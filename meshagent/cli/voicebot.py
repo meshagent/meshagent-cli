@@ -114,7 +114,7 @@ async def service(
     )
 
     @service.path(path=path)
-    class CustomVoiceBot():
+    class CustomVoiceBot(self):
         def __init__():
             super().__init__(
                 auto_greet_message=auto_greet_message,
