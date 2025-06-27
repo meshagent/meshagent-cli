@@ -110,8 +110,7 @@ async def service(
 
     service = ServiceHost(
         host=host,
-        port=port,
-        path=path
+        port=port
     )
 
     @service.path(path=path)
