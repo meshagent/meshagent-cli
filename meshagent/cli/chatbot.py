@@ -147,7 +147,7 @@ async def service(
     )
 
     @service.path(path=path)
-    class CustomChatbot():
+    class CustomChatbot(ChatBot):
         def __init__(self):
             super().__init__(
                 llm_adapter=OpenAIResponsesAdapter(),
