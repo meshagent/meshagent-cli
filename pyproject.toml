@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meshagent-cli"
+description = "CLI for Meshagent"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+keywords = []
+dependencies = [
+  "typer~=0.15.3",
+  "pydantic-yaml~=1.4.0",
+  "meshagent-api~=0.0.34",
+  "meshagent-agents~=0.0.34",
+  "meshagent-tools~=0.0.34",
+  "meshagent-mcp~=0.0.34",
+  "supabase~=2.15.1",
+  "fastmcp~=2.8.1"
+]
+dynamic = ["version", "readme"]
+
+[project.scripts]            
+meshagent = "meshagent.cli.cli:app"
+
+[project.urls]
+Documentation = "https://docs.meshagent.com"
+Website = "https://www.meshagent.com"
+Source = "https://www.meshagent.com"
+
+[tool.setuptools.packages.find]
+include = ["meshagent.*"]
+
+[tool.setuptools.package-data]
+"meshagent" = ["py.typed", "*.pyi", "**/*.pyi", "**/*.js"]
+
+[tool.setuptools.dynamic]
+version = {attr = "meshagent.cli.version.__version__"}
+readme = { file = "README.md", content-type = "text/markdown" }
