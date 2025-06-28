@@ -2,6 +2,7 @@ import pathlib
 import sys
 import tty
 import termios
+from meshagent.api.helpers import websocket_room_url
 from typing import Annotated, Optional
 
 import asyncio
@@ -46,10 +47,9 @@ async def tty_command(
         )
 
         token.add_role_grant(role="user")
-
         token.add_room_grant(room)
 
-        ws_url = f"{os.getenv("MESHAGENT_API_URL").replace("http","ws",1)}/rooms/{room}/tty?token={token.to_jwt(token=key)}"
+        ws_url = websocket_room_url(room_name=room)+"/tty?token={token.to_jwt(token=key)}"
 
         print(f"[bold green]Connecting to[/bold green] {room}")
 
