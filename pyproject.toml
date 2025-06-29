@@ -9,14 +9,14 @@ requires-python = ">=3.12"
 license = "Apache-2.0"
 keywords = []
 dependencies = [
-  "typer~=0.15.3",
-  "pydantic-yaml~=1.4.0",
+  "typer~=0.15",
+  "pydantic-yaml~=1.4",
   "meshagent-api~=0.0.35",
   "meshagent-agents~=0.0.35",
   "meshagent-tools~=0.0.35",
   "meshagent-mcp~=0.0.35",
-  "supabase~=2.15.1",
-  "fastmcp~=2.8.1"
+  "supabase~=2.15",
+  "fastmcp~=2.8"
 ]
 dynamic = ["version", "readme"]
 
