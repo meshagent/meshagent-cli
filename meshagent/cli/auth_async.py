@@ -58,7 +58,7 @@ async def _wait_for_code() -> str:
         return web.Response(status=400)
 
     app.add_routes([web.get("/callback", callback)])
-    runner = web.AppRunner(app)
+    runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, "localhost", REDIRECT_PORT)
     await site.start()

@@ -45,8 +45,10 @@ async def make_call(
         
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
-            protocol=WebSocketClientProtocol(url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-                                            token=jwt)
+            protocol=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                token=jwt
+            )
         ) as client:
             
             requirements = []
