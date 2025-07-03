@@ -16,7 +16,9 @@ dependencies = [
   "meshagent-tools~=0.0.35",
   "meshagent-mcp~=0.0.35",
   "supabase~=2.15",
-  "fastmcp~=2.8"
+  "fastmcp~=2.8",
+  "opentelemetry-distro~=0.54b1",
+  "opentelemetry-exporter-otlp-proto-http~=1.33"
 ]
 dynamic = ["version", "readme"]
 

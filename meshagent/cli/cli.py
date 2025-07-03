@@ -20,6 +20,16 @@ from meshagent.cli import chatbot
 from meshagent.cli import voicebot
 from meshagent.cli import tty
 
+from meshagent.cli import otel
+
+import logging
+
+otel.init(level=logging.INFO)
+
+# Turn down OpenAI logs, they are a bit noisy
+logging.getLogger("openai").setLevel(logging.ERROR)
+logging.getLogger("httpx").setLevel(logging.ERROR)
+
 app = typer.Typer()
 app.add_typer(call.app, name="call")
 app.add_typer(auth.app, name="auth")

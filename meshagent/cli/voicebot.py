@@ -53,7 +53,7 @@ async def make_call(
         room = resolve_room(room)
         jwt = await resolve_token_jwt(project_id=project_id, api_key_id=api_key_id, token_path=token_path, name=name, role=role, room=room)
         
-        print("[bold green]Connecting to room...[/bold green]")
+        print("[bold green]Connecting to room...[/bold green]", flush=True)
         async with RoomClient(
             protocol=WebSocketClientProtocol(url=websocket_room_url(room_name=room, base_url=meshagent_base_url()), token=jwt)
         ) as client:
