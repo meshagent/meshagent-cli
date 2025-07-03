@@ -13,7 +13,8 @@ from opentelemetry import _logs
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
-
+from opentelemetry.sdk.metrics.export import AggregationTemporality
+from opentelemetry.sdk.metrics import Counter, Histogram
 import logging
 
 import os
@@ -85,14 +86,23 @@ if otel_endpoint != None:
 
     if otel_metrics_endpoint != None:
         reader = PeriodicExportingMetricReader(
-            OTLPMetricExporter(endpoint=otel_metrics_endpoint)
+            exporter=OTLPMetricExporter(
+                endpoint=otel_metrics_endpoint,
+                 preferred_temporality={
+                    Counter: AggregationTemporality.DELTA,
+                    Histogram: AggregationTemporality.DELTA,
+                },
+            ),
+            export_interval_millis=1000
         )
         
         readers = [
             reader,
         ]
-        if add_console_exporters: 
-            readers.append(PeriodicExportingMetricReader(ConsoleMetricExporter()))
+        if add_console_exporters:
+            readers.append(PeriodicExportingMetricReader(
+                ConsoleMetricExporter()
+            ))
         
         meter_provider = MeterProvider(resource=resource, metric_readers=readers)
         metrics.set_meter_provider(meter_provider)
