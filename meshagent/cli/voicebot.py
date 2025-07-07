@@ -20,9 +20,8 @@ try:
     from meshagent.livekit.agents.voice import VoiceBot
 
 except ImportError:
-    
     class VoiceBot:
-        def __init__(**kwargs):
+        def __init__(self, **kwargs):
             raise RoomException("meshagent.livekit module not found, voicebots are not available")
 
 
