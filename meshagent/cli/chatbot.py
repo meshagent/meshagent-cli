@@ -59,6 +59,7 @@ def build_chatbot(*,
         llm_adapter = OpenAIResponsesAdapter(
             model=model
         )
+
     class CustomChatbot(BaseClass):
         def __init__(self):
             super().__init__(
@@ -138,16 +139,11 @@ async def make_call(
 
             CustomChatbot = build_chatbot(computer_use=computer_use, model=model, local_shell=local_shell, agent_name=agent_name, rule=rule, toolkit=toolkit, schema=schema, image_generation=image_generation)
                 
-            bot = CustomChatbot(
-                llm_adapter=OpenAIResponsesAdapter(),
-                name=agent_name,
-                requires=requirements,
-                toolkits=toolkits,
-                rules=rule if len(rule) > 0 else None
-            )
+            bot = CustomChatbot()
 
             await bot.start(room=client)
             try:
+                print(f"[bold green]Open the studio to interact with your agent: {meshagent_base_url().replace("api.","studio.")}/projects/{project_id}/rooms/{client.room_name}[/bold green]", flush=True)
                 await client.protocol.wait_for_close()
             except KeyboardInterrupt:
                 await bot.stop()

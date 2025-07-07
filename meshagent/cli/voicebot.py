@@ -77,6 +77,7 @@ async def make_call(
             await bot.start(room=client)
 
             try:
+                print(f"[bold green]Open the studio to interact with your agent: {meshagent_base_url().replace("api.","studio.")}/projects/{project_id}/rooms/{client.room_name}[/bold green]", flush=True)
                 await client.protocol.wait_for_close()
             except KeyboardInterrupt:
                 await bot.stop()
