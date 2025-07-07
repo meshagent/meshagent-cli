@@ -90,7 +90,7 @@ async def storage_cp_command(
     project_id: str = None,
     room: Annotated[str, typer.Option(..., help="Room name (if copying to/from remote)")],
     token_path: Annotated[Optional[str], typer.Option()] = None, 
-    api_key_id: Annotated[str, typer.Option(..., help="API Key ID (if copying to/from remote)")],
+    api_key_id: Annotated[str, typer.Option(..., help="API Key ID (if copying to/from remote)")] = None,
     name: Annotated[str, typer.Option(..., help="Participant name (if copying to/from remote)")],
     role: str = "user",
     source_path: str,
@@ -406,7 +406,7 @@ async def storage_rm_command(
 
         # Helper to ensure we have a storage client if we need remote operations
         async def ensure_storage_client():
-            nonlocal account_client, client, storage_client, api_key_id
+            nonlocal account_client, client, storage_client, project_id, api_key_id
 
             if storage_client is not None:
                 return  # Already set up
@@ -418,6 +418,7 @@ async def storage_rm_command(
 
             account_client = await get_client()
             project_id = await resolve_project_id(project_id=project_id)
+            api_key_id = await resolve_api_key(project_id, api_key_id)
             jwt = await resolve_token_jwt(project_id=project_id, api_key_id=api_key_id, token_path=token_path, name=name, role=role, room=room)
 
             print("[bold green]Connecting to room...[/bold green]")
@@ -588,7 +589,7 @@ async def storage_ls_command(
 
     # --- Set up remote connection if needed ---
     async def ensure_storage_client():
-        nonlocal account_client, client, storage_client, project_id
+        nonlocal account_client, client, storage_client, project_id, api_key_id
         if storage_client is not None:
             return
 
@@ -599,7 +600,7 @@ async def storage_ls_command(
 
         account_client = await get_client()
         project_id = await resolve_project_id(project_id=project_id)
-        
+        api_key_id = await resolve_api_key(project_id, api_key_id)        
         jwt = await resolve_token_jwt(project_id=project_id, api_key_id=api_key_id, token_path=token_path, name=name, role=role, room=room)
         
         client = RoomClient(
