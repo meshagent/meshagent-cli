@@ -6,14 +6,20 @@ import fnmatch
 import glob
 import shutil
 
-from meshagent.api import RoomClient, ParticipantToken, WebSocketClientProtocol
+from meshagent.api import RoomClient, WebSocketClientProtocol
 from meshagent.api.room_server_client import StorageClient
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.cli import async_typer
-from meshagent.cli.helper import get_client, resolve_project_id, resolve_api_key, resolve_token_jwt
-from meshagent.cli.helper import get_client, resolve_project_id, resolve_api_key, resolve_token_jwt, resolve_room
+from meshagent.cli.helper import (
+    get_client,
+    resolve_project_id,
+    resolve_api_key,
+    resolve_token_jwt,
+)
+from meshagent.cli.helper import resolve_room
 
 app = async_typer.AsyncTyper()
+
 
 def parse_path(path: str):
     """
@@ -23,8 +29,9 @@ def parse_path(path: str):
     """
     prefix = "room://"
     if path.startswith(prefix):
-        return ("room", path[len(prefix):])
+        return ("room", path[len(prefix) :])
     return ("local", path)
+
 
 def split_glob_subpath(subpath: str):
     """
@@ -51,11 +58,11 @@ async def storage_exists_command(
     *,
     project_id: str = None,
     room: Annotated[str, typer.Option(..., help="Room name")],
-    token_path: Annotated[Optional[str], typer.Option()] = None, 
+    token_path: Annotated[Optional[str], typer.Option()] = None,
     api_key_id: Annotated[Optional[str], typer.Option(..., help="API Key ID")] = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "user",
-    path: str
+    path: str,
 ):
     """
     Check if a file/folder exists in remote storage.
@@ -65,21 +72,29 @@ async def storage_exists_command(
         project_id = await resolve_project_id(project_id=project_id)
         api_key_id = await resolve_api_key(project_id, api_key_id)
         room = resolve_room(room)
-        jwt = await resolve_token_jwt(project_id=project_id, api_key_id=api_key_id, token_path=token_path, name=name, role=role, room=room)
-        
+        jwt = await resolve_token_jwt(
+            project_id=project_id,
+            api_key_id=api_key_id,
+            token_path=token_path,
+            name=name,
+            role=role,
+            room=room,
+        )
+
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
             protocol=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-                token=jwt
+                token=jwt,
             )
         ) as client:
-            
             file_exists = await client.storage.exists(path=path)
             if file_exists:
                 print(f"[bold cyan]'{path}' exists in remote storage.[/bold cyan]")
             else:
-                print(f"[bold red]'{path}' does NOT exist in remote storage.[/bold red]")
+                print(
+                    f"[bold red]'{path}' does NOT exist in remote storage.[/bold red]"
+                )
     finally:
         await account_client.close()
 
@@ -88,16 +103,22 @@ async def storage_exists_command(
 async def storage_cp_command(
     *,
     project_id: str = None,
-    room: Annotated[str, typer.Option(..., help="Room name (if copying to/from remote)")],
-    token_path: Annotated[Optional[str], typer.Option()] = None, 
-    api_key_id: Annotated[str, typer.Option(..., help="API Key ID (if copying to/from remote)")],
-    name: Annotated[str, typer.Option(..., help="Participant name (if copying to/from remote)")],
+    room: Annotated[
+        str, typer.Option(..., help="Room name (if copying to/from remote)")
+    ],
+    token_path: Annotated[Optional[str], typer.Option()] = None,
+    api_key_id: Annotated[
+        str, typer.Option(..., help="API Key ID (if copying to/from remote)")
+    ],
+    name: Annotated[
+        str, typer.Option(..., help="Participant name (if copying to/from remote)")
+    ],
     role: str = "user",
     source_path: str,
-    dest_path: str
+    dest_path: str,
 ):
     room = resolve_room(room)
-    
+
     try:
         """
         Copy files between local and remote storage. Supports globs on the source side.
@@ -114,7 +135,7 @@ async def storage_cp_command(
         # (or both are remote).
         account_client = None
         client = None
-        storage_client : None | StorageClient = None
+        storage_client: None | StorageClient = None
 
         # A helper to ensure we have a connected StorageClient if needed
         async def ensure_storage_client():
@@ -126,14 +147,23 @@ async def storage_cp_command(
             account_client = await get_client()
             project_id = await resolve_project_id(project_id=project_id)
             api_key_id = await resolve_api_key(project_id, api_key_id)
-            
-            jwt = await resolve_token_jwt(project_id=project_id, api_key_id=api_key_id, token_path=token_path, name=name, role=role, room=room)
-            
+
+            jwt = await resolve_token_jwt(
+                project_id=project_id,
+                api_key_id=api_key_id,
+                token_path=token_path,
+                name=name,
+                role=role,
+                room=room,
+            )
+
             print("[bold green]Connecting to room...[/bold green]")
             client = RoomClient(
                 protocol=WebSocketClientProtocol(
-                    url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-                    token=jwt
+                    url=websocket_room_url(
+                        room_name=room, base_url=meshagent_base_url()
+                    ),
+                    token=jwt,
                 )
             )
 
@@ -154,7 +184,9 @@ async def storage_cp_command(
                 # We'll just see if it exists
                 file_exists = await sc.exists(path=base_dir)
                 if not file_exists:
-                    raise FileNotFoundError(f"Remote file '{path_pattern}' does not exist.")
+                    raise FileNotFoundError(
+                        f"Remote file '{path_pattern}' does not exist."
+                    )
                 return [(base_dir, os.path.basename(base_dir))]  # (full, filename)
             else:
                 # List base_dir, filter
@@ -176,7 +208,9 @@ async def storage_cp_command(
                     print(f"[bold red]No local files match '{src_subpath}'[/bold red]")
                     return
                 # We'll store (absolute_source_file, filename_only)
-                expanded_sources = [(m, os.path.basename(m)) for m in local_matches if os.path.isfile(m)]
+                expanded_sources = [
+                    (m, os.path.basename(m)) for m in local_matches if os.path.isfile(m)
+                ]
             else:
                 # Single local file
                 if not os.path.isfile(src_subpath):
@@ -194,12 +228,16 @@ async def storage_cp_command(
 
         # 2) Figure out if destination is a single file or a directory
         #    We'll handle multi-file -> directory or single-file -> single-file.
-        multiple_sources = (len(expanded_sources) > 1)
+        multiple_sources = len(expanded_sources) > 1
 
         if dst_scheme == "local":
             # If local destination is a directory or ends with a path separator,
             # we treat it as a directory. If multiple files, it must be a directory.
-            if os.path.isdir(dst_subpath) or dst_subpath.endswith(os.sep) or dst_subpath == "":
+            if (
+                os.path.isdir(dst_subpath)
+                or dst_subpath.endswith(os.sep)
+                or dst_subpath == ""
+            ):
                 # directory
                 for full_src, fname in expanded_sources:
                     copy_operations.append((full_src, os.path.join(dst_subpath, fname)))
@@ -207,7 +245,9 @@ async def storage_cp_command(
                 # single file (or maybe it doesn't exist yet, but no slash)
                 if multiple_sources:
                     # Must be a directory, but user gave a file-like name => error
-                    print(f"[bold red]Destination '{dest_path}' is not a directory, but multiple files are being copied.[/bold red]")
+                    print(
+                        f"[bold red]Destination '{dest_path}' is not a directory, but multiple files are being copied.[/bold red]"
+                    )
                     return
                 # single file
                 copy_operations.append((expanded_sources[0][0], dst_subpath))
@@ -224,7 +264,7 @@ async def storage_cp_command(
             is_destination_folder = False
             try:
                 entries = await storage_client.list(path=dst_subpath)
-                # If listing worked, it might be a folder (unless it's a file with children?). 
+                # If listing worked, it might be a folder (unless it's a file with children?).
                 # We'll assume it’s a folder if we get any results or no error.
                 is_destination_folder = True
             except Exception:
@@ -240,7 +280,9 @@ async def storage_cp_command(
             else:
                 # single file path
                 if multiple_sources:
-                    print(f"[bold red]Destination '{dest_path}' is not a folder, but multiple files are being copied.[/bold red]")
+                    print(
+                        f"[bold red]Destination '{dest_path}' is not a folder, but multiple files are being copied.[/bold red]"
+                    )
                     return
                 copy_operations.append((expanded_sources[0][0], dst_subpath))
 
@@ -251,7 +293,7 @@ async def storage_cp_command(
         #    b) local->remote
         #    c) remote->local
         #    d) remote->remote
-        for (src_file, dst_file) in copy_operations:
+        for src_file, dst_file in copy_operations:
             # Determine combo
             if src_scheme == "local" and dst_scheme == "local":
                 # local->local
@@ -259,7 +301,9 @@ async def storage_cp_command(
                 os.makedirs(os.path.dirname(dst_file), exist_ok=True)
                 with open(src_file, "rb") as fsrc, open(dst_file, "wb") as fdst:
                     fdst.write(fsrc.read())
-                print(f"[bold cyan]Copied local '{src_file}' to '{dst_file}'[/bold cyan]")
+                print(
+                    f"[bold cyan]Copied local '{src_file}' to '{dst_file}'[/bold cyan]"
+                )
 
             elif src_scheme == "local" and dst_scheme == "room":
                 # local->remote
@@ -270,7 +314,9 @@ async def storage_cp_command(
                 dest_handle = await storage_client.open(path=dst_file, overwrite=True)
                 await storage_client.write(handle=dest_handle, data=data)
                 await storage_client.close(handle=dest_handle)
-                print(f"[bold cyan]Uploaded '{src_file}' to remote '{dst_file}'[/bold cyan]")
+                print(
+                    f"[bold cyan]Uploaded '{src_file}' to remote '{dst_file}'[/bold cyan]"
+                )
 
             elif src_scheme == "room" and dst_scheme == "local":
                 # remote->local
@@ -280,7 +326,9 @@ async def storage_cp_command(
                     os.makedirs(os.path.dirname(dst_file), exist_ok=True)
                 with open(dst_file, "wb") as fdst:
                     fdst.write(remote_file.data)
-                print(f"[bold cyan]Downloaded remote '{src_file}' to local '{dst_file}'[/bold cyan]")
+                print(
+                    f"[bold cyan]Downloaded remote '{src_file}' to local '{dst_file}'[/bold cyan]"
+                )
 
             else:
                 # remote->remote
@@ -289,7 +337,9 @@ async def storage_cp_command(
                 dest_handle = await storage_client.open(path=dst_file, overwrite=True)
                 await storage_client.write(handle=dest_handle, data=source_file.data)
                 await storage_client.close(handle=dest_handle)
-                print(f"[bold cyan]Copied remote '{src_file}' to '{dst_file}'[/bold cyan]")
+                print(
+                    f"[bold cyan]Copied remote '{src_file}' to '{dst_file}'[/bold cyan]"
+                )
     finally:
         # Clean up
         if client is not None:
@@ -301,22 +351,32 @@ async def storage_cp_command(
 @app.async_command("show")
 async def storage_show_command(
     *,
-    project_id: Annotated[Optional[str], typer.Option(..., help="Project ID (if remote)")] = None,
-    room: Annotated[Optional[str], typer.Option(..., help="Room name (if remote)")] = None,
-    token_path: Annotated[Optional[str], typer.Option()] = None, 
-    api_key_id: Annotated[Optional[str], typer.Option(..., help="API Key ID (if remote)")] = None,
-    name: Annotated[Optional[str], typer.Option(..., help="Participant name (if remote)")] = None,
+    project_id: Annotated[
+        Optional[str], typer.Option(..., help="Project ID (if remote)")
+    ] = None,
+    room: Annotated[
+        Optional[str], typer.Option(..., help="Room name (if remote)")
+    ] = None,
+    token_path: Annotated[Optional[str], typer.Option()] = None,
+    api_key_id: Annotated[
+        Optional[str], typer.Option(..., help="API Key ID (if remote)")
+    ] = None,
+    name: Annotated[
+        Optional[str], typer.Option(..., help="Participant name (if remote)")
+    ] = None,
     role: str = "user",
     path: str,
-    encoding: Annotated[str, typer.Option("--encoding", help="Text encoding")] = "utf-8"
+    encoding: Annotated[
+        str, typer.Option("--encoding", help="Text encoding")
+    ] = "utf-8",
 ):
     """
     Print the contents of a file (local or remote) to the console.
     """
     room = resolve_room(room)
-    
+
     scheme, subpath = parse_path(path)
-    
+
     # If we need a remote connection, set it up:
     account_client = None
     client = None
@@ -329,21 +389,26 @@ async def storage_show_command(
             return
 
         if not room:
-            raise typer.BadParameter(
-                "To show a remote file, you must provide --room"
-            )
+            raise typer.BadParameter("To show a remote file, you must provide --room")
 
         account_client = await get_client()
         project_id = await resolve_project_id(project_id=project_id)
         api_key_id = await resolve_api_key(project_id, api_key_id)
 
-        jwt = await resolve_token_jwt(project_id=project_id, api_key_id=api_key_id, token_path=token_path, name=name, role=role, room=room)
-        
+        jwt = await resolve_token_jwt(
+            project_id=project_id,
+            api_key_id=api_key_id,
+            token_path=token_path,
+            name=name,
+            role=role,
+            room=room,
+        )
+
         print("[bold green]Connecting to room...[/bold green]")
         client = RoomClient(
             protocol=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-                token=jwt
+                token=jwt,
             )
         )
 
@@ -379,14 +444,24 @@ async def storage_show_command(
 @app.async_command("rm")
 async def storage_rm_command(
     *,
-    project_id: Annotated[Optional[str], typer.Option(..., help="Project ID (if remote)")] = None,
-    room: Annotated[Optional[str], typer.Option(..., help="Room name (if remote)")] = None,
-    token_path: Annotated[Optional[str], typer.Option()] = None, 
-    api_key_id: Annotated[Optional[str], typer.Option(..., help="API Key ID (if remote)")] = None,
-    name: Annotated[Optional[str], typer.Option(..., help="Participant name (if remote)")] = None,
+    project_id: Annotated[
+        Optional[str], typer.Option(..., help="Project ID (if remote)")
+    ] = None,
+    room: Annotated[
+        Optional[str], typer.Option(..., help="Room name (if remote)")
+    ] = None,
+    token_path: Annotated[Optional[str], typer.Option()] = None,
+    api_key_id: Annotated[
+        Optional[str], typer.Option(..., help="API Key ID (if remote)")
+    ] = None,
+    name: Annotated[
+        Optional[str], typer.Option(..., help="Participant name (if remote)")
+    ] = None,
     role: str = "user",
     path: str,
-    recursive: Annotated[bool, typer.Option("-r", help="Remove directories/folders recursively")] = False,
+    recursive: Annotated[
+        bool, typer.Option("-r", help="Remove directories/folders recursively")
+    ] = False,
 ):
     """
     Remove files (and optionally folders) either locally or in remote storage.
@@ -418,13 +493,22 @@ async def storage_rm_command(
 
             account_client = await get_client()
             project_id = await resolve_project_id(project_id=project_id)
-            jwt = await resolve_token_jwt(project_id=project_id, api_key_id=api_key_id, token_path=token_path, name=name, role=role, room=room)
+            jwt = await resolve_token_jwt(
+                project_id=project_id,
+                api_key_id=api_key_id,
+                token_path=token_path,
+                name=name,
+                role=role,
+                room=room,
+            )
 
             print("[bold green]Connecting to room...[/bold green]")
             client = RoomClient(
                 protocol=WebSocketClientProtocol(
-                    url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-                    token=jwt
+                    url=websocket_room_url(
+                        room_name=room, base_url=meshagent_base_url()
+                    ),
+                    token=jwt,
                 )
             )
 
@@ -440,7 +524,9 @@ async def storage_rm_command(
         def remove_local_path(local_path: str, recursive: bool):
             """Remove a single local path (file or directory). Respects 'recursive' for directories."""
             if not os.path.exists(local_path):
-                print(f"[yellow]Local path '{local_path}' does not exist. Skipping.[/yellow]")
+                print(
+                    f"[yellow]Local path '{local_path}' does not exist. Skipping.[/yellow]"
+                )
                 return
 
             if os.path.isfile(local_path):
@@ -448,13 +534,19 @@ async def storage_rm_command(
                 print(f"[bold cyan]Removed local file '{local_path}'[/bold cyan]")
             elif os.path.isdir(local_path):
                 if not recursive:
-                    print(f"[bold red]Cannot remove directory '{local_path}' without -r.[/bold red]")
+                    print(
+                        f"[bold red]Cannot remove directory '{local_path}' without -r.[/bold red]"
+                    )
                     raise typer.Exit(code=1)
                 shutil.rmtree(local_path)
-                print(f"[bold cyan]Removed local directory '{local_path}' recursively[/bold cyan]")
+                print(
+                    f"[bold cyan]Removed local directory '{local_path}' recursively[/bold cyan]"
+                )
             else:
                 # Neither file nor directory?
-                print(f"[bold red]'{local_path}' is not a regular file or directory. Skipping.[/bold red]")
+                print(
+                    f"[bold red]'{local_path}' is not a regular file or directory. Skipping.[/bold red]"
+                )
 
         # ---------------
         # REMOTE HELPERS
@@ -486,7 +578,7 @@ async def storage_rm_command(
         async def is_remote_folder(sc: StorageClient, remote_path: str) -> bool:
             """Return True if remote_path is a folder, otherwise False or it doesn't exist."""
             stat = await sc.stat(path=remote_path)
-            if stat == None:
+            if stat is None:
                 return False
             else:
                 return stat.is_folder
@@ -498,14 +590,18 @@ async def storage_rm_command(
             """
             # Does it exist at all?
             if not await sc.exists(path=path):
-                print(f"[yellow]Remote path '{path}' does not exist. Skipping.[/yellow]")
+                print(
+                    f"[yellow]Remote path '{path}' does not exist. Skipping.[/yellow]"
+                )
                 return
 
             # Check if it's a folder
             if await is_remote_folder(sc, path):
                 # It's a folder
                 if not recursive:
-                    print(f"[bold red]Cannot remove remote directory '{path}' without -r.[/bold red]")
+                    print(
+                        f"[bold red]Cannot remove remote directory '{path}' without -r.[/bold red]"
+                    )
                     raise typer.Exit(code=1)
 
                 # Recursively remove contents
@@ -516,7 +612,9 @@ async def storage_rm_command(
 
                 # Finally remove the folder itself (assuming storage.delete can remove empty folders)
                 await sc.delete(path)
-                print(f"[bold cyan]Removed remote directory '{path}' recursively[/bold cyan]")
+                print(
+                    f"[bold cyan]Removed remote directory '{path}' recursively[/bold cyan]"
+                )
             else:
                 # It's a file
                 await sc.delete(path)
@@ -550,7 +648,7 @@ async def storage_rm_command(
         # ----------------------------------------------------------------
         # 2) Perform the removal
         # ----------------------------------------------------------------
-        for (full_path, _) in expanded_targets:
+        for full_path, _ in expanded_targets:
             if scheme == "local":
                 remove_local_path(full_path, recursive)
             else:
@@ -562,17 +660,30 @@ async def storage_rm_command(
         if account_client is not None:
             await account_client.close()
 
+
 @app.async_command("ls")
 async def storage_ls_command(
     *,
-    project_id: Annotated[Optional[str], typer.Option(..., help="Project ID (if remote)")] = None,
-    room: Annotated[Optional[str], typer.Option(..., help="Room name (if remote)")] = None,
-    token_path: Annotated[Optional[str], typer.Option()] = None, 
-    api_key_id: Annotated[Optional[str], typer.Option(..., help="API Key ID (if remote)")] = None,
-    name: Annotated[Optional[str], typer.Option(..., help="Participant name (if remote)")] = None,
+    project_id: Annotated[
+        Optional[str], typer.Option(..., help="Project ID (if remote)")
+    ] = None,
+    room: Annotated[
+        Optional[str], typer.Option(..., help="Room name (if remote)")
+    ] = None,
+    token_path: Annotated[Optional[str], typer.Option()] = None,
+    api_key_id: Annotated[
+        Optional[str], typer.Option(..., help="API Key ID (if remote)")
+    ] = None,
+    name: Annotated[
+        Optional[str], typer.Option(..., help="Participant name (if remote)")
+    ] = None,
     role: str = "user",
-    path: Annotated[str, typer.Argument(..., help="Path to list (local or room://...)")],
-    recursive: Annotated[bool, typer.Option("-r", help="List subfolders/files recursively")] = False,
+    path: Annotated[
+        str, typer.Argument(..., help="Path to list (local or room://...)")
+    ],
+    recursive: Annotated[
+        bool, typer.Option("-r", help="List subfolders/files recursively")
+    ] = False,
 ):
     """
     List files/folders either locally or in remote storage.
@@ -593,19 +704,24 @@ async def storage_ls_command(
             return
 
         if not room:
-            raise typer.BadParameter(
-                "To list a remote path, you must provide --room"
-            )
+            raise typer.BadParameter("To list a remote path, you must provide --room")
 
         account_client = await get_client()
         project_id = await resolve_project_id(project_id=project_id)
-        
-        jwt = await resolve_token_jwt(project_id=project_id, api_key_id=api_key_id, token_path=token_path, name=name, role=role, room=room)
-        
+
+        jwt = await resolve_token_jwt(
+            project_id=project_id,
+            api_key_id=api_key_id,
+            token_path=token_path,
+            name=name,
+            role=role,
+            room=room,
+        )
+
         client = RoomClient(
             protocol=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-                token=jwt
+                token=jwt,
             )
         )
         await client.__aenter__()
@@ -619,7 +735,7 @@ async def storage_ls_command(
         List a local path. If it's a file, print it.
         If it's a directory, list its contents.
         If recursive=True, walk subdirectories as well.
-        
+
         prefix is used to indent or prefix lines if desired.
         """
 
@@ -642,7 +758,11 @@ async def storage_ls_command(
                         print(f"{prefix}  {entry.name}/")
                         if recursive:
                             # Recursively list the folder
-                            list_local_path(os.path.join(base_path, entry.name), True, prefix + "    ")
+                            list_local_path(
+                                os.path.join(base_path, entry.name),
+                                True,
+                                prefix + "    ",
+                            )
                     else:
                         print(f"{prefix}  {entry.name}")
         except PermissionError:
@@ -668,18 +788,20 @@ async def storage_ls_command(
     async def is_remote_folder(sc: StorageClient, remote_path: str) -> bool:
         """Return True if remote_path is a folder, otherwise False or it doesn't exist."""
         stat = await sc.stat(path=remote_path)
-        
-        if stat == None:
+
+        if stat is None:
             return False
         else:
             return stat.is_folder
 
-    async def list_remote_path(sc: StorageClient, remote_path: str, recursive: bool, prefix: str = ""):
+    async def list_remote_path(
+        sc: StorageClient, remote_path: str, recursive: bool, prefix: str = ""
+    ):
         """
         List a remote path. If it's a file, just print it.
         If it's a folder, list its contents. If recursive=True, list subfolders too.
         """
-        
+
         # Does it exist at all?
         if not await sc.exists(path=remote_path):
             print(f"{prefix}[red]{remote_path} does not exist (remote)[/red]")
@@ -699,16 +821,22 @@ async def storage_ls_command(
                         if e.is_folder:
                             print(f"{prefix}  {e.name}/")
                             if recursive:
-                                await list_remote_path(sc, child_path, recursive, prefix + "    ")
+                                await list_remote_path(
+                                    sc, child_path, recursive, prefix + "    "
+                                )
                         else:
                             print(f"{prefix}  {e.name}")
                 except Exception as ex:
-                    print(f"{prefix}[red]Cannot list remote folder '{remote_path}': {ex}[/red]")
+                    print(
+                        f"{prefix}[red]Cannot list remote folder '{remote_path}': {ex}[/red]"
+                    )
         else:
             # It's a file
             print(f"{prefix}{os.path.basename(remote_path)}")
 
-    async def glob_and_list_remote(sc: StorageClient, path_pattern: str, recursive: bool):
+    async def glob_and_list_remote(
+        sc: StorageClient, path_pattern: str, recursive: bool
+    ):
         """
         If there's a wildcard, list matching files/folders. If no wildcard, list the single path.
         """
@@ -766,4 +894,3 @@ async def storage_ls_command(
             await client.__aexit__(None, None, None)
         if account_client is not None:
             await account_client.close()
-

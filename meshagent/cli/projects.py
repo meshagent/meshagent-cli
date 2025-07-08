@@ -16,9 +16,10 @@ async def create(name: str):
     client = await get_client()
     try:
         result = await client.create_project(name)
-        print(f"[green]Project created:[/] {result["id"]}")
+        print(f"[green]Project created:[/] {result['id']}")
     finally:
         await client.close()
+
 
 @app.async_command("list")
 async def list():
@@ -31,6 +32,7 @@ async def list():
 
     print_json_table(projects["projects"], "id", "name")
     await client.close()
+
 
 @app.async_command("activate")
 async def activate(
@@ -95,4 +97,3 @@ async def activate(
             raise typer.Exit(code=1)
     finally:
         await client.close()
-

@@ -7,7 +7,11 @@ from typing import Annotated, Dict, Optional
 
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client, print_json_table, resolve_project_id
-from meshagent.api.accounts_client import PullSecret, KeysSecret, SecretLike   # or wherever you defined them
+from meshagent.api.accounts_client import (
+    PullSecret,
+    KeysSecret,
+    SecretLike,
+)  # or wherever you defined them
 
 # --------------------------------------------------------------------------
 #  App Definition
@@ -18,6 +22,7 @@ secrets_app = async_typer.AsyncTyper(help="Manage secrets for your project.")
 # --------------------------------------------------------------------------
 #  Utility helpers
 # --------------------------------------------------------------------------
+
 
 def _parse_kv_inline(source: str | None) -> Dict[str, str]:
     """
@@ -39,7 +44,10 @@ def _parse_kv_inline(source: str | None) -> Dict[str, str]:
 #  Subcommand group: "keys"
 #     e.g.: meshagent secrets keys create --name <NAME> --data ...
 # --------------------------------------------------------------------------
-keys_app = async_typer.AsyncTyper(help="Create or update environment-based key-value secrets.")
+keys_app = async_typer.AsyncTyper(
+    help="Create or update environment-based key-value secrets."
+)
+
 
 @keys_app.async_command("create")
 async def create_keys_secret(
@@ -52,7 +60,7 @@ async def create_keys_secret(
             "--data",
             help="Format: key=value key2=value  (space-separated)",
         ),
-    ]
+    ],
 ):
     """
     Create a new 'keys' secret (opaque env-vars).
@@ -86,7 +94,7 @@ async def update_keys_secret(
             "--data",
             help="Format: key=value key2=value  (space-separated)",
         ),
-    ]
+    ],
 ):
     """
     Update an existing 'keys' secret (opaque env-vars).
@@ -111,20 +119,27 @@ async def update_keys_secret(
 #  Subcommand group: "docker"
 #     e.g.: meshagent secrets docker create --name myregistry --server ...
 # --------------------------------------------------------------------------
-docker_app = async_typer.AsyncTyper(help="Create or update a Docker registry pull secret.")
+docker_app = async_typer.AsyncTyper(
+    help="Create or update a Docker registry pull secret."
+)
+
 
 @docker_app.async_command("create")
 async def create_docker_secret(
     *,
     project_id: Optional[str] = typer.Option(None),
     name: Annotated[str, typer.Option(help="Secret name")],
-    server: Annotated[str, typer.Option(help="Docker registry server, e.g. index.docker.io")],
+    server: Annotated[
+        str, typer.Option(help="Docker registry server, e.g. index.docker.io")
+    ],
     username: Annotated[str, typer.Option(help="Registry user name")],
     password: Annotated[str, typer.Option(help="Registry password")],
     email: Annotated[
         str,
-        typer.Option("--email", help="User email for Docker config", show_default=False)
-    ] = "none@example.com"
+        typer.Option(
+            "--email", help="User email for Docker config", show_default=False
+        ),
+    ] = "none@example.com",
 ):
     """
     Create a new Docker pull secret (generic).
@@ -158,8 +173,10 @@ async def update_docker_secret(
     password: Annotated[str, typer.Option(help="Registry password")],
     email: Annotated[
         str,
-        typer.Option("--email", help="User email for Docker config", show_default=False)
-    ] = "none@example.com"
+        typer.Option(
+            "--email", help="User email for Docker config", show_default=False
+        ),
+    ] = "none@example.com",
 ):
     """
     Update an existing Docker pull secret (generic).
@@ -185,7 +202,10 @@ async def update_docker_secret(
 #  Subcommand group: "acr"
 #     e.g.: meshagent secrets acr create --name <NAME> --server <REG>.azurecr.io ...
 # --------------------------------------------------------------------------
-acr_app = async_typer.AsyncTyper(help="Create or update an Azure Container Registry pull secret.")
+acr_app = async_typer.AsyncTyper(
+    help="Create or update an Azure Container Registry pull secret."
+)
+
 
 @acr_app.async_command("create")
 async def create_acr_secret(
@@ -194,7 +214,7 @@ async def create_acr_secret(
     name: Annotated[str, typer.Option(help="Secret name")],
     server: Annotated[str, typer.Option(help="ACR server, e.g. myregistry.azurecr.io")],
     username: Annotated[str, typer.Option(help="Service principal ID")],
-    password: Annotated[str, typer.Option(help="Service principal secret/password")]
+    password: Annotated[str, typer.Option(help="Service principal secret/password")],
 ):
     """
     Create a new ACR pull secret (defaults email to 'none@microsoft.com').
@@ -209,12 +229,13 @@ async def create_acr_secret(
             server=server,
             username=username,
             password=password,
-            email="none@microsoft.com",   # Set a default for ACR usage
+            email="none@microsoft.com",  # Set a default for ACR usage
         )
         secret_id = await client.create_secret(project_id=project_id, secret=secret_obj)
         print(f"[green]Created ACR pull secret:[/] {secret_id}")
     finally:
         await client.close()
+
 
 @acr_app.async_command("update")
 async def update_acr_secret(
@@ -224,7 +245,7 @@ async def update_acr_secret(
     name: Annotated[str, typer.Option(help="Secret name")],
     server: Annotated[str, typer.Option(help="ACR server, e.g. myregistry.azurecr.io")],
     username: Annotated[str, typer.Option(help="Service principal ID")],
-    password: Annotated[str, typer.Option(help="Service principal secret/password")]
+    password: Annotated[str, typer.Option(help="Service principal secret/password")],
 ):
     """
     Update an existing ACR pull secret (defaults email to 'none@microsoft.com').
@@ -251,7 +272,10 @@ async def update_acr_secret(
 #     e.g.: meshagent secrets gar create --name <NAME> --server ...
 #           (Typically sets email='none@google.com' and username='_json_key')
 # --------------------------------------------------------------------------
-gar_app = async_typer.AsyncTyper(help="Create or update a Google Artifact Registry pull secret.")
+gar_app = async_typer.AsyncTyper(
+    help="Create or update a Google Artifact Registry pull secret."
+)
+
 
 @gar_app.async_command("create")
 async def create_gar_secret(
@@ -259,11 +283,13 @@ async def create_gar_secret(
     project_id: Optional[str] = typer.Option(None),
     name: Annotated[str, typer.Option(help="Secret name")],
     server: Annotated[str, typer.Option(help="GAR host, e.g. us-west1-docker.pkg.dev")],
-    json_key: Annotated[str, typer.Option(help="Entire GCP service account JSON as string")]
+    json_key: Annotated[
+        str, typer.Option(help="Entire GCP service account JSON as string")
+    ],
 ):
     """
     Create a new Google Artifact Registry pull secret.
-    
+
     By default, sets email='none@google.com', username='_json_key'
     """
     client = await get_client()
@@ -283,6 +309,7 @@ async def create_gar_secret(
     finally:
         await client.close()
 
+
 @gar_app.async_command("update")
 async def update_gar_secret(
     *,
@@ -290,7 +317,9 @@ async def update_gar_secret(
     secret_id: Annotated[str, typer.Option(help="Existing secret ID")],
     name: Annotated[str, typer.Option(help="Secret name")],
     server: Annotated[str, typer.Option(help="GAR host, e.g. us-west1-docker.pkg.dev")],
-    json_key: Annotated[str, typer.Option(help="Entire GCP service account JSON as string")]
+    json_key: Annotated[
+        str, typer.Option(help="Entire GCP service account JSON as string")
+    ],
 ):
     """
     Update an existing Google Artifact Registry pull secret.
@@ -316,6 +345,7 @@ async def update_gar_secret(
 #  Additional commands (shared by all secrets): list, delete
 # --------------------------------------------------------------------------
 
+
 @secrets_app.async_command("list")
 async def secret_list(*, project_id: Optional[str] = None):
     """List all secrets in the project (typed as Docker/ACR/GAR or Keys secrets)."""
@@ -329,7 +359,7 @@ async def secret_list(*, project_id: Optional[str] = None):
         rows = []
         for s in secrets:
             row = {
-                "id":   s.id,
+                "id": s.id,
                 "name": s.name,
                 "type": s.type,
             }
@@ -353,7 +383,7 @@ async def secret_list(*, project_id: Optional[str] = None):
 async def secret_delete(
     *,
     project_id: Optional[str] = None,
-    secret_id: Annotated[str, typer.Argument(help="ID of the secret to delete")]
+    secret_id: Annotated[str, typer.Argument(help="ID of the secret to delete")],
 ):
     """Delete a secret."""
     client = await get_client()

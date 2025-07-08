@@ -12,6 +12,7 @@ app = async_typer.AsyncTyper()
 # Webhook commands
 # ---------------------------------------------------------------------------
 
+
 @app.async_command("create")
 async def webhook_create(
     *,
@@ -21,12 +22,12 @@ async def webhook_create(
     event: Annotated[
         List[str],
         typer.Option(
-            "-e",
-            "--event",
-            help="Event to subscribe to (repeat for multiple)."
+            "-e", "--event", help="Event to subscribe to (repeat for multiple)."
         ),
     ],
-    description: Annotated[str, typer.Option(default="", help="Optional description")] = "",
+    description: Annotated[
+        str, typer.Option(default="", help="Optional description")
+    ] = "",
     action: Annotated[
         Optional[str],
         typer.Option("--action", help="Optional action name delivered with each call"),
@@ -69,7 +70,15 @@ async def webhook_list(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         hooks = await client.list_project_webhooks(project_id)
-        print_json_table(hooks.get("webhooks"), "id","name","description","url","events","action")
+        print_json_table(
+            hooks.get("webhooks"),
+            "id",
+            "name",
+            "description",
+            "url",
+            "events",
+            "action",
+        )
     finally:
         await client.close()
 
