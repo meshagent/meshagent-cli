@@ -9,7 +9,6 @@ app = async_typer.AsyncTyper()
 
 @app.async_command("list")
 async def list(*, project_id: str = None):
-
     project_id = await resolve_project_id(project_id=project_id)
 
     client = await get_client()
@@ -20,20 +19,21 @@ async def list(*, project_id: str = None):
         print("There are not currently any API keys in the project")
     await client.close()
 
+
 @app.async_command("create")
 async def create(*, project_id: str = None, name: str, description: str = ""):
-
     project_id = await resolve_project_id(project_id=project_id)
 
     client = await get_client()
-    api_key = await client.create_project_api_key(project_id=project_id, name=name, description=description)
+    api_key = await client.create_project_api_key(
+        project_id=project_id, name=name, description=description
+    )
     print(api_key["token"])
     await client.close()
 
 
 @app.async_command("delete")
 async def delete(*, project_id: str = None, id: str):
-
     project_id = await resolve_project_id(project_id=project_id)
 
     client = await get_client()
@@ -50,7 +50,7 @@ async def show(*, project_id: str = None, api_key_id: str):
         key = await client.decrypt_project_api_key(project_id=project_id, id=api_key_id)
 
         print(key["token"])
-    
+
     finally:
         await client.close()
 

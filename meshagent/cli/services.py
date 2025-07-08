@@ -10,8 +10,20 @@ from pydantic import PositiveInt
 import pydantic
 from typing import Literal
 from meshagent.cli import async_typer
-from meshagent.cli.helper import get_client, print_json_table, resolve_project_id, resolve_api_key
-from meshagent.api import ParticipantToken, RoomClient, WebSocketClientProtocol, websocket_room_url, meshagent_base_url
+from meshagent.cli.helper import (
+    get_client,
+    print_json_table,
+    resolve_project_id,
+    resolve_api_key,
+)
+from meshagent.api import (
+    ParticipantToken,
+    RoomClient,
+    WebSocketClientProtocol,
+    websocket_room_url,
+    meshagent_base_url,
+)
+
 # Pydantic basemodels
 from meshagent.api.accounts_client import Service, Port, Services
 
@@ -56,7 +68,9 @@ def _parse_port_spec(spec: str) -> PortSpec:
     kv: Dict[str, str] = {}
     for t in tokens:
         if "=" not in t:
-            raise typer.BadParameter(f"expected num=PORT_NUMBER type=meshagent.callable|mcp.sse liveness=OPTIONAL_PATH, got '{t}'")
+            raise typer.BadParameter(
+                f"expected num=PORT_NUMBER type=meshagent.callable|mcp.sse liveness=OPTIONAL_PATH, got '{t}'"
+            )
         k, v = t.split("=", 1)
         kv[k] = v
     try:
@@ -158,7 +172,12 @@ async def service_test(
     *,
     project_id: str = None,
     api_key_id: Annotated[Optional[str], typer.Option()] = None,
-    room: Annotated[str, typer.Option(help="A room name to test the service in (must not be currently running)")],
+    room: Annotated[
+        str,
+        typer.Option(
+            help="A room name to test the service in (must not be currently running)"
+        ),
+    ],
     name: Annotated[str, typer.Option(help="Friendly service name")],
     role: Annotated[str, typer.Option(help="Service role (agent|tool)")] = None,
     image: Annotated[str, typer.Option(help="Container image reference")],
@@ -190,11 +209,11 @@ async def service_test(
     ] = ...,
     timeout: Annotated[
         Optional[int],
-        typer.Option("--timeout", help="The maximum time that this room should run (default 1hr)"),
+        typer.Option(
+            "--timeout", help="The maximum time that this room should run (default 1hr)"
+        ),
     ] = None,
 ):
-    
-
     """Create a service attached to the project."""
     my_client = await get_client()
     try:
@@ -232,43 +251,43 @@ async def service_test(
 
         try:
             token = ParticipantToken(
-                name=name,
-                project_id=project_id,
-                api_key_id=api_key_id
+                name=name, project_id=project_id, api_key_id=api_key_id
             )
             token.add_role_grant("user")
             token.add_room_grant(room)
             token.extra_payload = {
-                "max_runtime_seconds" : timeout, # run for 1 hr max
-                "meshagent_dev_services" : [
-                    service_obj.model_dump(mode="json")
-                ]
+                "max_runtime_seconds": timeout,  # run for 1 hr max
+                "meshagent_dev_services": [service_obj.model_dump(mode="json")],
             }
-            
+
             print("[bold green]Connecting to room...[/bold green]")
 
-            key = (await my_client.decrypt_project_api_key(project_id=project_id, id=api_key_id))["token"]
+            key = (
+                await my_client.decrypt_project_api_key(
+                    project_id=project_id, id=api_key_id
+                )
+            )["token"]
 
             async with RoomClient(
                 protocol=WebSocketClientProtocol(
-                    url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-                    token=token.to_jwt(token=key)
+                    url=websocket_room_url(
+                        room_name=room, base_url=meshagent_base_url()
+                    ),
+                    token=token.to_jwt(token=key),
                 )
             ) as client:
-                
-                print(f"[green]Your test room '{room}' has been started. It will time out after a few minutes if you do not join it.[/green]")
+                print(
+                    f"[green]Your test room '{room}' has been started. It will time out after a few minutes if you do not join it.[/green]"
+                )
 
-            
         except ClientResponseError as exc:
             if exc.status == 409:
                 print(f"[red]Room already in use: {room}[/red]")
                 raise typer.Exit(code=1)
             raise
 
-    
     finally:
         await my_client.close()
-
 
 
 @app.async_command("show")
@@ -290,7 +309,11 @@ async def service_show(
 
 
 @app.async_command("list")
-async def service_list(*, project_id: str = None, o: Annotated[str, typer.Option(help="output format [json|table]")]):
+async def service_list(
+    *,
+    project_id: str = None,
+    o: Annotated[str, typer.Option(help="output format [json|table]")],
+):
     """List all services for the project."""
     client = await get_client()
     try:
@@ -303,10 +326,7 @@ async def service_list(*, project_id: str = None, o: Annotated[str, typer.Option
             print(Services(services=services).model_dump_json(indent=2))
         else:
             print_json_table(
-                [svc.model_dump(mode="json") for svc in services],
-                "id",
-                "name",
-                "image"
+                [svc.model_dump(mode="json") for svc in services], "id", "name", "image"
             )
     finally:
         await client.close()

@@ -9,19 +9,28 @@ import pathlib
 
 app = async_typer.AsyncTyper()
 
+
 @app.async_command("generate")
-async def generate(*, project_id: str = None, token_path: Annotated[str, typer.Option()], room: Annotated[str, typer.Option()], api_key_id: Annotated[Optional[str], typer.Option()] = None, name: Annotated[str, typer.Option()], role: str = "agent"):
+async def generate(
+    *,
+    project_id: str = None,
+    token_path: Annotated[str, typer.Option()],
+    room: Annotated[str, typer.Option()],
+    api_key_id: Annotated[Optional[str], typer.Option()] = None,
+    name: Annotated[str, typer.Option()],
+    role: str = "agent",
+):
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
         api_key_id = await resolve_api_key(project_id=project_id, api_key_id=api_key_id)
 
-        key = (await client.decrypt_project_api_key(project_id=project_id, id=api_key_id))["token"]
+        key = (
+            await client.decrypt_project_api_key(project_id=project_id, id=api_key_id)
+        )["token"]
 
         token = ParticipantToken(
-            name=name,
-            project_id=project_id,
-            api_key_id=api_key_id
+            name=name, project_id=project_id, api_key_id=api_key_id
         )
 
         token.add_role_grant(role=role)
@@ -29,12 +38,12 @@ async def generate(*, project_id: str = None, token_path: Annotated[str, typer.O
         token.add_room_grant(room)
 
         if token_path == None:
-
             print(token.to_jwt(token=key))
 
         else:
+            pathlib.Path(token_path).expanduser().resolve().write_text(
+                token.to_jwt(token=key)
+            )
 
-            pathlib.Path(token_path).expanduser().resolve().write_text(token.to_jwt(token=key))
-    
     finally:
         await client.close()

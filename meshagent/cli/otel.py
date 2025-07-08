@@ -8,8 +8,11 @@ from opentelemetry import metrics
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.sdk._logs.export import ConsoleLogExporter
 from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader, ConsoleMetricExporter
-from opentelemetry import _logs  
+from opentelemetry.sdk.metrics.export import (
+    PeriodicExportingMetricReader,
+    ConsoleMetricExporter,
+)
+from opentelemetry import _logs
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
@@ -18,6 +21,7 @@ from opentelemetry.sdk.metrics import Counter, Histogram
 import logging
 
 import os
+
 
 def _call_once(fn):
     called = False
@@ -29,6 +33,7 @@ def _call_once(fn):
             result = fn(*args, **kwargs)
             called = True
         return result
+
     return wrapper
 
 
@@ -53,66 +58,65 @@ meter_provider = None
 
 add_console_exporters = False
 
-otel_endpoint = os.getenv("OTEL_ENDPOINT") 
+otel_endpoint = os.getenv("OTEL_ENDPOINT")
 
 if otel_endpoint != None:
-
     otel_logs_endpoint = otel_endpoint + "/v1/logs"
     otel_traces_endpoint = otel_endpoint + "/v1/traces"
     otel_metrics_endpoint = otel_endpoint + "/v1/metrics"
-    
+
     if otel_logs_endpoint != None:
         logs_exporter = OTLPLogExporter(
             endpoint=otel_logs_endpoint,
         )
         logger_provider = LoggerProvider(resource=resource)
-        _logs.set_logger_provider(logger_provider) 
-        
-        logger_provider.add_log_record_processor(
-            BatchLogRecordProcessor(logs_exporter)
-        )
+        _logs.set_logger_provider(logger_provider)
 
-        if add_console_exporters: 
-            logger_provider.add_log_record_processor(BatchLogRecordProcessor(ConsoleLogExporter()))
+        logger_provider.add_log_record_processor(BatchLogRecordProcessor(logs_exporter))
 
-        
+        if add_console_exporters:
+            logger_provider.add_log_record_processor(
+                BatchLogRecordProcessor(ConsoleLogExporter())
+            )
+
     if otel_traces_endpoint != None:
         tracer_provider = TracerProvider(resource=resource)
         processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=otel_traces_endpoint))
         tracer_provider.add_span_processor(processor)
-        if add_console_exporters: 
-            tracer_provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
+        if add_console_exporters:
+            tracer_provider.add_span_processor(
+                BatchSpanProcessor(ConsoleSpanExporter())
+            )
         trace.set_tracer_provider(tracer_provider)
 
     if otel_metrics_endpoint != None:
         reader = PeriodicExportingMetricReader(
             exporter=OTLPMetricExporter(
                 endpoint=otel_metrics_endpoint,
-                 preferred_temporality={
+                preferred_temporality={
                     Counter: AggregationTemporality.DELTA,
                     Histogram: AggregationTemporality.DELTA,
                 },
             ),
-            export_interval_millis=1000
+            export_interval_millis=1000,
         )
-        
+
         readers = [
             reader,
         ]
         if add_console_exporters:
-            readers.append(PeriodicExportingMetricReader(
-                ConsoleMetricExporter()
-            ))
-        
+            readers.append(PeriodicExportingMetricReader(ConsoleMetricExporter()))
+
         meter_provider = MeterProvider(resource=resource, metric_readers=readers)
         metrics.set_meter_provider(meter_provider)
+
 
 @_call_once
 def init(level):
     if logger_provider != None:
         logging_handler = LoggingHandler(level=level, logger_provider=logger_provider)
-        root = logging.getLogger() 
-        root.setLevel(level) 
+        root = logging.getLogger()
+        root.setLevel(level)
         root.addHandler(logging_handler)
     else:
         logging.basicConfig(level=level)
