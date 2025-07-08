@@ -312,7 +312,9 @@ async def service_show(
 async def service_list(
     *,
     project_id: str = None,
-    o: Annotated[str, typer.Option("--output", "-o", help="output format [json|table]")] = "table",
+    o: Annotated[
+        str, typer.Option("--output", "-o", help="output format [json|table]")
+    ] = "table",
 ):
     """List all services for the project."""
     client = await get_client()

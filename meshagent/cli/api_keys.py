@@ -28,8 +28,7 @@ async def list(
     if len(keys) > 0:
         if o == "json":
             sanitized_keys = [
-                {k: v for k, v in key.items() if k != "created_by"}
-                for key in keys
+                {k: v for k, v in key.items() if k != "created_by"} for key in keys
             ]
             print(json.dumps({"api-keys": sanitized_keys}, indent=2))
         else:
