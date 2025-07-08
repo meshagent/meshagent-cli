@@ -49,14 +49,16 @@ app.add_typer(chatbot.app, name="chatbot")
 app.add_typer(voicebot.app, name="voicebot")
 app.add_typer(tty.app, name="tty")
 
+
 def _run_async(coro):
     asyncio.run(coro)
 
 
-import os, sys
+import os
+import sys
 from pathlib import Path
 import typer
-from meshagent.cli.helper import get_client, set_active_project, get_active_project, resolve_project_id, resolve_api_key
+from meshagent.cli.helper import get_client, resolve_project_id, resolve_api_key
 
 
 def detect_shell() -> str:
@@ -99,19 +101,19 @@ def detect_shell() -> str:
 
 
 def _bash_like(name: str, value: str, unset: bool) -> str:
-    return f'unset {name}' if unset else f'export {name}="{value}"'
+    return f"unset {name}" if unset else f'export {name}="{value}"'
 
 
 def _fish(name: str, value: str, unset: bool) -> str:
-    return f'set -e {name}' if unset else f'set -gx {name} "{value}"'
+    return f"set -e {name}" if unset else f'set -gx {name} "{value}"'
 
 
 def _powershell(name: str, value: str, unset: bool) -> str:
-    return f'Remove-Item Env:{name}' if unset else f'$Env:{name}="{value}"'
+    return f"Remove-Item Env:{name}" if unset else f'$Env:{name}="{value}"'
 
 
 def _cmd(name: str, value: str, unset: bool) -> str:
-    return f'set {name}=' if unset else f'set {name}={value}'
+    return f"set {name}=" if unset else f"set {name}={value}"
 
 
 SHELL_RENDERERS = {
@@ -128,7 +130,8 @@ SHELL_RENDERERS = {
     help="Generate commands to set meshagent environment variables.",
 )
 def env(
-    shell: Optional[str] = typer.Option(None,
+    shell: Optional[str] = typer.Option(
+        None,
         "--shell",
         case_sensitive=False,
         help="bash | zsh | fish | powershell | cmd",
@@ -138,7 +141,7 @@ def env(
     ),
 ):
     """Print shell-specific exports/unsets for Docker environment variables."""
-    
+
     async def command():
         nonlocal shell, unset
         shell = (shell or detect_shell()).lower()
@@ -151,14 +154,18 @@ def env(
             project_id = await resolve_project_id(project_id=None)
             api_key_id = await resolve_api_key(project_id=project_id, api_key_id=None)
 
-            token = (await client.decrypt_project_api_key(project_id=project_id, id=api_key_id))["token"]
+            token = (
+                await client.decrypt_project_api_key(
+                    project_id=project_id, id=api_key_id
+                )
+            )["token"]
         finally:
             await client.close()
 
         vars = {
-            "MESHAGENT_PROJECT_ID" : project_id,
-            "MESHAGENT_API_KEY" : api_key_id,
-            "MESHAGENT_SECRET" : token
+            "MESHAGENT_PROJECT_ID": project_id,
+            "MESHAGENT_API_KEY": api_key_id,
+            "MESHAGENT_SECRET": token,
         }
         if shell not in SHELL_RENDERERS:
             typer.echo(f"Unsupported shell '{shell}'.", err=True)
@@ -171,11 +178,12 @@ def env(
 
         if not unset and shell in ("bash", "zsh"):
             typer.echo(
-                '\n# Run this command to configure your current shell:\n'
-                f'# eval "$(meshagent env)"'
+                "\n# Run this command to configure your current shell:\n"
+                '# eval "$(meshagent env)"'
             )
-    
+
     _run_async(command())
+
 
 @app.command("setup")
 def setup_command():
@@ -194,6 +202,7 @@ def setup_command():
                 print("You have choosen to not activate an api-key. Exiting.")
 
     _run_async(runner())
+
 
 if __name__ == "__main__":
     app()
