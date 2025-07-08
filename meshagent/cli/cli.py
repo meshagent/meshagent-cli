@@ -24,6 +24,12 @@ from meshagent.cli import otel
 
 import logging
 
+import os
+import sys
+from pathlib import Path
+from meshagent.cli.helper import get_client, resolve_project_id, resolve_api_key
+
+
 otel.init(level=logging.INFO)
 
 # Turn down OpenAI logs, they are a bit noisy
@@ -53,12 +59,6 @@ app.add_typer(tty.app, name="tty")
 def _run_async(coro):
     asyncio.run(coro)
 
-
-import os
-import sys
-from pathlib import Path
-import typer
-from meshagent.cli.helper import get_client, resolve_project_id, resolve_api_key
 
 
 def detect_shell() -> str:

@@ -211,7 +211,7 @@ async def stdio_host(
 
 
 @app.async_command("sse-proxy")
-async def stdio_host(
+async def sse_proxy(
     *,
     command: Annotated[str, typer.Option()],
     host: Annotated[Optional[str], typer.Option()] = None,
@@ -244,7 +244,7 @@ async def stdio_host(
 
 
 @app.async_command("stdio-service")
-async def stdio_host(
+async def stdio_service(
     *,
     command: Annotated[str, typer.Option()],
     host: Annotated[Optional[str], typer.Option()] = None,

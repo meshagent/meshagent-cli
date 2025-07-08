@@ -14,13 +14,12 @@ from meshagent.api.services import send_webhook
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client, resolve_project_id
 from meshagent.cli.helper import resolve_api_key
-
-app = async_typer.AsyncTyper()
-
 from urllib.parse import urlparse
 from pathlib import PurePath
 import socket
 import ipaddress
+
+app = async_typer.AsyncTyper()
 
 PRIVATE_NETS = (
     ipaddress.ip_network("10.0.0.0/8"),
