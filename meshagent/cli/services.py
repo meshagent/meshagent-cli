@@ -277,7 +277,7 @@ async def service_test(
                 )
             ) as client:
                 print(
-                    f"[green]Your test room '{room}' has been started. It will time out after a few minutes if you do not join it.[/green]"
+                    f"[green]Your test room '{client.room_name}' has been started. It will time out after a few minutes if you do not join it.[/green]"
                 )
 
         except ClientResponseError as exc:
