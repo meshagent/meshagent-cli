@@ -60,7 +60,6 @@ def _run_async(coro):
     asyncio.run(coro)
 
 
-
 def detect_shell() -> str:
     """
     Best-effort detection of the *current* interactive shell.
