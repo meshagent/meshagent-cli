@@ -31,7 +31,7 @@ async def list(
                 {k: v for k, v in key.items() if k != "created_by"}
                 for key in keys
             ]
-            print(json.dumps(sanitized_keys, indent=2))
+            print(json.dumps({"api-keys": sanitized_keys}, indent=2))
         else:
             print_json_table(keys, "id", "name", "description")
     else:
