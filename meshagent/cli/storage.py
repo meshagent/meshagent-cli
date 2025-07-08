@@ -263,7 +263,7 @@ async def storage_cp_command(
             # doesn't differentiate a folder from an empty folder. We'll keep it simple.
             is_destination_folder = False
             try:
-                entries = await storage_client.list(path=dst_subpath)
+                await storage_client.list(path=dst_subpath)
                 # If listing worked, it might be a folder (unless it's a file with children?).
                 # We'll assume it’s a folder if we get any results or no error.
                 is_destination_folder = True
@@ -492,9 +492,9 @@ async def storage_rm_command(
                 )
 
             account_client = await get_client()
-            project_id = await resolve_project_id(project_id=project_id)
+            resolved_project_id = await resolve_project_id(project_id=project_id)
             jwt = await resolve_token_jwt(
-                project_id=project_id,
+                project_id=resolved_project_id,
                 api_key_id=api_key_id,
                 token_path=token_path,
                 name=name,

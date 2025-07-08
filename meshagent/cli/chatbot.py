@@ -156,8 +156,6 @@ async def make_call(
         ) as client:
             requirements = []
 
-            toolkits = []
-
             for t in toolkit:
                 requirements.append(RequiredToolkit(name=t))
 

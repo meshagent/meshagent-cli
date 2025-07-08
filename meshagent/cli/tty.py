@@ -34,10 +34,6 @@ async def tty_command(
         project_id = await resolve_project_id(project_id=project_id)
         api_key_id = await resolve_api_key(project_id=project_id, api_key_id=api_key_id)
 
-        key = (
-            await client.decrypt_project_api_key(project_id=project_id, id=api_key_id)
-        )["token"]
-
         token = ParticipantToken(
             name="tty", project_id=project_id, api_key_id=api_key_id
         )
