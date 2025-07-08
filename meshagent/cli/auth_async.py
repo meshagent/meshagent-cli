@@ -1,4 +1,7 @@
-import os, json, webbrowser, asyncio
+import os
+import json
+import webbrowser
+import asyncio
 from pathlib import Path
 from aiohttp import web
 from supabase._async.client import AsyncClient, create_client   # async flavour :contentReference[oaicite:1]{index=1}

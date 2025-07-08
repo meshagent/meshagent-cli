@@ -53,10 +53,11 @@ def _run_async(coro):
     asyncio.run(coro)
 
 
-import os, sys
+import os
+import sys
 from pathlib import Path
 import typer
-from meshagent.cli.helper import get_client, set_active_project, get_active_project, resolve_project_id, resolve_api_key
+from meshagent.cli.helper import get_client, resolve_project_id, resolve_api_key
 
 
 def detect_shell() -> str:
@@ -172,7 +173,7 @@ def env(
         if not unset and shell in ("bash", "zsh"):
             typer.echo(
                 '\n# Run this command to configure your current shell:\n'
-                f'# eval "$(meshagent env)"'
+                '# eval "$(meshagent env)"'
             )
     
     _run_async(command())

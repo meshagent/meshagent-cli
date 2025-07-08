@@ -8,14 +8,13 @@ from rich import print
 from typing import Annotated, Optional, List
 
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
-from meshagent.api import RoomClient, ParticipantToken, WebSocketClientProtocol, RoomException
+from meshagent.api import RoomClient, WebSocketClientProtocol, RoomException
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client, resolve_project_id, resolve_api_key, resolve_token_jwt, resolve_room
 
-from meshagent.tools.hosting import RemoteToolkit, RemoteToolkitServer
+from meshagent.tools.hosting import RemoteToolkit
 
 from meshagent.mcp import MCPToolkit
-from pathlib import Path
 
 from meshagent.api.services import ServiceHost
 import os

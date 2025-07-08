@@ -6,12 +6,12 @@ import fnmatch
 import glob
 import shutil
 
-from meshagent.api import RoomClient, ParticipantToken, WebSocketClientProtocol
+from meshagent.api import RoomClient, WebSocketClientProtocol
 from meshagent.api.room_server_client import StorageClient
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client, resolve_project_id, resolve_api_key, resolve_token_jwt
-from meshagent.cli.helper import get_client, resolve_project_id, resolve_api_key, resolve_token_jwt, resolve_room
+from meshagent.cli.helper import resolve_room
 
 app = async_typer.AsyncTyper()
 

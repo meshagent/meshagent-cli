@@ -2,14 +2,10 @@
 import typer
 from rich import print
 from typing import Annotated, Optional
-import json
-import aiohttp
-from meshagent.api import RoomClient, ParticipantToken, WebSocketClientProtocol, RoomException
+from meshagent.api import RoomClient, WebSocketClientProtocol, RoomException
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
-from meshagent.api.services import send_webhook
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client, resolve_project_id, resolve_api_key, resolve_token_jwt, resolve_room
-from meshagent.openai import OpenAIResponsesAdapter
 from typing import List
 
 from meshagent.api import RequiredToolkit, RequiredSchema

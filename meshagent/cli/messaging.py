@@ -3,7 +3,7 @@ from rich import print
 from typing import Annotated, Optional
 import json
 
-from meshagent.api import RoomClient, ParticipantToken, WebSocketClientProtocol
+from meshagent.api import RoomClient, WebSocketClientProtocol
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client, resolve_project_id, resolve_api_key, resolve_token_jwt, resolve_room

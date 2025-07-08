@@ -2,7 +2,7 @@ import typer
 from rich import print
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client, print_json_table
-from meshagent.cli.helper import set_active_project, get_active_project, resolve_project_id, set_active_api_key, resolve_api_key
+from meshagent.cli.helper import resolve_project_id, set_active_api_key
 
 app = async_typer.AsyncTyper()
 

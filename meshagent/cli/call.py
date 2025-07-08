@@ -4,12 +4,12 @@ from rich import print
 from typing import Annotated, Optional
 import json
 import aiohttp
-from meshagent.api import RoomClient, ParticipantToken, WebSocketClientProtocol, RoomException, ParticipantGrant
+from meshagent.api import RoomClient, ParticipantToken, WebSocketClientProtocol, ParticipantGrant
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.api.services import send_webhook
 from meshagent.cli import async_typer
-from meshagent.cli.helper import get_client, print_json_table, set_active_project, resolve_project_id
-from meshagent.cli.helper import set_active_project, get_active_project, resolve_project_id, resolve_api_key
+from meshagent.cli.helper import get_client, resolve_project_id
+from meshagent.cli.helper import resolve_api_key
 
 app = async_typer.AsyncTyper()
 

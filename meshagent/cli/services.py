@@ -6,13 +6,12 @@ from rich import print
 from typing import Annotated, List, Optional, Dict
 from aiohttp import ClientResponseError
 from datetime import datetime, timezone
-from pydantic_yaml import parse_yaml_raw_as, to_yaml_str
 from pydantic import PositiveInt
 import pydantic
 from typing import Literal
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client, print_json_table, resolve_project_id, resolve_api_key
-from meshagent.api import ParticipantToken, RoomClient, WebSocketClientProtocol, websocket_protocol, websocket_room_url, meshagent_base_url
+from meshagent.api import ParticipantToken, RoomClient, WebSocketClientProtocol, websocket_room_url, meshagent_base_url
 # Pydantic basemodels
 from meshagent.api.accounts_client import Service, Port, Services
 

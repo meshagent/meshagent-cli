@@ -1,5 +1,5 @@
 from meshagent.cli import async_typer
-from meshagent.cli.helper import get_client, print_json_table, set_active_project, resolve_project_id
+from meshagent.cli.helper import get_client, print_json_table, resolve_project_id
 
 app = async_typer.AsyncTyper()
 

@@ -5,11 +5,10 @@ import json
 import asyncio
 
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
-from meshagent.api.services import send_webhook
 from meshagent.api import RoomClient, ParticipantToken, WebSocketClientProtocol, RoomException
-from meshagent.cli.helper import set_active_project, get_active_project, resolve_project_id, resolve_api_key
+from meshagent.cli.helper import resolve_project_id, resolve_api_key
 from meshagent.cli import async_typer
-from meshagent.cli.helper import get_client, print_json_table, set_active_project, resolve_project_id, resolve_token_jwt
+from meshagent.cli.helper import get_client, resolve_token_jwt
 
 app = async_typer.AsyncTyper()
 

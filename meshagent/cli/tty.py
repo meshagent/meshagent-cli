@@ -1,4 +1,3 @@
-import pathlib
 import sys
 import tty
 import termios
@@ -10,17 +9,14 @@ import typer
 from rich import print
 import aiohttp
 
-from meshagent.api import RoomClient, ParticipantToken
+from meshagent.api import ParticipantToken
 from meshagent.cli import async_typer
 from meshagent.cli.helper import (
     get_client,
-    print_json_table,
-    set_active_project,
     resolve_project_id,
     resolve_api_key,
 )
 
-import os
 
 app = async_typer.AsyncTyper()
 

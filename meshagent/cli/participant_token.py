@@ -1,10 +1,10 @@
 import typer
 from rich import print
 from typing import Annotated, Optional
-from meshagent.api import RoomClient, ParticipantToken
-from meshagent.cli.helper import set_active_project, get_active_project, resolve_project_id, resolve_api_key
+from meshagent.api import ParticipantToken
+from meshagent.cli.helper import resolve_project_id, resolve_api_key
 from meshagent.cli import async_typer
-from meshagent.cli.helper import get_client, print_json_table, set_active_project, resolve_project_id
+from meshagent.cli.helper import get_client
 import pathlib
 
 app = async_typer.AsyncTyper()

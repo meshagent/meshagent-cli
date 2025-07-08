@@ -2,7 +2,7 @@ import typer
 
 from meshagent.cli import async_typer
 from meshagent.cli import auth_async 
-from meshagent.cli.helper import set_active_project, get_active_project
+from meshagent.cli.helper import get_active_project
 
 app = async_typer.AsyncTyper()
 
