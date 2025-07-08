@@ -81,7 +81,7 @@ def build_chatbot(
             if local_shell:
                 thread_toolkit.tools.append(LocalShellTool())
 
-            if image_generation != None:
+            if image_generation is not None:
                 print("adding openai image gen to thread", flush=True)
                 thread_toolkit.tools.append(
                     ChatBotThreadOpenAIImageGenerationTool(

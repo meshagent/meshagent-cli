@@ -12,7 +12,7 @@ async def login():
     await auth_async.login()
 
     project_id = await get_active_project()
-    if project_id == None:
+    if project_id is None:
         print(
             "You have been logged in, but you haven"
             't activated a project yet, list your projects with "meshagent project list" and then activate one with "meshagent project activate PROJECT_ID"'

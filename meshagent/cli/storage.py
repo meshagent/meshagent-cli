@@ -578,7 +578,7 @@ async def storage_rm_command(
         async def is_remote_folder(sc: StorageClient, remote_path: str) -> bool:
             """Return True if remote_path is a folder, otherwise False or it doesn't exist."""
             stat = await sc.stat(path=remote_path)
-            if stat == None:
+            if stat is None:
                 return False
             else:
                 return stat.is_folder
@@ -789,7 +789,7 @@ async def storage_ls_command(
         """Return True if remote_path is a folder, otherwise False or it doesn't exist."""
         stat = await sc.stat(path=remote_path)
 
-        if stat == None:
+        if stat is None:
             return False
         else:
             return stat.is_folder

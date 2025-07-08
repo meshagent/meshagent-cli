@@ -42,7 +42,7 @@ async def sse(
     url: Annotated[str, typer.Option()],
     toolkit_name: Annotated[Optional[str], typer.Option()] = None,
 ):
-    if toolkit_name == None:
+    if toolkit_name is None:
         toolkit_name = "mcp"
 
     account_client = await get_client()
@@ -111,7 +111,7 @@ async def stdio(
     toolkit_name: Annotated[Optional[str], typer.Option()] = None,
     env: Annotated[List[str], typer.Option("--env", "-e", help="KEY=VALUE")] = [],
 ):
-    if toolkit_name == None:
+    if toolkit_name is None:
         toolkit_name = "mcp"
 
     account_client = await get_client()
@@ -199,12 +199,12 @@ async def stdio_host(
         ),
     )
 
-    if name == None:
+    if name is None:
         name = "Stdio-to-Streamable Http Proxy"
 
     # Create a proxy server that connects to the client and exposes its capabilities
     proxy = FastMCP.as_proxy(proxy_client, name=name)
-    if path == None:
+    if path is None:
         path = "/mcp"
 
     await proxy.run_async(transport="streamable-http", host=host, port=port, path=path)
@@ -232,12 +232,12 @@ async def stdio_host(
         ),
     )
 
-    if name == None:
+    if name is None:
         name = "Stdio-to-SSE Proxy"
 
     # Create a proxy server that connects to the client and exposes its capabilities
     proxy = FastMCP.as_proxy(proxy_client, name=name)
-    if path == None:
+    if path is None:
         path = "/sse"
 
     await proxy.run_async(transport="sse", host=host, port=port, path=path)
@@ -271,24 +271,24 @@ async def stdio_host(
             ) as session:
                 mcp_tools_response = await session.list_tools()
 
-                if toolkit_name == None:
+                if toolkit_name is None:
                     toolkit_name = "mcp"
 
                 toolkit = MCPToolkit(
                     name=toolkit_name, session=session, tools=mcp_tools_response.tools
                 )
 
-                if port == None:
+                if port is None:
                     port = int(os.getenv("MESHAGENT_PORT", "8080"))
 
-                if host == None:
+                if host is None:
                     host = "0.0.0.0"
 
                 service_host = ServiceHost(
                     host=host, port=port, webhook_secret=webhook_secret
                 )
 
-                if path == None:
+                if path is None:
                     path = "/service"
 
                 print(

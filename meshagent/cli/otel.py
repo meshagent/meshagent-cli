@@ -41,13 +41,13 @@ attributes = {
     SERVICE_NAME: "room-server",
 }
 
-if os.getenv("MESHAGENT_PROJECT_ID") != None:
+if os.getenv("MESHAGENT_PROJECT_ID") is not None:
     attributes["project"] = os.getenv("MESHAGENT_PROJECT_ID")
 
-if os.getenv("MESHAGENT_SESSION_ID") != None:
+if os.getenv("MESHAGENT_SESSION_ID") is not None:
     attributes["session"] = os.getenv("MESHAGENT_SESSION_ID")
 
-if os.getenv("MESHAGENT_ROOM") != None:
+if os.getenv("MESHAGENT_ROOM") is not None:
     attributes["room"] = os.getenv("MESHAGENT_ROOM")
 
 resource = Resource.create(attributes=attributes)
@@ -60,12 +60,12 @@ add_console_exporters = False
 
 otel_endpoint = os.getenv("OTEL_ENDPOINT")
 
-if otel_endpoint != None:
+if otel_endpoint is not None:
     otel_logs_endpoint = otel_endpoint + "/v1/logs"
     otel_traces_endpoint = otel_endpoint + "/v1/traces"
     otel_metrics_endpoint = otel_endpoint + "/v1/metrics"
 
-    if otel_logs_endpoint != None:
+    if otel_logs_endpoint is not None:
         logs_exporter = OTLPLogExporter(
             endpoint=otel_logs_endpoint,
         )
@@ -79,7 +79,7 @@ if otel_endpoint != None:
                 BatchLogRecordProcessor(ConsoleLogExporter())
             )
 
-    if otel_traces_endpoint != None:
+    if otel_traces_endpoint is not None:
         tracer_provider = TracerProvider(resource=resource)
         processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=otel_traces_endpoint))
         tracer_provider.add_span_processor(processor)
@@ -89,7 +89,7 @@ if otel_endpoint != None:
             )
         trace.set_tracer_provider(tracer_provider)
 
-    if otel_metrics_endpoint != None:
+    if otel_metrics_endpoint is not None:
         reader = PeriodicExportingMetricReader(
             exporter=OTLPMetricExporter(
                 endpoint=otel_metrics_endpoint,
@@ -113,7 +113,7 @@ if otel_endpoint != None:
 
 @_call_once
 def init(level):
-    if logger_provider != None:
+    if logger_provider is not None:
         logging_handler = LoggingHandler(level=level, logger_provider=logger_provider)
         root = logging.getLogger()
         root.setLevel(level)

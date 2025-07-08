@@ -37,7 +37,7 @@ async def generate(
 
         token.add_room_grant(room)
 
-        if token_path == None:
+        if token_path is None:
             print(token.to_jwt(token=key))
 
         else:

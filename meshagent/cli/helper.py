@@ -40,7 +40,7 @@ def _load_settings():
 
 async def get_active_project():
     settings = _load_settings()
-    if settings == None:
+    if settings is None:
         return None
     return settings.active_project
 
@@ -53,7 +53,7 @@ async def set_active_project(project_id: str | None):
 
 async def get_active_api_key(project_id: str):
     settings = _load_settings()
-    if settings == None:
+    if settings is None:
         return None
     return settings.active_api_keys.get(project_id, None)
 
@@ -100,17 +100,17 @@ def print_json_table(records: list, *cols):
 
 
 def resolve_room(room_name: Optional[str] = None):
-    if room_name == None:
+    if room_name is None:
         room_name = os.getenv("MESHAGENT_ROOM")
 
     return room_name
 
 
 async def resolve_project_id(project_id: Optional[str] = None):
-    if project_id == None:
+    if project_id is None:
         project_id = await get_active_project()
 
-    if project_id == None:
+    if project_id is None:
         print(
             "[red]Project ID not specified, activate a project or pass a project on the command line[/red]"
         )
@@ -120,10 +120,10 @@ async def resolve_project_id(project_id: Optional[str] = None):
 
 
 async def resolve_api_key(project_id: str, api_key_id: Optional[str] = None):
-    if api_key_id == None:
+    if api_key_id is None:
         api_key_id = await get_active_api_key(project_id=project_id)
 
-    if api_key_id == None:
+    if api_key_id is None:
         print(
             "[red]API Key ID not specified, activate an api key or pass an api key id on the command line[/red]"
         )
@@ -143,9 +143,9 @@ async def resolve_token_jwt(
 ) -> str:
     jwt = None
 
-    if api_key_id == None:
-        if token_path != None:
-            if token_path == None:
+    if api_key_id is None:
+        if token_path is not None:
+            if token_path is None:
                 token_path = os.getenv(
                     "MESHAGENT_TOKEN_PATH",
                     (Path.home() / ".meshagent" / "token").as_posix(),
@@ -157,7 +157,7 @@ async def resolve_token_jwt(
         else:
             jwt = os.getenv("MESHAGENT_TOKEN", None)
 
-    if jwt == None:
+    if jwt is None:
         account_client = await get_client()
         try:
             key = (

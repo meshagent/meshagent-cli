@@ -103,7 +103,7 @@ async def make_call(
         token.add_room_grant(room)
         token.grants.append(ParticipantGrant(name="tunnel_ports", scope="9000"))
 
-        if local == None:
+        if local is None:
             local = is_local_url(url)
 
         if local:
