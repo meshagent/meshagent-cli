@@ -18,7 +18,8 @@ dependencies = [
   "supabase~=2.15",
   "fastmcp~=2.8",
   "opentelemetry-distro~=0.54b1",
-  "opentelemetry-exporter-otlp-proto-http~=1.33"
+  "opentelemetry-exporter-otlp-proto-http~=1.33",
+  "art~=6.5",
 ]
 dynamic = ["version", "readme"]
 

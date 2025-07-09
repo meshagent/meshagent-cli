@@ -22,6 +22,8 @@ from meshagent.cli import tty
 
 from meshagent.cli import otel
 
+from art import tprint
+
 import logging
 
 import os
@@ -189,6 +191,9 @@ def setup_command():
     """Perform initial login and project/api key activation."""
 
     async def runner():
+        print("\n", flush=True)
+        tprint("MeshAgent", "tarty10")
+        print("\n", flush=True)
         await auth.login()
         print("Activate a project...")
         project_id = await projects.activate(None, interactive=True)
