@@ -38,11 +38,15 @@ async def tty_command(
             name="tty", project_id=project_id, api_key_id=api_key_id
         )
 
+        key = (
+            await client.decrypt_project_api_key(project_id=project_id, id=api_key_id)
+        )["token"]
+
         token.add_role_grant(role="user")
         token.add_room_grant(room)
 
         ws_url = (
-            websocket_room_url(room_name=room) + "/tty?token={token.to_jwt(token=key)}"
+            websocket_room_url(room_name=room) + f"/tty?token={token.to_jwt(token=key)}"
         )
 
         print(f"[bold green]Connecting to[/bold green] {room}")
