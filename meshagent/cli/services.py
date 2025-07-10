@@ -10,6 +10,7 @@ from pydantic import PositiveInt
 import pydantic
 from typing import Literal
 from meshagent.cli import async_typer
+from pydantic import BaseModel
 from meshagent.cli.helper import (
     get_client,
     print_json_table,
@@ -24,8 +25,11 @@ from meshagent.api import (
     meshagent_base_url,
 )
 
+from pydantic_yaml import parse_yaml_raw_as
+
 # Pydantic basemodels
-from meshagent.api.accounts_client import Service, Port, Services
+from meshagent.api.accounts_client import Service, Port, Services, Endpoint
+
 
 app = async_typer.AsyncTyper()
 
@@ -88,9 +92,17 @@ def _parse_port_spec(spec: str) -> PortSpec:
 async def service_create(
     *,
     project_id: str = None,
-    name: Annotated[str, typer.Option(help="Friendly service name")],
-    image: Annotated[str, typer.Option(help="Container image reference")],
-    role: Annotated[str, typer.Option(help="Service role (agent|tool)")] = None,
+    file: Annotated[
+        Optional[str],
+        typer.Option("--file", "-f", help="File path to a service definition"),
+    ] = None,
+    name: Annotated[Optional[str], typer.Option(help="Friendly service name")] = None,
+    image: Annotated[
+        Optional[str], typer.Option(help="Container image reference")
+    ] = None,
+    role: Annotated[
+        Optional[str], typer.Option(help="Service role (agent|tool)")
+    ] = None,
     pull_secret: Annotated[
         Optional[str],
         typer.Option("--pull-secret", help="Secret ID for registry"),
@@ -106,6 +118,13 @@ async def service_create(
         Optional[str],
         typer.Option("--mount", help="Path inside container to mount room storage"),
     ] = None,
+    room_storage_subpath: Annotated[
+        Optional[str],
+        typer.Option(
+            "--mount-subpath",
+            help="Restrict the container's mount to a subpath within the room storage",
+        ),
+    ] = None,
     port: Annotated[
         List[str],
         typer.Option(
@@ -116,40 +135,45 @@ async def service_create(
                 '  -p "num=8080 type=[mcp.sse | meshagent.callable | http | tcp] liveness=/health path=/agent participant_name=myname"'
             ),
         ),
-    ] = ...,
+    ] = [],
 ):
     """Create a service attached to the project."""
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
 
-        # ✅ validate / coerce port specs
-        port_specs: List[PortSpec] = [_parse_port_spec(s) for s in port]
+        if file is not None:
+            with open(file, "rb") as f:
+                service_obj = parse_yaml_raw_as(ServiceSpec, f.read()).to_service()
 
-        ports_dict = {
-            ps.num: Port(
-                type=ps.type,
-                liveness_path=ps.liveness,
-                participant_name=ps.participant_name,
-                path=ps.path,
+        else:
+            # ✅ validate / coerce port specs
+            port_specs: List[PortSpec] = [_parse_port_spec(s) for s in port]
+
+            ports_dict = {
+                ps.num: Port(
+                    type=ps.type,
+                    liveness_path=ps.liveness,
+                    participant_name=ps.participant_name,
+                    path=ps.path,
+                )
+                for ps in port_specs
+            } or None
+
+            service_obj = Service(
+                created_at=datetime.now(timezone.utc).isoformat(),
+                name=name,
+                role=role,
+                image=image,
+                command=command,
+                pull_secret=pull_secret,
+                room_storage_path=room_storage_path,
+                room_storage_subpath=room_storage_subpath,
+                environment=_kv_to_dict(env),
+                environment_secrets=env_secret or None,
+                runtime_secrets=_kv_to_dict(runtime_secret),
+                ports=ports_dict,
             )
-            for ps in port_specs
-        } or None
-
-        service_obj = Service(
-            id="",
-            created_at=datetime.now(timezone.utc).isoformat(),
-            name=name,
-            role=role,
-            image=image,
-            command=command,
-            pull_secret=pull_secret,
-            room_storage_path=room_storage_path,
-            environment=_kv_to_dict(env),
-            environment_secrets=env_secret or None,
-            runtime_secrets=_kv_to_dict(runtime_secret),
-            ports=ports_dict,
-        )
 
         try:
             new_id = (
@@ -157,7 +181,7 @@ async def service_create(
             )["id"]
         except ClientResponseError as exc:
             if exc.status == 409:
-                print(f"[red]Service name already in use: {name}[/red]")
+                print(f"[red]Service name already in use: {service_obj.name}[/red]")
                 raise typer.Exit(code=1)
             raise
         else:
@@ -167,20 +191,193 @@ async def service_create(
         await client.close()
 
 
+@app.async_command("update")
+async def service_update(
+    *,
+    project_id: str = None,
+    id: str,
+    file: Annotated[
+        Optional[str],
+        typer.Option("--file", "-f", help="File path to a service definition"),
+    ] = None,
+    name: Annotated[Optional[str], typer.Option(help="Friendly service name")] = None,
+    image: Annotated[
+        Optional[str], typer.Option(help="Container image reference")
+    ] = None,
+    role: Annotated[
+        Optional[str], typer.Option(help="Service role (agent|tool)")
+    ] = None,
+    pull_secret: Annotated[
+        Optional[str],
+        typer.Option("--pull-secret", help="Secret ID for registry"),
+    ] = None,
+    command: Annotated[
+        Optional[str],
+        typer.Option("--command", help="Override ENTRYPOINT/CMD"),
+    ] = None,
+    env: Annotated[List[str], typer.Option("--env", "-e", help="KEY=VALUE")] = [],
+    env_secret: Annotated[List[str], typer.Option("--env-secret")] = [],
+    runtime_secret: Annotated[List[str], typer.Option("--runtime-secret")] = [],
+    room_storage_path: Annotated[
+        Optional[str],
+        typer.Option("--mount", help="Path inside container to mount room storage"),
+    ] = None,
+    room_storage_subpath: Annotated[
+        Optional[str],
+        typer.Option(
+            "--mount-subpath",
+            help="Restrict the container's mount to a subpath within the room storage",
+        ),
+    ] = None,
+    port: Annotated[
+        List[str],
+        typer.Option(
+            "--port",
+            "-p",
+            help=(
+                "Repeatable. Example:\n"
+                '  -p "num=8080 type=[mcp.sse | meshagent.callable | http | tcp] liveness=/health path=/agent participant_name=myname"'
+            ),
+        ),
+    ] = [],
+):
+    """Create a service attached to the project."""
+    client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id)
+
+        if file is not None:
+            with open(file, "rb") as f:
+                service_obj = parse_yaml_raw_as(ServiceSpec, f.read()).to_service()
+
+        else:
+            # ✅ validate / coerce port specs
+            port_specs: List[PortSpec] = [_parse_port_spec(s) for s in port]
+
+            ports_dict = {
+                ps.num: Port(
+                    type=ps.type,
+                    liveness_path=ps.liveness,
+                    participant_name=ps.participant_name,
+                    path=ps.path,
+                )
+                for ps in port_specs
+            } or None
+
+            service_obj = Service(
+                created_at=datetime.now(timezone.utc).isoformat(),
+                name=name,
+                role=role,
+                image=image,
+                command=command,
+                pull_secret=pull_secret,
+                room_storage_path=room_storage_path,
+                room_storage_subpath=room_storage_subpath,
+                environment=_kv_to_dict(env),
+                environment_secrets=env_secret or None,
+                runtime_secrets=_kv_to_dict(runtime_secret),
+                ports=ports_dict,
+            )
+
+        try:
+            new_id = (
+                await client.update_service(
+                    project_id=project_id, service_id=id, service=service_obj
+                )
+            )["id"]
+        except ClientResponseError as exc:
+            if exc.status == 409:
+                print(f"[red]Service name already in use: {service_obj.name}[/red]")
+                raise typer.Exit(code=1)
+            raise
+        else:
+            print(f"[green]Created service:[/] {new_id}")
+
+    finally:
+        await client.close()
+
+
+class ServicePortEndpointSpec(pydantic.BaseModel):
+    path: str
+    identity: str
+    type: Optional[Literal["mcp.sse", "meshagent.callable", "http", "tcp"]] = None
+
+
+class ServicePortSpec(pydantic.BaseModel):
+    num: PositiveInt
+    type: Literal["mcp.sse", "meshagent.callable", "http", "tcp"]
+    endpoints: list[ServicePortEndpointSpec] = []
+    liveness: Optional[str] = None
+
+
+class ServiceSpec(BaseModel):
+    type: Literal["v1/service"]
+    name: str
+    command: Optional[str] = None
+    image: str
+    ports: Optional[list[ServicePortSpec]] = []
+    role: Optional[Literal["user", "tool", "agent"]] = None
+    environment: Optional[dict[str, str]] = {}
+    secrets: list[str] = []
+    pull_secret: Optional[str] = None
+    room_storage_path: Optional[str] = None
+    room_storage_subpath: Optional[str] = None
+
+    def to_service(self):
+        ports = {}
+        for p in self.ports:
+            port = Port(liveness_path=p.liveness, type=p.type, endpoints=[])
+            for endpoint in p.endpoints:
+                type = port.type
+                if endpoint.type is not None:
+                    type = endpoint.type
+
+                port.endpoints.append(
+                    Endpoint(
+                        type=type,
+                        participant_name=endpoint.identity,
+                        path=endpoint.path,
+                    )
+                )
+            ports[p.num] = port
+        return Service(
+            id="",
+            created_at=datetime.now(timezone.utc).isoformat(),
+            name=self.name,
+            command=self.command,
+            image=self.image,
+            ports=ports,
+            role=self.role,
+            environment=self.environment,
+            environment_secrets=self.secrets,
+            pull_secret=self.pull_secret,
+            room_storage_path=self.room_storage_path,
+            room_storage_subpath=self.room_storage_subpath,
+        )
+
+
 @app.async_command("test")
 async def service_test(
     *,
     project_id: str = None,
     api_key_id: Annotated[Optional[str], typer.Option()] = None,
+    file: Annotated[
+        Optional[str],
+        typer.Option("--file", "-f", help="File path to a service definition"),
+    ],
     room: Annotated[
-        str,
+        Optional[str],
         typer.Option(
             help="A room name to test the service in (must not be currently running)"
         ),
-    ],
-    name: Annotated[str, typer.Option(help="Friendly service name")],
-    role: Annotated[str, typer.Option(help="Service role (agent|tool)")] = None,
-    image: Annotated[str, typer.Option(help="Container image reference")],
+    ] = None,
+    name: Annotated[Optional[str], typer.Option(help="Friendly service name")] = None,
+    role: Annotated[
+        Optional[str], typer.Option(help="Service role (agent|tool)")
+    ] = None,
+    image: Annotated[
+        Optional[str], typer.Option(help="Container image reference")
+    ] = None,
     pull_secret: Annotated[
         Optional[str],
         typer.Option("--pull-secret", help="Secret ID for registry"),
@@ -206,7 +403,7 @@ async def service_test(
                 '  -p "num=8080 type=[mcp.sse | meshagent.callable | http | tcp] liveness=/health path=/agent participant_name=myname"'
             ),
         ),
-    ] = ...,
+    ] = [],
     timeout: Annotated[
         Optional[int],
         typer.Option(
@@ -221,33 +418,37 @@ async def service_test(
 
         api_key_id = await resolve_api_key(project_id, api_key_id)
 
-        # ✅ validate / coerce port specs
-        port_specs: List[PortSpec] = [_parse_port_spec(s) for s in port]
+        if file is not None:
+            with open(file, "rb") as f:
+                service_obj = parse_yaml_raw_as(ServiceSpec, f.read()).to_service()
 
-        ports_dict = {
-            ps.num: Port(
-                type=ps.type,
-                liveness_path=ps.liveness,
-                participant_name=ps.participant_name,
-                path=ps.path,
+        else:
+            # ✅ validate / coerce port specs
+            port_specs: List[PortSpec] = [_parse_port_spec(s) for s in port]
+
+            ports_dict = {
+                str(ps.num): Port(
+                    type=ps.type,
+                    liveness_path=ps.liveness,
+                    participant_name=ps.participant_name,
+                    path=ps.path,
+                )
+                for ps in port_specs
+            } or None
+
+            service_obj = Service(
+                created_at=datetime.now(timezone.utc).isoformat(),
+                role=role,
+                name=name,
+                image=image,
+                command=command,
+                pull_secret=pull_secret,
+                room_storage_path=room_storage_path,
+                environment=_kv_to_dict(env),
+                environment_secrets=env_secret or None,
+                runtime_secrets=_kv_to_dict(runtime_secret),
+                ports=ports_dict,
             )
-            for ps in port_specs
-        } or None
-
-        service_obj = Service(
-            id="",
-            created_at=datetime.now(timezone.utc).isoformat(),
-            role=role,
-            name=name,
-            image=image,
-            command=command,
-            pull_secret=pull_secret,
-            room_storage_path=room_storage_path,
-            environment=_kv_to_dict(env),
-            environment_secrets=env_secret or None,
-            runtime_secrets=_kv_to_dict(runtime_secret),
-            ports=ports_dict,
-        )
 
         try:
             token = ParticipantToken(
