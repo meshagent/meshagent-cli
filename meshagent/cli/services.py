@@ -311,7 +311,8 @@ class ServicePortSpec(pydantic.BaseModel):
 
 
 class ServiceSpec(BaseModel):
-    type: Literal["v1/service"]
+    version: Literal["v1"]
+    kind: Literal["Service"]
     name: str
     command: Optional[str] = None
     image: str
