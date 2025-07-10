@@ -165,7 +165,7 @@ def env(
 
         vars = {
             "MESHAGENT_PROJECT_ID": project_id,
-            "MESHAGENT_API_KEY": api_key_id,
+            "MESHAGENT_KEY_ID": api_key_id,
             "MESHAGENT_SECRET": token,
         }
         if shell not in SHELL_RENDERERS:
