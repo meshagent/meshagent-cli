@@ -148,7 +148,7 @@ async def service_create(
                 if spec.id is not None:
                     print("[red]id cannot be set when creating a service[/red]")
                     raise typer.Exit(code=1)
-                
+
                 service_obj = spec.to_service()
 
         else:
@@ -245,7 +245,6 @@ async def service_update(
             ),
         ),
     ] = [],
-
     create: Annotated[
         Optional[bool],
         typer.Option(
@@ -268,7 +267,7 @@ async def service_update(
         else:
             # ✅ validate / coerce port specs
             port_specs: List[PortSpec] = [_parse_port_spec(s) for s in port]
-        
+
             ports_dict = {
                 ps.num: Port(
                     type=ps.type,
@@ -300,25 +299,23 @@ async def service_update(
                 for s in services:
                     if s.name == service_obj.name:
                         id = s.id
-            
+
             if id is None and not create:
                 print("[red]pass a service id or specify --create[/red]")
                 raise typer.Exit(code=1)
-            
+
             if id is None:
-                
                 id = (
                     await client.create_service(
                         project_id=project_id, service=service_obj
                     )
                 )["id"]
-            
+
             else:
-               
                 await client.update_service(
                     project_id=project_id, service_id=id, service=service_obj
                 )
-            
+
         except ClientResponseError as exc:
             if exc.status == 409:
                 print(f"[red]Service name already in use: {service_obj.name}[/red]")

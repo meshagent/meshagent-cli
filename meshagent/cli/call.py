@@ -72,10 +72,16 @@ async def make_call(
     project_id: str = None,
     room: Annotated[str, typer.Option()],
     api_key_id: Annotated[Optional[str], typer.Option()] = None,
-    name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "agent",
     local: Optional[bool] = None,
-    agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
+    agent_name: Annotated[
+        Optional[str], typer.Option(..., help="deprecated and unused", hidden=True)
+    ] = None,
+    name: Annotated[str, typer.Option(..., help="deprecated", hidden=True)] = None,
+    participant_name: Annotated[
+        Optional[str],
+        typer.Option(..., help="the participant name to be used by the callee"),
+    ] = None,
     url: Annotated[str, typer.Option(..., help="URL the agent should call")],
     arguments: Annotated[
         str, typer.Option(..., help="JSON string with arguments for the call")
@@ -83,7 +89,22 @@ async def make_call(
 ):
     """
     Instruct an agent to 'call' a given URL with specific arguments.
+
     """
+
+    if name is not None:
+        print("[yellow]name is deprecated and should no longer be passed[/yellow]")
+
+    if agent_name is not None:
+        print(
+            "[yellow]agent-name is deprecated and should no longer be passed, use participant-name instead[/yellow]"
+        )
+        participant_name = agent_name
+
+    if participant_name is None:
+        print("[red]--participant-name is required[/red]")
+        raise typer.Exit(1)
+
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
@@ -96,7 +117,7 @@ async def make_call(
         )["token"]
 
         token = ParticipantToken(
-            name=name, project_id=project_id, api_key_id=api_key_id
+            name="cli", project_id=project_id, api_key_id=api_key_id
         )
         token.add_role_grant(role=role)
         token.add_room_grant(room)
@@ -130,7 +151,7 @@ async def make_call(
             ) as client:
                 print("[bold green]Making agent call...[/bold green]")
                 await client.agents.make_call(
-                    name=agent_name, url=url, arguments=json.loads(arguments)
+                    name=participant_name, url=url, arguments=json.loads(arguments)
                 )
                 print("[bold cyan]Call request sent successfully.[/bold cyan]")
 
