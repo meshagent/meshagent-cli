@@ -144,7 +144,12 @@ async def service_create(
 
         if file is not None:
             with open(file, "rb") as f:
-                service_obj = parse_yaml_raw_as(ServiceSpec, f.read()).to_service()
+                spec = parse_yaml_raw_as(ServiceSpec, f.read())
+                if spec.id is not None:
+                    print("[red]id cannot be set when creating a service[/red]")
+                    raise typer.Exit(code=1)
+                
+                service_obj = spec.to_service()
 
         else:
             # ✅ validate / coerce port specs
@@ -195,7 +200,7 @@ async def service_create(
 async def service_update(
     *,
     project_id: str = None,
-    id: str,
+    id: Optional[str] = None,
     file: Annotated[
         Optional[str],
         typer.Option("--file", "-f", help="File path to a service definition"),
@@ -240,6 +245,13 @@ async def service_update(
             ),
         ),
     ] = [],
+
+    create: Annotated[
+        Optional[bool],
+        typer.Option(
+            help="create the service if it does not exist",
+        ),
+    ] = False,
 ):
     """Create a service attached to the project."""
     client = await get_client()
@@ -248,12 +260,15 @@ async def service_update(
 
         if file is not None:
             with open(file, "rb") as f:
-                service_obj = parse_yaml_raw_as(ServiceSpec, f.read()).to_service()
+                spec = parse_yaml_raw_as(ServiceSpec, f.read())
+                if spec.id is not None:
+                    id = spec.id
+                service_obj = spec.to_service()
 
         else:
             # ✅ validate / coerce port specs
             port_specs: List[PortSpec] = [_parse_port_spec(s) for s in port]
-
+        
             ports_dict = {
                 ps.num: Port(
                     type=ps.type,
@@ -280,18 +295,37 @@ async def service_update(
             )
 
         try:
-            new_id = (
+            if id is None:
+                services = await client.list_services(project_id=project_id)
+                for s in services:
+                    if s.name == service_obj.name:
+                        id = s.id
+            
+            if id is None and not create:
+                print("[red]pass a service id or specify --create[/red]")
+                raise typer.Exit(code=1)
+            
+            if id is None:
+                
+                id = (
+                    await client.create_service(
+                        project_id=project_id, service=service_obj
+                    )
+                )["id"]
+            
+            else:
+               
                 await client.update_service(
                     project_id=project_id, service_id=id, service=service_obj
                 )
-            )["id"]
+            
         except ClientResponseError as exc:
             if exc.status == 409:
                 print(f"[red]Service name already in use: {service_obj.name}[/red]")
                 raise typer.Exit(code=1)
             raise
         else:
-            print(f"[green]Created service:[/] {new_id}")
+            print(f"[green]Updated service:[/] {id}")
 
     finally:
         await client.close()
@@ -313,6 +347,7 @@ class ServicePortSpec(pydantic.BaseModel):
 class ServiceSpec(BaseModel):
     version: Literal["v1"]
     kind: Literal["Service"]
+    id: Optional[str] = None
     name: str
     command: Optional[str] = None
     image: str
