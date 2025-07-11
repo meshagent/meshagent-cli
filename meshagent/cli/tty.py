@@ -3,8 +3,6 @@ import tty
 import termios
 from meshagent.api.helpers import websocket_room_url
 from typing import Annotated, Optional
-import os
-
 import asyncio
 import typer
 from rich import print
