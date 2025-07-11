@@ -3,6 +3,7 @@ import tty
 import termios
 from meshagent.api.helpers import websocket_room_url
 from typing import Annotated, Optional
+import os
 
 import asyncio
 import typer
@@ -53,6 +54,8 @@ async def tty_command(
 
         # Save current terminal settings so we can restore them later.
         old_tty_settings = termios.tcgetattr(sys.stdin)
+        os.set_blocking(sys.stdout.fileno(), True)
+
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.ws_connect(ws_url) as websocket:
