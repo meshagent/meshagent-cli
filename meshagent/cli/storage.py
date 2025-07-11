@@ -112,7 +112,7 @@ async def storage_cp_command(
     ] = None,
     name: Annotated[
         str, typer.Option(..., help="Participant name (if copying to/from remote)")
-    ],
+    ] = "cli",
     role: str = "user",
     source_path: str,
     dest_path: str,
