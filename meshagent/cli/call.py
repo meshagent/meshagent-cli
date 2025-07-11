@@ -117,7 +117,7 @@ async def make_call(
         )["token"]
 
         token = ParticipantToken(
-            name="cli", project_id=project_id, api_key_id=api_key_id
+            name=participant_name, project_id=project_id, api_key_id=api_key_id
         )
         token.add_role_grant(role=role)
         token.add_room_grant(room)
