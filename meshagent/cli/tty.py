@@ -54,14 +54,21 @@ async def tty_command(
 
         # Save current terminal settings so we can restore them later.
         old_tty_settings = termios.tcgetattr(sys.stdin)
-        os.set_blocking(sys.stdout.fileno(), True)
-
+        
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.ws_connect(ws_url) as websocket:
-                    print(f"[bold green]Connected to[/bold green] {room}")
-
+                    
                     tty.setraw(sys.stdin)
+
+                    loop = asyncio.get_running_loop()
+                    transport, protocol = await loop.connect_write_pipe(asyncio.streams.FlowControlMixin, sys.stdout)
+                    writer = asyncio.StreamWriter(
+                        transport,
+                        protocol,
+                        None,
+                        loop
+                    )
 
                     async def recv_from_websocket():
                         async for message in websocket:
@@ -72,8 +79,8 @@ async def tty_command(
                                 await websocket.close()
 
                             data: bytes = message.data
-                            sys.stdout.write(data.decode("utf-8"))
-                            sys.stdout.flush()
+                            writer.write(data)
+                            await writer.drain()
 
                     async def send_to_websocket():
                         loop = asyncio.get_running_loop()
