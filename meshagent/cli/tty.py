@@ -1,6 +1,8 @@
 import sys
 import tty
 import termios
+from meshagent.api.websocket_protocol import WebSocketClientProtocol
+from meshagent.api import RoomClient
 from meshagent.api.helpers import websocket_room_url
 from typing import Annotated, Optional
 import asyncio
@@ -53,70 +55,73 @@ async def tty_command(
         # Save current terminal settings so we can restore them later.
         old_tty_settings = termios.tcgetattr(sys.stdin)
 
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.ws_connect(ws_url) as websocket:
-                    tty.setraw(sys.stdin)
+        async with RoomClient(protocol=WebSocketClientProtocol(url=websocket_room_url(room_name=room), token=token.to_jwt(token=key))):
+            
+            try:
+            
+                async with aiohttp.ClientSession() as session:
+                    async with session.ws_connect(ws_url) as websocket:
+                        tty.setraw(sys.stdin)
 
-                    loop = asyncio.get_running_loop()
-                    transport, protocol = await loop.connect_write_pipe(
-                        asyncio.streams.FlowControlMixin, sys.stdout
-                    )
-                    writer = asyncio.StreamWriter(transport, protocol, None, loop)
-
-                    async def recv_from_websocket():
-                        async for message in websocket:
-                            if message.type == aiohttp.WSMsgType.CLOSE:
-                                await websocket.close()
-
-                            elif message.type == aiohttp.WSMsgType.ERROR:
-                                await websocket.close()
-
-                            data: bytes = message.data
-                            writer.write(data)
-                            await writer.drain()
-
-                    async def send_to_websocket():
                         loop = asyncio.get_running_loop()
+                        transport, protocol = await loop.connect_write_pipe(
+                            asyncio.streams.FlowControlMixin, sys.stdout
+                        )
+                        writer = asyncio.StreamWriter(transport, protocol, None, loop)
 
-                        reader = asyncio.StreamReader()
-                        protocol = asyncio.StreamReaderProtocol(reader)
-                        await loop.connect_read_pipe(lambda: protocol, sys.stdin)
+                        async def recv_from_websocket():
+                            async for message in websocket:
+                                if message.type == aiohttp.WSMsgType.CLOSE:
+                                    await websocket.close()
 
-                        while True:
-                            # Read one character at a time from stdin without blocking the event loop.
+                                elif message.type == aiohttp.WSMsgType.ERROR:
+                                    await websocket.close()
 
-                            data = await reader.read(1)
-                            if not data:
-                                break
+                                data: bytes = message.data
+                                writer.write(data)
+                                await writer.drain()
 
-                            if websocket.closed:
-                                break
+                        async def send_to_websocket():
+                            loop = asyncio.get_running_loop()
 
-                            if data == b"\x03":
-                                print("<CTRL-C>\n")
-                                break
+                            reader = asyncio.StreamReader()
+                            protocol = asyncio.StreamReaderProtocol(reader)
+                            await loop.connect_read_pipe(lambda: protocol, sys.stdin)
 
-                            if data:
-                                await websocket.send_bytes(data)
-                            else:
-                                await websocket.close(code=1000)
-                                break
+                            while True:
+                                # Read one character at a time from stdin without blocking the event loop.
 
-                    done, pending = await asyncio.wait(
-                        [
-                            asyncio.create_task(recv_from_websocket()),
-                            asyncio.create_task(send_to_websocket()),
-                        ],
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
+                                data = await reader.read(1)
+                                if not data:
+                                    break
 
-                    for task in pending:
-                        task.cancel()
+                                if websocket.closed:
+                                    break
 
-        finally:
-            # Restore original terminal settings even if the coroutine is cancelled.
-            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_tty_settings)
+                                if data == b"\x04":
+                                    print("<CTRL-D>\n")
+                                    break
+
+                                if data:
+                                    await websocket.send_bytes(data)
+                                else:
+                                    await websocket.close(code=1000)
+                                    break
+
+                        done, pending = await asyncio.wait(
+                            [
+                                asyncio.create_task(recv_from_websocket()),
+                                asyncio.create_task(send_to_websocket()),
+                            ],
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+
+                        for task in pending:
+                            task.cancel()
+
+            finally:
+                # Restore original terminal settings even if the coroutine is cancelled.
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_tty_settings)
 
     finally:
         await client.close()
