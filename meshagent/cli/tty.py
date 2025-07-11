@@ -55,10 +55,12 @@ async def tty_command(
         # Save current terminal settings so we can restore them later.
         old_tty_settings = termios.tcgetattr(sys.stdin)
 
-        async with RoomClient(protocol=WebSocketClientProtocol(url=websocket_room_url(room_name=room), token=token.to_jwt(token=key))):
-            
+        async with RoomClient(
+            protocol=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room), token=token.to_jwt(token=key)
+            )
+        ):
             try:
-            
                 async with aiohttp.ClientSession() as session:
                     async with session.ws_connect(ws_url) as websocket:
                         tty.setraw(sys.stdin)
