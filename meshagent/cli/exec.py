@@ -79,10 +79,11 @@ def register(app: typer.Typer):
 
                 ws_url += "&tty=false"
 
-            if sys.stdin.isatty():
+            if tty:
                 # Save current terminal settings so we can restore them later.
                 old_tty_settings = termios.tcgetattr(sys.stdin)
-
+                _tty.setraw(sys.stdin)
+                
             async with RoomClient(
                 protocol=WebSocketClientProtocol(
                     url=websocket_room_url(room_name=room),
@@ -263,7 +264,7 @@ def register(app: typer.Typer):
                             await send_to_websocket_task
 
                 finally:
-                    if not sys.stdin.closed and sys.stdin.isatty():
+                    if not sys.stdin.closed and tty:
                         # Restore original terminal settings even if the coroutine is cancelled.
                         termios.tcsetattr(
                             sys.stdin, termios.TCSADRAIN, old_tty_settings
