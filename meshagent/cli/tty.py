@@ -9,6 +9,10 @@ import asyncio
 import typer
 from rich import print
 import aiohttp
+import struct
+import signal
+import shutil
+import json
 
 from meshagent.api import ParticipantToken
 from meshagent.cli import async_typer
@@ -17,7 +21,6 @@ from meshagent.cli.helper import (
     resolve_project_id,
     resolve_api_key,
 )
-
 
 app = async_typer.AsyncTyper()
 
@@ -64,6 +67,7 @@ async def tty_command(
                 async with aiohttp.ClientSession() as session:
                     async with session.ws_connect(ws_url) as websocket:
                         tty.setraw(sys.stdin)
+                        send_queue = asyncio.Queue[bytes]()
 
                         loop = asyncio.get_running_loop()
                         transport, protocol = await loop.connect_write_pipe(
@@ -76,6 +80,9 @@ async def tty_command(
                                 if message.type == aiohttp.WSMsgType.CLOSE:
                                     await websocket.close()
 
+                                elif message.type == aiohttp.WSMsgType.CLOSING:
+                                    pass
+
                                 elif message.type == aiohttp.WSMsgType.ERROR:
                                     await websocket.close()
 
@@ -83,7 +90,39 @@ async def tty_command(
                                 writer.write(data)
                                 await writer.drain()
 
-                        async def send_to_websocket():
+                        last_size = None
+
+                        async def send_resize(rows, cols):
+                            nonlocal last_size
+
+                            size = (cols, rows)
+                            if size == last_size:
+                                return
+
+                            last_size = size
+
+                            resize_json = json.dumps(
+                                {"Width": cols, "Height": rows}
+                            ).encode("utf-8")
+                            payload = struct.pack("B", 4) + resize_json
+                            send_queue.put_nowait(payload)
+                            await asyncio.sleep(5)
+
+                        cols, rows = shutil.get_terminal_size(fallback=(24, 80))
+                        await send_resize(rows, cols)
+
+                        def on_sigwinch():
+                            cols, rows = shutil.get_terminal_size(fallback=(24, 80))
+                            task = asyncio.create_task(send_resize(rows, cols))
+
+                            def on_done(t: asyncio.Task):
+                                t.result()
+
+                            task.add_done_callback(on_done)
+
+                        loop.add_signal_handler(signal.SIGWINCH, on_sigwinch)
+
+                        async def read_stdin():
                             loop = asyncio.get_running_loop()
 
                             reader = asyncio.StreamReader()
@@ -105,14 +144,25 @@ async def tty_command(
                                     break
 
                                 if data:
-                                    await websocket.send_bytes(data)
+                                    send_queue.put_nowait(b"\0" + data)
                                 else:
+                                    send_queue.shutdown(immediate=True)
                                     await websocket.close(code=1000)
                                     break
+
+                        async def send_to_websocket():
+                            while True:
+                                data = await send_queue.get()
+                                if websocket.closed:
+                                    return
+
+                                if data is not None:
+                                    await websocket.send_bytes(data)
 
                         done, pending = await asyncio.wait(
                             [
                                 asyncio.create_task(recv_from_websocket()),
+                                asyncio.create_task(read_stdin()),
                                 asyncio.create_task(send_to_websocket()),
                             ],
                             return_when=asyncio.FIRST_COMPLETED,
