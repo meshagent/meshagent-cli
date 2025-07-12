@@ -83,7 +83,7 @@ def register(app: typer.Typer):
                 # Save current terminal settings so we can restore them later.
                 old_tty_settings = termios.tcgetattr(sys.stdin)
                 _tty.setraw(sys.stdin)
-                
+
             async with RoomClient(
                 protocol=WebSocketClientProtocol(
                     url=websocket_room_url(room_name=room),
