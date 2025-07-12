@@ -2,6 +2,8 @@ import typer
 import asyncio
 from typing import Optional
 
+from meshagent.cli import async_typer
+
 from meshagent.cli import auth
 from meshagent.cli import api_keys
 from meshagent.cli import projects
@@ -18,7 +20,7 @@ from meshagent.cli import call
 from meshagent.cli import cli_mcp
 from meshagent.cli import chatbot
 from meshagent.cli import voicebot
-from meshagent.cli import tty
+from meshagent.cli.exec import register as register_exec
 
 from meshagent.cli import otel
 
@@ -38,7 +40,7 @@ otel.init(level=logging.INFO)
 logging.getLogger("openai").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.ERROR)
 
-app = typer.Typer()
+app = async_typer.AsyncTyper()
 app.add_typer(call.app, name="call")
 app.add_typer(auth.app, name="auth")
 app.add_typer(projects.app, name="project")
@@ -55,7 +57,8 @@ app.add_typer(cli_secrets.app, name="secret")
 app.add_typer(cli_mcp.app, name="mcp")
 app.add_typer(chatbot.app, name="chatbot")
 app.add_typer(voicebot.app, name="voicebot")
-app.add_typer(tty.app, name="tty")
+
+register_exec(app)
 
 
 def _run_async(coro):
