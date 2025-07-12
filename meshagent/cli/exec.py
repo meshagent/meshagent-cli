@@ -25,9 +25,8 @@ from meshagent.cli.helper import (
     resolve_api_key,
 )
 
+
 def register(app: typer.Typer):
-
-
     @app.async_command("exec")
     async def exec_command(
         *,
@@ -41,21 +40,26 @@ def register(app: typer.Typer):
         client = await get_client()
         try:
             project_id = await resolve_project_id(project_id=project_id)
-            api_key_id = await resolve_api_key(project_id=project_id, api_key_id=api_key_id)
+            api_key_id = await resolve_api_key(
+                project_id=project_id, api_key_id=api_key_id
+            )
 
             token = ParticipantToken(
                 name="tty", project_id=project_id, api_key_id=api_key_id
             )
 
             key = (
-                await client.decrypt_project_api_key(project_id=project_id, id=api_key_id)
+                await client.decrypt_project_api_key(
+                    project_id=project_id, id=api_key_id
+                )
             )["token"]
 
             token.add_role_grant(role="user")
             token.add_room_grant(room)
 
             ws_url = (
-                websocket_room_url(room_name=room) + f"/exec?token={token.to_jwt(token=key)}"
+                websocket_room_url(room_name=room)
+                + f"/exec?token={token.to_jwt(token=key)}"
             )
 
             if command is not None:
@@ -67,9 +71,8 @@ def register(app: typer.Typer):
                     typer.Exit(1)
 
                 ws_url += "&tty=true"
-            
-            else:
 
+            else:
                 if command is None:
                     print("[red]TTY required when not executing a command[/red]")
                     typer.Exit(1)
@@ -82,33 +85,42 @@ def register(app: typer.Typer):
 
             async with RoomClient(
                 protocol=WebSocketClientProtocol(
-                    url=websocket_room_url(room_name=room), token=token.to_jwt(token=key)
+                    url=websocket_room_url(room_name=room),
+                    token=token.to_jwt(token=key),
                 )
             ):
                 try:
                     async with aiohttp.ClientSession() as session:
                         async with session.ws_connect(ws_url) as websocket:
-
                             send_queue = asyncio.Queue[bytes]()
 
                             loop = asyncio.get_running_loop()
-                            stdout_transport, stdout_protocol = await loop.connect_write_pipe(
+                            (
+                                stdout_transport,
+                                stdout_protocol,
+                            ) = await loop.connect_write_pipe(
                                 asyncio.streams.FlowControlMixin, sys.stdout
                             )
-                            stdout_writer = asyncio.StreamWriter(stdout_transport, stdout_protocol, None, loop)
+                            stdout_writer = asyncio.StreamWriter(
+                                stdout_transport, stdout_protocol, None, loop
+                            )
 
-
-                            stderr_transport, stderr_protocol = await loop.connect_write_pipe(
+                            (
+                                stderr_transport,
+                                stderr_protocol,
+                            ) = await loop.connect_write_pipe(
                                 asyncio.streams.FlowControlMixin, sys.stderr
                             )
-                            stderr_writer = asyncio.StreamWriter(stderr_transport, stderr_protocol, None, loop)
+                            stderr_writer = asyncio.StreamWriter(
+                                stderr_transport, stderr_protocol, None, loop
+                            )
 
-                            
-                            
                             async def recv_from_websocket():
-
                                 while True:
-                                    done, pending = await asyncio.wait([ asyncio.create_task(websocket.receive()) ], return_when=asyncio.FIRST_COMPLETED )
+                                    done, pending = await asyncio.wait(
+                                        [asyncio.create_task(websocket.receive())],
+                                        return_when=asyncio.FIRST_COMPLETED,
+                                    )
 
                                     first = done.pop()
 
@@ -116,8 +128,8 @@ def register(app: typer.Typer):
                                         break
 
                                     message = first.result()
-                                
-                                    if websocket.closed: 
+
+                                    if websocket.closed:
                                         break
 
                                     if message.type == aiohttp.WSMsgType.CLOSE:
@@ -128,13 +140,12 @@ def register(app: typer.Typer):
 
                                     elif message.type == aiohttp.WSMsgType.ERROR:
                                         break
-                                    
+
                                     if not message.data:
                                         break
 
                                     data: bytes = message.data
                                     if len(data) > 0:
-        
                                         if data[0] == 1:
                                             stderr_writer.write(data)
                                             await stderr_writer.drain()
@@ -142,8 +153,10 @@ def register(app: typer.Typer):
                                             stdout_writer.write(data)
                                             await stdout_writer.drain()
                                         else:
-                                            raise ValueError(f"Invalid channel received {data[0]}")
-                            
+                                            raise ValueError(
+                                                f"Invalid channel received {data[0]}"
+                                            )
+
                             last_size = None
 
                             async def send_resize(rows, cols):
@@ -178,22 +191,26 @@ def register(app: typer.Typer):
                             loop.add_signal_handler(signal.SIGWINCH, on_sigwinch)
 
                             async def read_stdin():
-
                                 loop = asyncio.get_running_loop()
 
                                 reader = asyncio.StreamReader()
                                 protocol = asyncio.StreamReaderProtocol(reader)
-                                await loop.connect_read_pipe(lambda: protocol, sys.stdin)
+                                await loop.connect_read_pipe(
+                                    lambda: protocol, sys.stdin
+                                )
 
                                 while True:
                                     # Read one character at a time from stdin without blocking the event loop.
-                                    done, pending = await asyncio.wait([
-                                        asyncio.create_task(reader.read(1)),
-                                        websocket_recv_task
-                                    ], return_when=asyncio.FIRST_COMPLETED)
-                                    
+                                    done, pending = await asyncio.wait(
+                                        [
+                                            asyncio.create_task(reader.read(1)),
+                                            websocket_recv_task,
+                                        ],
+                                        return_when=asyncio.FIRST_COMPLETED,
+                                    )
+
                                     first = done.pop()
-                                    if  first == websocket_recv_task:
+                                    if first == websocket_recv_task:
                                         break
 
                                     data = first.result()
@@ -211,22 +228,21 @@ def register(app: typer.Typer):
                                         send_queue.put_nowait(b"\0" + data)
                                     else:
                                         break
-                                
+
                                 send_queue.put_nowait(b"\0")
-                                
-                    
-                            websocket_recv_task = asyncio.create_task(recv_from_websocket())
+
+                            websocket_recv_task = asyncio.create_task(
+                                recv_from_websocket()
+                            )
                             read_stdin_task = asyncio.create_task(read_stdin())
 
                             async def send_to_websocket():
-
-
                                 while True:
                                     try:
                                         data = await send_queue.get()
                                         if websocket.closed:
                                             break
-                                        
+
                                         if data is not None:
                                             await websocket.send_bytes(data)
 
@@ -235,7 +251,9 @@ def register(app: typer.Typer):
                                     except asyncio.QueueShutDown:
                                         break
 
-                            send_to_websocket_task = asyncio.create_task(send_to_websocket())
+                            send_to_websocket_task = asyncio.create_task(
+                                send_to_websocket()
+                            )
                             await asyncio.gather(
                                 websocket_recv_task,
                                 read_stdin_task,
@@ -245,9 +263,11 @@ def register(app: typer.Typer):
                             await send_to_websocket_task
 
                 finally:
-                    if not sys.stdin.closed and  sys.stdin.isatty():
+                    if not sys.stdin.closed and sys.stdin.isatty():
                         # Restore original terminal settings even if the coroutine is cancelled.
-                        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_tty_settings)
+                        termios.tcsetattr(
+                            sys.stdin, termios.TCSADRAIN, old_tty_settings
+                        )
 
         except Exception as e:
             print(f"[red]{e}[/red]")
