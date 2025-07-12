@@ -68,14 +68,14 @@ def register(app: typer.Typer):
             if tty:
                 if not sys.stdin.isatty():
                     print("[red]TTY requested but process is not a TTY[/red]")
-                    typer.Exit(1)
+                    raise typer.Exit(1)
 
                 ws_url += "&tty=true"
 
             else:
                 if command is None:
                     print("[red]TTY required when not executing a command[/red]")
-                    typer.Exit(1)
+                    raise typer.Exit(1)
 
                 ws_url += "&tty=false"
 
@@ -272,6 +272,6 @@ def register(app: typer.Typer):
         except Exception as e:
             print(f"[red]{e}[/red]")
             logging.error("failed", exc_info=e)
-            typer.Exit(1)
+            raise typer.Exit(1)
         finally:
             await client.close()
