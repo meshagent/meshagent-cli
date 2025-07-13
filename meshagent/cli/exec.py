@@ -63,7 +63,7 @@ def register(app: typer.Typer):
             )
 
             if len(command) != 0:
-                ws_url += f"&command={quote(" ".join(command))}"
+                ws_url += f"&command={quote(' '.join(command))}"
 
             if tty:
                 if not sys.stdin.isatty():
