@@ -32,6 +32,8 @@ def register(app: typer.Typer):
         *,
         project_id: str = None,
         room: Annotated[str, typer.Option()],
+        name: Annotated[Optional[str], typer.Option()] = None,
+        image: Annotated[Optional[str], typer.Option()] = None,
         api_key_id: Annotated[Optional[str], typer.Option()] = None,
         command: Annotated[list[str], typer.Argument(...)] = None,
         tty: bool = False,
@@ -62,7 +64,13 @@ def register(app: typer.Typer):
                 + f"/exec?token={token.to_jwt(token=key)}"
             )
 
-            if len(command) != 0:
+            if image:
+                ws_url += f"&image={quote(' '.join(image))}"
+
+            if name:
+                ws_url += f"&name={quote(' '.join(name))}"
+
+            if command and len(command) != 0:
                 ws_url += f"&command={quote(' '.join(command))}"
 
             if tty:
