@@ -33,7 +33,7 @@ def register(app: typer.Typer):
         project_id: str = None,
         room: Annotated[str, typer.Option()],
         api_key_id: Annotated[Optional[str], typer.Option()] = None,
-        command: Annotated[Optional[str], typer.Option()] = None,
+        command: Annotated[list[str], typer.Argument(...)] = None,
         tty: bool = False,
     ):
         """Open an interactive websocket‑based TTY."""
@@ -62,8 +62,8 @@ def register(app: typer.Typer):
                 + f"/exec?token={token.to_jwt(token=key)}"
             )
 
-            if command is not None:
-                ws_url += f"&command={quote(command)}"
+            if len(command) != 0:
+                ws_url += f"&command={quote(" ".join(command))}"
 
             if tty:
                 if not sys.stdin.isatty():
