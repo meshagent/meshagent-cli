@@ -37,6 +37,7 @@ def register(app: typer.Typer):
         api_key_id: Annotated[Optional[str], typer.Option()] = None,
         command: Annotated[list[str], typer.Argument(...)] = None,
         tty: bool = False,
+        room_storage_path: str = "/data",
     ):
         """Open an interactive websocket‑based TTY."""
         client = await get_client()
@@ -72,6 +73,11 @@ def register(app: typer.Typer):
 
             if command and len(command) != 0:
                 ws_url += f"&command={quote(' '.join(command))}"
+
+            if room_storage_path:
+                room_storage_path += (
+                    f"&room_storage_path={quote(' '.join(room_storage_path))}"
+                )
 
             if tty:
                 if not sys.stdin.isatty():
