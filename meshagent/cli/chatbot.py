@@ -14,10 +14,12 @@ from meshagent.cli.helper import (
 )
 from meshagent.agents.chat import ChatBot
 from meshagent.openai import OpenAIResponsesAdapter
-from meshagent.openai.tools.responses_adapter import LocalShellTool
 from meshagent.api.services import ServiceHost
 from meshagent.computers.agent import ComputerAgent
-from meshagent.agents.chat import ChatBotThreadOpenAIImageGenerationTool
+from meshagent.agents.chat import (
+    ChatBotThreadOpenAIImageGenerationTool,
+    ChatBotThreadLocalShellTool,
+)
 
 from typing import List
 
@@ -79,7 +81,9 @@ def build_chatbot(
             thread_toolkit = Toolkit(name="thread_toolkit", tools=[])
 
             if local_shell:
-                thread_toolkit.tools.append(LocalShellTool())
+                thread_toolkit.tools.append(
+                    ChatBotThreadLocalShellTool(thread_context=thread_context)
+                )
 
             if image_generation is not None:
                 print("adding openai image gen to thread", flush=True)
@@ -103,7 +107,6 @@ async def make_call(
     project_id: str = None,
     room: Annotated[Optional[str], typer.Option()] = None,
     api_key_id: Annotated[Optional[str], typer.Option()] = None,
-    name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "agent",
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     token_path: Annotated[Optional[str], typer.Option()] = None,
@@ -142,7 +145,7 @@ async def make_call(
             project_id=project_id,
             api_key_id=api_key_id,
             token_path=token_path,
-            name=name,
+            name=agent_name,
             role=role,
             room=room,
         )
