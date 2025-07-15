@@ -27,7 +27,7 @@ async def send(
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "user",
     queue: Annotated[str, typer.Option(..., help="Queue name")],
-    json: Optional[str] = typer.Option(...,  help="a JSON message to send to the queue"),
+    json: Optional[str] = typer.Option(..., help="a JSON message to send to the queue"),
     file: Annotated[
         Optional[str],
         typer.Option("--file", "-f", help="File path to a JSON file"),
@@ -58,7 +58,6 @@ async def send(
                 token=token.to_jwt(token=key),
             )
         ) as client:
-            
             if file is not None:
                 with open(file, "rb") as f:
                     message = f.read()
@@ -107,7 +106,6 @@ async def receive(
                 token=token.to_jwt(token=key),
             )
         ) as client:
-            
             response = await client.queues.receive(name=queue, wait=False)
             if response is None:
                 print("[bold yellow]Queue did not contain any messages.[/bold yellow]")
