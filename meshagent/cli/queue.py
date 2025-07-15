@@ -2,7 +2,6 @@ import typer
 from rich import print
 from typing import Annotated, Optional
 import json as _json
-from meshagent.api.messaging import JsonResponse
 
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.api import (
