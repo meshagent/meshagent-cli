@@ -4,6 +4,7 @@ from typing import Optional
 
 from meshagent.cli import async_typer
 
+from meshagent.cli import queue
 from meshagent.cli import auth
 from meshagent.cli import api_keys
 from meshagent.cli import projects
@@ -54,6 +55,7 @@ app.add_typer(developer.app, name="developer")
 app.add_typer(webhook.app, name="webhook")
 app.add_typer(services.app, name="service")
 app.add_typer(cli_secrets.app, name="secret")
+app.add_typer(queue.app, name="queue")
 app.add_typer(cli_mcp.app, name="mcp")
 app.add_typer(chatbot.app, name="chatbot")
 app.add_typer(voicebot.app, name="voicebot")
