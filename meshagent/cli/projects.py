@@ -24,7 +24,7 @@ async def create(name: str):
 
 @app.async_command("list")
 async def list(
-     o: Annotated[
+    o: Annotated[
         str,
         typer.Option(
             "--output",

@@ -76,7 +76,7 @@ async def make_call(
                     rule.extend(f.read().splitlines())
             except FileNotFoundError:
                 print(f"[yellow]rules file not found at {rules_file}[/yellow]")
-        
+
         print("[bold green]Connecting to room...[/bold green]", flush=True)
         async with RoomClient(
             protocol=WebSocketClientProtocol(
