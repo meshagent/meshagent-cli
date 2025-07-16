@@ -1,5 +1,6 @@
 import typer
 from rich import print
+from typing import Annotated
 from meshagent.cli import async_typer
 from meshagent.cli.helper import (
     get_client,
@@ -22,7 +23,16 @@ async def create(name: str):
 
 
 @app.async_command("list")
-async def list():
+async def list(
+     o: Annotated[
+        str,
+        typer.Option(
+            "--output",
+            "-o",
+            help="output format [json|table]",
+        ),
+    ] = "table",
+):
     client = await get_client()
     projects = await client.list_projects()
     active_project = await get_active_project()
@@ -30,7 +40,10 @@ async def list():
         if project["id"] == active_project:
             project["name"] = "*" + project["name"]
 
-    print_json_table(projects["projects"], "id", "name")
+    if o == "json":
+        print(projects)
+    else:
+        print_json_table(projects["projects"], "id", "name")
     await client.close()
 
 
