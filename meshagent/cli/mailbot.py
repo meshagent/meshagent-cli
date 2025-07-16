@@ -23,6 +23,7 @@ from typing import List
 from pathlib import Path
 
 from meshagent.api import RequiredToolkit, RequiredSchema
+from meshagent.openai.tools.responses_adapter import WebSearchTool
 
 app = async_typer.AsyncTyper()
 
@@ -38,6 +39,9 @@ def build_mailbot(
     local_shell: bool,
     computer_use: bool,
     rules_file: Optional[str] = None,
+    web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
 ):
     requirements = []
 
@@ -92,6 +96,9 @@ def build_mailbot(
                     )
                 )
 
+            if web_search:
+                thread_toolkit.tools.append(WebSearchTool())
+
             toolkits.append(thread_toolkit)
             return toolkits
 
@@ -122,6 +129,9 @@ async def make_call(
     ] = "gpt-4o",
     local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
+    ] = False,
+    web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
 ):
     account_client = await get_client()
@@ -163,6 +173,7 @@ async def make_call(
                 toolkit=toolkit,
                 schema=schema,
                 image_generation=None,
+                web_search=web_search,
                 rules_file=rules_file,
             )
 

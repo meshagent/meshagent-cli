@@ -24,6 +24,7 @@ from meshagent.agents.chat import (
 from typing import List
 from pathlib import Path
 
+from meshagent.openai.tools.responses_adapter import WebSearchTool
 from meshagent.api import RequiredToolkit, RequiredSchema
 
 app = async_typer.AsyncTyper()
@@ -39,6 +40,7 @@ def build_chatbot(
     image_generation: Optional[str] = None,
     local_shell: bool,
     computer_use: bool,
+    web_search: bool,
     rules_file: Optional[str] = None,
 ):
     requirements = []
@@ -104,6 +106,9 @@ def build_chatbot(
                     )
                 )
 
+            if web_search:
+                thread_toolkit.tools.append(WebSearchTool())
+
             toolkits.append(thread_toolkit)
             return toolkits
 
@@ -143,6 +148,9 @@ async def make_call(
     ] = False,
     local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
+    ] = False,
+    web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
 ):
     account_client = await get_client()
@@ -184,6 +192,7 @@ async def make_call(
                 toolkit=toolkit,
                 schema=schema,
                 image_generation=image_generation,
+                web_search=web_search,
                 rules_file=rules_file,
             )
 
@@ -233,6 +242,9 @@ async def service(
             ..., help="Enable computer use (requires computer-use-preview model)"
         ),
     ] = False,
+    web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
     path: Annotated[str, typer.Option()] = "/agent",
@@ -252,6 +264,7 @@ async def service(
             rule=rule,
             toolkit=toolkit,
             schema=schema,
+            web_search=web_search,
             image_generation=image_generation,
             rules_file=rules_file,
         ),
