@@ -21,6 +21,7 @@ from meshagent.cli import call
 from meshagent.cli import cli_mcp
 from meshagent.cli import chatbot
 from meshagent.cli import voicebot
+from meshagent.cli import mailbot
 from meshagent.cli.exec import register as register_exec
 
 from meshagent.cli import otel
@@ -59,6 +60,7 @@ app.add_typer(queue.app, name="queue")
 app.add_typer(cli_mcp.app, name="mcp")
 app.add_typer(chatbot.app, name="chatbot")
 app.add_typer(voicebot.app, name="voicebot")
+app.add_typer(mailbot.app, name="mailbot")
 
 register_exec(app)
 
