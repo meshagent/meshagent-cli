@@ -22,6 +22,7 @@ from meshagent.agents.chat import (
 )
 
 from typing import List
+from pathlib import Path
 
 from meshagent.api import RequiredToolkit, RequiredSchema
 
@@ -38,6 +39,7 @@ def build_chatbot(
     image_generation: Optional[str] = None,
     local_shell: bool,
     computer_use: bool,
+    rules_file: Optional[str] = None,
 ):
     requirements = []
 
@@ -48,6 +50,13 @@ def build_chatbot(
 
     for t in schema:
         requirements.append(RequiredSchema(name=t))
+
+    if rules_file is not None:
+        try:
+            with open(Path(rules_file).resolve(), "r") as f:
+                rule.extend(f.read().splitlines())
+        except FileNotFoundError:
+            print(f"[yellow]rules file not found at {rules_file}[/yellow]")
 
     BaseClass = ChatBot
     if computer_use:
@@ -111,6 +120,7 @@ async def make_call(
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     token_path: Annotated[Optional[str], typer.Option()] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
+    rules_file: Optional[str] = None,
     toolkit: Annotated[
         List[str],
         typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
@@ -174,6 +184,7 @@ async def make_call(
                 toolkit=toolkit,
                 schema=schema,
                 image_generation=image_generation,
+                rules_file=rules_file,
             )
 
             bot = CustomChatbot()
@@ -198,6 +209,7 @@ async def service(
     room: Annotated[Optional[str], typer.Option()] = None,
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
+    rules_file: Optional[str] = None,
     toolkit: Annotated[
         List[str],
         typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
@@ -241,6 +253,7 @@ async def service(
             toolkit=toolkit,
             schema=schema,
             image_generation=image_generation,
+            rules_file=rules_file,
         ),
     )
 

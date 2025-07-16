@@ -15,6 +15,7 @@ from typing import List
 
 from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.api.services import ServiceHost
+from pathlib import Path
 
 try:
     from meshagent.livekit.agents.voice import VoiceBot
@@ -41,6 +42,7 @@ async def make_call(
     role: str = "agent",
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
+    rules_file: Optional[str] = None,
     toolkit: Annotated[
         List[str],
         typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
@@ -68,6 +70,13 @@ async def make_call(
             room=room,
         )
 
+        if rules_file is not None:
+            try:
+                with open(Path(rules_file).resolve(), "r") as f:
+                    rule.extend(f.read().splitlines())
+            except FileNotFoundError:
+                print(f"[yellow]rules file not found at {rules_file}[/yellow]")
+        
         print("[bold green]Connecting to room...[/bold green]", flush=True)
         async with RoomClient(
             protocol=WebSocketClientProtocol(
@@ -112,6 +121,7 @@ async def service(
     project_id: str = None,
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
+    rules_file: Optional[str] = None,
     toolkit: Annotated[
         List[str],
         typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
@@ -133,6 +143,13 @@ async def service(
 
     for t in schema:
         requirements.append(RequiredSchema(name=t))
+
+    if rules_file is not None:
+        try:
+            with open(Path(rules_file).resolve(), "r") as f:
+                rule.extend(f.read().splitlines())
+        except FileNotFoundError:
+            print(f"[yellow]rules file not found at {rules_file}[/yellow]")
 
     service = ServiceHost(host=host, port=port)
 
