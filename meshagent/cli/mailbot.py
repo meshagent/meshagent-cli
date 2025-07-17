@@ -1,6 +1,7 @@
 from meshagent.agents.mail import MailWorker
 
 import typer
+from meshagent.api import ParticipantToken
 from rich import print
 from typing import Annotated, Optional
 from meshagent.tools import Toolkit
@@ -75,6 +76,15 @@ def build_mailbot(
                 toolkits=toolkits,
                 rules=rule if len(rule) > 0 else None,
             )
+
+        async def start(self, *, room: RoomClient):
+            parsed_token = ParticipantToken.from_jwt(
+                room.protocol.token, validate=False
+            )
+            print(
+                f"[bold green]Send an email interact with your mailbot: {room_address(project_id=parsed_token.project_id, room_name=room.room_name)}[/bold green]"
+            )
+            return await super().start(room=room)
 
         async def get_thread_toolkits(self, *, thread_context):
             toolkits = await super().get_thread_toolkits(thread_context=thread_context)
@@ -182,7 +192,6 @@ async def make_call(
             await bot.start(room=client)
             try:
                 print(
-                    f"[bold green]Send an email interact with your agent: {room_address(project_id=project_id, room_name=room)}[/bold green]",
                     flush=True,
                 )
                 await client.protocol.wait_for_close()
