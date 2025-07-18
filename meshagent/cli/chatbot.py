@@ -27,7 +27,7 @@ from pathlib import Path
 from meshagent.openai.tools.responses_adapter import WebSearchTool
 from meshagent.api import RequiredToolkit, RequiredSchema
 
-app = async_typer.AsyncTyper()
+app = async_typer.AsyncTyper(help="Join a chatbot to a room")
 
 
 def build_chatbot(

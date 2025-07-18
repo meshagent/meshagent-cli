@@ -23,6 +23,7 @@ from meshagent.cli import chatbot
 from meshagent.cli import voicebot
 from meshagent.cli import mailbot
 from meshagent.cli.exec import register as register_exec
+from meshagent.cli.version import __version__
 
 from meshagent.cli import otel
 
@@ -134,8 +135,16 @@ SHELL_RENDERERS = {
 
 
 @app.command(
+    "version",
+    help="Print the version",
+)
+def version():
+    print(__version__)
+
+
+@app.command(
     "env",
-    help="Generate commands to set meshagent environment variables.",
+    help="Generate shell commands to set meshagent environment variables.",
 )
 def env(
     shell: Optional[str] = typer.Option(

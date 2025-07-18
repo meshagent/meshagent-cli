@@ -9,7 +9,7 @@ from meshagent.cli.helper import (
     get_active_project,
 )
 
-app = async_typer.AsyncTyper()
+app = async_typer.AsyncTyper(help="Manage or activate your meshagent projects")
 
 
 @app.async_command("create")

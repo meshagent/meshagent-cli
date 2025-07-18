@@ -14,7 +14,7 @@ from meshagent.cli.helper import resolve_project_id, resolve_api_key
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client
 
-app = async_typer.AsyncTyper()
+app = async_typer.AsyncTyper(help="Use queues in a room")
 
 
 @app.async_command("send")

@@ -31,7 +31,7 @@ from pydantic_yaml import parse_yaml_raw_as
 from meshagent.api.accounts_client import Service, Port, Services, Endpoint
 
 
-app = async_typer.AsyncTyper()
+app = async_typer.AsyncTyper(help="Manage services for your project")
 
 # ---------------------------------------------------------------------------
 #  Utilities

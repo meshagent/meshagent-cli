@@ -4,7 +4,7 @@ from meshagent.cli import async_typer
 from meshagent.cli import auth_async
 from meshagent.cli.helper import get_active_project
 
-app = async_typer.AsyncTyper()
+app = async_typer.AsyncTyper(help="Authenticate to meshagent")
 
 
 @app.async_command("login")

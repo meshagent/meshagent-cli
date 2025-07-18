@@ -18,7 +18,7 @@ from meshagent.cli.helper import (
 )
 from meshagent.cli.helper import resolve_room
 
-app = async_typer.AsyncTyper()
+app = async_typer.AsyncTyper(help="Manage storage for a room")
 
 
 def parse_path(path: str):

@@ -6,7 +6,7 @@ from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client, print_json_table
 from meshagent.cli.helper import resolve_project_id, set_active_api_key
 
-app = async_typer.AsyncTyper()
+app = async_typer.AsyncTyper(help="Manage or activate api-keys for your project")
 
 
 @app.async_command("list")

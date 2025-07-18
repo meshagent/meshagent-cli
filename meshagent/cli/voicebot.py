@@ -29,7 +29,7 @@ except ImportError:
             )
 
 
-app = async_typer.AsyncTyper()
+app = async_typer.AsyncTyper(help="Join a voicebot to a room")
 
 
 @app.async_command("join")

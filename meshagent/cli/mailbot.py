@@ -26,7 +26,7 @@ from pathlib import Path
 from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.openai.tools.responses_adapter import WebSearchTool
 
-app = async_typer.AsyncTyper()
+app = async_typer.AsyncTyper(help="Join a mailbot to a room")
 
 
 def build_mailbot(
