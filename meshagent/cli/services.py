@@ -56,7 +56,7 @@ class PortSpec(pydantic.BaseModel):
         --port num=8080 type=webserver liveness=/health path=/agent participant_name=myname
     """
 
-    num: PositiveInt
+    num: PositiveInt | Literal["*"]
     type: Literal["mcp.sse", "meshagent.callable", "http", "tcp"]
     liveness: str | None = None
     participant_name: str | None = None
@@ -335,7 +335,7 @@ class ServicePortEndpointSpec(pydantic.BaseModel):
 
 
 class ServicePortSpec(pydantic.BaseModel):
-    num: PositiveInt
+    num: Literal["*"] | PositiveInt
     type: Literal["mcp.sse", "meshagent.callable", "http", "tcp"]
     endpoints: list[ServicePortEndpointSpec] = []
     liveness: Optional[str] = None
