@@ -10,7 +10,9 @@ from pydantic import PositiveInt
 import pydantic
 from typing import Literal
 from meshagent.cli import async_typer
-from pydantic import BaseModel
+from meshagent.api.specs.service import ServiceSpec
+
+
 from meshagent.cli.helper import (
     get_client,
     print_json_table,
@@ -326,67 +328,6 @@ async def service_update(
 
     finally:
         await client.close()
-
-
-class ServicePortEndpointSpec(pydantic.BaseModel):
-    path: str
-    identity: str
-    type: Optional[Literal["mcp.sse", "meshagent.callable", "http", "tcp"]] = None
-
-
-class ServicePortSpec(pydantic.BaseModel):
-    num: Literal["*"] | PositiveInt
-    type: Literal["mcp.sse", "meshagent.callable", "http", "tcp"]
-    endpoints: list[ServicePortEndpointSpec] = []
-    liveness: Optional[str] = None
-
-
-class ServiceSpec(BaseModel):
-    version: Literal["v1"]
-    kind: Literal["Service"]
-    id: Optional[str] = None
-    name: str
-    command: Optional[str] = None
-    image: str
-    ports: Optional[list[ServicePortSpec]] = []
-    role: Optional[Literal["user", "tool", "agent"]] = None
-    environment: Optional[dict[str, str]] = {}
-    secrets: list[str] = []
-    pull_secret: Optional[str] = None
-    room_storage_path: Optional[str] = None
-    room_storage_subpath: Optional[str] = None
-
-    def to_service(self):
-        ports = {}
-        for p in self.ports:
-            port = Port(liveness_path=p.liveness, type=p.type, endpoints=[])
-            for endpoint in p.endpoints:
-                type = port.type
-                if endpoint.type is not None:
-                    type = endpoint.type
-
-                port.endpoints.append(
-                    Endpoint(
-                        type=type,
-                        participant_name=endpoint.identity,
-                        path=endpoint.path,
-                    )
-                )
-            ports[p.num] = port
-        return Service(
-            id="",
-            created_at=datetime.now(timezone.utc).isoformat(),
-            name=self.name,
-            command=self.command,
-            image=self.image,
-            ports=ports,
-            role=self.role,
-            environment=self.environment,
-            environment_secrets=self.secrets,
-            pull_secret=self.pull_secret,
-            room_storage_path=self.room_storage_path,
-            room_storage_subpath=self.room_storage_subpath,
-        )
 
 
 @app.async_command("test")
