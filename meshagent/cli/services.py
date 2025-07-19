@@ -30,8 +30,7 @@ from meshagent.api import (
 from pydantic_yaml import parse_yaml_raw_as
 
 # Pydantic basemodels
-from meshagent.api.accounts_client import Service, Port, Services, Endpoint
-
+from meshagent.api.accounts_client import Service, Port, Services
 
 app = async_typer.AsyncTyper(help="Manage services for your project")
 
