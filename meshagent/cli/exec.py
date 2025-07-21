@@ -5,6 +5,7 @@ from meshagent.api.websocket_protocol import WebSocketClientProtocol
 from meshagent.api import RoomClient
 from meshagent.api.helpers import websocket_room_url
 from typing import Annotated, Optional
+from meshagent.cli.common_options import ProjectIdOption
 import asyncio
 import typer
 from rich import print
@@ -30,7 +31,7 @@ def register(app: typer.Typer):
     @app.async_command("exec")
     async def exec_command(
         *,
-        project_id: str = None,
+        project_id: ProjectIdOption = None,
         room: Annotated[str, typer.Option()],
         name: Annotated[Optional[str], typer.Option()] = None,
         image: Annotated[Optional[str], typer.Option()] = None,

@@ -1,6 +1,7 @@
 import typer
 from rich import print
 from typing import Annotated, Optional
+from meshagent.cli.common_options import ProjectIdOption
 import json as _json
 
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
@@ -20,7 +21,7 @@ app = async_typer.AsyncTyper(help="Use queues in a room")
 @app.async_command("send")
 async def send(
     *,
-    project_id: str = None,
+    project_id: ProjectIdOption = None,
     room: Annotated[str, typer.Option()],
     api_key_id: Annotated[Optional[str], typer.Option()] = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
@@ -74,7 +75,7 @@ async def send(
 @app.async_command("receive")
 async def receive(
     *,
-    project_id: str = None,
+    project_id: ProjectIdOption = None,
     room: Annotated[str, typer.Option()],
     api_key_id: Annotated[Optional[str], typer.Option()] = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",

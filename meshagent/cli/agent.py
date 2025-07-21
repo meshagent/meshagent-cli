@@ -1,6 +1,7 @@
 import typer
 from rich import print
 from typing import Annotated, Optional
+from meshagent.cli.common_options import ProjectIdOption
 import json
 import asyncio
 
@@ -21,7 +22,7 @@ app = async_typer.AsyncTyper()
 @app.async_command("ask")
 async def ask(
     *,
-    project_id: str = None,
+    project_id: ProjectIdOption = None,
     room: Annotated[str, typer.Option()],
     api_key_id: Annotated[Optional[str], typer.Option()] = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
@@ -93,7 +94,7 @@ async def ask(
 @app.async_command("invoke-tool")
 async def invoke_tool(
     *,
-    project_id: str = None,
+    project_id: ProjectIdOption = None,
     room: Annotated[str, typer.Option()],
     token_path: Annotated[Optional[str], typer.Option()] = None,
     api_key_id: Annotated[Optional[str], typer.Option()] = None,
@@ -189,7 +190,7 @@ async def invoke_tool(
 @app.async_command("list-agents")
 async def list_agents_command(
     *,
-    project_id: str = None,
+    project_id: ProjectIdOption = None,
     room: Annotated[str, typer.Option()],
     token_path: Annotated[Optional[str], typer.Option()] = None,
     api_key_id: Annotated[Optional[str], typer.Option()] = None,
@@ -243,7 +244,7 @@ async def list_agents_command(
 @app.async_command("list-toolkits")
 async def list_toolkits_command(
     *,
-    project_id: str = None,
+    project_id: ProjectIdOption = None,
     room: Annotated[str, typer.Option()],
     token_path: Annotated[Optional[str], typer.Option()] = None,
     api_key_id: Annotated[Optional[str], typer.Option()] = None,

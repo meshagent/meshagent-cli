@@ -1,6 +1,7 @@
 import typer
 from rich import print
 from typing import Annotated, Optional
+from meshagent.cli.common_options import ProjectIdOption
 from meshagent.tools import Toolkit
 from meshagent.api import RoomClient, WebSocketClientProtocol
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
@@ -118,7 +119,7 @@ def build_chatbot(
 @app.async_command("join")
 async def make_call(
     *,
-    project_id: str = None,
+    project_id: ProjectIdOption = None,
     room: Annotated[Optional[str], typer.Option()] = None,
     api_key_id: Annotated[Optional[str], typer.Option()] = None,
     role: str = "agent",

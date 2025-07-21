@@ -1,6 +1,5 @@
 import typer
 from rich import print
-from typing import Annotated
 from meshagent.cli import async_typer
 from meshagent.cli.helper import (
     get_client,

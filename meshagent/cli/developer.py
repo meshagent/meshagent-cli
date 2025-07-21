@@ -3,6 +3,7 @@ import json
 import typer
 from rich import print
 from typing import Annotated, Optional
+from meshagent.cli.common_options import ProjectIdOption
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client, resolve_project_id, resolve_api_key
 from meshagent.api import RoomClient, ParticipantToken, WebSocketClientProtocol
@@ -14,12 +15,7 @@ app = async_typer.AsyncTyper()
 @app.async_command("watch")
 async def watch_logs(
     *,
-    project_id: Annotated[
-        Optional[str],
-        typer.Option(
-            ..., help="Project ID (if not set, will try to use the active project)"
-        ),
-    ] = None,
+    project_id: ProjectIdOption = None,
     room: Annotated[str, typer.Option(..., help="Name of the room to connect to")],
     api_key_id: Annotated[Optional[str], typer.Option(..., help="API Key ID")] = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",

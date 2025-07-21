@@ -1,5 +1,6 @@
 import typer
 from typing import Annotated, Optional
+from meshagent.cli.common_options import ProjectIdOption
 from rich import print
 import os
 import fnmatch
@@ -56,7 +57,7 @@ def split_glob_subpath(subpath: str):
 @app.async_command("exists")
 async def storage_exists_command(
     *,
-    project_id: str = None,
+    project_id: ProjectIdOption = None,
     room: Annotated[str, typer.Option(..., help="Room name")],
     token_path: Annotated[Optional[str], typer.Option()] = None,
     api_key_id: Annotated[Optional[str], typer.Option(..., help="API Key ID")] = None,
@@ -102,7 +103,7 @@ async def storage_exists_command(
 @app.async_command("cp")
 async def storage_cp_command(
     *,
-    project_id: str = None,
+    project_id: ProjectIdOption = None,
     room: Annotated[
         str, typer.Option(..., help="Room name (if copying to/from remote)")
     ],
@@ -351,9 +352,7 @@ async def storage_cp_command(
 @app.async_command("show")
 async def storage_show_command(
     *,
-    project_id: Annotated[
-        Optional[str], typer.Option(..., help="Project ID (if remote)")
-    ] = None,
+    project_id: ProjectIdOption = None,
     room: Annotated[
         Optional[str], typer.Option(..., help="Room name (if remote)")
     ] = None,
@@ -444,9 +443,7 @@ async def storage_show_command(
 @app.async_command("rm")
 async def storage_rm_command(
     *,
-    project_id: Annotated[
-        Optional[str], typer.Option(..., help="Project ID (if remote)")
-    ] = None,
+    project_id: ProjectIdOption = None,
     room: Annotated[
         Optional[str], typer.Option(..., help="Room name (if remote)")
     ] = None,
@@ -665,9 +662,7 @@ async def storage_rm_command(
 @app.async_command("ls")
 async def storage_ls_command(
     *,
-    project_id: Annotated[
-        Optional[str], typer.Option(..., help="Project ID (if remote)")
-    ] = None,
+    project_id: ProjectIdOption = None,
     room: Annotated[
         Optional[str], typer.Option(..., help="Room name (if remote)")
     ] = None,

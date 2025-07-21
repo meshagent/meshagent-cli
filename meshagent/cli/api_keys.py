@@ -1,7 +1,8 @@
 import typer
 import json
 from rich import print
-from typing import Annotated
+
+from meshagent.cli.common_options import ProjectIdOption
 from meshagent.cli import async_typer
 from meshagent.cli.helper import (
     get_client,
@@ -18,7 +19,7 @@ app = async_typer.AsyncTyper(help="Manage or activate api-keys for your project"
 @app.async_command("list")
 async def list(
     *,
-    project_id: str = None,
+    project_id: ProjectIdOption = None,
     o: OutputFormatOption = "table",
 ):
     project_id = await resolve_project_id(project_id=project_id)
@@ -38,7 +39,7 @@ async def list(
 
 
 @app.async_command("create")
-async def create(*, project_id: str = None, name: str, description: str = ""):
+async def create(*, project_id: ProjectIdOption = None, name: str, description: str = ""):
     project_id = await resolve_project_id(project_id=project_id)
 
     client = await get_client()
@@ -50,7 +51,7 @@ async def create(*, project_id: str = None, name: str, description: str = ""):
 
 
 @app.async_command("delete")
-async def delete(*, project_id: str = None, id: str):
+async def delete(*, project_id: ProjectIdOption = None, id: str):
     project_id = await resolve_project_id(project_id=project_id)
 
     client = await get_client()
@@ -59,7 +60,7 @@ async def delete(*, project_id: str = None, id: str):
 
 
 @app.async_command("show")
-async def show(*, project_id: str = None, api_key_id: str):
+async def show(*, project_id: ProjectIdOption = None, api_key_id: str):
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
@@ -75,7 +76,7 @@ async def show(*, project_id: str = None, api_key_id: str):
 @app.async_command("activate")
 async def activate(
     api_key_id: str | None = typer.Argument(None),
-    project_id: str = None,
+    project_id: ProjectIdOption = None,
     interactive: bool = typer.Option(
         False,
         "-i",

@@ -2,6 +2,7 @@ import typer
 from rich import print
 import json
 from typing import Annotated, List, Optional
+from meshagent.cli.common_options import ProjectIdOption
 
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client, print_json_table, resolve_project_id
@@ -16,7 +17,7 @@ app = async_typer.AsyncTyper()
 @app.async_command("create")
 async def webhook_create(
     *,
-    project_id: str = None,
+    project_id: ProjectIdOption = None,
     name: Annotated[str, typer.Option(help="Friendly name for the webhook")],
     url: Annotated[str, typer.Option(help="Target URL that will receive POSTs")],
     event: Annotated[
@@ -63,7 +64,7 @@ async def webhook_create(
 @app.async_command("list")
 async def webhook_list(
     *,
-    project_id: str = None,
+    project_id: ProjectIdOption = None,
 ):
     """List all webhooks for the project."""
     client = await get_client()
@@ -86,7 +87,7 @@ async def webhook_list(
 @app.async_command("delete")
 async def webhook_delete(
     *,
-    project_id: str = None,
+    project_id: ProjectIdOption = None,
     webhook_id: Annotated[str, typer.Argument(help="ID of the webhook to delete")],
 ):
     """Delete a project webhook."""
