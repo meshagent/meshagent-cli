@@ -1,7 +1,7 @@
 import typer
 from rich import print
-from typing import Annotated, Optional
-from meshagent.cli.common_options import ProjectIdOption
+from typing import Annotated
+from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption
 from meshagent.api import ParticipantToken
 from meshagent.cli.helper import resolve_project_id, resolve_api_key
 from meshagent.cli import async_typer
@@ -17,7 +17,7 @@ async def generate(
     project_id: ProjectIdOption = None,
     token_path: Annotated[str, typer.Option()],
     room: Annotated[str, typer.Option()],
-    api_key_id: Annotated[Optional[str], typer.Option()] = None,
+    api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option()],
     role: str = "agent",
 ):

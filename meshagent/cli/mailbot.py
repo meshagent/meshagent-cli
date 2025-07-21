@@ -4,7 +4,7 @@ import typer
 from meshagent.api import ParticipantToken
 from rich import print
 from typing import Annotated, Optional
-from meshagent.cli.common_options import ProjectIdOption
+from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption
 from meshagent.tools import Toolkit
 from meshagent.api import RoomClient, WebSocketClientProtocol
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
@@ -121,7 +121,7 @@ async def make_call(
     *,
     project_id: ProjectIdOption = None,
     room: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: Annotated[Optional[str], typer.Option()] = None,
+    api_key_id: ApiKeyIdOption = None,
     role: str = "agent",
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     token_path: Annotated[Optional[str], typer.Option()] = None,

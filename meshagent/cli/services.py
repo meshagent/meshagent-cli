@@ -4,7 +4,7 @@
 import typer
 from rich import print
 from typing import Annotated, List, Optional, Dict
-from meshagent.cli.common_options import ProjectIdOption
+from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption
 from aiohttp import ClientResponseError
 from datetime import datetime, timezone
 from pydantic import PositiveInt
@@ -335,7 +335,7 @@ async def service_update(
 async def service_test(
     *,
     project_id: ProjectIdOption = None,
-    api_key_id: Annotated[Optional[str], typer.Option()] = None,
+    api_key_id: ApiKeyIdOption = None,
     file: Annotated[
         Optional[str],
         typer.Option("--file", "-f", help="File path to a service definition"),

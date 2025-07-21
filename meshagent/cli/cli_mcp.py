@@ -5,7 +5,7 @@ from mcp.client.stdio import stdio_client, StdioServerParameters
 import typer
 from rich import print
 from typing import Annotated, Optional, List
-from meshagent.cli.common_options import ProjectIdOption
+from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption
 
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.api import RoomClient, WebSocketClientProtocol, RoomException
@@ -37,7 +37,7 @@ async def sse(
     project_id: ProjectIdOption = None,
     room: Annotated[str, typer.Option()],
     token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: Annotated[Optional[str], typer.Option()] = None,
+    api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "tool",
     url: Annotated[str, typer.Option()],
@@ -105,7 +105,7 @@ async def stdio(
     project_id: ProjectIdOption = None,
     room: Annotated[str, typer.Option()],
     token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: Annotated[Optional[str], typer.Option()] = None,
+    api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "tool",
     command: Annotated[str, typer.Option()],

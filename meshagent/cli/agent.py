@@ -1,7 +1,7 @@
 import typer
 from rich import print
 from typing import Annotated, Optional
-from meshagent.cli.common_options import ProjectIdOption
+from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption
 import json
 import asyncio
 
@@ -24,7 +24,7 @@ async def ask(
     *,
     project_id: ProjectIdOption = None,
     room: Annotated[str, typer.Option()],
-    api_key_id: Annotated[Optional[str], typer.Option()] = None,
+    api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "user",
     agent: Annotated[str, typer.Option()],
@@ -97,7 +97,7 @@ async def invoke_tool(
     project_id: ProjectIdOption = None,
     room: Annotated[str, typer.Option()],
     token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: Annotated[Optional[str], typer.Option()] = None,
+    api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "user",
     toolkit: Annotated[str, typer.Option(..., help="Toolkit name")],
@@ -193,7 +193,7 @@ async def list_agents_command(
     project_id: ProjectIdOption = None,
     room: Annotated[str, typer.Option()],
     token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: Annotated[Optional[str], typer.Option()] = None,
+    api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "user",
 ):
@@ -247,7 +247,7 @@ async def list_toolkits_command(
     project_id: ProjectIdOption = None,
     room: Annotated[str, typer.Option()],
     token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: Annotated[Optional[str], typer.Option()] = None,
+    api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "user",
     participant_id: Annotated[

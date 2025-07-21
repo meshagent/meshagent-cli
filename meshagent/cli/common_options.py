@@ -10,3 +10,11 @@ ProjectIdOption = Annotated[
     Optional[str],
     typer.Option("--project-id", help="MeshAgent project id. If empty, the activated project will be used."),
 ]
+
+ApiKeyIdOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--api-key-id",
+        help="MeshAgent API key id. If empty, the activated api key will be used.",
+    ),
+]

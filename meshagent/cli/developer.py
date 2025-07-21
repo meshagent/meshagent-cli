@@ -2,8 +2,8 @@ import asyncio
 import json
 import typer
 from rich import print
-from typing import Annotated, Optional
-from meshagent.cli.common_options import ProjectIdOption
+from typing import Annotated
+from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client, resolve_project_id, resolve_api_key
 from meshagent.api import RoomClient, ParticipantToken, WebSocketClientProtocol
@@ -17,7 +17,7 @@ async def watch_logs(
     *,
     project_id: ProjectIdOption = None,
     room: Annotated[str, typer.Option(..., help="Name of the room to connect to")],
-    api_key_id: Annotated[Optional[str], typer.Option(..., help="API Key ID")] = None,
+    api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: Annotated[
         str, typer.Option(..., help="Role to assign to this participant")

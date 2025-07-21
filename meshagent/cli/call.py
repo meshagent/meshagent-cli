@@ -1,7 +1,7 @@
 import typer
 from rich import print
 from typing import Annotated, Optional
-from meshagent.cli.common_options import ProjectIdOption
+from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption
 import json
 import aiohttp
 from meshagent.api import (
@@ -72,7 +72,7 @@ async def make_call(
     *,
     project_id: ProjectIdOption = None,
     room: Annotated[str, typer.Option()],
-    api_key_id: Annotated[Optional[str], typer.Option()] = None,
+    api_key_id: ApiKeyIdOption = None,
     role: str = "agent",
     local: Optional[bool] = None,
     agent_name: Annotated[

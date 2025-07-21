@@ -1,7 +1,7 @@
 import typer
 from rich import print
 from typing import Annotated, Optional
-from meshagent.cli.common_options import ProjectIdOption
+from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption
 import json as _json
 
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
@@ -23,7 +23,7 @@ async def send(
     *,
     project_id: ProjectIdOption = None,
     room: Annotated[str, typer.Option()],
-    api_key_id: Annotated[Optional[str], typer.Option()] = None,
+    api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "user",
     queue: Annotated[str, typer.Option(..., help="Queue name")],
@@ -77,7 +77,7 @@ async def receive(
     *,
     project_id: ProjectIdOption = None,
     room: Annotated[str, typer.Option()],
-    api_key_id: Annotated[Optional[str], typer.Option()] = None,
+    api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "user",
     queue: Annotated[str, typer.Option(..., help="Queue name")],

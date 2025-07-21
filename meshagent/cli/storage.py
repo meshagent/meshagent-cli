@@ -1,6 +1,6 @@
 import typer
 from typing import Annotated, Optional
-from meshagent.cli.common_options import ProjectIdOption
+from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption
 from rich import print
 import os
 import fnmatch
@@ -60,7 +60,7 @@ async def storage_exists_command(
     project_id: ProjectIdOption = None,
     room: Annotated[str, typer.Option(..., help="Room name")],
     token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: Annotated[Optional[str], typer.Option(..., help="API Key ID")] = None,
+    api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "user",
     path: str,
@@ -108,9 +108,7 @@ async def storage_cp_command(
         str, typer.Option(..., help="Room name (if copying to/from remote)")
     ],
     token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: Annotated[
-        str, typer.Option(..., help="API Key ID (if copying to/from remote)")
-    ] = None,
+    api_key_id: ApiKeyIdOption = None,
     name: Annotated[
         str, typer.Option(..., help="Participant name (if copying to/from remote)")
     ] = "cli",
@@ -357,9 +355,7 @@ async def storage_show_command(
         Optional[str], typer.Option(..., help="Room name (if remote)")
     ] = None,
     token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: Annotated[
-        Optional[str], typer.Option(..., help="API Key ID (if remote)")
-    ] = None,
+    api_key_id: ApiKeyIdOption = None,
     name: Annotated[
         Optional[str], typer.Option(..., help="Participant name (if remote)")
     ] = None,
@@ -448,9 +444,7 @@ async def storage_rm_command(
         Optional[str], typer.Option(..., help="Room name (if remote)")
     ] = None,
     token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: Annotated[
-        Optional[str], typer.Option(..., help="API Key ID (if remote)")
-    ] = None,
+    api_key_id: ApiKeyIdOption = None,
     name: Annotated[
         Optional[str], typer.Option(..., help="Participant name (if remote)")
     ] = None,
@@ -667,9 +661,7 @@ async def storage_ls_command(
         Optional[str], typer.Option(..., help="Room name (if remote)")
     ] = None,
     token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: Annotated[
-        Optional[str], typer.Option(..., help="API Key ID (if remote)")
-    ] = None,
+    api_key_id: ApiKeyIdOption = None,
     name: Annotated[
         Optional[str], typer.Option(..., help="Participant name (if remote)")
     ] = None,
