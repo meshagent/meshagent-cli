@@ -26,6 +26,7 @@ from meshagent.api import (
     websocket_room_url,
     meshagent_base_url,
 )
+from meshagent.cli.common_options import OutputFormatOption
 
 from pydantic_yaml import parse_yaml_raw_as
 
@@ -486,9 +487,7 @@ async def service_show(
 async def service_list(
     *,
     project_id: str = None,
-    o: Annotated[
-        str, typer.Option("--output", "-o", help="output format [json|table]")
-    ] = "table",
+    o: OutputFormatOption = "table",
 ):
     """List all services for the project."""
     client = await get_client()

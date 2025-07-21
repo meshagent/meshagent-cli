@@ -3,8 +3,14 @@ import json
 from rich import print
 from typing import Annotated
 from meshagent.cli import async_typer
-from meshagent.cli.helper import get_client, print_json_table
-from meshagent.cli.helper import resolve_project_id, set_active_api_key
+from meshagent.cli.helper import (
+    get_client,
+    print_json_table,
+    resolve_project_id,
+    set_active_api_key,
+)
+from meshagent.cli.common_options import OutputFormatOption
+
 
 app = async_typer.AsyncTyper(help="Manage or activate api-keys for your project")
 
@@ -13,14 +19,7 @@ app = async_typer.AsyncTyper(help="Manage or activate api-keys for your project"
 async def list(
     *,
     project_id: str = None,
-    o: Annotated[
-        str,
-        typer.Option(
-            "--output",
-            "-o",
-            help="output format [json|table]",
-        ),
-    ] = "table",
+    o: OutputFormatOption = "table",
 ):
     project_id = await resolve_project_id(project_id=project_id)
     client = await get_client()

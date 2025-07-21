@@ -8,6 +8,7 @@ from meshagent.cli.helper import (
     set_active_project,
     get_active_project,
 )
+from meshagent.cli.common_options import OutputFormatOption
 
 app = async_typer.AsyncTyper(help="Manage or activate your meshagent projects")
 
@@ -24,14 +25,7 @@ async def create(name: str):
 
 @app.async_command("list")
 async def list(
-    o: Annotated[
-        str,
-        typer.Option(
-            "--output",
-            "-o",
-            help="output format [json|table]",
-        ),
-    ] = "table",
+    o: OutputFormatOption = "table",
 ):
     client = await get_client()
     projects = await client.list_projects()
