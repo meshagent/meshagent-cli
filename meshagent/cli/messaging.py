@@ -1,7 +1,11 @@
 import typer
 from rich import print
 from typing import Annotated, Optional
-from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption
+from meshagent.cli.common_options import (
+    ProjectIdOption,
+    ApiKeyIdOption,
+    RoomOption,
+)
 import json
 
 from meshagent.api import RoomClient, WebSocketClientProtocol
@@ -22,7 +26,7 @@ app = async_typer.AsyncTyper()
 async def messaging_list_participants_command(
     *,
     project_id: ProjectIdOption = None,
-    room: Annotated[Optional[str], typer.Option()] = None,
+    room: RoomOption = None,
     token_path: Annotated[Optional[str], typer.Option()] = None,
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option()] = "cli",
@@ -76,7 +80,7 @@ async def messaging_list_participants_command(
 async def messaging_send_command(
     *,
     project_id: ProjectIdOption = None,
-    room: Annotated[Optional[str], typer.Option()] = None,
+    room: RoomOption = None,
     token_path: Annotated[Optional[str], typer.Option()] = None,
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option()] = "cli",
@@ -147,7 +151,7 @@ async def messaging_send_command(
 async def messaging_broadcast_command(
     *,
     project_id: ProjectIdOption = None,
-    room: Annotated[Optional[str], typer.Option()] = None,
+    room: RoomOption = None,
     token_path: Annotated[Optional[str], typer.Option()] = None,
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option()] = "cli",

@@ -4,7 +4,11 @@ import typer
 from meshagent.api import ParticipantToken
 from rich import print
 from typing import Annotated, Optional
-from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption
+from meshagent.cli.common_options import (
+    ProjectIdOption,
+    ApiKeyIdOption,
+    RoomOption,
+)
 from meshagent.tools import Toolkit
 from meshagent.api import RoomClient, WebSocketClientProtocol
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
@@ -120,7 +124,7 @@ def build_mailbot(
 async def make_call(
     *,
     project_id: ProjectIdOption = None,
-    room: Annotated[Optional[str], typer.Option()] = None,
+    room: RoomOption = None,
     api_key_id: ApiKeyIdOption = None,
     role: str = "agent",
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
@@ -206,7 +210,7 @@ async def make_call(
 @app.async_command("service")
 async def service(
     *,
-    room: Annotated[Optional[str], typer.Option()] = None,
+    room: RoomOption = None,
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[str] = None,

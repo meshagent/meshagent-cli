@@ -1,7 +1,7 @@
 import typer
 from rich import print
 from typing import Annotated, Optional
-from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption
+from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption, RoomOption
 from meshagent.api import RoomClient, WebSocketClientProtocol, RoomException
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.cli import async_typer
@@ -37,7 +37,7 @@ app = async_typer.AsyncTyper(help="Join a voicebot to a room")
 async def make_call(
     *,
     project_id: ProjectIdOption = None,
-    room: Annotated[Optional[str], typer.Option()] = None,
+    room: RoomOption = None,
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "agent",

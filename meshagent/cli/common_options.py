@@ -8,7 +8,10 @@ OutputFormatOption = Annotated[
 
 ProjectIdOption = Annotated[
     Optional[str],
-    typer.Option("--project-id", help="A MeshAgent project id. If empty, the activated project will be used."),
+    typer.Option(
+        "--project-id",
+        help="A MeshAgent project id. If empty, the activated project will be used.",
+    ),
 ]
 
 ApiKeyIdOption = Annotated[
@@ -16,5 +19,13 @@ ApiKeyIdOption = Annotated[
     typer.Option(
         "--api-key-id",
         help="A MeshAgent project API key id. If empty, the activated api key will be used.",
+    ),
+]
+
+RoomOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--room",
+        help="Room name. If empty, the MESHAGENT_ROOM environment variable will be used.",
     ),
 ]
