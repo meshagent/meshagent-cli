@@ -1,7 +1,7 @@
 import typer
 from rich import print
 from typing import Annotated, Optional
-from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption
+from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption, RoomOption
 import json as _json
 
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
@@ -11,7 +11,7 @@ from meshagent.api import (
     WebSocketClientProtocol,
     RoomException,
 )
-from meshagent.cli.helper import resolve_project_id, resolve_api_key
+from meshagent.cli.helper import resolve_project_id, resolve_api_key, resolve_room
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client
 
@@ -22,7 +22,7 @@ app = async_typer.AsyncTyper(help="Use queues in a room")
 async def send(
     *,
     project_id: ProjectIdOption = None,
-    room: Annotated[str, typer.Option()],
+    room: RoomOption,
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "user",
@@ -37,6 +37,7 @@ async def send(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         api_key_id = await resolve_api_key(project_id, api_key_id)
+        room = resolve_room(room)
 
         key = (
             await account_client.decrypt_project_api_key(
@@ -76,7 +77,7 @@ async def send(
 async def receive(
     *,
     project_id: ProjectIdOption = None,
-    room: Annotated[str, typer.Option()],
+    room: RoomOption,
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "user",
@@ -86,6 +87,7 @@ async def receive(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         api_key_id = await resolve_api_key(project_id, api_key_id)
+        room = resolve_room(room)
 
         key = (
             await account_client.decrypt_project_api_key(

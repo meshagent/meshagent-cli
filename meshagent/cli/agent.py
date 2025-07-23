@@ -1,7 +1,7 @@
 import typer
 from rich import print
 from typing import Annotated, Optional
-from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption
+from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption, RoomOption
 import json
 import asyncio
 
@@ -14,7 +14,7 @@ from meshagent.api import (
 )
 from meshagent.cli.helper import resolve_project_id, resolve_api_key
 from meshagent.cli import async_typer
-from meshagent.cli.helper import get_client, resolve_token_jwt
+from meshagent.cli.helper import get_client, resolve_token_jwt, resolve_room
 
 app = async_typer.AsyncTyper()
 
@@ -23,7 +23,7 @@ app = async_typer.AsyncTyper()
 async def ask(
     *,
     project_id: ProjectIdOption = None,
-    room: Annotated[str, typer.Option()],
+    room: RoomOption,
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "user",
@@ -40,6 +40,7 @@ async def ask(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         api_key_id = await resolve_api_key(project_id, api_key_id)
+        room = resolve_room(room)
 
         key = (
             await account_client.decrypt_project_api_key(
@@ -95,7 +96,7 @@ async def ask(
 async def invoke_tool(
     *,
     project_id: ProjectIdOption = None,
-    room: Annotated[str, typer.Option()],
+    room: RoomOption,
     token_path: Annotated[Optional[str], typer.Option()] = None,
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
@@ -130,6 +131,7 @@ async def invoke_tool(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         api_key_id = await resolve_api_key(project_id, api_key_id)
+        room = resolve_room(room)
 
         jwt = await resolve_token_jwt(
             project_id=project_id,
@@ -191,7 +193,7 @@ async def invoke_tool(
 async def list_agents_command(
     *,
     project_id: ProjectIdOption = None,
-    room: Annotated[str, typer.Option()],
+    room: RoomOption,
     token_path: Annotated[Optional[str], typer.Option()] = None,
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
@@ -204,6 +206,8 @@ async def list_agents_command(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         api_key_id = await resolve_api_key(project_id, api_key_id)
+        room = resolve_room(room)
+
         jwt = await resolve_token_jwt(
             project_id=project_id,
             api_key_id=api_key_id,
@@ -245,7 +249,7 @@ async def list_agents_command(
 async def list_toolkits_command(
     *,
     project_id: ProjectIdOption = None,
-    room: Annotated[str, typer.Option()],
+    room: RoomOption,
     token_path: Annotated[Optional[str], typer.Option()] = None,
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
@@ -261,6 +265,7 @@ async def list_toolkits_command(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         api_key_id = await resolve_api_key(project_id, api_key_id)
+        room = resolve_room(room)
         jwt = await resolve_token_jwt(
             project_id=project_id,
             api_key_id=api_key_id,

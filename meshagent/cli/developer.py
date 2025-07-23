@@ -3,9 +3,14 @@ import json
 import typer
 from rich import print
 from typing import Annotated
-from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption
+from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption, RoomOption
 from meshagent.cli import async_typer
-from meshagent.cli.helper import get_client, resolve_project_id, resolve_api_key
+from meshagent.cli.helper import (
+    get_client,
+    resolve_project_id,
+    resolve_api_key,
+    resolve_room,
+)
 from meshagent.api import RoomClient, ParticipantToken, WebSocketClientProtocol
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 
@@ -16,7 +21,7 @@ app = async_typer.AsyncTyper()
 async def watch_logs(
     *,
     project_id: ProjectIdOption = None,
-    room: Annotated[str, typer.Option(..., help="Name of the room to connect to")],
+    room: RoomOption,
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: Annotated[
@@ -32,6 +37,7 @@ async def watch_logs(
         # Resolve project ID (or fetch from the active project if not provided)
         project_id = await resolve_project_id(project_id=project_id)
         api_key_id = await resolve_api_key(project_id, api_key_id)
+        room = resolve_room(room)
 
         # Decrypt the project's API key
         key = (

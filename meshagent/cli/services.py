@@ -19,6 +19,7 @@ from meshagent.cli.helper import (
     print_json_table,
     resolve_project_id,
     resolve_api_key,
+    resolve_room,
 )
 from meshagent.api import (
     ParticipantToken,
@@ -390,8 +391,8 @@ async def service_test(
     my_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
-
         api_key_id = await resolve_api_key(project_id, api_key_id)
+        room = resolve_room(room)
 
         if file is not None:
             with open(file, "rb") as f:

@@ -162,7 +162,6 @@ async def make_call(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         api_key_id = await resolve_api_key(project_id, api_key_id)
-
         room = resolve_room(room)
         jwt = await resolve_token_jwt(
             project_id=project_id,

@@ -39,7 +39,9 @@ async def list(
 
 
 @app.async_command("create")
-async def create(*, project_id: ProjectIdOption = None, name: str, description: str = ""):
+async def create(
+    *, project_id: ProjectIdOption = None, name: str, description: str = ""
+):
     project_id = await resolve_project_id(project_id=project_id)
 
     client = await get_client()
