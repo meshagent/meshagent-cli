@@ -677,6 +677,8 @@ async def storage_ls_command(
     client = None
     storage_client: Optional[StorageClient] = None
 
+    room = resolve_room(room)
+
     # --- Set up remote connection if needed ---
     async def ensure_storage_client():
         nonlocal account_client, client, storage_client, project_id, api_key_id
@@ -689,7 +691,6 @@ async def storage_ls_command(
         account_client = await get_client()
         project_id = await resolve_project_id(project_id=project_id)
         api_key_id = await resolve_api_key(project_id, api_key_id)
-        room = resolve_room(room)
         jwt = await resolve_token_jwt(
             project_id=project_id,
             api_key_id=api_key_id,
