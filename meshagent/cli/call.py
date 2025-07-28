@@ -1,6 +1,7 @@
 import typer
 from rich import print
 from typing import Annotated, Optional
+from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption, RoomOption
 import json
 import aiohttp
 from meshagent.api import (
@@ -13,7 +14,7 @@ from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.api.services import send_webhook
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client, resolve_project_id
-from meshagent.cli.helper import resolve_api_key
+from meshagent.cli.helper import resolve_api_key, resolve_room
 from urllib.parse import urlparse
 from pathlib import PurePath
 import socket
@@ -69,9 +70,9 @@ def is_local_url(url: str) -> bool:
 @app.async_command("tool")
 async def make_call(
     *,
-    project_id: str = None,
-    room: Annotated[str, typer.Option()],
-    api_key_id: Annotated[Optional[str], typer.Option()] = None,
+    project_id: ProjectIdOption = None,
+    room: RoomOption,
+    api_key_id: ApiKeyIdOption = None,
     role: str = "agent",
     local: Optional[bool] = None,
     agent_name: Annotated[
@@ -109,6 +110,7 @@ async def make_call(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         api_key_id = await resolve_api_key(project_id, api_key_id)
+        room = resolve_room(room)
 
         key = (
             await account_client.decrypt_project_api_key(

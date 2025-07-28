@@ -4,7 +4,6 @@ from rich.table import Table
 from pydantic import BaseModel
 from pathlib import Path
 from typing import Optional
-
 from meshagent.cli import auth_async
 from meshagent.cli import async_typer
 from meshagent.api.helpers import meshagent_base_url

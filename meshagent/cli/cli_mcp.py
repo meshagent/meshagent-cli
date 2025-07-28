@@ -5,6 +5,7 @@ from mcp.client.stdio import stdio_client, StdioServerParameters
 import typer
 from rich import print
 from typing import Annotated, Optional, List
+from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption, RoomOption
 
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.api import RoomClient, WebSocketClientProtocol, RoomException
@@ -33,10 +34,10 @@ app = async_typer.AsyncTyper()
 @app.async_command("sse")
 async def sse(
     *,
-    project_id: str = None,
-    room: Annotated[str, typer.Option()],
+    project_id: ProjectIdOption = None,
+    room: RoomOption,
     token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: Annotated[Optional[str], typer.Option()] = None,
+    api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "tool",
     url: Annotated[str, typer.Option()],
@@ -49,7 +50,6 @@ async def sse(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         api_key_id = await resolve_api_key(project_id, api_key_id)
-
         room = resolve_room(room)
         jwt = await resolve_token_jwt(
             project_id=project_id,
@@ -101,10 +101,10 @@ async def sse(
 @app.async_command("stdio")
 async def stdio(
     *,
-    project_id: str = None,
-    room: Annotated[str, typer.Option()],
+    project_id: ProjectIdOption = None,
+    room: RoomOption,
     token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: Annotated[Optional[str], typer.Option()] = None,
+    api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "tool",
     command: Annotated[str, typer.Option()],
@@ -118,7 +118,6 @@ async def stdio(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         api_key_id = await resolve_api_key(project_id, api_key_id)
-
         room = resolve_room(room)
         jwt = await resolve_token_jwt(
             project_id=project_id,

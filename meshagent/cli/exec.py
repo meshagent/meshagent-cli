@@ -5,6 +5,7 @@ from meshagent.api.websocket_protocol import WebSocketClientProtocol
 from meshagent.api import RoomClient
 from meshagent.api.helpers import websocket_room_url
 from typing import Annotated, Optional
+from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption, RoomOption
 import asyncio
 import typer
 from rich import print
@@ -23,6 +24,7 @@ from meshagent.cli.helper import (
     get_client,
     resolve_project_id,
     resolve_api_key,
+    resolve_room,
 )
 
 
@@ -30,11 +32,11 @@ def register(app: typer.Typer):
     @app.async_command("exec")
     async def exec_command(
         *,
-        project_id: str = None,
-        room: Annotated[str, typer.Option()],
+        project_id: ProjectIdOption = None,
+        room: RoomOption,
         name: Annotated[Optional[str], typer.Option()] = None,
         image: Annotated[Optional[str], typer.Option()] = None,
-        api_key_id: Annotated[Optional[str], typer.Option()] = None,
+        api_key_id: ApiKeyIdOption = None,
         command: Annotated[list[str], typer.Argument(...)] = None,
         tty: bool = False,
         room_storage_path: str = "/data",
@@ -46,6 +48,7 @@ def register(app: typer.Typer):
             api_key_id = await resolve_api_key(
                 project_id=project_id, api_key_id=api_key_id
             )
+            room = resolve_room(room)
 
             token = ParticipantToken(
                 name="tty", project_id=project_id, api_key_id=api_key_id

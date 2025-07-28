@@ -4,6 +4,7 @@
 import typer
 from rich import print
 from typing import Annotated, List, Optional, Dict
+from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption
 from aiohttp import ClientResponseError
 from datetime import datetime, timezone
 from pydantic import PositiveInt
@@ -18,6 +19,7 @@ from meshagent.cli.helper import (
     print_json_table,
     resolve_project_id,
     resolve_api_key,
+    resolve_room,
 )
 from meshagent.api import (
     ParticipantToken,
@@ -26,6 +28,7 @@ from meshagent.api import (
     websocket_room_url,
     meshagent_base_url,
 )
+from meshagent.cli.common_options import OutputFormatOption
 
 from pydantic_yaml import parse_yaml_raw_as
 
@@ -92,7 +95,7 @@ def _parse_port_spec(spec: str) -> PortSpec:
 @app.async_command("create")
 async def service_create(
     *,
-    project_id: str = None,
+    project_id: ProjectIdOption = None,
     file: Annotated[
         Optional[str],
         typer.Option("--file", "-f", help="File path to a service definition"),
@@ -200,7 +203,7 @@ async def service_create(
 @app.async_command("update")
 async def service_update(
     *,
-    project_id: str = None,
+    project_id: ProjectIdOption = None,
     id: Optional[str] = None,
     file: Annotated[
         Optional[str],
@@ -332,8 +335,8 @@ async def service_update(
 @app.async_command("test")
 async def service_test(
     *,
-    project_id: str = None,
-    api_key_id: Annotated[Optional[str], typer.Option()] = None,
+    project_id: ProjectIdOption = None,
+    api_key_id: ApiKeyIdOption = None,
     file: Annotated[
         Optional[str],
         typer.Option("--file", "-f", help="File path to a service definition"),
@@ -388,8 +391,8 @@ async def service_test(
     my_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
-
         api_key_id = await resolve_api_key(project_id, api_key_id)
+        room = resolve_room(room)
 
         if file is not None:
             with open(file, "rb") as f:
@@ -467,7 +470,7 @@ async def service_test(
 @app.async_command("show")
 async def service_show(
     *,
-    project_id: str = None,
+    project_id: ProjectIdOption = None,
     service_id: Annotated[str, typer.Argument(help="ID of the service to delete")],
 ):
     """Show a services for the project."""
@@ -485,10 +488,8 @@ async def service_show(
 @app.async_command("list")
 async def service_list(
     *,
-    project_id: str = None,
-    o: Annotated[
-        str, typer.Option("--output", "-o", help="output format [json|table]")
-    ] = "table",
+    project_id: ProjectIdOption = None,
+    o: OutputFormatOption = "table",
 ):
     """List all services for the project."""
     client = await get_client()
@@ -511,7 +512,7 @@ async def service_list(
 @app.async_command("delete")
 async def service_delete(
     *,
-    project_id: Optional[str] = None,
+    project_id: ProjectIdOption = None,
     service_id: Annotated[str, typer.Argument(help="ID of the service to delete")],
 ):
     """Delete a service."""
