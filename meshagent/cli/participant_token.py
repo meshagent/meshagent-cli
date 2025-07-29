@@ -15,7 +15,7 @@ app = async_typer.AsyncTyper()
 async def generate(
     *,
     project_id: ProjectIdOption = None,
-    token_path: Annotated[str, typer.Option()],
+    token_path: Annotated[str, typer.Option()] = None,
     room: RoomOption,
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option()],
