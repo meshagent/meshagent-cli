@@ -14,6 +14,8 @@ import signal
 import shutil
 import json
 from urllib.parse import quote
+import threading
+import time
 
 from meshagent.api import ParticipantToken
 
@@ -27,14 +29,29 @@ from meshagent.cli.helper import (
 )
 
 if os.name == "nt":
-    # Windows fallback — if you never really need termios/tty on Windows,
-    # you can stub out the functions you call, e.g.:
-    def set_raw(fd):
-        # no-op on Windows
-        return None
+    import msvcrt
+    import ctypes
+    from ctypes import wintypes
 
-    def restore(fd, settings):
-        # no-op on Windows
+    _kernel32 = ctypes.windll.kernel32
+    _ENABLE_ECHO_INPUT = 0x0004
+    _ENABLE_LINE_INPUT = 0x0002
+
+    def set_raw(f):
+        """Disable line and echo mode for the given file handle."""
+        handle = msvcrt.get_osfhandle(f.fileno())
+        original_mode = wintypes.DWORD()
+        if not _kernel32.GetConsoleMode(handle, ctypes.byref(original_mode)):
+            return None
+        new_mode = original_mode.value & ~(_ENABLE_ECHO_INPUT | _ENABLE_LINE_INPUT)
+        _kernel32.SetConsoleMode(handle, new_mode)
+        return handle, original_mode.value
+
+    def restore(f, state):
+        if state is None:
+            return None
+        handle, mode = state
+        _kernel32.SetConsoleMode(handle, mode)
         return None
 
 else:
@@ -48,6 +65,19 @@ else:
 
     def restore(fd, old_settings):
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
+class _StdWriter:
+    """Simple asyncio-friendly wrapper for standard streams on Windows."""
+
+    def __init__(self, file):
+        self._file = file
+
+    def write(self, data: bytes) -> None:
+        self._file.buffer.write(data)
+
+    async def drain(self) -> None:
+        await asyncio.get_running_loop().run_in_executor(None, self._file.flush)
 
 
 def register(app: typer.Typer):
@@ -134,25 +164,29 @@ def register(app: typer.Typer):
                             send_queue = asyncio.Queue[bytes]()
 
                             loop = asyncio.get_running_loop()
-                            (
-                                stdout_transport,
-                                stdout_protocol,
-                            ) = await loop.connect_write_pipe(
-                                asyncio.streams.FlowControlMixin, sys.stdout
-                            )
-                            stdout_writer = asyncio.StreamWriter(
-                                stdout_transport, stdout_protocol, None, loop
-                            )
+                            if os.name == "nt":
+                                stdout_writer = _StdWriter(sys.stdout)
+                                stderr_writer = _StdWriter(sys.stderr)
+                            else:
+                                (
+                                    stdout_transport,
+                                    stdout_protocol,
+                                ) = await loop.connect_write_pipe(
+                                    asyncio.streams.FlowControlMixin, sys.stdout
+                                )
+                                stdout_writer = asyncio.StreamWriter(
+                                    stdout_transport, stdout_protocol, None, loop
+                                )
 
-                            (
-                                stderr_transport,
-                                stderr_protocol,
-                            ) = await loop.connect_write_pipe(
-                                asyncio.streams.FlowControlMixin, sys.stderr
-                            )
-                            stderr_writer = asyncio.StreamWriter(
-                                stderr_transport, stderr_protocol, None, loop
-                            )
+                                (
+                                    stderr_transport,
+                                    stderr_protocol,
+                                ) = await loop.connect_write_pipe(
+                                    asyncio.streams.FlowControlMixin, sys.stderr
+                                )
+                                stderr_writer = asyncio.StreamWriter(
+                                    stderr_transport, stderr_protocol, None, loop
+                                )
 
                             async def recv_from_websocket():
                                 while True:
@@ -227,46 +261,97 @@ def register(app: typer.Typer):
 
                                 task.add_done_callback(on_done)
 
-                            loop.add_signal_handler(signal.SIGWINCH, on_sigwinch)
+                            if hasattr(signal, "SIGWINCH"):
+                                loop.add_signal_handler(signal.SIGWINCH, on_sigwinch)
 
                             async def read_stdin():
                                 loop = asyncio.get_running_loop()
 
-                                reader = asyncio.StreamReader()
-                                protocol = asyncio.StreamReaderProtocol(reader)
-                                await loop.connect_read_pipe(
-                                    lambda: protocol, sys.stdin
-                                )
+                                if os.name == "nt":
+                                    queue: asyncio.Queue[bytes] = asyncio.Queue()
+                                    stop_event = threading.Event()
 
-                                while True:
-                                    # Read one character at a time from stdin without blocking the event loop.
-                                    done, pending = await asyncio.wait(
-                                        [
-                                            asyncio.create_task(reader.read(1)),
-                                            websocket_recv_task,
-                                        ],
-                                        return_when=asyncio.FIRST_COMPLETED,
+                                    if sys.stdin.isatty():
+
+                                        def reader() -> None:
+                                            try:
+                                                while not stop_event.is_set():
+                                                    if msvcrt.kbhit():
+                                                        data = msvcrt.getch()
+                                                        loop.call_soon_threadsafe(
+                                                            queue.put_nowait, data
+                                                        )
+                                                    else:
+                                                        time.sleep(0.01)
+                                            finally:
+                                                loop.call_soon_threadsafe(
+                                                    queue.put_nowait, b""
+                                                )
+                                    else:
+
+                                        def reader() -> None:
+                                            try:
+                                                while not stop_event.is_set():
+                                                    data = sys.stdin.buffer.read(1)
+                                                    loop.call_soon_threadsafe(
+                                                        queue.put_nowait, data
+                                                    )
+                                                    if not data:
+                                                        break
+                                            finally:
+                                                loop.call_soon_threadsafe(
+                                                    queue.put_nowait, b""
+                                                )
+
+                                    thread = threading.Thread(target=reader)
+                                    thread.start()
+
+                                    async def reader_task() -> bytes:
+                                        return await queue.get()
+                                else:
+                                    reader = asyncio.StreamReader()
+                                    protocol = asyncio.StreamReaderProtocol(reader)
+                                    await loop.connect_read_pipe(
+                                        lambda: protocol, sys.stdin
                                     )
 
-                                    first = done.pop()
-                                    if first == websocket_recv_task:
-                                        break
+                                    async def reader_task():
+                                        return await reader.read(1)
 
-                                    data = first.result()
-                                    if not data:
-                                        break
+                                try:
+                                    while True:
+                                        # Read one character at a time from stdin without blocking the event loop.
+                                        done, pending = await asyncio.wait(
+                                            [
+                                                asyncio.create_task(reader_task()),
+                                                websocket_recv_task,
+                                            ],
+                                            return_when=asyncio.FIRST_COMPLETED,
+                                        )
 
-                                    if websocket.closed:
-                                        break
-
-                                    if tty:
-                                        if data == b"\x04":
+                                        first = done.pop()
+                                        if first == websocket_recv_task:
                                             break
 
-                                    if data:
-                                        send_queue.put_nowait(b"\0" + data)
-                                    else:
-                                        break
+                                        data = first.result()
+                                        if not data:
+                                            break
+
+                                        if websocket.closed:
+                                            break
+
+                                        if tty:
+                                            if data == b"\x04":
+                                                break
+
+                                        if data:
+                                            send_queue.put_nowait(b"\0" + data)
+                                        else:
+                                            break
+                                finally:
+                                    if os.name == "nt":
+                                        stop_event.set()
+                                        thread.join()
 
                                 send_queue.put_nowait(b"\0")
 
