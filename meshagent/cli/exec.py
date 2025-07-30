@@ -1,6 +1,5 @@
 import sys
-import tty as _tty
-import termios
+import os
 from meshagent.api.websocket_protocol import WebSocketClientProtocol
 from meshagent.api import RoomClient
 from meshagent.api.helpers import websocket_room_url
@@ -26,6 +25,29 @@ from meshagent.cli.helper import (
     resolve_api_key,
     resolve_room,
 )
+
+if os.name == "nt":
+    # Windows fallback — if you never really need termios/tty on Windows,
+    # you can stub out the functions you call, e.g.:
+    def set_raw(fd):
+        # no-op on Windows
+        return None
+
+    def restore(fd, settings):
+        # no-op on Windows
+        return None
+
+else:
+    import termios
+    import tty as _tty
+
+    def set_raw(fd):
+        old = termios.tcgetattr(fd)
+        _tty.setraw(fd)
+        return old
+
+    def restore(fd, old_settings):
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 
 def register(app: typer.Typer):
@@ -98,8 +120,7 @@ def register(app: typer.Typer):
 
             if tty:
                 # Save current terminal settings so we can restore them later.
-                old_tty_settings = termios.tcgetattr(sys.stdin)
-                _tty.setraw(sys.stdin)
+                old_tty_settings = set_raw(sys.stdin)
 
             async with RoomClient(
                 protocol=WebSocketClientProtocol(
@@ -283,9 +304,7 @@ def register(app: typer.Typer):
                 finally:
                     if not sys.stdin.closed and tty:
                         # Restore original terminal settings even if the coroutine is cancelled.
-                        termios.tcsetattr(
-                            sys.stdin, termios.TCSADRAIN, old_tty_settings
-                        )
+                        restore(sys.stdin, old_tty_settings)
 
         except Exception as e:
             print(f"[red]{e}[/red]")
