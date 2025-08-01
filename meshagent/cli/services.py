@@ -11,7 +11,11 @@ from pydantic import PositiveInt
 import pydantic
 from typing import Literal
 from meshagent.cli import async_typer
-from meshagent.api.specs.service import ServiceSpec
+from meshagent.api.specs.service import (
+    ServiceSpec,
+    ServiceStorageMounts,
+    RoomStorageMount,
+)
 
 
 from meshagent.cli.helper import (
@@ -169,6 +173,15 @@ async def service_create(
                 for ps in port_specs
             } or None
 
+            storage = ServiceStorageMounts(room=[])
+
+            if room_storage_path is not None:
+                storage.room.append(
+                    RoomStorageMount(
+                        path=room_storage_path, subpath=room_storage_subpath
+                    )
+                )
+
             service_obj = Service(
                 created_at=datetime.now(timezone.utc).isoformat(),
                 name=name,
@@ -176,12 +189,11 @@ async def service_create(
                 image=image,
                 command=command,
                 pull_secret=pull_secret,
-                room_storage_path=room_storage_path,
-                room_storage_subpath=room_storage_subpath,
                 environment=_kv_to_dict(env),
                 environment_secrets=env_secret or None,
                 runtime_secrets=_kv_to_dict(runtime_secret),
                 ports=ports_dict,
+                storage=storage,
             )
 
         try:
@@ -282,6 +294,15 @@ async def service_update(
                 for ps in port_specs
             } or None
 
+            storage = ServiceStorageMounts(room=[])
+
+            if room_storage_path is not None:
+                storage.room.append(
+                    RoomStorageMount(
+                        path=room_storage_path, subpath=room_storage_subpath
+                    )
+                )
+
             service_obj = Service(
                 created_at=datetime.now(timezone.utc).isoformat(),
                 name=name,
@@ -289,12 +310,11 @@ async def service_update(
                 image=image,
                 command=command,
                 pull_secret=pull_secret,
-                room_storage_path=room_storage_path,
-                room_storage_subpath=room_storage_subpath,
                 environment=_kv_to_dict(env),
                 environment_secrets=env_secret or None,
                 runtime_secrets=_kv_to_dict(runtime_secret),
                 ports=ports_dict,
+                storage=storage,
             )
 
         try:
