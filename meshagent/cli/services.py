@@ -13,7 +13,6 @@ from typing import Literal
 from meshagent.cli import async_typer
 from meshagent.api.specs.service import (
     ServiceSpec,
-    ServiceStorageMountsSpec,
     ServiceStorageMounts,
     RoomStorageMount,
 )
