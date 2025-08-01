@@ -11,7 +11,12 @@ from pydantic import PositiveInt
 import pydantic
 from typing import Literal
 from meshagent.cli import async_typer
-from meshagent.api.specs.service import ServiceSpec, ServiceStorageMountsSpec, ServiceStorageMounts, RoomStorageMount
+from meshagent.api.specs.service import (
+    ServiceSpec,
+    ServiceStorageMountsSpec,
+    ServiceStorageMounts,
+    RoomStorageMount,
+)
 
 
 from meshagent.cli.helper import (
@@ -169,12 +174,14 @@ async def service_create(
                 for ps in port_specs
             } or None
 
-            storage = ServiceStorageMounts(
-                room=[]
-            )
+            storage = ServiceStorageMounts(room=[])
 
             if room_storage_path is not None:
-                storage.room.append(RoomStorageMount(path=room_storage_path, subpath=room_storage_subpath))
+                storage.room.append(
+                    RoomStorageMount(
+                        path=room_storage_path, subpath=room_storage_subpath
+                    )
+                )
 
             service_obj = Service(
                 created_at=datetime.now(timezone.utc).isoformat(),
@@ -187,7 +194,7 @@ async def service_create(
                 environment_secrets=env_secret or None,
                 runtime_secrets=_kv_to_dict(runtime_secret),
                 ports=ports_dict,
-                storage=storage
+                storage=storage,
             )
 
         try:
@@ -288,13 +295,14 @@ async def service_update(
                 for ps in port_specs
             } or None
 
-
-            storage = ServiceStorageMounts(
-                room=[]
-            )
+            storage = ServiceStorageMounts(room=[])
 
             if room_storage_path is not None:
-                storage.room.append(RoomStorageMount(path=room_storage_path, subpath=room_storage_subpath))
+                storage.room.append(
+                    RoomStorageMount(
+                        path=room_storage_path, subpath=room_storage_subpath
+                    )
+                )
 
             service_obj = Service(
                 created_at=datetime.now(timezone.utc).isoformat(),
