@@ -16,7 +16,8 @@ import shutil
 import json
 from urllib.parse import quote
 
-from meshagent.api import ParticipantToken
+
+from meshagent.api import ParticipantToken, ApiScope
 
 import logging
 
@@ -53,6 +54,7 @@ def register(app: typer.Typer):
             token = ParticipantToken(
                 name="tty", project_id=project_id, api_key_id=api_key_id
             )
+            token.add_api_grant(ApiScope.agent_default())
 
             key = (
                 await client.decrypt_project_api_key(

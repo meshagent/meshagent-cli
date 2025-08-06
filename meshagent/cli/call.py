@@ -9,6 +9,7 @@ from meshagent.api import (
     ParticipantToken,
     WebSocketClientProtocol,
     ParticipantGrant,
+    ApiScope,
 )
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.api.services import send_webhook
@@ -121,6 +122,7 @@ async def make_call(
         token = ParticipantToken(
             name=participant_name, project_id=project_id, api_key_id=api_key_id
         )
+        token.add_api_grant(ApiScope.agent_default())
         token.add_role_grant(role=role)
         token.add_room_grant(room)
         token.grants.append(ParticipantGrant(name="tunnel_ports", scope="9000"))

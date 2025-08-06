@@ -11,6 +11,7 @@ from meshagent.api import (
     ParticipantToken,
     WebSocketClientProtocol,
     RoomException,
+    ApiScope
 )
 from meshagent.cli.helper import resolve_project_id, resolve_api_key
 from meshagent.cli import async_typer
@@ -51,7 +52,7 @@ async def ask(
         token = ParticipantToken(
             name=name, project_id=project_id, api_key_id=api_key_id
         )
-
+        token.add_api_grant(ApiScope.agent_default())
         token.add_role_grant(role=role)
         token.add_room_grant(room)
 

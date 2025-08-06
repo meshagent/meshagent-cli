@@ -2,7 +2,7 @@ import typer
 from rich import print
 from typing import Annotated
 from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption, RoomOption
-from meshagent.api import ParticipantToken
+from meshagent.api import ParticipantToken, ApiScope
 from meshagent.cli.helper import resolve_project_id, resolve_api_key, resolve_room
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client
@@ -37,6 +37,7 @@ async def generate(
         token.add_role_grant(role=role)
 
         token.add_room_grant(room)
+        token.add_api_grant(ApiScope.agent_default())
 
         if token_path is None:
             print(token.to_jwt(token=key))
