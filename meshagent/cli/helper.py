@@ -8,7 +8,7 @@ from meshagent.cli import auth_async
 from meshagent.cli import async_typer
 from meshagent.api.helpers import meshagent_base_url
 from meshagent.api.accounts_client import AccountsClient
-from meshagent.api.participant_token import ParticipantToken
+from meshagent.api.participant_token import ParticipantToken, ApiScope
 
 import os
 
@@ -168,6 +168,8 @@ async def resolve_token_jwt(
             token = ParticipantToken(
                 name=name, project_id=project_id, api_key_id=api_key_id
             )
+
+            token.add_api_grant(ApiScope.agent_default())
 
             token.add_role_grant(role=role)
             token.add_room_grant(room)

@@ -11,7 +11,12 @@ from meshagent.cli.helper import (
     resolve_api_key,
     resolve_room,
 )
-from meshagent.api import RoomClient, ParticipantToken, WebSocketClientProtocol
+from meshagent.api import (
+    RoomClient,
+    ParticipantToken,
+    WebSocketClientProtocol,
+    ApiScope,
+)
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 
 app = async_typer.AsyncTyper()
@@ -50,6 +55,7 @@ async def watch_logs(
         token = ParticipantToken(
             name=name, project_id=project_id, api_key_id=api_key_id
         )
+        token.add_api_grant(ApiScope.agent_default())
         token.add_role_grant(role=role)
         token.add_room_grant(room)
 

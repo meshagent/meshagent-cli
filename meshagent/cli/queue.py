@@ -10,6 +10,7 @@ from meshagent.api import (
     ParticipantToken,
     WebSocketClientProtocol,
     RoomException,
+    ApiScope,
 )
 from meshagent.cli.helper import resolve_project_id, resolve_api_key, resolve_room
 from meshagent.cli import async_typer
@@ -48,9 +49,10 @@ async def send(
         token = ParticipantToken(
             name=name, project_id=project_id, api_key_id=api_key_id
         )
-
+        token.add_api_grant(ApiScope.agent_default())
         token.add_role_grant(role=role)
         token.add_room_grant(room)
+        token.add_api_grant(ApiScope.agent_default())
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
@@ -98,7 +100,7 @@ async def receive(
         token = ParticipantToken(
             name=name, project_id=project_id, api_key_id=api_key_id
         )
-
+        token.add_api_grant(ApiScope.agent_default())
         token.add_role_grant(role=role)
         token.add_room_grant(room)
 

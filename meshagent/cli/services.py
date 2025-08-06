@@ -31,6 +31,7 @@ from meshagent.api import (
     WebSocketClientProtocol,
     websocket_room_url,
     meshagent_base_url,
+    ApiScope,
 )
 from meshagent.cli.common_options import OutputFormatOption
 
@@ -450,6 +451,7 @@ async def service_test(
             token = ParticipantToken(
                 name=name, project_id=project_id, api_key_id=api_key_id
             )
+            token.add_api_grant(ApiScope.agent_default())
             token.add_role_grant("user")
             token.add_room_grant(room)
             token.extra_payload = {
