@@ -11,7 +11,12 @@ from meshagent.cli.helper import (
     resolve_api_key,
     resolve_room,
 )
-from meshagent.api import RoomClient, ParticipantToken, WebSocketClientProtocol, ApiScope
+from meshagent.api import (
+    RoomClient,
+    ParticipantToken,
+    WebSocketClientProtocol,
+    ApiScope,
+)
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 
 app = async_typer.AsyncTyper()

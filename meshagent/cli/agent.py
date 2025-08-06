@@ -11,7 +11,7 @@ from meshagent.api import (
     ParticipantToken,
     WebSocketClientProtocol,
     RoomException,
-    ApiScope
+    ApiScope,
 )
 from meshagent.cli.helper import resolve_project_id, resolve_api_key
 from meshagent.cli import async_typer
