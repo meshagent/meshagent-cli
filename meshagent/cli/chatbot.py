@@ -20,7 +20,12 @@ from meshagent.cli.helper import (
 from meshagent.agents.chat import ChatBot
 from meshagent.openai import OpenAIResponsesAdapter
 from meshagent.api.services import ServiceHost
-from meshagent.computers.agent import ComputerAgent
+
+try:
+    from meshagent.computers.agent import ComputerAgent
+except ImportError:
+    ComputerAgent = None
+
 from meshagent.agents.chat import (
     ChatBotThreadOpenAIImageGenerationTool,
     ChatBotThreadLocalShellTool,
@@ -65,19 +70,22 @@ def build_chatbot(
         except FileNotFoundError:
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
 
-    BaseClass = ChatBot
-    if computer_use:
-        BaseClass = ComputerAgent
-
-        llm_adapter = OpenAIResponsesAdapter(
-            model=model,
-            response_options={
-                "reasoning": {"generate_summary": "concise"},
-                "truncation": "auto",
-            },
-        )
-    else:
-        llm_adapter = OpenAIResponsesAdapter(model=model)
+        BaseClass = ChatBot
+        if computer_use:
+            if ComputerAgent is None:
+                raise RuntimeError(
+                    "Computer use is enabled, but meshagent.computers is not installed."
+                )
+            BaseClass = ComputerAgent
+            llm_adapter = OpenAIResponsesAdapter(
+                model=model,
+                response_options={
+                    "reasoning": {"generate_summary": "concise"},
+                    "truncation": "auto",
+                },
+            )
+        else:
+            llm_adapter = OpenAIResponsesAdapter(model=model)
 
     class CustomChatbot(BaseClass):
         def __init__(self):

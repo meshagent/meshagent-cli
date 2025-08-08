@@ -10,13 +10,6 @@ license = "Apache-2.0"
 keywords = []
 dependencies = [
   "typer~=0.15",
-  "pydantic-yaml~=1.4",
-  "meshagent-api~=0.5.7",
-  "meshagent-agents~=0.5.7",
-  "meshagent-computers~=0.5.7",
-  "meshagent-openai~=0.5.7",
-  "meshagent-tools~=0.5.7",
-  "meshagent-mcp~=0.5.7",
   "supabase~=2.15",
   "fastmcp~=2.8",
   "opentelemetry-distro~=0.54b1",
@@ -26,6 +19,24 @@ dependencies = [
 ]
 
 dynamic = ["version", "readme"]
+
+[project.optional-dependencies]
+
+all = [
+  "meshagent-agents[all]~=0.5.7",
+  "meshagent-api[all]~=0.5.7",
+  "meshagent-computers~=0.5.7",
+  "meshagent-openai~=0.5.7",
+  "meshagent-mcp~=0.5.7",
+  "meshagent-tools~=0.5.7"
+]
+
+mcp-service = [
+    "meshagent-agents[all]~=0.5.7",
+    "meshagent-api~=0.5.7",
+    "meshagent-mcp~=0.5.7",
+    "meshagent-tools~=0.5.7"
+]
 
 [project.scripts]            
 meshagent = "meshagent.cli.cli:app"
