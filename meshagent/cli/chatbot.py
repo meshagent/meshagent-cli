@@ -70,22 +70,22 @@ def build_chatbot(
         except FileNotFoundError:
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
 
-        BaseClass = ChatBot
-        if computer_use:
-            if ComputerAgent is None:
-                raise RuntimeError(
-                    "Computer use is enabled, but meshagent.computers is not installed."
-                )
-            BaseClass = ComputerAgent
-            llm_adapter = OpenAIResponsesAdapter(
-                model=model,
-                response_options={
-                    "reasoning": {"generate_summary": "concise"},
-                    "truncation": "auto",
-                },
+    BaseClass = ChatBot
+    if computer_use:
+        if ComputerAgent is None:
+            raise RuntimeError(
+                "Computer use is enabled, but meshagent.computers is not installed."
             )
-        else:
-            llm_adapter = OpenAIResponsesAdapter(model=model)
+        BaseClass = ComputerAgent
+        llm_adapter = OpenAIResponsesAdapter(
+            model=model,
+            response_options={
+                "reasoning": {"generate_summary": "concise"},
+                "truncation": "auto",
+            },
+        )
+    else:
+        llm_adapter = OpenAIResponsesAdapter(model=model)
 
     class CustomChatbot(BaseClass):
         def __init__(self):
