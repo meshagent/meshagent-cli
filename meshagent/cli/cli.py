@@ -22,6 +22,7 @@ from meshagent.cli import cli_mcp
 from meshagent.cli import chatbot
 from meshagent.cli import voicebot
 from meshagent.cli import mailbot
+from meshagent.cli import containers
 from meshagent.cli.exec import register as register_exec
 from meshagent.cli.version import __version__
 
@@ -62,6 +63,7 @@ app.add_typer(cli_mcp.app, name="mcp")
 app.add_typer(chatbot.app, name="chatbot")
 app.add_typer(voicebot.app, name="voicebot")
 app.add_typer(mailbot.app, name="mailbot")
+app.add_typer(containers.app, name="container")
 
 register_exec(app)
 
