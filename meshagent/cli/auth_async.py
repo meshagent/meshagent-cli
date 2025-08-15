@@ -9,7 +9,7 @@ from supabase._async.client import (
     create_client,
 )  # async flavour :contentReference[oaicite:1]{index=1}
 from supabase.lib.client_options import ClientOptions
-from gotrue import AsyncMemoryStorage
+from supabase_auth import AsyncMemoryStorage
 
 AUTH_URL = os.getenv("MESHAGENT_AUTH_URL", "https://infra.meshagent.com")
 AUTH_ANON_KEY = os.getenv(

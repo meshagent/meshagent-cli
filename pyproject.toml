@@ -22,7 +22,8 @@ dependencies = [
   "opentelemetry-distro~=0.54b1",
   "opentelemetry-exporter-otlp-proto-http~=1.33",
   "art~=6.5",
-  "pydantic-yaml~=1.5"
+  "pydantic-yaml~=1.5",
+  "supabase-auth~=2.12.3"
 ]
 
 dynamic = ["version", "readme"]
