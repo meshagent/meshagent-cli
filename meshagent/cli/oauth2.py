@@ -31,6 +31,7 @@ async def oauth2(
     scopes: Annotated[Optional[str], typer.Option()] = None,
     client_secret: Annotated[Optional[str], typer.Option()],
     redirect_uri: Annotated[Optional[str], typer.Option()],
+    pkce: Annotated[bool, typer.Option()] = True,
 ):
     """
     Run an OAuth2 request test between two participants in the same room.
@@ -64,9 +65,10 @@ async def oauth2(
                 token_endpoint=token_endpoint,
                 scopes=scopes.split(",") if scopes is not None else scopes,
                 from_participant_id=from_participant_id,
-                timeout=10,
+                timeout=300,
                 client_secret=client_secret,
                 redirect_uri=redirect_uri,
+                no_pkce=not pkce,
             )
 
             print(f"[bold cyan]Got access token:[/bold cyan] {token}")
