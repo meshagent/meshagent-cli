@@ -96,15 +96,15 @@ async def login():
     # 1️⃣  Build provider URL – async now
     res = await supa.auth.sign_in_with_oauth(
         {
-            "provider": "google",
-            "options": {"redirect_to": REDIRECT_URL},
+            "provider": os.getenv("MESHAGENT_AUTH_PROVIDER", "google"),
+            "options": {"redirect_to": REDIRECT_URL, "scopes": "email"},
         }
     )  # :contentReference[oaicite:3]{index=3}
     oauth_url = res.url
 
     # 2️⃣  Kick user to browser without blocking the loop
     await asyncio.to_thread(webbrowser.open, oauth_url)
-    print(f"Waiting for Google OAuth redirect on {oauth_url}…")
+    print(f"Waiting for auth redirect on {oauth_url}…")
 
     # 3️⃣  Await the auth code, then exchange for tokens
     auth_code = await _wait_for_code()
