@@ -1,9 +1,9 @@
 import typer
 from rich import print
 from typing import Annotated
-from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption, RoomOption
+from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption
 from meshagent.api import ParticipantToken, ApiScope
-from meshagent.cli.helper import resolve_project_id, resolve_api_key, resolve_room
+from meshagent.cli.helper import resolve_project_id, resolve_api_key
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client
 import pathlib
