@@ -20,6 +20,9 @@ from urllib.parse import urlparse
 from pathlib import PurePath
 import socket
 import ipaddress
+import pathlib
+from pydantic_yaml import parse_yaml_raw_as
+from meshagent.api.participant_token import ParticipantTokenSpec
 
 app = async_typer.AsyncTyper()
 
@@ -88,6 +91,14 @@ async def make_call(
     arguments: Annotated[
         str, typer.Option(..., help="JSON string with arguments for the call")
     ] = {},
+    permissions: Annotated[
+        Optional[str],
+        typer.Option(
+            "--permissions",
+            "-p",
+            help="File path to a token definition, if not specified default agent permissions will be used",
+        ),
+    ] = None,
 ):
     """
     Instruct an agent to 'call' a given URL with specific arguments.
@@ -119,13 +130,21 @@ async def make_call(
             )
         )["token"]
 
-        token = ParticipantToken(
-            name=participant_name, project_id=project_id, api_key_id=api_key_id
-        )
-        token.add_api_grant(ApiScope.agent_default())
-        token.add_role_grant(role=role)
-        token.add_room_grant(room)
-        token.grants.append(ParticipantGrant(name="tunnel_ports", scope="9000"))
+        if permissions is not None:
+            with open(str(pathlib.Path(permissions).expanduser().resolve()), "rb") as f:
+                spec = parse_yaml_raw_as(ParticipantTokenSpec, f.read())
+
+                token = ParticipantToken(
+                    name=spec.identity, project_id=project_id, api_key_id=api_key_id
+                )
+        else:
+            token = ParticipantToken(
+                name=participant_name, project_id=project_id, api_key_id=api_key_id
+            )
+            token.add_api_grant(ApiScope.agent_default())
+            token.add_role_grant(role=role)
+            token.add_room_grant(room)
+            token.grants.append(ParticipantGrant(name="tunnel_ports", scope="9000"))
 
         if local is None:
             local = is_local_url(url)

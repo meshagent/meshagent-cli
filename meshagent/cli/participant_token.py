@@ -2,26 +2,17 @@ import typer
 from rich import print
 from typing import Annotated
 from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption
-from meshagent.api import ParticipantToken, ApiScope
+from meshagent.api import ParticipantToken
 from meshagent.cli.helper import resolve_project_id, resolve_api_key
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client
 import pathlib
-from pydantic import BaseModel
-from typing import Literal, Optional
+from typing import Optional
+from meshagent.api.participant_token import ParticipantTokenSpec
 
 from pydantic_yaml import parse_yaml_raw_as
 
 app = async_typer.AsyncTyper()
-
-
-class ParticipantTokenSpec(BaseModel):
-    version: Literal["v1"]
-    kind: Literal["ParticipantToken"]
-    room: Optional[str] = None
-    identity: str
-    role: Optional[Literal["user", "agent", "tool"]] = None
-    api: ApiScope
 
 
 @app.async_command("generate")
