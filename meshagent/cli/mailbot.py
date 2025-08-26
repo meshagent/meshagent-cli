@@ -141,7 +141,7 @@ async def make_call(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
-    ] = "gpt-4o",
+    ] = "gpt-5",
     local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
@@ -224,7 +224,7 @@ async def service(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
-    ] = "gpt-4o",
+    ] = "gpt-5",
     local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
