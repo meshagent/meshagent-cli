@@ -8,6 +8,7 @@ from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption
 from aiohttp import ClientResponseError
 from datetime import datetime, timezone
 from pydantic import PositiveInt
+import pathlib
 import pydantic
 from typing import Literal
 from meshagent.cli import async_typer
@@ -152,8 +153,9 @@ async def service_create(
         project_id = await resolve_project_id(project_id)
 
         if file is not None:
-            with open(file, "rb") as f:
+            with open(str(pathlib.Path(file).expanduser().resolve()), "rb") as f:
                 spec = parse_yaml_raw_as(ServiceSpec, f.read())
+
                 if spec.id is not None:
                     print("[red]id cannot be set when creating a service[/red]")
                     raise typer.Exit(code=1)
@@ -275,7 +277,7 @@ async def service_update(
         project_id = await resolve_project_id(project_id)
 
         if file is not None:
-            with open(file, "rb") as f:
+            with open(str(pathlib.Path(file).expanduser().resolve()), "rb") as f:
                 spec = parse_yaml_raw_as(ServiceSpec, f.read())
                 if spec.id is not None:
                     id = spec.id
