@@ -17,6 +17,8 @@ from meshagent.api.specs.service import (
     ServiceStorageMounts,
     RoomStorageMount,
 )
+import asyncio
+import shlex
 
 
 from meshagent.cli.helper import (
@@ -40,6 +42,8 @@ from pydantic_yaml import parse_yaml_raw_as
 
 # Pydantic basemodels
 from meshagent.api.accounts_client import Service, Port, Services
+
+from meshagent.cli.call import _make_call
 
 app = async_typer.AsyncTyper(help="Manage services for your project")
 
@@ -417,6 +421,10 @@ async def service_test(
         api_key_id = await resolve_api_key(project_id, api_key_id)
         room = resolve_room(room)
 
+        if room is None:
+            print("[bold red]Room was not set...[/bold red]")
+            typer.Exit(1)
+
         if file is not None:
             with open(file, "rb") as f:
                 service_obj = parse_yaml_raw_as(ServiceSpec, f.read()).to_service()
@@ -491,6 +499,110 @@ async def service_test(
         await my_client.close()
 
 
+@app.async_command("run")
+async def service_run(
+    *,
+    project_id: ProjectIdOption = None,
+    api_key_id: ApiKeyIdOption = None,
+    command: str,
+    room: Annotated[
+        Optional[str],
+        typer.Option(
+            help="A room name to test the service in (must not be currently running)"
+        ),
+    ] = None,
+):
+    """Create a service attached to the project."""
+    my_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id)
+        api_key_id = await resolve_api_key(project_id, api_key_id)
+        room = resolve_room(room)
+
+        if room is None:
+            print("[bold red]Room was not set...[/bold red]")
+            typer.Exit(1)
+
+        try:
+            token = ParticipantToken(
+                name="cli", project_id=project_id, api_key_id=api_key_id
+            )
+            token.add_api_grant(ApiScope.agent_default())
+            token.add_role_grant("user")
+            token.add_room_grant(room)
+
+            print("[bold green]Connecting to room...[/bold green]")
+
+            status, output = await _run_process(
+                cmd=shlex.split("python3 " + command + " --describe")
+            )
+
+            if status != 0:
+                print(f"[red]{output}[/red]")
+                exit(1)
+
+            run_tasks = []
+
+            async def run_service():
+                code, output = await _run_process(
+                    cmd=shlex.split("python3 " + command), log=True
+                )
+
+                if code != 0:
+                    print(f"[red]{output}[/red]")
+
+            run_tasks.append(asyncio.create_task(run_service()))
+
+            spec = ServiceSpec.model_validate_json(output)
+
+            for port in spec.ports:
+                print(f"[bold green]Connecting port {port.num}...[/bold green]")
+
+                for endpoint in port.endpoints:
+                    print(
+                        f"[bold green]Connecting endpoint {endpoint.path} as {endpoint.identity}...[/bold green]"
+                    )
+
+                    token = ParticipantToken(
+                        name=endpoint.identity,
+                        project_id=project_id,
+                        api_key_id=api_key_id,
+                    )
+                    if endpoint.role is not None:
+                        token.add_role_grant(role=endpoint.role)
+
+                    token.add_room_grant(room)
+                    if endpoint.api is not None:
+                        token.add_api_grant(endpoint.api)
+                    else:
+                        token.add_api_grant(ApiScope.agent_default())
+
+                    run_tasks.append(
+                        asyncio.create_task(
+                            _make_call(
+                                room=room,
+                                api_key_id=api_key_id,
+                                project_id=project_id,
+                                participant_name=endpoint.identity,
+                                url=f"http://localhost:{port.num}{endpoint.path}",
+                                arguments={},
+                                token=endpoint.api,
+                            )
+                        )
+                    )
+
+            await asyncio.gather(*run_tasks)
+
+        except ClientResponseError as exc:
+            if exc.status == 409:
+                print(f"[red]Room already in use: {room}[/red]")
+                raise typer.Exit(code=1)
+            raise
+
+    finally:
+        await my_client.close()
+
+
 @app.async_command("show")
 async def service_show(
     *,
@@ -547,3 +659,47 @@ async def service_delete(
         print(f"[green]Service {service_id} deleted.[/]")
     finally:
         await client.close()
+
+
+async def _run_process(
+    cmd: list[str], cwd=None, env=None, timeout: float | None = None, log: bool = False
+) -> tuple[int, str]:
+    """
+    Spawn a process, stream its output line-by-line as it runs, and return its exit code.
+    stdout+stderr are merged to preserve ordering.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=cwd,
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+
+    output = []
+    try:
+        # Stream lines as they appear
+        assert proc.stdout is not None
+        while True:
+            line = (
+                await asyncio.wait_for(proc.stdout.readline(), timeout=timeout)
+                if timeout
+                else await proc.stdout.readline()
+            )
+            if not line:
+                break
+            ln = line.decode(errors="replace").rstrip()
+            if log:
+                print(ln)
+            output.append(ln)  # or send to a logger/queue
+
+        return await proc.wait(), "".join(output)
+    except asyncio.TimeoutError:
+        # Graceful shutdown on timeout
+        proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), 5)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+        raise

@@ -100,10 +100,69 @@ async def make_call(
         ),
     ] = None,
 ):
+    if permissions is not None:
+        with open(str(pathlib.Path(permissions).expanduser().resolve()), "rb") as f:
+            spec = parse_yaml_raw_as(ParticipantTokenSpec, f.read())
+
+            token = ParticipantToken(
+                name=spec.identity, project_id=project_id, api_key_id=api_key_id
+            )
+            token.add_role_grant(role=role)
+            token.add_room_grant(room)
+            token.add_api_grant(spec.api)
+
+    else:
+        token = None
+
+    _make_call(
+        project_id=project_id,
+        room=room,
+        api_key_id=api_key_id,
+        role=role,
+        local=local,
+        agent_name=agent_name,
+        name=name,
+        participant_name=participant_name,
+        url=url,
+        arguments=arguments,
+        token=token,
+    )
+
+
+async def _make_call(
+    *,
+    project_id: ProjectIdOption = None,
+    room: RoomOption,
+    api_key_id: ApiKeyIdOption = None,
+    role: str = "agent",
+    local: Optional[bool] = None,
+    agent_name: Annotated[
+        Optional[str], typer.Option(..., help="deprecated and unused", hidden=True)
+    ] = None,
+    name: Annotated[str, typer.Option(..., help="deprecated", hidden=True)] = None,
+    participant_name: Annotated[
+        Optional[str],
+        typer.Option(..., help="the participant name to be used by the callee"),
+    ] = None,
+    url: Annotated[str, typer.Option(..., help="URL the agent should call")],
+    arguments: Annotated[
+        str, typer.Option(..., help="JSON string with arguments for the call")
+    ] = {},
+    token: Optional[ParticipantToken] = None,
+):
     """
     Instruct an agent to 'call' a given URL with specific arguments.
 
     """
+
+    if token is None:
+        token = ParticipantToken(
+            name=participant_name, project_id=project_id, api_key_id=api_key_id
+        )
+        token.add_api_grant(ApiScope.agent_default())
+        token.add_role_grant(role=role)
+        token.add_room_grant(room)
+        token.grants.append(ParticipantGrant(name="tunnel_ports", scope="9000"))
 
     if name is not None:
         print("[yellow]name is deprecated and should no longer be passed[/yellow]")
@@ -129,22 +188,6 @@ async def make_call(
                 project_id=project_id, id=api_key_id
             )
         )["token"]
-
-        if permissions is not None:
-            with open(str(pathlib.Path(permissions).expanduser().resolve()), "rb") as f:
-                spec = parse_yaml_raw_as(ParticipantTokenSpec, f.read())
-
-                token = ParticipantToken(
-                    name=spec.identity, project_id=project_id, api_key_id=api_key_id
-                )
-        else:
-            token = ParticipantToken(
-                name=participant_name, project_id=project_id, api_key_id=api_key_id
-            )
-            token.add_api_grant(ApiScope.agent_default())
-            token.add_role_grant(role=role)
-            token.add_room_grant(room)
-            token.grants.append(ParticipantGrant(name="tunnel_ports", scope="9000"))
 
         if local is None:
             local = is_local_url(url)
