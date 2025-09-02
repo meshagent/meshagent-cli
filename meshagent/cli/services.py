@@ -422,8 +422,8 @@ async def service_test(
         room = resolve_room(room)
 
         if room is None:
-            print("[bold red]Room was not set...[/bold red]")
-            typer.Exit(1)
+            print("[bold red]Room was not set[/bold red]")
+            raise typer.Exit(1)
 
         if file is not None:
             with open(file, "rb") as f:
@@ -520,8 +520,8 @@ async def service_run(
         room = resolve_room(room)
 
         if room is None:
-            print("[bold red]Room was not set...[/bold red]")
-            typer.Exit(1)
+            print("[bold red]Room was not set[/bold red]")
+            raise typer.Exit(1)
 
         try:
             token = ParticipantToken(
@@ -690,7 +690,7 @@ async def _run_process(
                 break
             ln = line.decode(errors="replace").rstrip()
             if log:
-                print(ln)
+                print(ln, flush=True)
             output.append(ln)  # or send to a logger/queue
 
         return await proc.wait(), "".join(output)
