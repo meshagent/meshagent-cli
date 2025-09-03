@@ -599,6 +599,10 @@ async def service_run(
                 raise typer.Exit(code=1)
             raise
 
+        except Exception as e:
+            print(f"[red]{e}[/red]")
+            raise typer.Exit(code=1)
+
     finally:
         await my_client.close()
 
