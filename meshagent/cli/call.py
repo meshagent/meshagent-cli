@@ -114,7 +114,7 @@ async def make_call(
     else:
         token = None
 
-    _make_call(
+    await _make_call(
         project_id=project_id,
         room=room,
         api_key_id=api_key_id,
@@ -154,16 +154,6 @@ async def _make_call(
     Instruct an agent to 'call' a given URL with specific arguments.
 
     """
-
-    if token is None:
-        token = ParticipantToken(
-            name=participant_name, project_id=project_id, api_key_id=api_key_id
-        )
-        token.add_api_grant(ApiScope.agent_default())
-        token.add_role_grant(role=role)
-        token.add_room_grant(room)
-        token.grants.append(ParticipantGrant(name="tunnel_ports", scope="9000"))
-
     if name is not None:
         print("[yellow]name is deprecated and should no longer be passed[/yellow]")
 
@@ -182,6 +172,15 @@ async def _make_call(
         project_id = await resolve_project_id(project_id=project_id)
         api_key_id = await resolve_api_key(project_id, api_key_id)
         room = resolve_room(room)
+
+        if token is None:
+            token = ParticipantToken(
+                name=participant_name, project_id=project_id, api_key_id=api_key_id
+            )
+            token.add_api_grant(ApiScope.agent_default())
+            token.add_role_grant(role=role)
+            token.add_room_grant(room)
+            token.grants.append(ParticipantGrant(name="tunnel_ports", scope="9000"))
 
         key = (
             await account_client.decrypt_project_api_key(
