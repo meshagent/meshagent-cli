@@ -9,6 +9,7 @@ from meshagent.cli.helper import (
     print_json_table,
     resolve_project_id,
     set_active_api_key,
+    get_active_api_key,
 )
 from meshagent.cli.common_options import OutputFormatOption
 
@@ -25,6 +26,11 @@ async def list(
     project_id = await resolve_project_id(project_id=project_id)
     client = await get_client()
     keys = (await client.list_project_api_keys(project_id=project_id))["keys"]
+    active_api_key = await get_active_api_key(project_id=project_id)
+    for key in keys:
+        if key["id"] == active_api_key:
+            key["name"] = "*" + key["name"]
+
     if len(keys) > 0:
         if o == "json":
             sanitized_keys = [

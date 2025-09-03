@@ -50,7 +50,7 @@ async def set_active_project(project_id: str | None):
     _save_settings(settings)
 
 
-async def get_active_api_key(project_id: str):
+async def get_active_api_key(project_id: str) -> str:
     settings = _load_settings()
     if settings is None:
         return None

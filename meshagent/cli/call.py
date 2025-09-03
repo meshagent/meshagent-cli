@@ -114,7 +114,7 @@ async def make_call(
     else:
         token = None
 
-    _make_call(
+    await _make_call(
         project_id=project_id,
         room=room,
         api_key_id=api_key_id,
