@@ -20,7 +20,11 @@ from meshagent.api.specs.service import (
 import asyncio
 import shlex
 
-import os, signal, atexit, ctypes, sys
+import os
+import signal
+import atexit
+import ctypes
+import sys
 
 
 from meshagent.cli.helper import (
