@@ -20,6 +20,8 @@ from meshagent.api.specs.service import (
 import asyncio
 import shlex
 
+import os, signal, atexit, ctypes, sys
+
 
 from meshagent.cli.helper import (
     get_client,
@@ -505,6 +507,16 @@ async def service_run(
     project_id: ProjectIdOption = None,
     api_key_id: ApiKeyIdOption = None,
     command: str,
+    port: Annotated[
+        int,
+        typer.Option(
+            "--port",
+            "-p",
+            help=(
+                "a port number to run the agent on (will set MESHAGENT_PORT environment variable when launching the service)"
+            ),
+        ),
+    ] = None,
     room: Annotated[
         Optional[str],
         typer.Option(
@@ -512,7 +524,17 @@ async def service_run(
         ),
     ] = None,
 ):
-    """Create a service attached to the project."""
+    if port is None:
+        import socket
+
+        def find_free_port():
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("", 0))  # Bind to a free port provided by the host.
+                s.listen(1)
+                return s.getsockname()[1]
+
+        port = find_free_port()
+
     my_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
@@ -533,27 +555,48 @@ async def service_run(
 
             print("[bold green]Connecting to room...[/bold green]")
 
-            status, output = await _run_process(
-                cmd=shlex.split("python3 " + command + " --describe")
-            )
-
-            if status != 0:
-                print(f"[red]{output}[/red]")
-                exit(1)
-
             run_tasks = []
 
-            async def run_service():
+            async def run_service(port: int):
                 code, output = await _run_process(
-                    cmd=shlex.split("python3 " + command), log=True
+                    cmd=shlex.split("python3 " + command),
+                    log=True,
+                    env={**os.environ, "MESHAGENT_PORT": str(port)},
                 )
 
                 if code != 0:
                     print(f"[red]{output}[/red]")
 
-            run_tasks.append(asyncio.create_task(run_service()))
+            run_tasks.append(asyncio.create_task(run_service(port)))
 
-            spec = ServiceSpec.model_validate_json(output)
+            async def get_spec(port: int, attempt=0) -> ServiceSpec:
+                import aiohttp
+
+                max_attempts = 10
+
+                url = f"http://localhost:{port}/.well-known/meshagent-service.json"
+
+                async with aiohttp.ClientSession() as session:
+                    try:
+                        res = await session.get(url=url)
+                        res.raise_for_status()
+
+                        spec_json = await res.json()
+
+                        return ServiceSpec.model_validate(spec_json)
+
+                    except Exception:
+                        if attempt < max_attempts:
+                            backoff = 0.1 * pow(2, attempt)
+                            await asyncio.sleep(backoff)
+                            return await get_spec(port, attempt + 1)
+                        else:
+                            print("[red]unable to read service spec[/red]")
+                            raise typer.Exit(-1)
+
+            spec = await get_spec(port)
+
+            sys.stdout.write("\n")
 
             for port in spec.ports:
                 print(f"[bold green]Connecting port {port.num}...[/bold green]")
@@ -611,7 +654,7 @@ async def service_run(
 async def service_show(
     *,
     project_id: ProjectIdOption = None,
-    service_id: Annotated[str, typer.Argument(help="ID of the service to delete")],
+    service_id: Annotated[str, typer.Argument(help="ID of the service to show")],
 ):
     """Show a services for the project."""
     client = await get_client()
@@ -678,7 +721,10 @@ async def _run_process(
         env=env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        preexec_fn=_preexec_fn,
     )
+
+    _spawned.append(proc)
 
     output = []
     try:
@@ -707,3 +753,37 @@ async def _run_process(
             proc.kill()
             await proc.wait()
         raise
+
+
+# Linux-only: send SIGTERM to child if parent dies
+_PRCTL_AVAILABLE = sys.platform.startswith("linux")
+if _PRCTL_AVAILABLE:
+    libc = ctypes.CDLL("libc.so.6", use_errno=True)
+    PR_SET_PDEATHSIG = 1
+
+
+def _preexec_fn():
+    # Make child the leader of a new session/process group
+    os.setsid()
+    # On Linux, ensure child gets SIGTERM if parent dies unexpectedly
+    if _PRCTL_AVAILABLE:
+        if libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM) != 0:
+            err = ctypes.get_errno()
+            raise OSError(err, "prctl(PR_SET_PDEATHSIG) failed")
+
+
+_spawned = []
+
+
+def _cleanup():
+    # Kill each child's process group (created by setsid)
+    for p in _spawned:
+        try:
+            os.killpg(p.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except Exception:
+            pass
+
+
+atexit.register(_cleanup)
