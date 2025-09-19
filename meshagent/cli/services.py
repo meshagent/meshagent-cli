@@ -12,6 +12,7 @@ import pathlib
 import pydantic
 from typing import Literal
 from meshagent.cli import async_typer
+from meshagent.api.services import well_known_service_path
 from meshagent.api.specs.service import (
     ServiceSpec,
     ServiceStorageMounts,
@@ -578,7 +579,7 @@ async def service_run(
 
                 max_attempts = 10
 
-                url = f"http://localhost:{port}/.well-known/meshagent-service.json"
+                url = f"http://localhost:{port}{well_known_service_path}"
 
                 async with aiohttp.ClientSession() as session:
                     try:
