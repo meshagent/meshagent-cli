@@ -263,8 +263,8 @@ async def session():
     if not tokens:
         return None, None
 
-    # Refresh if expired or within 60s of expiry
-    if not tokens.get("expires_at") or tokens["expires_at"] <= _now() + 60:
+    # Refresh if expired or within 5 min of expiry
+    if not tokens.get("expires_at") or tokens["expires_at"] <= _now() + 5 * 60:
         try:
             tokens = await _refresh_tokens(tokens)
             _save(tokens)
