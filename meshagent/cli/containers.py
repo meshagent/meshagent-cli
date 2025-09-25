@@ -103,6 +103,7 @@ def _parse_creds(items: List[str]) -> List[DockerSecret]:
             )
     return creds
 
+
 class DockerIgnore:
     def __init__(self, dockerignore_path: str):
         """
@@ -142,7 +143,7 @@ async def _make_targz_from_dir(path: Path) -> bytes:
         if docker_ignore is not None:
             if docker_ignore.matches(ti.path):
                 return None
-    
+
         base = os.path.basename(ti.name)
         if base.startswith("._"):
             return None
@@ -164,6 +165,7 @@ async def _make_targz_from_dir(path: Path) -> bytes:
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         tar.add(path, arcname=".", filter=_tarfilter_strip_macos)
     return buf.getvalue()
+
 
 async def _drain_stream_plain(stream, *, show_progress: bool = True):
     async def _logs():
@@ -752,7 +754,6 @@ async def build_context(
     has_manifest = await aiofiles.ospath.exists(manifest_path)
     manifest = None
     if has_manifest:
-
         async with aiofiles.open(manifest_path, "r") as file:
             raw_manifest = await file.read()
             manifest = yaml.load(raw_manifest, Loader=Loader)
@@ -765,7 +766,6 @@ async def build_context(
         project_id=project_id, room=room, api_key_id=api_key_id, name=name, role=role
     )
     try:
-
         source = BuildSource(context=BuildSourceContext(encoding="gzip"))
         stream = client.containers.build(
             tag=tag,
