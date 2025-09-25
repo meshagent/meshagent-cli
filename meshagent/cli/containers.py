@@ -401,7 +401,7 @@ async def _with_client(
 async def list_containers(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
+    room: RoomOption,
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(...)] = "cli",
     role: Annotated[str, typer.Option(...)] = "user",
@@ -435,7 +435,7 @@ async def list_containers(
 async def stop_container(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
+    room: RoomOption,
     api_key_id: ApiKeyIdOption = None,
     id: Annotated[str, typer.Option(..., help="Container ID")],
     name: Annotated[str, typer.Option(...)] = "cli",
@@ -456,7 +456,7 @@ async def stop_container(
 async def container_logs(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
+    room: RoomOption,
     api_key_id: ApiKeyIdOption = None,
     id: Annotated[str, typer.Option(..., help="Container ID")],
     follow: Annotated[bool, typer.Option("--follow/--no-follow")] = False,
@@ -483,7 +483,7 @@ async def container_logs(
 async def run_container(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
+    room: RoomOption,
     api_key_id: ApiKeyIdOption = None,
     image: Annotated[str, typer.Option(..., help="Image to run")],
     command: Annotated[Optional[str], typer.Option(...)] = None,
@@ -540,7 +540,7 @@ async def run_container(
 async def run_attached(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
+    room: RoomOption,
     api_key_id: ApiKeyIdOption = None,
     image: Annotated[str, typer.Option(..., help="Image to run")],
     command: Annotated[Optional[str], typer.Option(...)] = None,
@@ -615,7 +615,7 @@ app.add_typer(images_app, name="images")
 async def images_list(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
+    room: RoomOption,
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(...)] = "cli",
     role: Annotated[str, typer.Option(...)] = "user",
@@ -635,7 +635,7 @@ async def images_list(
 async def images_delete(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
+    room: RoomOption,
     api_key_id: ApiKeyIdOption = None,
     image: Annotated[str, typer.Option(..., help="Image ref/tag to delete")],
     name: Annotated[str, typer.Option(...)] = "cli",
@@ -656,7 +656,7 @@ async def images_delete(
 async def images_pull(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
+    room: RoomOption,
     api_key_id: ApiKeyIdOption = None,
     tag: Annotated[str, typer.Option(..., help="Image tag/ref to pull")],
     cred: Annotated[
@@ -693,7 +693,7 @@ app.add_typer(build_app, name="build")
 async def build_git(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
+    room: RoomOption,
     api_key_id: ApiKeyIdOption = None,
     tag: Annotated[str, typer.Option(..., help="Resulting image tag")],
     url: Annotated[str, typer.Option(..., help="Git URL")],
@@ -729,7 +729,7 @@ async def build_git(
 async def build_context(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
+    room: RoomOption,
     api_key_id: ApiKeyIdOption = None,
     tag: Annotated[str, typer.Option(..., help="Resulting image tag")],
     source: Annotated[
@@ -786,7 +786,7 @@ async def build_context(
 async def build_room(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
+    room: RoomOption,
     api_key_id: ApiKeyIdOption = None,
     tag: Annotated[str, typer.Option(..., help="Resulting image tag")],
     path: Annotated[str, typer.Option(..., help="Room path to a .tar.gz context")],
@@ -829,7 +829,7 @@ app.add_typer(builds_app, name="builds")
 async def list_builds(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
+    room: RoomOption,
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(...)] = "cli",
     role: Annotated[str, typer.Option(...)] = "user",
@@ -849,7 +849,7 @@ async def list_builds(
 async def stop_build(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
+    room: RoomOption,
     api_key_id: ApiKeyIdOption = None,
     request_id: Annotated[str, typer.Option(..., help="Build request_id to stop")],
     name: Annotated[str, typer.Option(...)] = "cli",

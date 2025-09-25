@@ -1,6 +1,5 @@
 import typer
 from typing import Annotated, Optional
-import os
 
 OutputFormatOption = Annotated[
     str,
@@ -23,19 +22,10 @@ ApiKeyIdOption = Annotated[
     ),
 ]
 
-if os.getenv("MESHAGENT_ROOM") is not None:
-    RoomOption = Annotated[
-        Optional[str],
-        typer.Option(
-            "--room",
-            help="Room name. If empty, the MESHAGENT_ROOM environment variable will be used.",
-        ),
-    ]
-else:
-    RoomOption = Annotated[
-        str,
-        typer.Option(
-            "--room",
-            help="Room name",
-        ),
-    ]
+RoomOption = Annotated[
+    str,
+    typer.Option(
+        "--room",
+        help="Room name",
+    ),
+]

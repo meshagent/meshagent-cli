@@ -1,5 +1,4 @@
 import typer
-import os
 from rich import print
 from typing import Annotated, Optional
 from meshagent.cli.common_options import (
@@ -27,7 +26,7 @@ app = async_typer.AsyncTyper()
 async def messaging_list_participants_command(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
+    room: RoomOption,
     token_path: Annotated[Optional[str], typer.Option()] = None,
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option()] = "cli",
@@ -81,7 +80,7 @@ async def messaging_list_participants_command(
 async def messaging_send_command(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
+    room: RoomOption,
     token_path: Annotated[Optional[str], typer.Option()] = None,
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option()] = "cli",
@@ -152,7 +151,7 @@ async def messaging_send_command(
 async def messaging_broadcast_command(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
+    room: RoomOption,
     token_path: Annotated[Optional[str], typer.Option()] = None,
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option()] = "cli",
