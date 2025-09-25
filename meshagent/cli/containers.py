@@ -8,7 +8,11 @@ import sys
 import tarfile
 import time
 from pathlib import Path
-
+import aiofiles
+import aiofiles.ospath
+import yaml
+from yaml import Loader
+from meshagent.api.specs.service import ServiceTemplateSpec
 import typer
 from rich import print
 from typing import Annotated, Optional, List, Dict
@@ -701,21 +705,9 @@ async def build_context(
     room: RoomOption = None,
     api_key_id: ApiKeyIdOption = None,
     tag: Annotated[str, typer.Option(..., help="Resulting image tag")],
-    from_dir: Annotated[
+    source: Annotated[
         Optional[str],
-        typer.Option(help="Directory to tar.gz as build context"),
-    ] = None,
-    dockerfile: Annotated[
-        Optional[str],
-        typer.Option(help="Path to a Dockerfile; sends just this file as context"),
-    ] = None,
-    dockerfile_inline: Annotated[
-        Optional[str],
-        typer.Option(help="Inline Dockerfile text; sends only this as context"),
-    ] = None,
-    tgz: Annotated[
-        Optional[str],
-        typer.Option(help="Use an existing .tar.gz file as the context"),
+        typer.Option(help="Directory to build from (defaults to current directory)"),
     ] = None,
     cred: Annotated[
         List[str],
@@ -728,23 +720,20 @@ async def build_context(
     role: Annotated[str, typer.Option(...)] = "user",
     pretty: Annotated[bool, typer.Option(...)] = True,
 ):
-    # Validate mutually exclusive inputs
-    specified = [x for x in [from_dir, dockerfile, dockerfile_inline, tgz] if x]
-    if len(specified) != 1:
-        raise typer.BadParameter(
-            "Specify exactly one of --from-dir, --dockerfile, --dockerfile-inline, or --tgz"
-        )
+    if source is None:
+        source = os.getcwd()
 
-    # Prepare context bytes
-    if from_dir:
-        ctx_bytes = _make_targz_from_dir(Path(from_dir).resolve())
-    elif dockerfile_inline:
-        ctx_bytes = _make_targz_with_dockerfile_text(dockerfile_inline)
-    elif dockerfile:
-        text = Path(dockerfile).read_text(encoding="utf-8")
-        ctx_bytes = _make_targz_with_dockerfile_text(text)
-    else:
-        ctx_bytes = Path(tgz).read_bytes()
+    manifest_path = source + "/meshagent.yaml"
+    has_manifest = await aiofiles.ospath.exists(manifest_path)
+    manifest = None
+    if has_manifest:
+        async with aiofiles.open(manifest_path, "r") as file:
+            raw_manifest = await file.read()
+            manifest = yaml.load(raw_manifest, Loader=Loader)
+
+            manifest = ServiceTemplateSpec.model_validate(manifest)
+
+    ctx_bytes = _make_targz_from_dir(Path(source).resolve())
 
     account_client, client = await _with_client(
         project_id=project_id, room=room, api_key_id=api_key_id, name=name, role=role
@@ -756,6 +745,7 @@ async def build_context(
             source=source,
             context_bytes=ctx_bytes,
             credentials=_parse_creds(cred),
+            manifest=manifest,
         )
         await _drain_stream_pretty(stream) if pretty else await _drain_stream_plain(
             stream

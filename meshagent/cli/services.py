@@ -13,8 +13,10 @@ import pydantic
 from typing import Literal
 from meshagent.cli import async_typer
 from meshagent.api.services import well_known_service_path
-from meshagent.api.specs.service import (
-    ServiceSpec,
+from meshagent.api.specs.service import ServiceSpec
+
+from meshagent.api.accounts_client import (
+    Service,
     ServiceStorageMounts,
     RoomStorageMount,
 )
@@ -48,7 +50,7 @@ from meshagent.cli.common_options import OutputFormatOption
 from pydantic_yaml import parse_yaml_raw_as
 
 # Pydantic basemodels
-from meshagent.api.accounts_client import Service, Port, Services
+from meshagent.api.accounts_client import Port, Services
 
 from meshagent.cli.call import _make_call
 
@@ -171,7 +173,7 @@ async def service_create(
                     print("[red]id cannot be set when creating a service[/red]")
                     raise typer.Exit(code=1)
 
-                service_obj = spec.to_service()
+                service_obj = Service.from_spec(spec)
 
         else:
             # ✅ validate / coerce port specs
@@ -292,7 +294,7 @@ async def service_update(
                 spec = parse_yaml_raw_as(ServiceSpec, f.read())
                 if spec.id is not None:
                     id = spec.id
-                service_obj = spec.to_service()
+                service_obj = Service.from_spec(spec)
 
         else:
             # ✅ validate / coerce port specs
@@ -434,7 +436,9 @@ async def service_test(
 
         if file is not None:
             with open(file, "rb") as f:
-                service_obj = parse_yaml_raw_as(ServiceSpec, f.read()).to_service()
+                service_obj = Service.from_spec(
+                    parse_yaml_raw_as(ServiceSpec, f.read())
+                )
 
         else:
             # ✅ validate / coerce port specs
