@@ -8,6 +8,10 @@ import sys
 import tarfile
 import time
 from pathlib import Path
+
+import pathlib
+import pathspec
+
 import aiofiles
 import aiofiles.ospath
 import yaml
@@ -99,46 +103,67 @@ def _parse_creds(items: List[str]) -> List[DockerSecret]:
             )
     return creds
 
+class DockerIgnore:
+    def __init__(self, dockerignore_path: str):
+        """
+        Load a .dockerignore file and compile its patterns.
+        """
+        dockerignore_file = pathlib.Path(dockerignore_path)
+        if dockerignore_file.exists():
+            with dockerignore_file.open("r") as f:
+                patterns = f.read().splitlines()
+        else:
+            patterns = []
 
-def _tarfilter_strip_macos(ti: tarfile.TarInfo) -> tarfile.TarInfo | None:
-    """
-    Filter to make Linux-friendly tarballs:
-    - Drop AppleDouble files (._*)
-    - Reset uid/gid/uname/gname
-    - Clear pax headers
-    """
-    base = os.path.basename(ti.name)
-    if base.startswith("._"):
-        return None
-    ti.uid = 0
-    ti.gid = 0
-    ti.uname = ""
-    ti.gname = ""
-    ti.pax_headers = {}
-    # Preserve mode & type; set a stable-ish mtime
-    if ti.mtime is None:
-        ti.mtime = int(time.time())
-    return ti
+        # pathspec with gitwildmatch is the same style used by dockerignore
+        self._spec = pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+
+    def matches(self, path: str) -> bool:
+        """
+        Return True if the given path matches a pattern in the .dockerignore file.
+        Path can be relative or absolute.
+        """
+        return self._spec.match_file(path)
 
 
-def _make_targz_from_dir(path: Path) -> bytes:
+async def _make_targz_from_dir(path: Path) -> bytes:
     buf = io.BytesIO()
+
+    docker_ignore = None
+
+    def _tarfilter_strip_macos(ti: tarfile.TarInfo) -> tarfile.TarInfo | None:
+        """
+        Filter to make Linux-friendly tarballs:
+        - Drop AppleDouble files (._*)
+        - Reset uid/gid/uname/gname
+        - Clear pax headers
+        """
+
+        if docker_ignore is not None:
+            if docker_ignore.matches(ti.path):
+                return None
+    
+        base = os.path.basename(ti.name)
+        if base.startswith("._"):
+            return None
+        ti.uid = 0
+        ti.gid = 0
+        ti.uname = ""
+        ti.gname = ""
+        ti.pax_headers = {}
+        # Preserve mode & type; set a stable-ish mtime
+        if ti.mtime is None:
+            ti.mtime = int(time.time())
+        return ti
+
+    docker_ignore_path = path.joinpath(".dockerignore")
+
+    if await aiofiles.ospath.exists(docker_ignore_path):
+        docker_ignore = DockerIgnore(docker_ignore_path)
+
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         tar.add(path, arcname=".", filter=_tarfilter_strip_macos)
     return buf.getvalue()
-
-
-def _make_targz_with_dockerfile_text(text: str) -> bytes:
-    b = text.encode("utf-8")
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        ti = tarfile.TarInfo("Dockerfile")
-        ti.size = len(b)
-        ti.mtime = int(time.time())
-        ti.mode = 0o644
-        tar.addfile(ti, io.BytesIO(b))
-    return buf.getvalue()
-
 
 async def _drain_stream_plain(stream, *, show_progress: bool = True):
     async def _logs():
@@ -374,7 +399,7 @@ async def _with_client(
 async def list_containers(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = None,
+    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(...)] = "cli",
     role: Annotated[str, typer.Option(...)] = "user",
@@ -408,7 +433,7 @@ async def list_containers(
 async def stop_container(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = None,
+    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
     api_key_id: ApiKeyIdOption = None,
     id: Annotated[str, typer.Option(..., help="Container ID")],
     name: Annotated[str, typer.Option(...)] = "cli",
@@ -429,7 +454,7 @@ async def stop_container(
 async def container_logs(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = None,
+    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
     api_key_id: ApiKeyIdOption = None,
     id: Annotated[str, typer.Option(..., help="Container ID")],
     follow: Annotated[bool, typer.Option("--follow/--no-follow")] = False,
@@ -456,7 +481,7 @@ async def container_logs(
 async def run_container(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = None,
+    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
     api_key_id: ApiKeyIdOption = None,
     image: Annotated[str, typer.Option(..., help="Image to run")],
     command: Annotated[Optional[str], typer.Option(...)] = None,
@@ -513,7 +538,7 @@ async def run_container(
 async def run_attached(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = None,
+    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
     api_key_id: ApiKeyIdOption = None,
     image: Annotated[str, typer.Option(..., help="Image to run")],
     command: Annotated[Optional[str], typer.Option(...)] = None,
@@ -588,7 +613,7 @@ app.add_typer(images_app, name="images")
 async def images_list(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = None,
+    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(...)] = "cli",
     role: Annotated[str, typer.Option(...)] = "user",
@@ -608,7 +633,7 @@ async def images_list(
 async def images_delete(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = None,
+    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
     api_key_id: ApiKeyIdOption = None,
     image: Annotated[str, typer.Option(..., help="Image ref/tag to delete")],
     name: Annotated[str, typer.Option(...)] = "cli",
@@ -629,7 +654,7 @@ async def images_delete(
 async def images_pull(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = None,
+    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
     api_key_id: ApiKeyIdOption = None,
     tag: Annotated[str, typer.Option(..., help="Image tag/ref to pull")],
     cred: Annotated[
@@ -666,7 +691,7 @@ app.add_typer(build_app, name="build")
 async def build_git(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = None,
+    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
     api_key_id: ApiKeyIdOption = None,
     tag: Annotated[str, typer.Option(..., help="Resulting image tag")],
     url: Annotated[str, typer.Option(..., help="Git URL")],
@@ -702,7 +727,7 @@ async def build_git(
 async def build_context(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = None,
+    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
     api_key_id: ApiKeyIdOption = None,
     tag: Annotated[str, typer.Option(..., help="Resulting image tag")],
     source: Annotated[
@@ -727,18 +752,20 @@ async def build_context(
     has_manifest = await aiofiles.ospath.exists(manifest_path)
     manifest = None
     if has_manifest:
+
         async with aiofiles.open(manifest_path, "r") as file:
             raw_manifest = await file.read()
             manifest = yaml.load(raw_manifest, Loader=Loader)
 
             manifest = ServiceTemplateSpec.model_validate(manifest)
 
-    ctx_bytes = _make_targz_from_dir(Path(source).resolve())
+    ctx_bytes = await _make_targz_from_dir(Path(source).resolve())
 
     account_client, client = await _with_client(
         project_id=project_id, room=room, api_key_id=api_key_id, name=name, role=role
     )
     try:
+
         source = BuildSource(context=BuildSourceContext(encoding="gzip"))
         stream = client.containers.build(
             tag=tag,
@@ -759,7 +786,7 @@ async def build_context(
 async def build_room(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = None,
+    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
     api_key_id: ApiKeyIdOption = None,
     tag: Annotated[str, typer.Option(..., help="Resulting image tag")],
     path: Annotated[str, typer.Option(..., help="Room path to a .tar.gz context")],
@@ -802,7 +829,7 @@ app.add_typer(builds_app, name="builds")
 async def list_builds(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = None,
+    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(...)] = "cli",
     role: Annotated[str, typer.Option(...)] = "user",
@@ -822,7 +849,7 @@ async def list_builds(
 async def stop_build(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = None,
+    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
     api_key_id: ApiKeyIdOption = None,
     request_id: Annotated[str, typer.Option(..., help="Build request_id to stop")],
     name: Annotated[str, typer.Option(...)] = "cli",

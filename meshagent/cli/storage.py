@@ -104,7 +104,7 @@ async def storage_exists_command(
 async def storage_cp_command(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = None,
+    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
     token_path: Annotated[Optional[str], typer.Option()] = None,
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[
@@ -349,7 +349,7 @@ async def storage_cp_command(
 async def storage_show_command(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = None,
+    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
     token_path: Annotated[Optional[str], typer.Option()] = None,
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[
@@ -436,7 +436,7 @@ async def storage_show_command(
 async def storage_rm_command(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = None,
+    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
     token_path: Annotated[Optional[str], typer.Option()] = None,
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[
@@ -651,7 +651,7 @@ async def storage_rm_command(
 async def storage_ls_command(
     *,
     project_id: ProjectIdOption = None,
-    room: RoomOption = None,
+    room: RoomOption = os.getenv("MESHAGENT_ROOM"),
     token_path: Annotated[Optional[str], typer.Option()] = None,
     api_key_id: ApiKeyIdOption = None,
     name: Annotated[
