@@ -40,7 +40,6 @@ from meshagent.api.room_server_client import (
     BuildSource,
     BuildSourceGit,
     BuildSourceContext,
-    BuildSourceRoom,
     DockerSecret,
 )
 
@@ -681,60 +680,24 @@ async def images_pull(
         await account_client.close()
 
 
-# -------------------------
-# Build sub-commands
-# -------------------------
-
-build_app = async_typer.AsyncTyper(help="Build images")
-app.add_typer(build_app, name="build")
-
-
-@build_app.async_command("git")
-async def build_git(
-    *,
-    project_id: ProjectIdOption = None,
-    room: RoomOption,
-    api_key_id: ApiKeyIdOption = None,
-    tag: Annotated[str, typer.Option(..., help="Resulting image tag")],
-    url: Annotated[str, typer.Option(..., help="Git URL")],
-    ref: Annotated[str, typer.Option(..., help="Git ref/branch/tag")],
-    cred: Annotated[
-        List[str],
-        typer.Option(
-            "--cred",
-            help="Docker creds (username,password) or (registry,username,password)",
-        ),
-    ] = [],
-    name: Annotated[str, typer.Option(...)] = "cli",
-    role: Annotated[str, typer.Option(...)] = "user",
-    pretty: Annotated[bool, typer.Option(...)] = True,
-):
-    account_client, client = await _with_client(
-        project_id=project_id, room=room, api_key_id=api_key_id, name=name, role=role
-    )
-    try:
-        source = BuildSource(git=BuildSourceGit(url=url, ref=ref))
-        stream = client.containers.build(
-            tag=tag, source=source, credentials=_parse_creds(cred)
-        )
-        await _drain_stream_pretty(stream) if pretty else await _drain_stream_plain(
-            stream
-        )
-    finally:
-        await client.__aexit__(None, None, None)
-        await account_client.close()
-
-
-@build_app.async_command("context")
+@app.async_command("build")
 async def build_context(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
     api_key_id: ApiKeyIdOption = None,
     tag: Annotated[str, typer.Option(..., help="Resulting image tag")],
-    source: Annotated[
+    dir: Annotated[
         Optional[str],
         typer.Option(help="Directory to build from (defaults to current directory)"),
+    ] = None,
+    git: Annotated[
+        Optional[str],
+        typer.Option(help="git url to build from"),
+    ] = None,
+    ref: Annotated[
+        Optional[str],
+        typer.Option(help="git ref to build from"),
     ] = None,
     cred: Annotated[
         List[str],
@@ -747,67 +710,37 @@ async def build_context(
     role: Annotated[str, typer.Option(...)] = "user",
     pretty: Annotated[bool, typer.Option(...)] = True,
 ):
-    if source is None:
-        source = os.getcwd()
+    if dir is None and git is None:
+        dir = os.getcwd()
 
-    manifest_path = source + "/meshagent.yaml"
-    has_manifest = await aiofiles.ospath.exists(manifest_path)
-    manifest = None
-    if has_manifest:
-        async with aiofiles.open(manifest_path, "r") as file:
-            raw_manifest = await file.read()
-            manifest = yaml.load(raw_manifest, Loader=Loader)
+    if dir is not None:
+        manifest_path = dir + "/meshagent.yaml"
+        has_manifest = await aiofiles.ospath.exists(manifest_path)
+        manifest = None
+        if has_manifest:
+            async with aiofiles.open(manifest_path, "r") as file:
+                raw_manifest = await file.read()
+                manifest = yaml.load(raw_manifest, Loader=Loader)
 
-            manifest = ServiceTemplateSpec.model_validate(manifest)
+                manifest = ServiceTemplateSpec.model_validate(manifest)
 
-    ctx_bytes = await _make_targz_from_dir(Path(source).resolve())
+        ctx_bytes = await _make_targz_from_dir(Path(dir).resolve())
 
     account_client, client = await _with_client(
         project_id=project_id, room=room, api_key_id=api_key_id, name=name, role=role
     )
     try:
-        source = BuildSource(context=BuildSourceContext(encoding="gzip"))
+        if dir is not None:
+            bs = BuildSource(context=BuildSourceContext(encoding="gzip"))
+        else:
+            bs = BuildSource(git=BuildSourceGit(url=git, ref=ref))
+
         stream = client.containers.build(
             tag=tag,
-            source=source,
-            context_bytes=ctx_bytes,
+            source=bs,
+            context_bytes=ctx_bytes if dir is not None else None,
             credentials=_parse_creds(cred),
             manifest=manifest,
-        )
-        await _drain_stream_pretty(stream) if pretty else await _drain_stream_plain(
-            stream
-        )
-    finally:
-        await client.__aexit__(None, None, None)
-        await account_client.close()
-
-
-@build_app.async_command("room")
-async def build_room(
-    *,
-    project_id: ProjectIdOption = None,
-    room: RoomOption,
-    api_key_id: ApiKeyIdOption = None,
-    tag: Annotated[str, typer.Option(..., help="Resulting image tag")],
-    path: Annotated[str, typer.Option(..., help="Room path to a .tar.gz context")],
-    cred: Annotated[
-        List[str],
-        typer.Option(
-            "--cred",
-            help="Docker creds (username,password) or (registry,username,password)",
-        ),
-    ] = [],
-    name: Annotated[str, typer.Option(...)] = "cli",
-    role: Annotated[str, typer.Option(...)] = "user",
-    pretty: Annotated[bool, typer.Option(...)] = True,
-):
-    account_client, client = await _with_client(
-        project_id=project_id, room=room, api_key_id=api_key_id, name=name, role=role
-    )
-    try:
-        source = BuildSource(room=BuildSourceRoom(path=path))
-        stream = client.containers.build(
-            tag=tag, source=source, credentials=_parse_creds(cred)
         )
         await _drain_stream_pretty(stream) if pretty else await _drain_stream_plain(
             stream
