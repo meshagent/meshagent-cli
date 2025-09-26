@@ -419,8 +419,9 @@ async def list_containers(
             table.add_column("ID", style="cyan")
             table.add_column("Image")
             table.add_column("Status")
+            table.add_column("Name")
             for c in containers:
-                table.add_row(c.id, c.image or "", c.status or "")
+                table.add_row(c.id, c.image or "", c.status or "", c.name or "")
             Console().print(table)
         else:
             # default json-ish
@@ -506,6 +507,7 @@ async def run_container(
     participant_name: Annotated[Optional[str], typer.Option()] = None,
     role: Annotated[str, typer.Option(...)] = "user",
     name: Annotated[str, typer.Option(...)] = "cli",
+    container_name: Annotated[str, typer.Option(...)] = None,
 ):
     account_client, client = await _with_client(
         project_id=project_id, room=room, api_key_id=api_key_id, name=name, role=role
@@ -517,6 +519,7 @@ async def run_container(
         vars_map = _parse_keyvals(var)
 
         stream = client.containers.run(
+            name=container_name,
             image=image,
             command=command,
             env=env_map,
