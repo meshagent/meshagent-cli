@@ -174,7 +174,7 @@ async def make_call(
     ] = None,
 ):
     key = await resolve_key(project_id=project_id, key=key)
-
+    print("[JE]" + key)
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)

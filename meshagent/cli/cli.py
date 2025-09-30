@@ -165,8 +165,12 @@ def setup_command():
                 "You do not have an active api key for this project. Would you like to create and activate a new api key?",
                 default=True,
             ):
-                print("Creating and activating api-key...")
-                await api_keys.create(None, activate=True, silent=True)
+                name = typer.prompt(
+                    "Enter a name for your API Key (must be a unique name):"
+                )
+                await api_keys.create(
+                    project_id=None, activate=True, silent=True, name=name
+                )
 
     _run_async(runner())
 
