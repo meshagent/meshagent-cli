@@ -49,6 +49,21 @@ async def set_active_project(project_id: str | None):
     _save_settings(settings)
 
 
+async def set_active_api_key(project_id: str, key: str):
+    settings = _load_settings()
+    settings.active_api_keys[project_id] = key
+    _save_settings(settings)
+
+
+async def get_active_api_key(project_id: str):
+    settings = _load_settings()
+    key : str = settings.active_api_keys.get(project_id)
+    # Ignore old keys, API key format changed
+    if key is not None and key.startswith("ma-"):
+        return key
+    else:
+        return None
+
 app = async_typer.AsyncTyper()
 
 
@@ -104,13 +119,18 @@ async def resolve_project_id(project_id: Optional[str] = None):
     return project_id
 
 
-async def resolve_key(key: str):
+async def resolve_key(project_id: str | None, key: str):
+    project_id = await resolve_project_id(project_id=project_id)
+    if key is None:
+        key = await get_active_api_key(project_id=project_id)
+    
     if key is None:
         key = os.getenv("MESHAGENT_API_KEY")
-        if key is None:
-            print(
-                "[red]--key is required if MESHGENT_API_KEY is not set. You can use meshagent api-key create to create a new api key."
-            )
-            raise typer.Exit(1)
+
+    if key is None:
+        print(
+            "[red]--key is required if MESHGENT_API_KEY is not set. You can use meshagent api-key create to create a new api key."
+        )
+        raise typer.Exit(1)
 
     return key

@@ -1,3 +1,4 @@
+import typer
 import asyncio
 
 from meshagent.cli import async_typer
@@ -24,7 +25,7 @@ from meshagent.cli import containers
 from meshagent.cli import oauth2
 from meshagent.cli.exec import register as register_exec
 from meshagent.cli.version import __version__
-
+from meshagent.cli.helper import get_active_api_key
 from meshagent.cli import otel
 
 from art import tprint
@@ -156,7 +157,14 @@ def setup_command():
         project_id = await projects.activate(None, interactive=True)
         if project_id is None:
             print("You have choosen to not activate a project. Exiting.")
-
+        if project_id is not None and await get_active_api_key(project_id=project_id) is None:
+            if typer.confirm(
+                "You do not have an active api key for this project. Would you like to create and activate a new api key?",
+                default=True,
+            ):
+                print("Creating and activating api-key...")
+                await api_keys.create(None, activate=True, silent=True)
+                
     _run_async(runner())
 
 

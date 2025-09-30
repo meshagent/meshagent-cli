@@ -47,7 +47,7 @@ async def sse(
         typer.Option("--key", help="an api key to sign the token with"),
     ] = None,
 ):
-    key = await resolve_key(key)
+    key = await resolve_key(project_id=project_id, key=key)
 
     if toolkit_name is None:
         toolkit_name = "mcp"
@@ -122,7 +122,7 @@ async def stdio(
         typer.Option("--key", help="an api key to sign the token with"),
     ] = None,
 ):
-    key = await resolve_key(key)
+    key = await resolve_key(project_id=project_id, key=key)
 
     if toolkit_name is None:
         toolkit_name = "mcp"

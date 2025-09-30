@@ -391,7 +391,7 @@ async def service_run(
         typer.Option("--key", help="an api key to sign the token with"),
     ] = None,
 ):
-    key = await resolve_key(key)
+    key = await resolve_key(project_id=project_id, key=key)
 
     if port is None:
         import socket

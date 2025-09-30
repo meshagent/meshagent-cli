@@ -7,9 +7,11 @@ from meshagent.cli.helper import (
     get_client,
     print_json_table,
     resolve_project_id,
+    set_active_api_key,
 )
 from meshagent.cli.common_options import OutputFormatOption
-
+from typing import Annotated
+import typer
 
 app = async_typer.AsyncTyper(help="Manage or activate api-keys for your project")
 
@@ -39,20 +41,52 @@ async def list(
 
 @app.async_command("create")
 async def create(
-    *, project_id: ProjectIdOption = None, name: str, description: str = ""
+    *,
+    project_id: ProjectIdOption = None,
+    name: str,
+    description: Annotated[str, typer.Option(..., help="a description for the api key")] = "",
+    activate: Annotated[bool, typer.Option(..., help="use this key by default for commands that accept an API key")],
+    silent: Annotated[bool, typer.Option(..., help="do not print api key")] = False,
 ):
+            
     project_id = await resolve_project_id(project_id=project_id)
-
+   
     client = await get_client()
     api_key = await client.create_project_api_key(
         project_id=project_id, name=name, description=description
     )
-    print(
-        "[green]This is your token save it for later, you will not be able to get the value again:[/green]"
-    )
-    print(api_key["value"])
-    await client.close()
+    if not silent:
+        if not activate:
+            print(
+                "[green]This is your token. Save it for later, you will not be able to get the value again:[/green]\n"
+            )
+            print(api_key["value"])
+            print(
+                "[green]\nNote: you can use the --activate flag to save a key in your local project settings when creating a key.[/green]\n"
+            )
+        else:
+            print(
+                "[green]This is your token:[/green]\n"
+            )
+            print(api_key["value"])
 
+
+    await client.close()
+    if activate:
+        await set_active_api_key(project_id=project_id, key=api_key["value"])
+        print(
+            "[green]your api key has been activated and will be used automatically with commands that require a key[/green]\n"
+        )
+
+@app.async_command("activate")
+async def activate(
+    *,
+    project_id: ProjectIdOption = None,
+    key: str,
+):
+    project_id = await resolve_project_id(project_id=project_id)
+    if activate:
+        await set_active_api_key(project_id=project_id, key=api_key["value"])
 
 @app.async_command("delete")
 async def delete(*, project_id: ProjectIdOption = None, id: str):
