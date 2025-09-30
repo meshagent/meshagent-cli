@@ -3,12 +3,13 @@ from rich import print
 from typing import Annotated
 from meshagent.api import ParticipantToken
 from meshagent.cli import async_typer
-from meshagent.cli.helper import get_client, resolve_key
+from meshagent.cli.helper import get_client, resolve_key, resolve_project_id
 import pathlib
 from typing import Optional
 from meshagent.api.participant_token import ParticipantTokenSpec
 from meshagent.api.keys import parse_api_key
 from pydantic_yaml import parse_yaml_raw_as
+from meshagent.cli.common_options import ProjectIdOption
 
 app = async_typer.AsyncTyper()
 
@@ -16,6 +17,7 @@ app = async_typer.AsyncTyper()
 @app.async_command("generate")
 async def generate(
     *,
+    project_id: ProjectIdOption = None,
     output: Annotated[
         Optional[str],
         typer.Option("--output", "-o", help="File path to a file"),
@@ -29,6 +31,7 @@ async def generate(
         typer.Option("--key", help="an api key to sign the token with"),
     ] = None,
 ):
+    project_id = await resolve_project_id(project_id=project_id)
     key = await resolve_key(project_id=project_id, key=key)
 
     client = await get_client()

@@ -90,7 +90,7 @@ async def activate(
 ):
     project_id = await resolve_project_id(project_id=project_id)
     if activate:
-        await set_active_api_key(project_id=project_id, key=api_key["value"])
+        await set_active_api_key(project_id=project_id, key=key)
 
 
 @app.async_command("delete")
