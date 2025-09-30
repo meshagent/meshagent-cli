@@ -1,6 +1,4 @@
-import typer
 import asyncio
-from typing import Optional
 
 from meshagent.cli import async_typer
 
@@ -36,7 +34,6 @@ import logging
 import os
 import sys
 from pathlib import Path
-from meshagent.cli.helper import get_client, resolve_project_id, resolve_api_key
 
 
 otel.init(level=logging.INFO)
@@ -146,66 +143,6 @@ def version():
     print(__version__)
 
 
-@app.command(
-    "env",
-    help="Generate shell commands to set meshagent environment variables.",
-)
-def env(
-    shell: Optional[str] = typer.Option(
-        None,
-        "--shell",
-        case_sensitive=False,
-        help="bash | zsh | fish | powershell | cmd",
-    ),
-    unset: bool = typer.Option(
-        False, "--unset", help="Output commands to unset the variables."
-    ),
-):
-    """Print shell-specific exports/unsets for Docker environment variables."""
-
-    async def command():
-        nonlocal shell, unset
-        shell = (shell or detect_shell()).lower()
-        if shell not in SHELL_RENDERERS:
-            typer.echo(f"Unsupported shell '{shell}'.", err=True)
-            raise typer.Exit(code=1)
-
-        client = await get_client()
-        try:
-            project_id = await resolve_project_id(project_id=None)
-            api_key_id = await resolve_api_key(project_id=project_id, api_key_id=None)
-
-            token = (
-                await client.decrypt_project_api_key(
-                    project_id=project_id, id=api_key_id
-                )
-            )["token"]
-        finally:
-            await client.close()
-
-        vars = {
-            "MESHAGENT_PROJECT_ID": project_id,
-            "MESHAGENT_KEY_ID": api_key_id,
-            "MESHAGENT_SECRET": token,
-        }
-        if shell not in SHELL_RENDERERS:
-            typer.echo(f"Unsupported shell '{shell}'.", err=True)
-            raise typer.Exit(code=1)
-
-        render = SHELL_RENDERERS[shell]
-
-        for name, value in vars.items():
-            typer.echo(render(name, value, unset))
-
-        if not unset and shell in ("bash", "zsh"):
-            typer.echo(
-                "\n# Run this command to configure your current shell:\n"
-                '# eval "$(meshagent env)"'
-            )
-
-    _run_async(command())
-
-
 @app.command("setup")
 def setup_command():
     """Perform initial login and project/api key activation."""
@@ -219,11 +156,6 @@ def setup_command():
         project_id = await projects.activate(None, interactive=True)
         if project_id is None:
             print("You have choosen to not activate a project. Exiting.")
-        if project_id is not None:
-            print("Activate an api-key...")
-            api_key_id = await api_keys.activate(None, interactive=True)
-            if api_key_id is None:
-                print("You have choosen to not activate an api-key. Exiting.")
 
     _run_async(runner())
 

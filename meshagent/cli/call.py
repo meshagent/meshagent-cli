@@ -1,7 +1,7 @@
 import typer
 from rich import print
 from typing import Annotated, Optional
-from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption, RoomOption
+from meshagent.cli.common_options import ProjectIdOption, RoomOption
 import json
 import aiohttp
 from meshagent.api import (
@@ -14,8 +14,8 @@ from meshagent.api import (
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.api.services import send_webhook
 from meshagent.cli import async_typer
-from meshagent.cli.helper import get_client, resolve_project_id
-from meshagent.cli.helper import resolve_api_key, resolve_room
+from meshagent.cli.helper import get_client, resolve_project_id, resolve_key
+from meshagent.cli.helper import resolve_room
 from urllib.parse import urlparse
 from pathlib import PurePath
 import socket
@@ -23,6 +23,7 @@ import ipaddress
 import pathlib
 from pydantic_yaml import parse_yaml_raw_as
 from meshagent.api.participant_token import ParticipantTokenSpec
+from meshagent.api.keys import parse_api_key
 
 app = async_typer.AsyncTyper()
 
@@ -76,7 +77,6 @@ async def make_call(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    api_key_id: ApiKeyIdOption = None,
     role: str = "agent",
     local: Optional[bool] = None,
     agent_name: Annotated[
@@ -99,13 +99,22 @@ async def make_call(
             help="File path to a token definition, if not specified default agent permissions will be used",
         ),
     ] = None,
+    key: Annotated[
+        str,
+        typer.Option("--key", help="an api key to sign the token with"),
+    ] = None,
 ):
+    key = await resolve_key(key)
+
     if permissions is not None:
         with open(str(pathlib.Path(permissions).expanduser().resolve()), "rb") as f:
             spec = parse_yaml_raw_as(ParticipantTokenSpec, f.read())
 
+            parsed_key = parse_api_key(key)
             token = ParticipantToken(
-                name=spec.identity, project_id=project_id, api_key_id=api_key_id
+                name=spec.identity,
+                project_id=project_id,
+                api_key_id=parsed_key.id,
             )
             token.add_role_grant(role=role)
             token.add_room_grant(room)
@@ -117,7 +126,6 @@ async def make_call(
     await _make_call(
         project_id=project_id,
         room=room,
-        api_key_id=api_key_id,
         role=role,
         local=local,
         agent_name=agent_name,
@@ -126,6 +134,7 @@ async def make_call(
         url=url,
         arguments=arguments,
         token=token,
+        key=key,
     )
 
 
@@ -133,7 +142,6 @@ async def _make_call(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    api_key_id: ApiKeyIdOption = None,
     role: str = "agent",
     local: Optional[bool] = None,
     agent_name: Annotated[
@@ -149,6 +157,7 @@ async def _make_call(
         str, typer.Option(..., help="JSON string with arguments for the call")
     ] = {},
     token: Optional[ParticipantToken] = None,
+    key: str,
 ):
     """
     Instruct an agent to 'call' a given URL with specific arguments.
@@ -170,23 +179,18 @@ async def _make_call(
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        api_key_id = await resolve_api_key(project_id, api_key_id)
+
         room = resolve_room(room)
 
         if token is None:
+            parsed_key = parse_api_key(key)
             token = ParticipantToken(
-                name=participant_name, project_id=project_id, api_key_id=api_key_id
+                name=participant_name, project_id=project_id, api_key_id=parsed_key.id
             )
             token.add_api_grant(ApiScope.agent_default())
             token.add_role_grant(role=role)
             token.add_room_grant(room)
             token.grants.append(ParticipantGrant(name="tunnel_ports", scope="9000"))
-
-        key = (
-            await account_client.decrypt_project_api_key(
-                project_id=project_id, id=api_key_id
-            )
-        )["token"]
 
         if local is None:
             local = is_local_url(url)
@@ -197,7 +201,7 @@ async def _make_call(
                 data = {
                     "room_url": websocket_room_url(room_name=room),
                     "room_name": room,
-                    "token": token.to_jwt(token=key),
+                    "token": token.to_jwt(token=parsed_key.secret),
                     "arguments": arguments,
                 }
 
@@ -211,7 +215,7 @@ async def _make_call(
                     url=websocket_room_url(
                         room_name=room, base_url=meshagent_base_url()
                     ),
-                    token=token.to_jwt(token=key),
+                    token=token.to_jwt(token=parsed_key.secret),
                 )
             ) as client:
                 print("[bold green]Making agent call...[/bold green]")

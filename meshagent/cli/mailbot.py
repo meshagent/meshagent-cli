@@ -5,19 +5,17 @@ from rich import print
 from typing import Annotated, Optional
 from meshagent.cli.common_options import (
     ProjectIdOption,
-    ApiKeyIdOption,
     RoomOption,
 )
 from meshagent.tools import Toolkit
-from meshagent.api import RoomClient, WebSocketClientProtocol
+from meshagent.api import RoomClient, WebSocketClientProtocol, ApiScope
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.cli import async_typer
 from meshagent.cli.helper import (
     get_client,
     resolve_project_id,
-    resolve_api_key,
-    resolve_token_jwt,
     resolve_room,
+    resolve_key,
 )
 from meshagent.openai import OpenAIResponsesAdapter
 from meshagent.openai.tools.responses_adapter import ImageGenerationTool, LocalShellTool
@@ -29,6 +27,8 @@ from pathlib import Path
 
 from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.openai.tools.responses_adapter import WebSearchTool
+
+from meshagent.api.keys import parse_api_key
 
 app = async_typer.AsyncTyper(help="Join a mailbot to a room")
 
@@ -124,10 +124,8 @@ async def make_call(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    api_key_id: ApiKeyIdOption = None,
     role: str = "agent",
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
-    token_path: Annotated[Optional[str], typer.Option()] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[str] = None,
     toolkit: Annotated[
@@ -147,21 +145,30 @@ async def make_call(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    key: Annotated[
+        str,
+        typer.Option("--key", help="an api key to sign the token with"),
+    ] = None,
 ):
+    key = await resolve_key(key)
+
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        api_key_id = await resolve_api_key(project_id, api_key_id)
 
         room = resolve_room(room)
-        jwt = await resolve_token_jwt(
-            project_id=project_id,
-            api_key_id=api_key_id,
-            token_path=token_path,
-            name=agent_name,
-            role=role,
-            room=room,
+
+        parsed_key = parse_api_key(key)
+        token = ParticipantToken(
+            name=agent_name, project_id=parsed_key.project_id, api_key_id=parsed_key.id
         )
+
+        token.add_api_grant(ApiScope.agent_default())
+
+        token.add_role_grant(role=role)
+        token.add_room_grant(room)
+
+        jwt = token.to_jwt(token=parsed_key.secret)
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
         async with RoomClient(

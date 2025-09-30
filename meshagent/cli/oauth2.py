@@ -1,10 +1,8 @@
 from meshagent.cli import async_typer
-from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption, RoomOption
+from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.cli.helper import (
     get_client,
     resolve_project_id,
-    resolve_api_key,
-    resolve_token_jwt,
 )
 from meshagent.api import RoomClient, WebSocketClientProtocol
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
@@ -20,14 +18,10 @@ async def oauth2(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: ApiKeyIdOption = None,
-    name: Annotated[str, typer.Option()] = "cli",
     from_participant_id: Annotated[str, typer.Option()],
     client_id: Annotated[str, typer.Option()],
     authorization_endpoint: Annotated[str, typer.Option()],
     token_endpoint: Annotated[str, typer.Option()],
-    role: str = "user",
     scopes: Annotated[Optional[str], typer.Option()] = None,
     client_secret: Annotated[Optional[str], typer.Option()],
     redirect_uri: Annotated[Optional[str], typer.Option()],
@@ -41,21 +35,15 @@ async def oauth2(
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        api_key_id = await resolve_api_key(project_id, api_key_id)
 
-        jwt_consumer = await resolve_token_jwt(
-            project_id=project_id,
-            api_key_id=api_key_id,
-            token_path=token_path,
-            name=f"{name}-consumer",
-            role=role,
-            room=room,
+        jwt_consumer = await account_client.connect_room(
+            project_id=project_id, room=room
         )
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-                token=jwt_consumer,
+                token=jwt_consumer.jwt,
             )
         ) as consumer:
             print("[green]Requesting OAuth token from consumer side...[/green]")

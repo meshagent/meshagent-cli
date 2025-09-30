@@ -14,14 +14,6 @@ ProjectIdOption = Annotated[
     ),
 ]
 
-ApiKeyIdOption = Annotated[
-    Optional[str],
-    typer.Option(
-        "--api-key-id",
-        help="A MeshAgent project API key id. If empty, the activated api key will be used.",
-    ),
-]
-
 RoomOption = Annotated[
     str,
     typer.Option(

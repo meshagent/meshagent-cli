@@ -1,6 +1,6 @@
 import typer
 from typing import Annotated, Optional
-from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption, RoomOption
+from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from rich import print
 import os
 import fnmatch
@@ -14,8 +14,6 @@ from meshagent.cli import async_typer
 from meshagent.cli.helper import (
     get_client,
     resolve_project_id,
-    resolve_api_key,
-    resolve_token_jwt,
 )
 from meshagent.cli.helper import resolve_room
 
@@ -59,10 +57,6 @@ async def storage_exists_command(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: ApiKeyIdOption = None,
-    name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
-    role: str = "user",
     path: str,
 ):
     """
@@ -71,22 +65,14 @@ async def storage_exists_command(
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        api_key_id = await resolve_api_key(project_id, api_key_id)
         room = resolve_room(room)
-        jwt = await resolve_token_jwt(
-            project_id=project_id,
-            api_key_id=api_key_id,
-            token_path=token_path,
-            name=name,
-            role=role,
-            room=room,
-        )
+        connection = await account_client.connect_room(project_id=project_id, room=room)
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
             protocol=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-                token=jwt,
+                token=connection.jwt,
             )
         ) as client:
             file_exists = await client.storage.exists(path=path)
@@ -105,12 +91,6 @@ async def storage_cp_command(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: ApiKeyIdOption = None,
-    name: Annotated[
-        str, typer.Option(..., help="Participant name (if copying to/from remote)")
-    ] = "cli",
-    role: str = "user",
     source_path: str,
     dest_path: str,
 ):
@@ -136,22 +116,16 @@ async def storage_cp_command(
 
         # A helper to ensure we have a connected StorageClient if needed
         async def ensure_storage_client():
-            nonlocal account_client, client, storage_client, api_key_id, project_id
+            nonlocal account_client, client, storage_client, project_id
 
             if storage_client is not None:
                 return  # Already connected
 
             account_client = await get_client()
             project_id = await resolve_project_id(project_id=project_id)
-            api_key_id = await resolve_api_key(project_id, api_key_id)
 
-            jwt = await resolve_token_jwt(
-                project_id=project_id,
-                api_key_id=api_key_id,
-                token_path=token_path,
-                name=name,
-                role=role,
-                room=room,
+            connection = await account_client.connect_room(
+                project_id=project_id, room=room
             )
 
             print("[bold green]Connecting to room...[/bold green]")
@@ -160,7 +134,7 @@ async def storage_cp_command(
                     url=websocket_room_url(
                         room_name=room, base_url=meshagent_base_url()
                     ),
-                    token=jwt,
+                    token=connection.jwt,
                 )
             )
 
@@ -350,12 +324,6 @@ async def storage_show_command(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: ApiKeyIdOption = None,
-    name: Annotated[
-        Optional[str], typer.Option(..., help="Participant name (if remote)")
-    ] = None,
-    role: str = "user",
     path: str,
     encoding: Annotated[
         str, typer.Option("--encoding", help="Text encoding")
@@ -374,7 +342,7 @@ async def storage_show_command(
     storage_client = None
 
     async def ensure_storage_client():
-        nonlocal account_client, client, storage_client, api_key_id, project_id
+        nonlocal account_client, client, storage_client, project_id
 
         if storage_client is not None:
             return
@@ -384,22 +352,14 @@ async def storage_show_command(
 
         account_client = await get_client()
         project_id = await resolve_project_id(project_id=project_id)
-        api_key_id = await resolve_api_key(project_id, api_key_id)
 
-        jwt = await resolve_token_jwt(
-            project_id=project_id,
-            api_key_id=api_key_id,
-            token_path=token_path,
-            name=name,
-            role=role,
-            room=room,
-        )
+        connection = await account_client.connect_room(project_id=project_id, name=room)
 
         print("[bold green]Connecting to room...[/bold green]")
         client = RoomClient(
             protocol=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-                token=jwt,
+                token=connection.jwt,
             )
         )
 
@@ -437,12 +397,6 @@ async def storage_rm_command(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: ApiKeyIdOption = None,
-    name: Annotated[
-        Optional[str], typer.Option(..., help="Participant name (if remote)")
-    ] = None,
-    role: str = "user",
     path: str,
     recursive: Annotated[
         bool, typer.Option("-r", help="Remove directories/folders recursively")
@@ -466,7 +420,7 @@ async def storage_rm_command(
 
         # Helper to ensure we have a storage client if we need remote operations
         async def ensure_storage_client():
-            nonlocal account_client, client, storage_client, project_id, api_key_id
+            nonlocal account_client, client, storage_client, project_id
 
             if storage_client is not None:
                 return  # Already set up
@@ -478,14 +432,9 @@ async def storage_rm_command(
 
             account_client = await get_client()
             project_id = await resolve_project_id(project_id=project_id)
-            resolved_project_id = await resolve_project_id(project_id=project_id)
-            jwt = await resolve_token_jwt(
-                project_id=resolved_project_id,
-                api_key_id=api_key_id,
-                token_path=token_path,
-                name=name,
-                role=role,
-                room=room,
+
+            connection = await account_client.connect_room(
+                project_id=project_id, name=room
             )
 
             print("[bold green]Connecting to room...[/bold green]")
@@ -494,7 +443,7 @@ async def storage_rm_command(
                     url=websocket_room_url(
                         room_name=room, base_url=meshagent_base_url()
                     ),
-                    token=jwt,
+                    token=connection.jwt,
                 )
             )
 
@@ -652,12 +601,6 @@ async def storage_ls_command(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: ApiKeyIdOption = None,
-    name: Annotated[
-        Optional[str], typer.Option(..., help="Participant name (if remote)")
-    ] = None,
-    role: str = "user",
     path: Annotated[
         str, typer.Argument(..., help="Path to list (local or room://...)")
     ],
@@ -681,7 +624,7 @@ async def storage_ls_command(
 
     # --- Set up remote connection if needed ---
     async def ensure_storage_client():
-        nonlocal account_client, client, storage_client, project_id, api_key_id
+        nonlocal account_client, client, storage_client, project_id
         if storage_client is not None:
             return
 
@@ -690,20 +633,12 @@ async def storage_ls_command(
 
         account_client = await get_client()
         project_id = await resolve_project_id(project_id=project_id)
-        api_key_id = await resolve_api_key(project_id, api_key_id)
-        jwt = await resolve_token_jwt(
-            project_id=project_id,
-            api_key_id=api_key_id,
-            token_path=token_path,
-            name=name,
-            role=role,
-            room=room,
-        )
+        connection = await account_client.connect_room(project_id=project_id, room=room)
 
         client = RoomClient(
             protocol=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-                token=jwt,
+                token=connection.jwt,
             )
         )
         await client.__aenter__()

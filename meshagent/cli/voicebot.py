@@ -1,22 +1,25 @@
 import typer
 from rich import print
 from typing import Annotated, Optional
-from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption, RoomOption
+from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.api import RoomClient, WebSocketClientProtocol, RoomException
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.cli import async_typer
+from meshagent.api import ParticipantToken, ApiScope
 from meshagent.cli.helper import (
     get_client,
     resolve_project_id,
-    resolve_api_key,
-    resolve_token_jwt,
     resolve_room,
+    resolve_key,
 )
 from typing import List
 
 from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.api.services import ServiceHost
 from pathlib import Path
+
+from meshagent.api.keys import parse_api_key
+
 
 try:
     from meshagent.livekit.agents.voice import VoiceBot
@@ -38,9 +41,6 @@ async def make_call(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    api_key_id: ApiKeyIdOption = None,
-    name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
-    role: str = "agent",
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[str] = None,
@@ -54,22 +54,29 @@ async def make_call(
     ] = [],
     auto_greet_message: Annotated[Optional[str], typer.Option()] = None,
     auto_greet_prompt: Annotated[Optional[str], typer.Option()] = None,
-    token_path: Annotated[Optional[str], typer.Option()] = None,
+    key: Annotated[
+        str,
+        typer.Option("--key", help="an api key to sign the token with"),
+    ] = None,
 ):
+    key = await resolve_key(key)
+
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        api_key_id = await resolve_api_key(project_id, api_key_id)
         room = resolve_room(room)
-        jwt = await resolve_token_jwt(
-            project_id=project_id,
-            api_key_id=api_key_id,
-            token_path=token_path,
-            name=name,
-            role=role,
-            room=room,
+
+        parsed_key = parse_api_key(key)
+        token = ParticipantToken(
+            name=agent_name, project_id=parsed_key.project_id, api_key_id=parsed_key.id
         )
 
+        token.add_api_grant(ApiScope.agent_default())
+
+        token.add_role_grant(role="agent")
+        token.add_room_grant(room)
+
+        jwt = token.to_jwt(token=parsed_key.secret)
         if rules_file is not None:
             try:
                 with open(Path(rules_file).resolve(), "r") as f:

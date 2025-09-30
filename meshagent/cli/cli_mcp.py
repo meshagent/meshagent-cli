@@ -5,7 +5,7 @@ from mcp.client.stdio import stdio_client, StdioServerParameters
 import typer
 from rich import print
 from typing import Annotated, Optional, List
-from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption, RoomOption
+from meshagent.cli.common_options import ProjectIdOption, RoomOption
 
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.api import RoomClient, WebSocketClientProtocol, RoomException
@@ -13,9 +13,8 @@ from meshagent.cli import async_typer
 from meshagent.cli.helper import (
     get_client,
     resolve_project_id,
-    resolve_api_key,
-    resolve_token_jwt,
     resolve_room,
+    resolve_key,
 )
 
 from meshagent.tools.hosting import RemoteToolkit
@@ -28,6 +27,9 @@ import os
 from meshagent.cli.services import _kv_to_dict
 import shlex
 
+from meshagent.api import ParticipantToken, ApiScope
+from meshagent.api.keys import parse_api_key
+
 app = async_typer.AsyncTyper()
 
 
@@ -36,29 +38,36 @@ async def sse(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "tool",
     url: Annotated[str, typer.Option()],
     toolkit_name: Annotated[Optional[str], typer.Option()] = None,
+    key: Annotated[
+        str,
+        typer.Option("--key", help="an api key to sign the token with"),
+    ] = None,
 ):
+    key = await resolve_key(key)
+
     if toolkit_name is None:
         toolkit_name = "mcp"
 
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        api_key_id = await resolve_api_key(project_id, api_key_id)
         room = resolve_room(room)
-        jwt = await resolve_token_jwt(
-            project_id=project_id,
-            api_key_id=api_key_id,
-            token_path=token_path,
-            name=name,
-            role=role,
-            room=room,
+
+        parsed_key = parse_api_key(key)
+        token = ParticipantToken(
+            name=name, project_id=project_id, api_key_id=parsed_key.id
         )
+
+        token.add_api_grant(ApiScope.agent_default())
+
+        token.add_role_grant(role=role)
+        token.add_room_grant(room)
+
+        jwt = token.to_jwt(token=parsed_key.secret)
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
@@ -103,30 +112,37 @@ async def stdio(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: ApiKeyIdOption = None,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "tool",
     command: Annotated[str, typer.Option()],
     toolkit_name: Annotated[Optional[str], typer.Option()] = None,
     env: Annotated[List[str], typer.Option("--env", "-e", help="KEY=VALUE")] = [],
+    key: Annotated[
+        str,
+        typer.Option("--key", help="an api key to sign the token with"),
+    ] = None,
 ):
+    key = await resolve_key(key)
+
     if toolkit_name is None:
         toolkit_name = "mcp"
 
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        api_key_id = await resolve_api_key(project_id, api_key_id)
         room = resolve_room(room)
-        jwt = await resolve_token_jwt(
-            project_id=project_id,
-            api_key_id=api_key_id,
-            token_path=token_path,
-            name=name,
-            role=role,
-            room=room,
+
+        parsed_key = parse_api_key(key)
+        token = ParticipantToken(
+            name=name, project_id=project_id, api_key_id=parsed_key.id
         )
+
+        token.add_api_grant(ApiScope.agent_default())
+
+        token.add_role_grant(role=role)
+        token.add_room_grant(room)
+
+        jwt = token.to_jwt(token=parsed_key.secret)
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(

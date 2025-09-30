@@ -22,18 +22,15 @@ from rich import print
 from typing import Annotated, Optional, List, Dict
 
 from meshagent.cli import async_typer
-from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption, RoomOption
+from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.cli.helper import (
     get_client,
     resolve_project_id,
-    resolve_api_key,
     resolve_room,
 )
 from meshagent.api import (
     RoomClient,
-    ParticipantToken,
     WebSocketClientProtocol,
-    ApiScope,
 )
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.api.room_server_client import (
@@ -355,33 +352,18 @@ async def _with_client(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
-    api_key_id: ApiKeyIdOption,
-    name: str,
-    role: str,
 ):
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        api_key_id = await resolve_api_key(project_id, api_key_id)
         room = resolve_room(room)
 
-        key = (
-            await account_client.decrypt_project_api_key(
-                project_id=project_id, id=api_key_id
-            )
-        )["token"]
-
-        token = ParticipantToken(
-            name=name, project_id=project_id, api_key_id=api_key_id
-        )
-        token.add_api_grant(ApiScope.agent_default())
-        token.add_role_grant(role=role)
-        token.add_room_grant(room)
+        connection = await account_client.connect_room(project_id=project_id, room=room)
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
         proto = WebSocketClientProtocol(
             url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-            token=token.to_jwt(token=key),
+            token=connection.jwt,
         )
         client_cm = RoomClient(protocol=proto)
         await client_cm.__aenter__()
@@ -401,13 +383,11 @@ async def list_containers(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    api_key_id: ApiKeyIdOption = None,
-    name: Annotated[str, typer.Option(...)] = "cli",
-    role: Annotated[str, typer.Option(...)] = "user",
     output: Annotated[Optional[str], typer.Option(help="json | table")] = "json",
 ):
     account_client, client = await _with_client(
-        project_id=project_id, room=room, api_key_id=api_key_id, name=name, role=role
+        project_id=project_id,
+        room=room,
     )
     try:
         containers = await client.containers.list()
@@ -436,13 +416,11 @@ async def stop_container(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    api_key_id: ApiKeyIdOption = None,
     id: Annotated[str, typer.Option(..., help="Container ID")],
-    name: Annotated[str, typer.Option(...)] = "cli",
-    role: Annotated[str, typer.Option(...)] = "user",
 ):
     account_client, client = await _with_client(
-        project_id=project_id, room=room, api_key_id=api_key_id, name=name, role=role
+        project_id=project_id,
+        room=room,
     )
     try:
         await client.containers.stop(container_id=id)
@@ -457,14 +435,12 @@ async def container_logs(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    api_key_id: ApiKeyIdOption = None,
     id: Annotated[str, typer.Option(..., help="Container ID")],
     follow: Annotated[bool, typer.Option("--follow/--no-follow")] = False,
-    name: Annotated[str, typer.Option(...)] = "cli",
-    role: Annotated[str, typer.Option(...)] = "user",
 ):
     account_client, client = await _with_client(
-        project_id=project_id, room=room, api_key_id=api_key_id, name=name, role=role
+        project_id=project_id,
+        room=room,
     )
     try:
         stream = client.containers.logs(container_id=id, follow=follow)
@@ -484,7 +460,6 @@ async def run_container(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    api_key_id: ApiKeyIdOption = None,
     image: Annotated[str, typer.Option(..., help="Image to run")],
     command: Annotated[Optional[str], typer.Option(...)] = None,
     env: Annotated[List[str], typer.Option("--env", "-e", help="KEY=VALUE")] = [],
@@ -506,11 +481,11 @@ async def run_container(
     mount_subpath: Annotated[Optional[str], typer.Option()] = None,
     participant_name: Annotated[Optional[str], typer.Option()] = None,
     role: Annotated[str, typer.Option(...)] = "user",
-    name: Annotated[str, typer.Option(...)] = "cli",
     container_name: Annotated[str, typer.Option(...)] = None,
 ):
     account_client, client = await _with_client(
-        project_id=project_id, room=room, api_key_id=api_key_id, name=name, role=role
+        project_id=project_id,
+        room=room,
     )
     try:
         creds = _parse_creds(cred)
@@ -543,7 +518,6 @@ async def run_attached(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    api_key_id: ApiKeyIdOption = None,
     image: Annotated[str, typer.Option(..., help="Image to run")],
     command: Annotated[Optional[str], typer.Option(...)] = None,
     tty: Annotated[bool, typer.Option("--tty/--no-tty")] = False,
@@ -562,7 +536,8 @@ async def run_attached(
     role: Annotated[str, typer.Option(...)] = "user",
 ):
     account_client, client = await _with_client(
-        project_id=project_id, room=room, api_key_id=api_key_id, name=name, role=role
+        project_id=project_id,
+        room=room,
     )
     try:
         env_map = _parse_keyvals(env)
@@ -618,12 +593,10 @@ async def images_list(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    api_key_id: ApiKeyIdOption = None,
-    name: Annotated[str, typer.Option(...)] = "cli",
-    role: Annotated[str, typer.Option(...)] = "user",
 ):
     account_client, client = await _with_client(
-        project_id=project_id, room=room, api_key_id=api_key_id, name=name, role=role
+        project_id=project_id,
+        room=room,
     )
     try:
         imgs = await client.containers.list_images()
@@ -638,13 +611,11 @@ async def images_delete(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    api_key_id: ApiKeyIdOption = None,
     image: Annotated[str, typer.Option(..., help="Image ref/tag to delete")],
-    name: Annotated[str, typer.Option(...)] = "cli",
-    role: Annotated[str, typer.Option(...)] = "user",
 ):
     account_client, client = await _with_client(
-        project_id=project_id, room=room, api_key_id=api_key_id, name=name, role=role
+        project_id=project_id,
+        room=room,
     )
     try:
         await client.containers.delete_image(image=image)
@@ -659,7 +630,6 @@ async def images_pull(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    api_key_id: ApiKeyIdOption = None,
     tag: Annotated[str, typer.Option(..., help="Image tag/ref to pull")],
     cred: Annotated[
         List[str],
@@ -668,11 +638,10 @@ async def images_pull(
             help="Docker creds (username,password) or (registry,username,password)",
         ),
     ] = [],
-    name: Annotated[str, typer.Option(...)] = "cli",
-    role: Annotated[str, typer.Option(...)] = "user",
 ):
     account_client, client = await _with_client(
-        project_id=project_id, room=room, api_key_id=api_key_id, name=name, role=role
+        project_id=project_id,
+        room=room,
     )
     try:
         stream = client.containers.pull_image(tag=tag, credentials=_parse_creds(cred))
@@ -688,7 +657,6 @@ async def build_context(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    api_key_id: ApiKeyIdOption = None,
     tag: Annotated[str, typer.Option(..., help="Resulting image tag")],
     dir: Annotated[
         Optional[str],
@@ -709,8 +677,6 @@ async def build_context(
             help="Docker creds (username,password) or (registry,username,password)",
         ),
     ] = [],
-    name: Annotated[str, typer.Option(...)] = "cli",
-    role: Annotated[str, typer.Option(...)] = "user",
     pretty: Annotated[bool, typer.Option(...)] = True,
 ):
     if dir is None and git is None:
@@ -730,7 +696,8 @@ async def build_context(
         ctx_bytes = await _make_targz_from_dir(Path(dir).resolve())
 
     account_client, client = await _with_client(
-        project_id=project_id, room=room, api_key_id=api_key_id, name=name, role=role
+        project_id=project_id,
+        room=room,
     )
     try:
         if dir is not None:
@@ -766,12 +733,10 @@ async def list_builds(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    api_key_id: ApiKeyIdOption = None,
-    name: Annotated[str, typer.Option(...)] = "cli",
-    role: Annotated[str, typer.Option(...)] = "user",
 ):
     account_client, client = await _with_client(
-        project_id=project_id, room=room, api_key_id=api_key_id, name=name, role=role
+        project_id=project_id,
+        room=room,
     )
     try:
         builds = await client.containers.list_builds()
@@ -786,13 +751,11 @@ async def stop_build(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    api_key_id: ApiKeyIdOption = None,
     request_id: Annotated[str, typer.Option(..., help="Build request_id to stop")],
-    name: Annotated[str, typer.Option(...)] = "cli",
-    role: Annotated[str, typer.Option(...)] = "user",
 ):
     account_client, client = await _with_client(
-        project_id=project_id, room=room, api_key_id=api_key_id, name=name, role=role
+        project_id=project_id,
+        room=room,
     )
     try:
         await client.containers.stop_build(request_id=request_id)

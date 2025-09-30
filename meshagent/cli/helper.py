@@ -8,9 +8,8 @@ from meshagent.cli import auth_async
 from meshagent.cli import async_typer
 from meshagent.api.helpers import meshagent_base_url
 from meshagent.api.accounts_client import AccountsClient
-from meshagent.api.participant_token import ParticipantToken, ApiScope
-
 import os
+from rich import print
 
 SETTINGS_FILE = Path.home() / ".meshagent" / "project.json"
 
@@ -47,19 +46,6 @@ async def get_active_project():
 async def set_active_project(project_id: str | None):
     settings = _load_settings()
     settings.active_project = project_id
-    _save_settings(settings)
-
-
-async def get_active_api_key(project_id: str) -> str:
-    settings = _load_settings()
-    if settings is None:
-        return None
-    return settings.active_api_keys.get(project_id, None)
-
-
-async def set_active_api_key(project_id: str, api_key_id: str | None):
-    settings = _load_settings()
-    settings.active_api_keys[project_id] = api_key_id
     _save_settings(settings)
 
 
@@ -118,64 +104,13 @@ async def resolve_project_id(project_id: Optional[str] = None):
     return project_id
 
 
-async def resolve_api_key(project_id: str, api_key_id: Optional[str] = None):
-    if api_key_id is None:
-        api_key_id = await get_active_api_key(project_id=project_id)
-
-    if api_key_id is None:
-        print(
-            "[red]API Key ID not specified, activate an api key or pass an api key id on the command line[/red]"
-        )
-        raise typer.Exit(code=1)
-
-    return api_key_id
-
-
-async def resolve_token_jwt(
-    *,
-    project_id: str,
-    api_key_id: Optional[str] = None,
-    token_path: Optional[str] = None,
-    name: Optional[str] = None,
-    role: Optional[str] = None,
-    room: Optional[str] = None,
-) -> str:
-    jwt = None
-
-    if api_key_id is None:
-        if token_path is not None:
-            if token_path is None:
-                token_path = os.getenv(
-                    "MESHAGENT_TOKEN_PATH",
-                    (Path.home() / ".meshagent" / "token").as_posix(),
-                )
-
-            p = Path(token_path)
-            jwt = p.read_text().strip()
-
-        else:
-            jwt = os.getenv("MESHAGENT_TOKEN", None)
-
-    if jwt is None:
-        account_client = await get_client()
-        try:
-            key = (
-                await account_client.decrypt_project_api_key(
-                    project_id=project_id, id=api_key_id
-                )
-            )["token"]
-
-            token = ParticipantToken(
-                name=name, project_id=project_id, api_key_id=api_key_id
+async def resolve_key(key: str):
+    if key is None:
+        key = os.getenv("MESHAGENT_API_KEY")
+        if key is None:
+            print(
+                "[red]--key is required if MESHGENT_API_KEY is not set. You can use meshagent api-key create to create a new api key."
             )
+            raise typer.Exit(1)
 
-            token.add_api_grant(ApiScope.agent_default())
-
-            token.add_role_grant(role=role)
-            token.add_room_grant(room)
-
-            jwt = token.to_jwt(token=key)
-        finally:
-            await account_client.close()
-
-    return jwt
+    return key

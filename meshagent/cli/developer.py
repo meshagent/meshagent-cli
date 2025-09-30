@@ -1,21 +1,16 @@
 import asyncio
 import json
-import typer
 from rich import print
-from typing import Annotated
-from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption, RoomOption
+from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.cli import async_typer
 from meshagent.cli.helper import (
     get_client,
     resolve_project_id,
-    resolve_api_key,
     resolve_room,
 )
 from meshagent.api import (
     RoomClient,
-    ParticipantToken,
     WebSocketClientProtocol,
-    ApiScope,
 )
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 
@@ -27,11 +22,6 @@ async def watch_logs(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    api_key_id: ApiKeyIdOption = None,
-    name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
-    role: Annotated[
-        str, typer.Option(..., help="Role to assign to this participant")
-    ] = "user",
 ):
     """
     Watch logs from the developer feed in the specified room.
@@ -41,29 +31,15 @@ async def watch_logs(
     try:
         # Resolve project ID (or fetch from the active project if not provided)
         project_id = await resolve_project_id(project_id=project_id)
-        api_key_id = await resolve_api_key(project_id, api_key_id)
         room = resolve_room(room)
 
-        # Decrypt the project's API key
-        key = (
-            await account_client.decrypt_project_api_key(
-                project_id=project_id, id=api_key_id
-            )
-        )["token"]
-
-        # Build a participant token
-        token = ParticipantToken(
-            name=name, project_id=project_id, api_key_id=api_key_id
-        )
-        token.add_api_grant(ApiScope.agent_default())
-        token.add_role_grant(role=role)
-        token.add_room_grant(room)
+        connection = await account_client.connect_room(project_id=project_id, room=room)
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
             protocol=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-                token=token.to_jwt(token=key),
+                token=connection.jwt,
             )
         ) as client:
             # Create a developer client from the room client

@@ -1,21 +1,19 @@
 import typer
 from rich import print
 from typing import Annotated, Optional
-from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption, RoomOption
+from meshagent.cli.common_options import ProjectIdOption, RoomOption
 import json
 import asyncio
 
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.api import (
     RoomClient,
-    ParticipantToken,
     WebSocketClientProtocol,
     RoomException,
-    ApiScope,
 )
-from meshagent.cli.helper import resolve_project_id, resolve_api_key
+from meshagent.cli.helper import resolve_project_id
 from meshagent.cli import async_typer
-from meshagent.cli.helper import get_client, resolve_token_jwt, resolve_room
+from meshagent.cli.helper import get_client, resolve_room
 
 app = async_typer.AsyncTyper()
 
@@ -25,9 +23,6 @@ async def ask(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    api_key_id: ApiKeyIdOption = None,
-    name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
-    role: str = "user",
     agent: Annotated[str, typer.Option()],
     input: Annotated[str, typer.Option()],
     timeout: Annotated[
@@ -40,27 +35,15 @@ async def ask(
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        api_key_id = await resolve_api_key(project_id, api_key_id)
         room = resolve_room(room)
 
-        key = (
-            await account_client.decrypt_project_api_key(
-                project_id=project_id, id=api_key_id
-            )
-        )["token"]
-
-        token = ParticipantToken(
-            name=name, project_id=project_id, api_key_id=api_key_id
-        )
-        token.add_api_grant(ApiScope.agent_default())
-        token.add_role_grant(role=role)
-        token.add_room_grant(room)
+        connection = await account_client.connect_room(project_id=project_id, room=room)
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
             protocol=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-                token=token.to_jwt(token=key),
+                token=connection.jwt,
             )
         ) as client:
             found = timeout == 0
@@ -98,10 +81,6 @@ async def invoke_tool(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: ApiKeyIdOption = None,
-    name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
-    role: str = "user",
     toolkit: Annotated[str, typer.Option(..., help="Toolkit name")],
     tool: Annotated[str, typer.Option(..., help="Tool name")],
     arguments: Annotated[
@@ -131,23 +110,15 @@ async def invoke_tool(
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        api_key_id = await resolve_api_key(project_id, api_key_id)
         room = resolve_room(room)
 
-        jwt = await resolve_token_jwt(
-            project_id=project_id,
-            api_key_id=api_key_id,
-            token_path=token_path,
-            name=name,
-            role=role,
-            room=room,
-        )
+        connection = await account_client.connect_room(project_id=project_id, room=room)
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
             protocol=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-                token=jwt,
+                token=connection.jwt,
             )
         ) as client:
             found = timeout == 0
@@ -195,10 +166,6 @@ async def list_agents_command(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: ApiKeyIdOption = None,
-    name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
-    role: str = "user",
 ):
     """
     List all agents available in the room.
@@ -206,23 +173,15 @@ async def list_agents_command(
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        api_key_id = await resolve_api_key(project_id, api_key_id)
         room = resolve_room(room)
 
-        jwt = await resolve_token_jwt(
-            project_id=project_id,
-            api_key_id=api_key_id,
-            token_path=token_path,
-            name=name,
-            role=role,
-            room=room,
-        )
+        connection = await account_client.connect_room(project_id=project_id, room=room)
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
             protocol=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-                token=jwt,
+                token=connection.jwt,
             )
         ) as client:
             print("[bold green]Fetching list of agents...[/bold green]")
@@ -251,9 +210,6 @@ async def list_toolkits_command(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    token_path: Annotated[Optional[str], typer.Option()] = None,
-    api_key_id: ApiKeyIdOption = None,
-    name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "user",
     participant_id: Annotated[
         Optional[str], typer.Option(..., help="Optional participant ID")
@@ -265,22 +221,14 @@ async def list_toolkits_command(
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        api_key_id = await resolve_api_key(project_id, api_key_id)
         room = resolve_room(room)
-        jwt = await resolve_token_jwt(
-            project_id=project_id,
-            api_key_id=api_key_id,
-            token_path=token_path,
-            name=name,
-            role=role,
-            room=room,
-        )
+        connection = await account_client.connect_room(project_id=project_id, room=room)
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
             protocol=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-                token=jwt,
+                token=connection.jwt,
             )
         ) as client:
             print("[bold green]Fetching list of toolkits...[/bold green]")

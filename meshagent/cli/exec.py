@@ -4,7 +4,7 @@ from meshagent.api.websocket_protocol import WebSocketClientProtocol
 from meshagent.api import RoomClient
 from meshagent.api.helpers import websocket_room_url
 from typing import Annotated, Optional
-from meshagent.cli.common_options import ProjectIdOption, ApiKeyIdOption, RoomOption
+from meshagent.cli.common_options import ProjectIdOption, RoomOption
 import asyncio
 import typer
 from rich import print
@@ -18,14 +18,11 @@ import threading
 import time
 
 
-from meshagent.api import ParticipantToken, ApiScope
-
 import logging
 
 from meshagent.cli.helper import (
     get_client,
     resolve_project_id,
-    resolve_api_key,
     resolve_room,
 )
 
@@ -89,7 +86,6 @@ def register(app: typer.Typer):
         room: RoomOption,
         name: Annotated[Optional[str], typer.Option()] = None,
         image: Annotated[Optional[str], typer.Option()] = None,
-        api_key_id: ApiKeyIdOption = None,
         command: Annotated[list[str], typer.Argument(...)] = None,
         tty: bool = False,
         room_storage_path: str = "/data",
@@ -98,28 +94,12 @@ def register(app: typer.Typer):
         client = await get_client()
         try:
             project_id = await resolve_project_id(project_id=project_id)
-            api_key_id = await resolve_api_key(
-                project_id=project_id, api_key_id=api_key_id
-            )
             room = resolve_room(room)
 
-            token = ParticipantToken(
-                name="tty", project_id=project_id, api_key_id=api_key_id
-            )
-            token.add_api_grant(ApiScope.agent_default())
-
-            key = (
-                await client.decrypt_project_api_key(
-                    project_id=project_id, id=api_key_id
-                )
-            )["token"]
-
-            token.add_role_grant(role="user")
-            token.add_room_grant(room)
+            connection = await client.connect_room(project_id=project_id, room=room)
 
             ws_url = (
-                websocket_room_url(room_name=room)
-                + f"/exec?token={token.to_jwt(token=key)}"
+                websocket_room_url(room_name=room) + f"/exec?token={connection.jwt}"
             )
 
             if image:
@@ -157,7 +137,7 @@ def register(app: typer.Typer):
             async with RoomClient(
                 protocol=WebSocketClientProtocol(
                     url=websocket_room_url(room_name=room),
-                    token=token.to_jwt(token=key),
+                    token=connection.jwt,
                 )
             ):
                 try:
