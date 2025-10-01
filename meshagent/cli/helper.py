@@ -7,7 +7,7 @@ from typing import Optional
 from meshagent.cli import auth_async
 from meshagent.cli import async_typer
 from meshagent.api.helpers import meshagent_base_url
-from meshagent.api.accounts_client import AccountsClient
+from meshagent.api.client import Meshagent
 import os
 from rich import print
 
@@ -70,7 +70,7 @@ app = async_typer.AsyncTyper()
 
 async def get_client():
     access_token = await auth_async.get_access_token()
-    return AccountsClient(base_url=meshagent_base_url(), token=access_token)
+    return Meshagent(base_url=meshagent_base_url(), token=access_token)
 
 
 def print_json_table(records: list, *cols):

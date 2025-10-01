@@ -8,7 +8,7 @@ from meshagent.cli.common_options import ProjectIdOption
 
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client, print_json_table, resolve_project_id
-from meshagent.api.accounts_client import (
+from meshagent.api.client import (
     PullSecret,
     KeysSecret,
     SecretLike,
