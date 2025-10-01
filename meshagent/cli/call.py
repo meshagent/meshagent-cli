@@ -157,6 +157,7 @@ async def _make_call(
         str, typer.Option(..., help="JSON string with arguments for the call")
     ] = {},
     token: Optional[ParticipantToken] = None,
+    permissions: Optional[ApiScope] = None,
     key: str,
 ):
     """
@@ -187,7 +188,7 @@ async def _make_call(
             token = ParticipantToken(
                 name=participant_name, project_id=project_id, api_key_id=parsed_key.id
             )
-            token.add_api_grant(ApiScope.agent_default())
+            token.add_api_grant(permissions or ApiScope.agent_default())
             token.add_role_grant(role=role)
             token.add_room_grant(room)
             token.grants.append(ParticipantGrant(name="tunnel_ports", scope="9000"))

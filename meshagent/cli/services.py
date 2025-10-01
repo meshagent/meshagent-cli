@@ -467,10 +467,10 @@ async def service_run(
 
             sys.stdout.write("\n")
 
-            for port in spec.ports:
-                print(f"[bold green]Connecting port {port.num}...[/bold green]")
+            for p in spec.ports:
+                print(f"[bold green]Connecting port {p.num}...[/bold green]")
 
-                for endpoint in port.endpoints:
+                for endpoint in p.endpoints:
                     print(
                         f"[bold green]Connecting endpoint {endpoint.path} as {endpoint.identity}...[/bold green]"
                     )
@@ -481,10 +481,10 @@ async def service_run(
                                 room=room,
                                 project_id=project_id,
                                 participant_name=endpoint.identity,
-                                url=f"http://localhost:{port.num}{endpoint.path}",
+                                url=f"http://localhost:{p.num}{endpoint.path}",
                                 arguments={},
-                                token=endpoint.api,
                                 key=key,
+                                permissions=endpoint.api,
                             )
                         )
                     )
