@@ -72,7 +72,7 @@ async def get_client():
     access_token = await auth_async.get_access_token()
     return Meshagent(
         base_url=meshagent_base_url(),
-        token=await resolve_key(project_id=None, key=None),
+        token=access_token,
     )
 
 
