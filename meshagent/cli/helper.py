@@ -70,7 +70,10 @@ app = async_typer.AsyncTyper()
 
 async def get_client():
     access_token = await auth_async.get_access_token()
-    return Meshagent(base_url=meshagent_base_url(), token=access_token)
+    return Meshagent(
+        base_url=meshagent_base_url(),
+        token=await resolve_key(project_id=None, key=None),
+    )
 
 
 def print_json_table(records: list, *cols):
@@ -120,7 +123,7 @@ async def resolve_project_id(project_id: Optional[str] = None):
     return project_id
 
 
-async def resolve_key(project_id: str | None, key: str):
+async def resolve_key(project_id: str | None, key: str | None):
     project_id = await resolve_project_id(project_id=project_id)
     if key is None:
         key = await get_active_api_key(project_id=project_id)
