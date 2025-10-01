@@ -7,7 +7,6 @@ from meshagent.cli.helper import get_client, resolve_key, resolve_project_id
 import pathlib
 from typing import Optional
 from meshagent.api.participant_token import ParticipantTokenSpec
-from meshagent.api.keys import parse_api_key
 from pydantic_yaml import parse_yaml_raw_as
 from meshagent.cli.common_options import ProjectIdOption
 

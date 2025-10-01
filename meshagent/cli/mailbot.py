@@ -28,7 +28,6 @@ from pathlib import Path
 from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.openai.tools.responses_adapter import WebSearchTool
 
-from meshagent.api.keys import parse_api_key
 
 app = async_typer.AsyncTyper(help="Join a mailbot to a room")
 

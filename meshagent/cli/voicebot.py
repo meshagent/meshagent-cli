@@ -18,7 +18,6 @@ from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.api.services import ServiceHost
 from pathlib import Path
 
-from meshagent.api.keys import parse_api_key
 
 
 try:

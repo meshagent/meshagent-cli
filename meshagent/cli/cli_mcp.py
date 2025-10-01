@@ -28,7 +28,6 @@ from meshagent.cli.services import _kv_to_dict
 import shlex
 
 from meshagent.api import ParticipantToken, ApiScope
-from meshagent.api.keys import parse_api_key
 
 app = async_typer.AsyncTyper()
 

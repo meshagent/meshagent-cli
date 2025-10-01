@@ -23,7 +23,6 @@ import ipaddress
 import pathlib
 from pydantic_yaml import parse_yaml_raw_as
 from meshagent.api.participant_token import ParticipantTokenSpec
-from meshagent.api.keys import parse_api_key
 
 app = async_typer.AsyncTyper()
 
