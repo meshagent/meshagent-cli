@@ -47,7 +47,7 @@ async def webhook_create(
         project_id = await resolve_project_id(project_id=project_id)
 
         payload_obj = json.loads(payload) if payload else None
-        webhook = await client.create_project_webhook(
+        webhook = await client.create_webhook(
             project_id=project_id,
             name=name,
             url=url,

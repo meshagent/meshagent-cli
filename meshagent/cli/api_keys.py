@@ -58,7 +58,7 @@ async def create(
     project_id = await resolve_project_id(project_id=project_id)
 
     client = await get_client()
-    api_key = await client.create_project_api_key(
+    api_key = await client.create_api_key(
         project_id=project_id, name=name, description=description
     )
     if not silent:
