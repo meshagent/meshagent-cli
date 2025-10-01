@@ -179,9 +179,8 @@ async def make_call(
         project_id = await resolve_project_id(project_id=project_id)
         room = resolve_room(room)
 
-        parsed_key = parse_api_key(key)
         token = ParticipantToken(
-            name=agent_name, project_id=parsed_key.project_id, api_key_id=parsed_key.id
+            name=agent_name,
         )
 
         token.add_api_grant(ApiScope.agent_default())
@@ -189,7 +188,7 @@ async def make_call(
         token.add_role_grant(role=role)
         token.add_room_grant(room)
 
-        jwt = token.to_jwt(token=parsed_key.secret)
+        jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
         async with RoomClient(

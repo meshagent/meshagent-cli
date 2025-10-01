@@ -110,11 +110,8 @@ async def make_call(
         with open(str(pathlib.Path(permissions).expanduser().resolve()), "rb") as f:
             spec = parse_yaml_raw_as(ParticipantTokenSpec, f.read())
 
-            parsed_key = parse_api_key(key)
             token = ParticipantToken(
                 name=spec.identity,
-                project_id=project_id,
-                api_key_id=parsed_key.id,
             )
             token.add_role_grant(role=role)
             token.add_room_grant(room)
@@ -184,9 +181,8 @@ async def _make_call(
         room = resolve_room(room)
 
         if token is None:
-            parsed_key = parse_api_key(key)
             token = ParticipantToken(
-                name=participant_name, project_id=project_id, api_key_id=parsed_key.id
+                name=participant_name,
             )
             token.add_api_grant(permissions or ApiScope.agent_default())
             token.add_role_grant(role=role)
@@ -202,7 +198,7 @@ async def _make_call(
                 data = {
                     "room_url": websocket_room_url(room_name=room),
                     "room_name": room,
-                    "token": token.to_jwt(token=parsed_key.secret),
+                    "token": token.to_jwt(api_key=key),
                     "arguments": arguments,
                 }
 
@@ -216,7 +212,7 @@ async def _make_call(
                     url=websocket_room_url(
                         room_name=room, base_url=meshagent_base_url()
                     ),
-                    token=token.to_jwt(token=parsed_key.secret),
+                    token=token.to_jwt(api_key=key),
                 )
             ) as client:
                 print("[bold green]Making agent call...[/bold green]")

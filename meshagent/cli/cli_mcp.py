@@ -57,9 +57,8 @@ async def sse(
         project_id = await resolve_project_id(project_id=project_id)
         room = resolve_room(room)
 
-        parsed_key = parse_api_key(key)
         token = ParticipantToken(
-            name=name, project_id=project_id, api_key_id=parsed_key.id
+            name=name,
         )
 
         token.add_api_grant(ApiScope.agent_default())
@@ -67,7 +66,7 @@ async def sse(
         token.add_role_grant(role=role)
         token.add_room_grant(room)
 
-        jwt = token.to_jwt(token=parsed_key.secret)
+        jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
@@ -132,9 +131,8 @@ async def stdio(
         project_id = await resolve_project_id(project_id=project_id)
         room = resolve_room(room)
 
-        parsed_key = parse_api_key(key)
         token = ParticipantToken(
-            name=name, project_id=project_id, api_key_id=parsed_key.id
+            name=name,
         )
 
         token.add_api_grant(ApiScope.agent_default())
@@ -142,7 +140,7 @@ async def stdio(
         token.add_role_grant(role=role)
         token.add_room_grant(room)
 
-        jwt = token.to_jwt(token=parsed_key.secret)
+        jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
