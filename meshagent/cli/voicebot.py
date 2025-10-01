@@ -19,7 +19,6 @@ from meshagent.api.services import ServiceHost
 from pathlib import Path
 
 
-
 try:
     from meshagent.livekit.agents.voice import VoiceBot
 
