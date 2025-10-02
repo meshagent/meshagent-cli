@@ -171,6 +171,7 @@ async def service_create(
                     raise typer.Exit(code=1)
 
                 service_obj = Service.from_spec(spec)
+                print(service_obj.model_dump_json())
 
         else:
             # ✅ validate / coerce port specs
