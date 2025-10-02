@@ -16,7 +16,7 @@ from meshagent.api.services import well_known_service_path
 from meshagent.api.specs.service import ServiceSpec
 from meshagent.api.keys import parse_api_key
 
-from meshagent.api.accounts_client import (
+from meshagent.api.client import (
     Service,
     ServiceStorageMounts,
     RoomStorageMount,
@@ -47,7 +47,7 @@ from meshagent.cli.common_options import OutputFormatOption
 from pydantic_yaml import parse_yaml_raw_as
 
 # Pydantic basemodels
-from meshagent.api.accounts_client import Port, Services
+from meshagent.api.client import Port, Services
 
 from meshagent.cli.call import _make_call
 

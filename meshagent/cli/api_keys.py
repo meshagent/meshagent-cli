@@ -24,7 +24,7 @@ async def list(
 ):
     project_id = await resolve_project_id(project_id=project_id)
     client = await get_client()
-    keys = (await client.list_project_api_keys(project_id=project_id))["keys"]
+    keys = (await client.list_api_keys(project_id=project_id))["keys"]
 
     if len(keys) > 0:
         if o == "json":
@@ -52,13 +52,13 @@ async def create(
         typer.Option(
             ..., help="use this key by default for commands that accept an API key"
         ),
-    ],
+    ] = False,
     silent: Annotated[bool, typer.Option(..., help="do not print api key")] = False,
 ):
     project_id = await resolve_project_id(project_id=project_id)
 
     client = await get_client()
-    api_key = await client.create_project_api_key(
+    api_key = await client.create_api_key(
         project_id=project_id, name=name, description=description
     )
     if not silent:
@@ -98,5 +98,5 @@ async def delete(*, project_id: ProjectIdOption = None, id: str):
     project_id = await resolve_project_id(project_id=project_id)
 
     client = await get_client()
-    await client.delete_project_api_key(project_id=project_id, id=id)
+    await client.delete_api_key(project_id=project_id, id=id)
     await client.close()

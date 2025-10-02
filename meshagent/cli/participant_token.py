@@ -7,7 +7,6 @@ from meshagent.cli.helper import get_client, resolve_key, resolve_project_id
 import pathlib
 from typing import Optional
 from meshagent.api.participant_token import ParticipantTokenSpec
-from meshagent.api.keys import parse_api_key
 from pydantic_yaml import parse_yaml_raw_as
 from meshagent.cli.common_options import ProjectIdOption
 
@@ -36,14 +35,11 @@ async def generate(
 
     client = await get_client()
     try:
-        parsed_key = parse_api_key(key)
-        project_id = await parsed_key.project_id
-
         with open(str(pathlib.Path(input).expanduser().resolve()), "rb") as f:
             spec = parse_yaml_raw_as(ParticipantTokenSpec, f.read())
 
         token = ParticipantToken(
-            name=spec.identity, project_id=project_id, api_key_id=parsed_key.id
+            name=spec.identity,
         )
 
         if spec.role is not None:
@@ -54,11 +50,11 @@ async def generate(
         token.add_api_grant(spec.api)
 
         if output is None:
-            print(token.to_jwt(token=parsed_key.secret))
+            print(token.to_jwt(api_key=key))
 
         else:
             pathlib.Path(output).expanduser().resolve().write_text(
-                token.to_jwt(token=parsed_key.secret)
+                token.to_jwt(api_key=key)
             )
 
     finally:

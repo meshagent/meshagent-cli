@@ -47,7 +47,7 @@ async def webhook_create(
         project_id = await resolve_project_id(project_id=project_id)
 
         payload_obj = json.loads(payload) if payload else None
-        webhook = await client.create_project_webhook(
+        webhook = await client.create_webhook(
             project_id=project_id,
             name=name,
             url=url,
@@ -70,7 +70,7 @@ async def webhook_list(
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        hooks = await client.list_project_webhooks(project_id)
+        hooks = await client.list_webhooks(project_id)
         print_json_table(
             hooks.get("webhooks"),
             "id",
@@ -94,7 +94,7 @@ async def webhook_delete(
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        await client.delete_project_webhook(project_id, webhook_id)
+        await client.delete_webhook(project_id, webhook_id)
         print(f"[green]Webhook {webhook_id} deleted.[/]")
     finally:
         await client.close()
