@@ -52,7 +52,7 @@ async def create(
         typer.Option(
             ..., help="use this key by default for commands that accept an API key"
         ),
-    ],
+    ] = False,
     silent: Annotated[bool, typer.Option(..., help="do not print api key")] = False,
 ):
     project_id = await resolve_project_id(project_id=project_id)
