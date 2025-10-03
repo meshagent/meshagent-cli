@@ -23,10 +23,12 @@ from meshagent.cli import voicebot
 from meshagent.cli import mailbot
 from meshagent.cli import containers
 from meshagent.cli import oauth2
+from meshagent.cli import helpers
 from meshagent.cli.exec import register as register_exec
 from meshagent.cli.version import __version__
 from meshagent.cli.helper import get_active_api_key
 from meshagent.cli import otel
+
 
 from art import tprint
 
@@ -64,6 +66,7 @@ app.add_typer(voicebot.app, name="voicebot")
 app.add_typer(mailbot.app, name="mailbot")
 app.add_typer(containers.app, name="container")
 app.add_typer(oauth2.app, name="oauth2")
+app.add_typer(helpers.app, name="helpers")
 
 register_exec(app)
 
