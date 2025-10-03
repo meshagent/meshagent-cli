@@ -52,7 +52,7 @@ def _pkce_pair():
 
 
 def _api_base() -> str:
-    api = os.getenv("MESHAGENT_API_URL")
+    api = os.getenv("MESHAGENT_API_URL", "https://api.meshagent.com")
     if not api:
         raise RuntimeError("MESHAGENT_API_URL is not set")
     return api.rstrip("/")

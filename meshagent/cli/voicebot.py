@@ -122,7 +122,6 @@ async def make_call(
 @app.async_command("service")
 async def service(
     *,
-    project_id: ProjectIdOption = None,
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[str] = None,
