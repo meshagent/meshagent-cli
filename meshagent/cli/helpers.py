@@ -3,7 +3,6 @@ from meshagent.cli import async_typer
 
 from meshagent.agents.planning import DynamicPlanningResponder, PlanningResponder
 from meshagent.openai.tools import OpenAIResponsesAdapter
-from meshagent.markitdown.tools import MarkItDownToolkit
 from meshagent.tools.storage import StorageToolkit
 from meshagent.api.services import ServiceHost
 
@@ -114,15 +113,6 @@ async def helpers_service():
                 validate_webhook_secret=False,
                 schemas=[SchemaRegistration(name=name, schema=schema)],
             )
-
-    @service.path("/toolkits/meshagent.markitdown")
-    class HostedMarkItDownToolkitLegacy(MarkItDownToolkit):
-        pass
-
-    @service.path("/toolkits/markitdown")
-    class HostedMarkItDownToolkit(MarkItDownToolkit):
-        def __init__(self):
-            super().__init__(name="markitdown")
 
     @service.path("/toolkits/storage")
     class HostedStorageToolkit(StorageToolkit):
