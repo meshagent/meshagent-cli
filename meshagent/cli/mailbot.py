@@ -214,7 +214,6 @@ async def make_call(
 @app.async_command("service")
 async def service(
     *,
-    room: RoomOption,
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[str] = None,
@@ -236,8 +235,6 @@ async def service(
     port: Annotated[Optional[int], typer.Option()] = None,
     path: Annotated[str, typer.Option()] = "/agent",
 ):
-    room = resolve_room(room)
-
     print("[bold green]Connecting to room...[/bold green]", flush=True)
 
     service = ServiceHost(host=host, port=port)
