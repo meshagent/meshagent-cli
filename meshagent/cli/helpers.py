@@ -1,6 +1,5 @@
 from meshagent.cli import async_typer
 
-import asyncio
 
 from meshagent.agents.planning import DynamicPlanningResponder, PlanningResponder
 from meshagent.openai.tools import OpenAIResponsesAdapter
@@ -23,9 +22,9 @@ import logging
 
 app = async_typer.AsyncTyper(help="Join a mailbot to a room")
 
+
 @app.async_command("service")
 async def helpers_service():
-
     logging.getLogger("openai").setLevel(logging.ERROR)
     logging.getLogger("httpx").setLevel(logging.ERROR)
 
@@ -51,7 +50,6 @@ async def helpers_service():
                 },
             )
 
-
     @service.path("/schema_planner")
     class DynamicPlanner(DynamicPlanningResponder):
         def __init__(self, **kwargs):
@@ -61,7 +59,6 @@ async def helpers_service():
                 description="an agent that can produces output that matches a schema",
                 llm_adapter=OpenAIResponsesAdapter(model="gpt-4.1"),
             )
-
 
     @service.path("/schemas/document")
     class DocumentSchemaRegistry(SchemaRegistry):
@@ -74,7 +71,6 @@ async def helpers_service():
                 schemas=[SchemaRegistration(name=name, schema=schema)],
             )
 
-
     @service.path("/schemas/superdoc")
     class SuperdocDocumentSchemaRegistry(SchemaRegistry):
         def __init__(self):
@@ -85,7 +81,6 @@ async def helpers_service():
                 validate_webhook_secret=False,
                 schemas=[SchemaRegistration(name=name, schema=schema)],
             )
-
 
     @service.path("/schemas/gallery")
     class GalleryDocumentSchemaRegistry(SchemaRegistry):
@@ -98,7 +93,6 @@ async def helpers_service():
                 schemas=[SchemaRegistration(name=name, schema=schema)],
             )
 
-
     @service.path("/schemas/thread")
     class ThreadDocumentSchemaRegistry(SchemaRegistry):
         def __init__(self):
@@ -109,7 +103,6 @@ async def helpers_service():
                 validate_webhook_secret=False,
                 schemas=[SchemaRegistration(name=name, schema=schema)],
             )
-
 
     @service.path("/schemas/presentation")
     class PresentationDocumentSchemaRegistry(SchemaRegistry):
@@ -122,17 +115,14 @@ async def helpers_service():
                 schemas=[SchemaRegistration(name=name, schema=schema)],
             )
 
-
     @service.path("/toolkits/meshagent.markitdown")
     class HostedMarkItDownToolkitLegacy(MarkItDownToolkit):
         pass
-
 
     @service.path("/toolkits/markitdown")
     class HostedMarkItDownToolkit(MarkItDownToolkit):
         def __init__(self):
             super().__init__(name="markitdown")
-
 
     @service.path("/toolkits/storage")
     class HostedStorageToolkit(StorageToolkit):
