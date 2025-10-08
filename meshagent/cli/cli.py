@@ -27,7 +27,7 @@ from meshagent.cli import helpers
 from meshagent.cli.exec import register as register_exec
 from meshagent.cli.version import __version__
 from meshagent.cli.helper import get_active_api_key
-from meshagent.cli import otel
+from meshagent.otel import otel_config
 
 
 from art import tprint
@@ -38,8 +38,8 @@ import os
 import sys
 from pathlib import Path
 
+otel_config(service_name="meshagent-cli")
 
-otel.init(level=logging.INFO)
 
 # Turn down OpenAI logs, they are a bit noisy
 logging.getLogger("openai").setLevel(logging.ERROR)

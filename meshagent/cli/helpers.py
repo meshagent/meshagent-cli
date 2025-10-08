@@ -15,7 +15,6 @@ from meshagent.agents import thread_schema
 
 from meshagent.api import SchemaRegistry, SchemaRegistration
 
-from meshagent.otel import otel_config
 
 import logging
 
@@ -26,8 +25,6 @@ app = async_typer.AsyncTyper(help="Join a mailbot to a room")
 async def helpers_service():
     logging.getLogger("openai").setLevel(logging.ERROR)
     logging.getLogger("httpx").setLevel(logging.ERROR)
-
-    otel_config(service_name="meshagent-server")
 
     service = ServiceHost(port=9000)
 
