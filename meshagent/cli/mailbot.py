@@ -1,4 +1,3 @@
-from meshagent.agents.mail import MailWorker
 import typer
 from meshagent.api import ParticipantToken
 from rich import print
@@ -21,7 +20,7 @@ from meshagent.openai import OpenAIResponsesAdapter
 from meshagent.openai.tools.responses_adapter import ImageGenerationTool, LocalShellTool
 from meshagent.api.services import ServiceHost
 
-from meshagent.agents.mail import room_address
+
 from typing import List
 from pathlib import Path
 
@@ -46,7 +45,10 @@ def build_mailbot(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    queue: str,
 ):
+    from meshagent.agents.mail import MailWorker
+
     requirements = []
 
     toolkits = []
@@ -77,15 +79,13 @@ def build_mailbot(
                 name=agent_name,
                 requires=requirements,
                 toolkits=toolkits,
+                queue=queue,
                 rules=rule if len(rule) > 0 else None,
             )
 
         async def start(self, *, room: RoomClient):
-            parsed_token = ParticipantToken.from_jwt(
-                room.protocol.token, validate=False
-            )
             print(
-                f"[bold green]Send an email interact with your mailbot: {room_address(project_id=parsed_token.project_id, room_name=room.room_name)}[/bold green]"
+                "[bold green]Configure and send an email interact with your mailbot[/bold green]"
             )
             return await super().start(room=room)
 
@@ -148,6 +148,7 @@ async def make_call(
         str,
         typer.Option("--key", help="an api key to sign the token with"),
     ] = None,
+    queue: Annotated[str, typer.Option(..., help="the name of the mail queue")],
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -194,6 +195,7 @@ async def make_call(
                 image_generation=None,
                 web_search=web_search,
                 rules_file=rules_file,
+                queue=queue,
             )
 
             bot = CustomMailbot()
@@ -234,6 +236,7 @@ async def service(
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
     path: Annotated[str, typer.Option()] = "/agent",
+    queue: Annotated[str, typer.Option(..., help="the name of the mail queue")],
 ):
     print("[bold green]Connecting to room...[/bold green]", flush=True)
 
@@ -241,6 +244,7 @@ async def service(
     service.add_path(
         path=path,
         cls=build_mailbot(
+            queue=queue,
             computer_use=None,
             model=model,
             local_shell=local_shell,

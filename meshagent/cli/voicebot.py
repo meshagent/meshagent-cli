@@ -19,18 +19,6 @@ from meshagent.api.services import ServiceHost
 from pathlib import Path
 
 
-try:
-    from meshagent.livekit.agents.voice import VoiceBot
-
-except ImportError:
-
-    class VoiceBot:
-        def __init__(self, **kwargs):
-            raise RoomException(
-                "meshagent.livekit module not found, voicebots are not available"
-            )
-
-
 app = async_typer.AsyncTyper(help="Join a voicebot to a room")
 
 
@@ -57,6 +45,16 @@ async def make_call(
         typer.Option("--key", help="an api key to sign the token with"),
     ] = None,
 ):
+    try:
+        from meshagent.livekit.agents.voice import VoiceBot
+    except ImportError:
+
+        class VoiceBot:
+            def __init__(self, **kwargs):
+                raise RoomException(
+                    "meshagent.livekit module not found, voicebots are not available"
+                )
+
     key = await resolve_key(project_id=project_id, key=key)
 
     account_client = await get_client()
@@ -139,6 +137,16 @@ async def service(
     port: Annotated[Optional[int], typer.Option()] = None,
     path: Annotated[str, typer.Option()] = "/agent",
 ):
+    try:
+        from meshagent.livekit.agents.voice import VoiceBot
+    except ImportError:
+
+        class VoiceBot:
+            def __init__(self, **kwargs):
+                raise RoomException(
+                    "meshagent.livekit module not found, voicebots are not available"
+                )
+
     requirements = []
 
     for t in toolkit:

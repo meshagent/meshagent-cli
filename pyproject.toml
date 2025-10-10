@@ -10,13 +10,11 @@ license = "Apache-2.0"
 keywords = []
 dependencies = [
   "typer~=0.15",
-  "supabase~=2.15",
   "fastmcp~=2.8",
   "opentelemetry-distro~=0.54b1",
   "opentelemetry-exporter-otlp-proto-http~=1.33",
   "art~=6.5",
   "pydantic-yaml~=1.5",
-  "supabase-auth~=2.12.3",
   "pathspec~=0.12.1",
 ]
 
