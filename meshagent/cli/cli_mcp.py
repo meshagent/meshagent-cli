@@ -1,7 +1,3 @@
-from mcp.client.session import ClientSession
-from mcp.client.sse import sse_client
-from mcp.client.stdio import stdio_client, StdioServerParameters
-
 import typer
 from rich import print
 from typing import Annotated, Optional, List
@@ -19,7 +15,6 @@ from meshagent.cli.helper import (
 
 from meshagent.tools.hosting import RemoteToolkit
 
-from meshagent.mcp import MCPToolkit
 
 from meshagent.api.services import ServiceHost
 import os
@@ -46,6 +41,11 @@ async def sse(
         typer.Option("--key", help="an api key to sign the token with"),
     ] = None,
 ):
+    from mcp.client.session import ClientSession
+    from mcp.client.sse import sse_client
+
+    from meshagent.mcp import MCPToolkit
+
     key = await resolve_key(project_id=project_id, key=key)
 
     if toolkit_name is None:
@@ -120,6 +120,11 @@ async def stdio(
         typer.Option("--key", help="an api key to sign the token with"),
     ] = None,
 ):
+    from mcp.client.session import ClientSession
+    from mcp.client.stdio import stdio_client, StdioServerParameters
+
+    from meshagent.mcp import MCPToolkit
+
     key = await resolve_key(project_id=project_id, key=key)
 
     if toolkit_name is None:
@@ -266,6 +271,11 @@ async def stdio_service(
     toolkit_name: Annotated[Optional[str], typer.Option()] = None,
     env: Annotated[List[str], typer.Option("--env", "-e", help="KEY=VALUE")] = [],
 ):
+    from mcp.client.session import ClientSession
+    from mcp.client.stdio import stdio_client, StdioServerParameters
+
+    from meshagent.mcp import MCPToolkit
+
     try:
         parsed_command = shlex.split(command)
 

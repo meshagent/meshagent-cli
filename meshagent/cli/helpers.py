@@ -1,18 +1,6 @@
 from meshagent.cli import async_typer
 
 
-from meshagent.agents.planning import DynamicPlanningResponder, PlanningResponder
-from meshagent.openai.tools import OpenAIResponsesAdapter
-from meshagent.tools.storage import StorageToolkit
-from meshagent.api.services import ServiceHost
-
-
-from meshagent.agents.schemas.gallery import gallery_schema
-from meshagent.agents.schemas.document import document_schema
-from meshagent.agents.schemas.super_editor_document import super_editor_document_schema
-from meshagent.agents.schemas.presentation import presentation_schema
-from meshagent.agents import thread_schema
-
 from meshagent.api import SchemaRegistry, SchemaRegistration
 
 
@@ -23,6 +11,19 @@ app = async_typer.AsyncTyper(help="Join a mailbot to a room")
 
 @app.async_command("service")
 async def helpers_service():
+    from meshagent.agents.planning import DynamicPlanningResponder, PlanningResponder
+    from meshagent.openai.tools import OpenAIResponsesAdapter
+    from meshagent.tools.storage import StorageToolkit
+    from meshagent.api.services import ServiceHost
+
+    from meshagent.agents.schemas.gallery import gallery_schema
+    from meshagent.agents.schemas.document import document_schema
+    from meshagent.agents.schemas.super_editor_document import (
+        super_editor_document_schema,
+    )
+    from meshagent.agents.schemas.presentation import presentation_schema
+    from meshagent.agents import thread_schema
+
     logging.getLogger("openai").setLevel(logging.ERROR)
     logging.getLogger("httpx").setLevel(logging.ERROR)
 

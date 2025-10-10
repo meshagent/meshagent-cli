@@ -20,26 +20,16 @@ from meshagent.cli.helper import (
     resolve_room,
     resolve_key,
 )
-from meshagent.agents.chat import ChatBot
+
 from meshagent.openai import OpenAIResponsesAdapter
-from meshagent.api.services import ServiceHost
 
-try:
-    from meshagent.computers.agent import ComputerAgent
-except ImportError:
-    ComputerAgent = None
-
-from meshagent.agents.chat import (
-    ChatBotThreadOpenAIImageGenerationTool,
-    ChatBotThreadLocalShellTool,
-)
 
 from typing import List
 from pathlib import Path
 
 from meshagent.openai.tools.responses_adapter import WebSearchTool
 from meshagent.api import RequiredToolkit, RequiredSchema
-
+from meshagent.api.services import ServiceHost
 
 app = async_typer.AsyncTyper(help="Join a chatbot to a room")
 
@@ -57,6 +47,13 @@ def build_chatbot(
     web_search: bool,
     rules_file: Optional[str] = None,
 ):
+    from meshagent.agents.chat import ChatBot
+
+    from meshagent.agents.chat import (
+        ChatBotThreadOpenAIImageGenerationTool,
+        ChatBotThreadLocalShellTool,
+    )
+
     requirements = []
 
     toolkits = []
@@ -76,6 +73,8 @@ def build_chatbot(
 
     BaseClass = ChatBot
     if computer_use:
+        from meshagent.computers.agent import ComputerAgent
+
         if ComputerAgent is None:
             raise RuntimeError(
                 "Computer use is enabled, but meshagent.computers is not installed."
