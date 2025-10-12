@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import io
 import os
-import sys
 import tarfile
 import time
 from pathlib import Path
@@ -14,9 +13,6 @@ import pathspec
 
 import aiofiles
 import aiofiles.ospath
-import yaml
-from yaml import Loader
-from meshagent.api.specs.service import ServiceTemplateSpec
 import typer
 from rich import print
 from typing import Annotated, Optional, List, Dict
@@ -34,9 +30,6 @@ from meshagent.api import (
 )
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.api.room_server_client import (
-    BuildSource,
-    BuildSourceGit,
-    BuildSourceContext,
     DockerSecret,
 )
 
@@ -493,7 +486,7 @@ async def run_container(
         ports_map = _parse_ports(port)
         vars_map = _parse_keyvals(var)
 
-        stream = client.containers.run(
+        container_id = client.containers.run(
             name=container_name,
             image=image,
             command=command,
@@ -506,75 +499,8 @@ async def run_container(
             credentials=creds,
             variables=vars_map or None,
         )
-        result = await _drain_stream_plain(stream)
-        print(result.model_dump() if hasattr(result, "model_dump") else result)
-    finally:
-        await client.__aexit__(None, None, None)
-        await account_client.close()
 
-
-@app.async_command("run-attached")
-async def run_attached(
-    *,
-    project_id: ProjectIdOption = None,
-    room: RoomOption,
-    image: Annotated[str, typer.Option(..., help="Image to run")],
-    command: Annotated[Optional[str], typer.Option(...)] = None,
-    tty: Annotated[bool, typer.Option("--tty/--no-tty")] = False,
-    env: Annotated[List[str], typer.Option("--env", "-e", help="KEY=VALUE")] = [],
-    port: Annotated[
-        List[str], typer.Option("--port", "-p", help="CONTAINER:HOST")
-    ] = [],
-    send: Annotated[
-        List[str],
-        typer.Option(
-            "--send",
-            help="Optional lines to send to container stdin (each becomes a line)",
-        ),
-    ] = [],
-    name: Annotated[str, typer.Option(...)] = "cli",
-    role: Annotated[str, typer.Option(...)] = "user",
-):
-    account_client, client = await _with_client(
-        project_id=project_id,
-        room=room,
-    )
-    try:
-        env_map = _parse_keyvals(env)
-        ports_map = _parse_ports(port)
-
-        tty_obj = client.containers.run_attached(
-            image=image,
-            command=command,
-            env=env_map,
-            ports=ports_map,
-            tty=tty,
-            role=role,
-            participant_name=name,
-        )
-
-        # Output reader
-        async def _read():
-            async for b in tty_obj.output():
-                if not b:
-                    continue
-                try:
-                    sys.stdout.buffer.write(b)
-                    sys.stdout.flush()
-                except Exception:
-                    # fallback printing
-                    print(b.decode(errors="ignore"), end="")
-
-        # Optional sender (from --send args)
-        async def _preload():
-            for line in send:
-                await tty_obj.write(line.encode("utf-8") + b"\n")
-
-        readers = asyncio.gather(_read(), _preload())
-        status = await tty_obj.result
-        await readers
-        if status is not None:
-            print(f"\n[green]Exit status:[/green] {status}")
+        print(f"Container started: {container_id}")
     finally:
         await client.__aexit__(None, None, None)
         await account_client.close()
@@ -644,122 +570,8 @@ async def images_pull(
         room=room,
     )
     try:
-        stream = client.containers.pull_image(tag=tag, credentials=_parse_creds(cred))
-        result = await _drain_stream_plain(stream)
-        print(result.model_dump() if hasattr(result, "model_dump") else result)
-    finally:
-        await client.__aexit__(None, None, None)
-        await account_client.close()
-
-
-@app.async_command("build")
-async def build_context(
-    *,
-    project_id: ProjectIdOption = None,
-    room: RoomOption,
-    tag: Annotated[str, typer.Option(..., help="Resulting image tag")],
-    dir: Annotated[
-        Optional[str],
-        typer.Option(help="Directory to build from (defaults to current directory)"),
-    ] = None,
-    git: Annotated[
-        Optional[str],
-        typer.Option(help="git url to build from"),
-    ] = None,
-    ref: Annotated[
-        Optional[str],
-        typer.Option(help="git ref to build from"),
-    ] = None,
-    cred: Annotated[
-        List[str],
-        typer.Option(
-            "--cred",
-            help="Docker creds (username,password) or (registry,username,password)",
-        ),
-    ] = [],
-    pretty: Annotated[bool, typer.Option(...)] = True,
-):
-    if dir is None and git is None:
-        dir = os.getcwd()
-
-    if dir is not None:
-        manifest_path = dir + "/meshagent.yaml"
-        has_manifest = await aiofiles.ospath.exists(manifest_path)
-        manifest = None
-        if has_manifest:
-            async with aiofiles.open(manifest_path, "r") as file:
-                raw_manifest = await file.read()
-                manifest = yaml.load(raw_manifest, Loader=Loader)
-
-                manifest = ServiceTemplateSpec.model_validate(manifest)
-
-        ctx_bytes = await _make_targz_from_dir(Path(dir).resolve())
-
-    account_client, client = await _with_client(
-        project_id=project_id,
-        room=room,
-    )
-    try:
-        if dir is not None:
-            bs = BuildSource(context=BuildSourceContext(encoding="gzip"))
-        else:
-            bs = BuildSource(git=BuildSourceGit(url=git, ref=ref))
-
-        stream = client.containers.build(
-            tag=tag,
-            source=bs,
-            context_bytes=ctx_bytes if dir is not None else None,
-            credentials=_parse_creds(cred),
-            manifest=manifest,
-        )
-        await _drain_stream_pretty(stream) if pretty else await _drain_stream_plain(
-            stream
-        )
-    finally:
-        await client.__aexit__(None, None, None)
-        await account_client.close()
-
-
-# -------------------------
-# Build admin: list/stop
-# -------------------------
-
-builds_app = async_typer.AsyncTyper(help="Inspect or manage running builds")
-app.add_typer(builds_app, name="builds")
-
-
-@builds_app.async_command("list")
-async def list_builds(
-    *,
-    project_id: ProjectIdOption = None,
-    room: RoomOption,
-):
-    account_client, client = await _with_client(
-        project_id=project_id,
-        room=room,
-    )
-    try:
-        builds = await client.containers.list_builds()
-        print([b.model_dump() for b in builds])
-    finally:
-        await client.__aexit__(None, None, None)
-        await account_client.close()
-
-
-@builds_app.async_command("stop")
-async def stop_build(
-    *,
-    project_id: ProjectIdOption = None,
-    room: RoomOption,
-    request_id: Annotated[str, typer.Option(..., help="Build request_id to stop")],
-):
-    account_client, client = await _with_client(
-        project_id=project_id,
-        room=room,
-    )
-    try:
-        await client.containers.stop_build(request_id=request_id)
-        print("[green]Stopped[/green]")
+        await client.containers.pull_image(tag=tag, credentials=_parse_creds(cred))
+        print("Image pulled")
     finally:
         await client.__aexit__(None, None, None)
         await account_client.close()
