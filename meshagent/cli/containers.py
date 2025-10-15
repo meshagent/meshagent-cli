@@ -416,7 +416,7 @@ async def stop_container(
         room=room,
     )
     try:
-        await client.containers.stop(container_id=id)
+        await client.containers.stopContainer(container_id=id)
         print("[green]Stopped[/green]")
     finally:
         await client.__aexit__(None, None, None)
