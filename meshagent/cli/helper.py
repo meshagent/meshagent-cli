@@ -69,11 +69,18 @@ app = async_typer.AsyncTyper()
 
 
 async def get_client():
-    access_token = await auth_async.get_access_token()
-    return Meshagent(
-        base_url=meshagent_base_url(),
-        token=access_token,
-    )
+    key = os.getenv("MESHAGENT_API_KEY")
+    if key is not None:
+        return Meshagent(
+            base_url=meshagent_base_url(),
+            token=key,
+        )
+    else:
+        access_token = await auth_async.get_access_token()
+        return Meshagent(
+            base_url=meshagent_base_url(),
+            token=access_token,
+        )
 
 
 def print_json_table(records: list, *cols):
