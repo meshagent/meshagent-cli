@@ -99,3 +99,36 @@ async def list(
 
     finally:
         await account_client.close()
+
+
+@app.async_command("delete")
+async def delete(
+    *,
+    project_id: ProjectIdOption = None,
+    room: RoomOption,
+    id: str,
+    delegated_to: Annotated[Optional[str], typer.Option()] = None,
+):
+    """
+    delete a secret
+    """
+
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+
+        jwt_consumer = await account_client.connect_room(
+            project_id=project_id, room=room
+        )
+
+        async with RoomClient(
+            protocol=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                token=jwt_consumer.jwt,
+            )
+        ) as consumer:
+            await consumer.secrets.delete_user_secret(id=id, delegated_to=delegated_to)
+            print("deleted secret")
+
+    finally:
+        await account_client.close()
