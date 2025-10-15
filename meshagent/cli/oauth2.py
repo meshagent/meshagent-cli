@@ -9,6 +9,7 @@ from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from rich import print
 from typing import Annotated, Optional
 import typer
+import json
 
 app = async_typer.AsyncTyper(help="OAuth2 test commands")
 
@@ -60,6 +61,41 @@ async def oauth2(
             )
 
             print(f"[bold cyan]Got access token:[/bold cyan] {token}")
+
+    finally:
+        await account_client.close()
+
+
+@app.async_command("list")
+async def list(
+    *,
+    project_id: ProjectIdOption = None,
+    room: RoomOption,
+):
+    """
+    list secrets
+    """
+
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+
+        jwt_consumer = await account_client.connect_room(
+            project_id=project_id, room=room
+        )
+
+        async with RoomClient(
+            protocol=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                token=jwt_consumer.jwt,
+            )
+        ) as consumer:
+            secrets = await consumer.secrets.list_user_secrets()
+            output = []
+            for s in secrets:
+                output.append(s.model_dump(mode="json"))
+
+            print(json.dumps(output, indent=2))
 
     finally:
         await account_client.close()
