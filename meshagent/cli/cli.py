@@ -45,7 +45,7 @@ otel_config(service_name="meshagent-cli")
 logging.getLogger("openai").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.ERROR)
 
-app = async_typer.AsyncTyper()
+app = async_typer.AsyncTyper(no_args_is_help=True)
 app.add_typer(call.app, name="call")
 app.add_typer(auth.app, name="auth")
 app.add_typer(projects.app, name="project")
