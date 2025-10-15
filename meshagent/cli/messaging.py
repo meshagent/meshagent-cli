@@ -69,6 +69,7 @@ async def messaging_send_command(
     to_participant_id: Annotated[
         str, typer.Option(..., help="Participant ID to send a message to")
     ],
+    type: Annotated[str, typer.Option(..., help="type of the message to send")],
     data: Annotated[str, typer.Option(..., help="JSON message to send")],
 ):
     """
@@ -108,7 +109,7 @@ async def messaging_send_command(
                 # Send the message
                 await client.messaging.send_message(
                     to=participant,
-                    type="chat.message",
+                    type=type,
                     message=json.loads(data),
                     attachment=None,
                 )
