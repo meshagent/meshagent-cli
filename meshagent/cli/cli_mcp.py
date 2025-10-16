@@ -19,10 +19,21 @@ from meshagent.tools.hosting import RemoteToolkit
 from meshagent.api.services import ServiceHost
 import os
 
-from meshagent.cli.services import _kv_to_dict
 import shlex
 
 from meshagent.api import ParticipantToken, ApiScope
+
+
+def _kv_to_dict(pairs: List[str]) -> dict[str, str]:
+    """Convert ["A=1","B=2"] → {"A":"1","B":"2"}."""
+    out: dict[str, str] = {}
+    for p in pairs:
+        if "=" not in p:
+            raise typer.BadParameter(f"'{p}' must be KEY=VALUE")
+        k, v = p.split("=", 1)
+        out[k] = v
+    return out
+
 
 app = async_typer.AsyncTyper()
 
