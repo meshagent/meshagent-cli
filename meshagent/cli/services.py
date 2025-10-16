@@ -110,7 +110,7 @@ async def service_update(
             if id is None:
                 services = await client.list_services(project_id=project_id)
                 for s in services:
-                    if s.name == spec.metadata.name:
+                    if s.metadata.name == spec.metadata.name:
                         id = s.id
 
             if id is None and not create:
