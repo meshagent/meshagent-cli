@@ -124,7 +124,9 @@ async def service_update(
 
             else:
                 spec.id = id
-                await client.update_service(project_id=project_id, service=spec)
+                await client.update_service(
+                    project_id=project_id, service_id=id, service=spec
+                )
 
         except ClientResponseError as exc:
             if exc.status == 409:
