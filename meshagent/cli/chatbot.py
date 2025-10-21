@@ -27,7 +27,7 @@ from meshagent.openai import OpenAIResponsesAdapter
 from typing import List
 from pathlib import Path
 
-from meshagent.openai.tools.responses_adapter import WebSearchTool
+from meshagent.openai.tools.responses_adapter import WebSearchTool, WebSearchLLMTool
 from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.api.services import ServiceHost
 
@@ -50,6 +50,7 @@ def build_chatbot(
     from meshagent.agents.chat import ChatBot
 
     from meshagent.agents.chat import (
+        ChatBotThreadOpenAIImageGenerationLLMTool,
         ChatBotThreadOpenAIImageGenerationTool,
         ChatBotThreadLocalShellTool,
     )
@@ -88,7 +89,13 @@ def build_chatbot(
             },
         )
     else:
-        llm_adapter = OpenAIResponsesAdapter(model=model)
+        llm_adapter = OpenAIResponsesAdapter(
+            model=model,
+            llm_tools=[
+                WebSearchLLMTool(),
+                ChatBotThreadOpenAIImageGenerationLLMTool(),
+            ],
+        )
 
     class CustomChatbot(BaseClass):
         def __init__(self):
