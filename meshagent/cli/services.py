@@ -247,7 +247,7 @@ async def service_run(
 
                 for endpoint in p.endpoints:
                     print(
-                        f"[bold green]Connecting endpoint {endpoint.path} as {endpoint.identity}...[/bold green]"
+                        f"[bold green]Connecting endpoint {endpoint.path}...[/bold green]"
                     )
 
                     run_tasks.append(
@@ -255,11 +255,11 @@ async def service_run(
                             _make_call(
                                 room=room,
                                 project_id=project_id,
-                                participant_name=endpoint.identity,
+                                participant_name=endpoint.meshagent.identity,
                                 url=f"http://localhost:{p.num}{endpoint.path}",
                                 arguments={},
                                 key=key,
-                                permissions=endpoint.api,
+                                permissions=endpoint.meshagent.api,
                             )
                         )
                     )
