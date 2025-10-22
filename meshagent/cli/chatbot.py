@@ -5,7 +5,6 @@ from meshagent.cli.common_options import (
     ProjectIdOption,
     RoomOption,
 )
-from meshagent.tools import Toolkit
 from meshagent.api import (
     RoomClient,
     WebSocketClientProtocol,
@@ -27,7 +26,10 @@ from meshagent.openai import OpenAIResponsesAdapter
 from typing import List
 from pathlib import Path
 
-from meshagent.openai.tools.responses_adapter import WebSearchTool, WebSearchLLMTool
+from meshagent.openai.tools.responses_adapter import (
+    WebSearchToolProvider,
+    MCPToolProvider,
+)
 from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.api.services import ServiceHost
 
@@ -45,14 +47,14 @@ def build_chatbot(
     local_shell: bool,
     computer_use: bool,
     web_search: bool,
+    mcp: bool,
     rules_file: Optional[str] = None,
 ):
     from meshagent.agents.chat import ChatBot
 
     from meshagent.agents.chat import (
-        ChatBotThreadOpenAIImageGenerationLLMTool,
-        ChatBotThreadOpenAIImageGenerationTool,
-        ChatBotThreadLocalShellTool,
+        ChatBotThreadOpenAIImageGenerationToolProvider,
+        ChatBotThreadLocalShellToolProvider,
     )
 
     requirements = []
@@ -91,10 +93,6 @@ def build_chatbot(
     else:
         llm_adapter = OpenAIResponsesAdapter(
             model=model,
-            llm_tools=[
-                WebSearchLLMTool(),
-                ChatBotThreadOpenAIImageGenerationLLMTool(),
-            ],
         )
 
     class CustomChatbot(BaseClass):
@@ -107,33 +105,28 @@ def build_chatbot(
                 rules=rule if len(rule) > 0 else None,
             )
 
-        async def get_thread_toolkits(self, *, thread_context, participant):
-            toolkits = await super().get_thread_toolkits(
-                thread_context=thread_context, participant=participant
-            )
+        async def get_thread_tool_providers(self, *, thread_context, participant):
+            providers = []
 
-            thread_toolkit = Toolkit(name="thread_toolkit", tools=[])
-
-            if local_shell:
-                thread_toolkit.tools.append(
-                    ChatBotThreadLocalShellTool(thread_context=thread_context)
-                )
-
-            if image_generation is not None:
-                print("adding openai image gen to thread", flush=True)
-                thread_toolkit.tools.append(
-                    ChatBotThreadOpenAIImageGenerationTool(
-                        model=image_generation,
-                        thread_context=thread_context,
-                        partial_images=3,
+            if image_generation:
+                providers.append(
+                    ChatBotThreadOpenAIImageGenerationToolProvider(
+                        thread_context=thread_context
                     )
                 )
 
-            if web_search:
-                thread_toolkit.tools.append(WebSearchTool())
+            if local_shell:
+                providers.append(
+                    ChatBotThreadLocalShellToolProvider(thread_context=thread_context)
+                )
 
-            toolkits.append(thread_toolkit)
-            return toolkits
+            if mcp:
+                providers.append(MCPToolProvider())
+
+            if web_search:
+                providers.append(WebSearchToolProvider())
+
+            return providers
 
     return CustomChatbot
 
@@ -172,6 +165,9 @@ async def make_call(
     ] = False,
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    mcp: Annotated[
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
     key: Annotated[
         str,
@@ -221,6 +217,7 @@ async def make_call(
                 image_generation=image_generation,
                 web_search=web_search,
                 rules_file=rules_file,
+                mcp=mcp,
             )
 
             bot = CustomChatbot()
@@ -271,6 +268,9 @@ async def service(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    mcp: Annotated[
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
+    ] = False,
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
     path: Annotated[str, typer.Option()] = "/agent",
@@ -291,6 +291,7 @@ async def service(
             web_search=web_search,
             image_generation=image_generation,
             rules_file=rules_file,
+            mcp=mcp,
         ),
     )
 
