@@ -28,8 +28,8 @@ from typing import List
 from pathlib import Path
 
 from meshagent.openai.tools.responses_adapter import (
-    WebSearchToolProvider,
-    MCPToolProvider,
+    WebSearchToolkitBuilder,
+    MCPToolkitBuilder,
 )
 from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.api.services import ServiceHost
@@ -55,8 +55,8 @@ def build_chatbot(
     from meshagent.agents.chat import ChatBot
 
     from meshagent.agents.chat import (
-        ChatBotThreadOpenAIImageGenerationToolProvider,
-        ChatBotThreadLocalShellToolProvider,
+        ChatBotThreadOpenAIImageGenerationToolkitBuilder,
+        ChatBotThreadLocalShellToolkitBuilder,
     )
 
     requirements = []
@@ -115,21 +115,21 @@ def build_chatbot(
 
             if image_generation:
                 providers.append(
-                    ChatBotThreadOpenAIImageGenerationToolProvider(
+                    ChatBotThreadOpenAIImageGenerationToolkitBuilder(
                         thread_context=thread_context
                     )
                 )
 
             if local_shell:
                 providers.append(
-                    ChatBotThreadLocalShellToolProvider(thread_context=thread_context)
+                    ChatBotThreadLocalShellToolkitBuilder(thread_context=thread_context)
                 )
 
             if mcp:
-                providers.append(MCPToolProvider())
+                providers.append(MCPToolkitBuilder())
 
             if web_search:
-                providers.append(WebSearchToolProvider())
+                providers.append(WebSearchToolkitBuilder())
 
             return providers
 
