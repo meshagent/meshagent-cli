@@ -1,6 +1,7 @@
 import typer
 from rich import print
 from typing import Annotated, Optional
+from meshagent.tools.storage import StorageToolkit
 from meshagent.cli.common_options import (
     ProjectIdOption,
     RoomOption,
@@ -48,6 +49,7 @@ def build_chatbot(
     computer_use: bool,
     web_search: bool,
     mcp: bool,
+    storage: bool,
     rules_file: Optional[str] = None,
 ):
     from meshagent.agents.chat import ChatBot
@@ -94,6 +96,9 @@ def build_chatbot(
         llm_adapter = OpenAIResponsesAdapter(
             model=model,
         )
+
+    if storage:
+        toolkits.append(StorageToolkit())
 
     class CustomChatbot(BaseClass):
         def __init__(self):
@@ -169,6 +174,9 @@ async def make_call(
     mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
+    storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
+    ] = False,
     key: Annotated[
         str,
         typer.Option("--key", help="an api key to sign the token with"),
@@ -218,6 +226,7 @@ async def make_call(
                 web_search=web_search,
                 rules_file=rules_file,
                 mcp=mcp,
+                storage=storage,
             )
 
             bot = CustomChatbot()
@@ -271,6 +280,9 @@ async def service(
     mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
+    storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
+    ] = False,
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
     path: Annotated[str, typer.Option()] = "/agent",
@@ -292,6 +304,7 @@ async def service(
             image_generation=image_generation,
             rules_file=rules_file,
             mcp=mcp,
+            storage=storage,
         ),
     )
 
