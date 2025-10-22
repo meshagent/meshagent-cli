@@ -1,7 +1,7 @@
 import typer
 from rich import print
 from typing import Annotated, Optional
-from meshagent.tools.storage import StorageToolkit
+from meshagent.tools.storage import StorageToolkitBuilder
 from meshagent.cli.common_options import (
     ProjectIdOption,
     RoomOption,
@@ -97,9 +97,6 @@ def build_chatbot(
             model=model,
         )
 
-    if storage:
-        toolkits.append(StorageToolkit())
-
     class CustomChatbot(BaseClass):
         def __init__(self):
             super().__init__(
@@ -130,6 +127,9 @@ def build_chatbot(
 
             if web_search:
                 providers.append(WebSearchToolkitBuilder())
+
+            if storage:
+                providers.append(StorageToolkitBuilder())
 
             return providers
 
