@@ -51,6 +51,12 @@ async def service_create(
         str,
         typer.Option("--file", "-f", help="File path to a service definition"),
     ],
+    room: Annotated[
+        Optional[str],
+        typer.Option(
+            "--room", "-r", help="The name of a room to create the service for"
+        ),
+    ] = None,
 ):
     """Create a service attached to the project."""
     client = await get_client()
@@ -65,9 +71,16 @@ async def service_create(
                 raise typer.Exit(code=1)
 
         try:
-            new_id = (await client.create_service(project_id=project_id, service=spec))[
-                "id"
-            ]
+            if room is None:
+                new_id = (
+                    await client.create_service(project_id=project_id, service=spec)
+                )["id"]
+            else:
+                new_id = (
+                    await client.create_room_service(
+                        project_id=project_id, service=spec, room_name=room
+                    )
+                )["id"]
         except ClientResponseError as exc:
             if exc.status == 409:
                 print(f"[red]Service name already in use: {spec.metadata.name}[/red]")
@@ -95,6 +108,12 @@ async def service_update(
             help="create the service if it does not exist",
         ),
     ] = False,
+    room: Annotated[
+        Optional[str],
+        typer.Option(
+            "--room", "-r", help="The name of a room to update the service for"
+        ),
+    ] = None,
 ):
     """Create a service attached to the project."""
     client = await get_client()
@@ -108,7 +127,13 @@ async def service_update(
 
         try:
             if id is None:
-                services = await client.list_services(project_id=project_id)
+                if room is None:
+                    services = await client.list_services(project_id=project_id)
+                else:
+                    services = await client.list_room_services(
+                        project_id=project_id, room_name=room
+                    )
+
                 for s in services:
                     if s.metadata.name == spec.metadata.name:
                         id = s.id
@@ -118,15 +143,30 @@ async def service_update(
                 raise typer.Exit(code=1)
 
             if id is None:
-                id = (await client.create_service(project_id=project_id, service=spec))[
-                    "id"
-                ]
+                if room is None:
+                    id = (
+                        await client.create_service(project_id=project_id, service=spec)
+                    )["id"]
+                else:
+                    id = (
+                        await client.create_room_service(
+                            project_id=project_id, service=spec, room_name=room
+                        )
+                    )["id"]
 
             else:
                 spec.id = id
-                await client.update_service(
-                    project_id=project_id, service_id=id, service=spec
-                )
+                if room is None:
+                    await client.update_service(
+                        project_id=project_id, service_id=id, service=spec
+                    )
+                else:
+                    await client.update_room_service(
+                        project_id=project_id,
+                        service_id=id,
+                        service=spec,
+                        room_name=room,
+                    )
 
         except ClientResponseError as exc:
             if exc.status == 409:
@@ -303,14 +343,24 @@ async def service_list(
     *,
     project_id: ProjectIdOption = None,
     o: OutputFormatOption = "table",
+    room: Annotated[
+        Optional[str],
+        typer.Option(
+            "--room", "-r", help="The name of a room to list the services for"
+        ),
+    ] = None,
 ):
     """List all services for the project."""
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
-        services: list[ServiceSpec] = await client.list_services(
-            project_id=project_id
-        )  # → List[Service]
+        services: list[ServiceSpec] = (
+            (await client.list_services(project_id=project_id))
+            if room is None
+            else (
+                await client.list_room_services(project_id=project_id, room_name=room)
+            )
+        )
 
         if o == "json":
             print(
@@ -319,7 +369,13 @@ async def service_list(
         else:
             print_json_table(
                 [
-                    {"id": svc.id, "name": svc.metadata.name, "image": svc.image}
+                    {
+                        "id": svc.id,
+                        "name": svc.metadata.name,
+                        "image": svc.container.image
+                        if svc.container is not None
+                        else None,
+                    }
                     for svc in services
                 ],
                 "id",
@@ -335,12 +391,23 @@ async def service_delete(
     *,
     project_id: ProjectIdOption = None,
     service_id: Annotated[str, typer.Argument(help="ID of the service to delete")],
+    room: Annotated[
+        Optional[str],
+        typer.Option(
+            "--room", "-r", help="The name of a room to delete the service for"
+        ),
+    ] = None,
 ):
     """Delete a service."""
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
-        await client.delete_service(project_id=project_id, service_id=service_id)
+        if room is None:
+            await client.delete_service(project_id=project_id, service_id=service_id)
+        else:
+            await client.delete_service(
+                project_id=project_id, service_id=service_id, room_name=room
+            )
         print(f"[green]Service {service_id} deleted.[/]")
     finally:
         await client.close()
