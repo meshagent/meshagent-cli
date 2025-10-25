@@ -486,7 +486,7 @@ async def run_container(
         ports_map = _parse_ports(port)
         vars_map = _parse_keyvals(var)
 
-        container_id = client.containers.run(
+        container_id = await client.containers.run(
             name=container_name,
             image=image,
             command=command,
