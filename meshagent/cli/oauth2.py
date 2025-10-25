@@ -69,13 +69,12 @@ async def oauth2(
         await account_client.close()
 
 
-# TODO: this doesn't work for a user as expected, can't get the token because it assumes caller is the one that was delegated the token
-# @app.async_command("get_offline")
-async def get_offline(
+@app.async_command("get")
+async def get(
     *,
     project_id: ProjectIdOption = None,
     room: RoomOption,
-    participant_name: Annotated[str, typer.Option()],
+    delegated_to: Annotated[str, typer.Option()],
     client_id: Annotated[str, typer.Option()],
     authorization_endpoint: Annotated[str, typer.Option()],
     token_endpoint: Annotated[str, typer.Option()],
@@ -113,7 +112,7 @@ async def get_offline(
                     client_secret=client_secret,
                     no_pkce=not pkce,
                 ),
-                participant_name=participant_name,
+                delegated_to=delegated_to,
             )
 
             print(f"[bold cyan]Got access token:[/bold cyan] {token}")
