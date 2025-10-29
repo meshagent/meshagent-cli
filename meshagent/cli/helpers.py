@@ -18,6 +18,7 @@ async def helpers_service():
 
     from meshagent.agents.schemas.gallery import gallery_schema
     from meshagent.agents.schemas.document import document_schema
+    from meshagent.agents.schemas.transcript import transcript_schema
     from meshagent.agents.schemas.super_editor_document import (
         super_editor_document_schema,
     )
@@ -106,6 +107,17 @@ async def helpers_service():
         def __init__(presentation):
             name = "presentation"
             schema = presentation_schema
+            super().__init__(
+                name=f"meshagent.schema.{name}",
+                validate_webhook_secret=False,
+                schemas=[SchemaRegistration(name=name, schema=schema)],
+            )
+
+    @service.path("/schemas/transcript")
+    class TranscriptRegistry(SchemaRegistry):
+        def __init__(self):
+            name = "transcript"
+            schema = transcript_schema
             super().__init__(
                 name=f"meshagent.schema.{name}",
                 validate_webhook_secret=False,
