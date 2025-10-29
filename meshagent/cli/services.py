@@ -72,15 +72,13 @@ async def service_create(
 
         try:
             if room is None:
-                new_id = (
-                    await client.create_service(project_id=project_id, service=spec)
-                )["id"]
+                new_id = await client.create_service(
+                    project_id=project_id, service=spec
+                )
             else:
-                new_id = (
-                    await client.create_room_service(
-                        project_id=project_id, service=spec, room_name=room
-                    )
-                )["id"]
+                new_id = await client.create_room_service(
+                    project_id=project_id, service=spec, room_name=room
+                )
         except ClientResponseError as exc:
             if exc.status == 409:
                 print(f"[red]Service name already in use: {spec.metadata.name}[/red]")
@@ -144,15 +142,13 @@ async def service_update(
 
             if id is None:
                 if room is None:
-                    id = (
-                        await client.create_service(project_id=project_id, service=spec)
-                    )["id"]
+                    id = await client.create_service(
+                        project_id=project_id, service=spec
+                    )
                 else:
-                    id = (
-                        await client.create_room_service(
-                            project_id=project_id, service=spec, room_name=room
-                        )
-                    )["id"]
+                    id = await client.create_room_service(
+                        project_id=project_id, service=spec, room_name=room
+                    )
 
             else:
                 spec.id = id

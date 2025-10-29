@@ -107,7 +107,7 @@ def build_chatbot(
                 rules=rule if len(rule) > 0 else None,
             )
 
-        async def get_thread_tool_providers(self, *, thread_context, participant):
+        async def get_thread_toolkit_builders(self, *, thread_context, participant):
             providers = []
 
             if image_generation:
