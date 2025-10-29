@@ -24,6 +24,7 @@ from meshagent.cli import mailbot
 from meshagent.cli import containers
 from meshagent.cli import oauth2
 from meshagent.cli import helpers
+from meshagent.cli import meeting_transcriber
 from meshagent.cli.exec import register as register_exec
 from meshagent.cli.version import __version__
 from meshagent.cli.helper import get_active_api_key
@@ -67,6 +68,7 @@ app.add_typer(mailbot.app, name="mailbot")
 app.add_typer(containers.app, name="container")
 app.add_typer(oauth2.app, name="oauth2")
 app.add_typer(helpers.app, name="helpers")
+app.add_typer(meeting_transcriber.app, name="meeting-transcriber")
 
 register_exec(app)
 
