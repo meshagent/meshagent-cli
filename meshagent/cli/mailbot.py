@@ -46,6 +46,7 @@ def build_mailbot(
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
     queue: str,
+    email_address: str,
 ):
     from meshagent.agents.mail import MailWorker
 
@@ -80,6 +81,7 @@ def build_mailbot(
                 requires=requirements,
                 toolkits=toolkits,
                 queue=queue,
+                email_address=email_address,
                 rules=rule if len(rule) > 0 else None,
             )
 
@@ -149,6 +151,9 @@ async def make_call(
         typer.Option("--key", help="an api key to sign the token with"),
     ] = None,
     queue: Annotated[str, typer.Option(..., help="the name of the mail queue")],
+    email_address: Annotated[
+        str, typer.Option(..., help="the email address of the agent")
+    ],
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -196,6 +201,7 @@ async def make_call(
                 web_search=web_search,
                 rules_file=rules_file,
                 queue=queue,
+                email_address=email_address,
             )
 
             bot = CustomMailbot()
@@ -237,6 +243,9 @@ async def service(
     port: Annotated[Optional[int], typer.Option()] = None,
     path: Annotated[str, typer.Option()] = "/agent",
     queue: Annotated[str, typer.Option(..., help="the name of the mail queue")],
+    email_address: Annotated[
+        str, typer.Option(..., help="the email address of the agent")
+    ],
 ):
     print("[bold green]Connecting to room...[/bold green]", flush=True)
 
@@ -254,6 +263,7 @@ async def service(
             schema=schema,
             image_generation=None,
             rules_file=rules_file,
+            email_address=email_address,
         ),
     )
 
