@@ -1,6 +1,7 @@
 import typer
 from rich import print
 from typing import Annotated, Optional
+from meshagent.tools import Toolkit
 from meshagent.tools.storage import StorageToolkitBuilder
 from meshagent.cli.common_options import (
     ProjectIdOption,
@@ -23,14 +24,17 @@ from meshagent.cli.helper import (
 
 from meshagent.openai import OpenAIResponsesAdapter
 
-
 from typing import List
 from pathlib import Path
 
 from meshagent.openai.tools.responses_adapter import (
     WebSearchToolkitBuilder,
     MCPToolkitBuilder,
+    WebSearchTool,
+    LocalShellConfig,
+    WebSearchConfig,
 )
+
 from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.api.services import ServiceHost
 
@@ -45,18 +49,29 @@ def build_chatbot(
     toolkit: List[str],
     schema: List[str],
     image_generation: Optional[str] = None,
-    local_shell: bool,
-    computer_use: bool,
-    web_search: bool,
-    mcp: bool,
-    storage: bool,
+    local_shell: Optional[str] = None,
+    computer_use: Optional[str] = None,
+    web_search: Optional[str] = None,
+    mcp: Optional[str] = None,
+    storage: Optional[str] = None,
+    require_image_generation: Optional[str] = None,
+    require_local_shell: Optional[str] = None,
+    require_computer_use: Optional[str] = None,
+    require_web_search: Optional[str] = None,
+    require_mcp: Optional[str] = None,
+    require_storage: Optional[str] = None,
     rules_file: Optional[str] = None,
 ):
     from meshagent.agents.chat import ChatBot
 
+    from meshagent.tools.storage import StorageToolkit
+
     from meshagent.agents.chat import (
         ChatBotThreadOpenAIImageGenerationToolkitBuilder,
         ChatBotThreadLocalShellToolkitBuilder,
+        ChatBotThreadOpenAIImageGenerationTool,
+        ChatBotThreadLocalShellTool,
+        ImageGenerationConfig,
     )
 
     requirements = []
@@ -105,6 +120,45 @@ def build_chatbot(
                 requires=requirements,
                 toolkits=toolkits,
                 rules=rule if len(rule) > 0 else None,
+            )
+
+        async def get_thread_toolkits(self, *, thread_context, participant):
+            providers = []
+
+            if require_image_generation:
+                providers.append(
+                    ChatBotThreadOpenAIImageGenerationTool(
+                        thread_context=thread_context,
+                        config=ImageGenerationConfig(
+                            name="image_generation",
+                            partial_images=3,
+                        ),
+                    )
+                )
+
+            if require_local_shell:
+                providers.append(
+                    ChatBotThreadLocalShellTool(
+                        thread_context=thread_context,
+                        config=LocalShellConfig(name="local_shell"),
+                    )
+                )
+
+            if require_mcp:
+                raise Exception(
+                    "mcp tool cannot be required by cli currently, use 'optional' instead"
+                )
+
+            if require_web_search:
+                providers.append(
+                    WebSearchTool(config=WebSearchConfig(name="web_search"))
+                )
+
+            if require_storage:
+                providers.extend(StorageToolkit().tools)
+
+            return (
+                [Toolkit(name="tools", tools=providers)] if len(providers) > 0 else []
             )
 
         async def get_thread_toolkit_builders(self, *, thread_context, participant):
@@ -177,6 +231,31 @@ async def make_call(
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
+    require_image_generation: Annotated[
+        Optional[str], typer.Option(..., help="Name of an image gen model", hidden=True)
+    ] = None,
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+            hidden=True,
+        ),
+    ] = False,
+    require_local_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable local shell tool calling", hidden=True),
+    ] = False,
+    require_web_search: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable web search tool calling", hidden=True),
+    ] = False,
+    require_mcp: Annotated[
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling", hidden=True)
+    ] = False,
+    require_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
+    ] = False,
     key: Annotated[
         str,
         typer.Option("--key", help="an api key to sign the token with"),
@@ -222,11 +301,16 @@ async def make_call(
                 rule=rule,
                 toolkit=toolkit,
                 schema=schema,
+                rules_file=rules_file,
                 image_generation=image_generation,
                 web_search=web_search,
-                rules_file=rules_file,
                 mcp=mcp,
                 storage=storage,
+                require_web_search=require_web_search,
+                require_local_shell=require_local_shell,
+                require_image_generation=require_image_generation,
+                require_mcp=require_mcp,
+                require_storage=require_storage,
             )
 
             bot = CustomChatbot()
@@ -283,6 +367,31 @@ async def service(
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
+    require_image_generation: Annotated[
+        Optional[str], typer.Option(..., help="Name of an image gen model", hidden=True)
+    ] = None,
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+            hidden=True,
+        ),
+    ] = False,
+    require_local_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable local shell tool calling", hidden=True),
+    ] = False,
+    require_web_search: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable web search tool calling", hidden=True),
+    ] = False,
+    require_mcp: Annotated[
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling", hidden=True)
+    ] = False,
+    require_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
+    ] = False,
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
     path: Annotated[str, typer.Option()] = "/agent",
@@ -300,11 +409,16 @@ async def service(
             rule=rule,
             toolkit=toolkit,
             schema=schema,
+            rules_file=rules_file,
             web_search=web_search,
             image_generation=image_generation,
-            rules_file=rules_file,
             mcp=mcp,
             storage=storage,
+            require_web_search=require_web_search,
+            require_local_shell=require_local_shell,
+            require_image_generation=require_image_generation,
+            require_mcp=require_mcp,
+            require_storage=require_storage,
         ),
     )
 
