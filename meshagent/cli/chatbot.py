@@ -157,9 +157,17 @@ def build_chatbot(
             if require_storage:
                 providers.extend(StorageToolkit().tools)
 
-            return (
-                [Toolkit(name="tools", tools=providers)] if len(providers) > 0 else []
+            tk = await super().get_thread_toolkits(
+                thread_context=thread_context, participant=participant
             )
+            return [
+                *(
+                    [Toolkit(name="tools", tools=providers)]
+                    if len(providers) > 0
+                    else []
+                ),
+                *tk,
+            ]
 
         async def get_thread_toolkit_builders(self, *, thread_context, participant):
             providers = []
