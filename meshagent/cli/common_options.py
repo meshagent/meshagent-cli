@@ -21,3 +21,12 @@ RoomOption = Annotated[
         help="Room name",
     ),
 ]
+
+
+RoomCreateOption = Annotated[
+    bool,
+    typer.Option(
+        "--create",
+        help="Room name",
+    ),
+]
