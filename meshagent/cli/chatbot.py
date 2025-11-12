@@ -105,7 +105,7 @@ def build_chatbot(
                             print(line)
                         else:
                             print(line)
-                            
+
         except FileNotFoundError:
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
 
