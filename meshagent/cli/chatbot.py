@@ -38,6 +38,8 @@ from meshagent.openai.tools.responses_adapter import (
 from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.api.services import ServiceHost
 
+import os.path
+
 app = async_typer.AsyncTyper(help="Join a chatbot to a room")
 
 
@@ -84,10 +86,26 @@ def build_chatbot(
     for t in schema:
         requirements.append(RequiredSchema(name=t))
 
+    client_rules = {}
+
     if rules_file is not None:
         try:
-            with open(Path(rules_file).resolve(), "r") as f:
-                rule.extend(f.read().splitlines())
+            with open(Path(os.path.expanduser(rules_file)).resolve(), "r") as f:
+                lines = f.read().splitlines()
+                client = None
+                for line in lines:
+                    line = line.strip()
+                    if line.startswith("[") and line.endswith("]"):
+                        client = line.strip("[]")
+                        client_rules[client] = []
+                        print(f"found client rules for {client}")
+                    else:
+                        if client is None:
+                            rule.append(line)
+                            print(line)
+                        else:
+                            print(line)
+                            
         except FileNotFoundError:
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
 
@@ -120,6 +138,7 @@ def build_chatbot(
                 requires=requirements,
                 toolkits=toolkits,
                 rules=rule if len(rule) > 0 else None,
+                client_rules=client_rules,
             )
 
         async def get_thread_toolkits(self, *, thread_context, participant):
