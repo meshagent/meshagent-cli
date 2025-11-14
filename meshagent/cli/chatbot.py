@@ -3,6 +3,8 @@ from rich import print
 from typing import Annotated, Optional
 from meshagent.tools import Toolkit
 from meshagent.tools.storage import StorageToolkitBuilder
+from meshagent.agents.config import RulesConfig
+
 from meshagent.cli.common_options import (
     ProjectIdOption,
     RoomOption,
@@ -12,6 +14,7 @@ from meshagent.api import (
     WebSocketClientProtocol,
     ParticipantToken,
     ApiScope,
+    RoomException,
 )
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.cli import async_typer
@@ -37,8 +40,10 @@ from meshagent.openai.tools.responses_adapter import (
 
 from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.api.services import ServiceHost
-
+import logging
 import os.path
+
+logger = logging.getLogger("chatbot")
 
 app = async_typer.AsyncTyper(help="Join a chatbot to a room")
 
@@ -63,6 +68,7 @@ def build_chatbot(
     require_mcp: Optional[str] = None,
     require_storage: Optional[str] = None,
     rules_file: Optional[str] = None,
+    room_rules_path: Optional[str] = None,
 ):
     from meshagent.agents.chat import ChatBot
 
@@ -91,20 +97,9 @@ def build_chatbot(
     if rules_file is not None:
         try:
             with open(Path(os.path.expanduser(rules_file)).resolve(), "r") as f:
-                lines = f.read().splitlines()
-                client = None
-                for line in lines:
-                    line = line.strip()
-                    if line.startswith("[") and line.endswith("]"):
-                        client = line.strip("[]")
-                        client_rules[client] = []
-                        print(f"found client rules for {client}")
-                    else:
-                        if client is None:
-                            rule.append(line)
-                            print(line)
-                        else:
-                            print(line)
+                rules_config = RulesConfig.parse(f.read())
+                rule = rules_config.rules
+                client_rules = rules_config.client_rules
 
         except FileNotFoundError:
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
@@ -140,6 +135,40 @@ def build_chatbot(
                 rules=rule if len(rule) > 0 else None,
                 client_rules=client_rules,
             )
+
+        async def get_rules(self, *, thread_context, participant):
+            rules = await super().get_rules(
+                thread_context=thread_context, participant=participant
+            )
+
+            if room_rules_path is not None:
+                try:
+                    for p in room_rules_path:
+                        room_rules = await self.room.storage.download(path=p)
+
+                        rules_txt = room_rules.data.decode()
+
+                        rules_config = RulesConfig.parse(rules_txt)
+
+                        if rules_config.rules is not None:
+                            rules.extend(rules_config.rules)
+
+                        client = participant.get_attribute("client")
+
+                        if rules_config.client_rules is not None and client is not None:
+                            cr = rules_config.client_rules.get(client)
+                            if cr is not None:
+                                rules.extend(cr)
+
+                except RoomException:
+                    logger.info(
+                        f"unable to load rules from {room_rules_path}, continuing with default rules"
+                    )
+                    pass
+
+            print(f"using rules {rules}", flush=True)
+
+            return rules
 
         async def get_thread_toolkits(self, *, thread_context, participant):
             providers = []
@@ -225,6 +254,14 @@ async def make_call(
     role: str = "agent",
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="a path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
     rules_file: Optional[str] = None,
     toolkit: Annotated[
         List[str],
@@ -338,6 +375,7 @@ async def make_call(
                 require_image_generation=require_image_generation,
                 require_mcp=require_mcp,
                 require_storage=require_storage,
+                room_rules_path=room_rules,
             )
 
             bot = CustomChatbot()
@@ -362,6 +400,14 @@ async def service(
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[str] = None,
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="a path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
     toolkit: Annotated[
         List[str],
         typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
@@ -446,6 +492,7 @@ async def service(
             require_image_generation=require_image_generation,
             require_mcp=require_mcp,
             require_storage=require_storage,
+            room_rules_path=room_rules,
         ),
     )
 
