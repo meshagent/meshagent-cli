@@ -236,7 +236,7 @@ async def make_call(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
-    ] = "gpt-5",
+    ] = "gpt-5.1",
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -372,7 +372,7 @@ async def service(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
-    ] = "gpt-5",
+    ] = "gpt-5.1",
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
