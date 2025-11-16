@@ -144,7 +144,6 @@ def build_chatbot(
             if room_rules_path is not None:
                 for p in room_rules_path:
                     try:
-                 
                         room_rules = await self.room.storage.download(path=p)
 
                         rules_txt = room_rules.data.decode()
@@ -164,8 +163,13 @@ def build_chatbot(
                     except RoomException:
                         try:
                             logger.info("attempting to initialize rules file")
-                            handle = await self.room.storage.open(path=p, overwrite=False)
-                            await self.room.storage.write(handle=handle, data="# Add rules to this file to customize your agent's behavior, lines starting with # will be ignored.\n\n".encode())
+                            handle = await self.room.storage.open(
+                                path=p, overwrite=False
+                            )
+                            await self.room.storage.write(
+                                handle=handle,
+                                data="# Add rules to this file to customize your agent's behavior, lines starting with # will be ignored.\n\n".encode(),
+                            )
                             await self.room.storage.close(handle=handle)
 
                         except RoomException:
