@@ -161,6 +161,13 @@ def build_chatbot(
                                 rules.extend(cr)
 
                 except RoomException:
+                    try:
+                        handle = await self.room.storage.open(path=p, overwrite=False)
+                        await self.room.storage.write(handle=handle, data="".encode())
+                        await self.room.storage.close(handle=handle)
+
+                    except RoomException:
+                        pass
                     logger.info(
                         f"unable to load rules from {room_rules_path}, continuing with default rules"
                     )
