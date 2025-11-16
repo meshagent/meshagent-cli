@@ -165,7 +165,7 @@ def build_chatbot(
                         try:
                             logger.info("attempting to initialize rules file")
                             handle = await self.room.storage.open(path=p, overwrite=False)
-                            await self.room.storage.write(handle=handle, data="# Add rules to this file to customize this agent's behavior\n\n".encode())
+                            await self.room.storage.write(handle=handle, data="# Add rules to this file to customize your agent's behavior, lines starting with # will be ignored.\n\n".encode())
                             await self.room.storage.close(handle=handle)
 
                         except RoomException:
