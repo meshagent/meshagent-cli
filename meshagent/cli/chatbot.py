@@ -35,6 +35,7 @@ from meshagent.openai.tools.responses_adapter import (
     MCPToolkitBuilder,
     WebSearchTool,
     LocalShellConfig,
+    ShellConfig,
     WebSearchConfig,
 )
 
@@ -57,12 +58,14 @@ def build_chatbot(
     schema: List[str],
     image_generation: Optional[str] = None,
     local_shell: Optional[str] = None,
+    shell: Optional[str] = None,
     computer_use: Optional[str] = None,
     web_search: Optional[str] = None,
     mcp: Optional[str] = None,
     storage: Optional[str] = None,
     require_image_generation: Optional[str] = None,
     require_local_shell: Optional[str] = None,
+    require_shell: Optional[str] = None,
     require_computer_use: Optional[str] = None,
     require_web_search: Optional[str] = None,
     require_mcp: Optional[str] = None,
@@ -79,6 +82,8 @@ def build_chatbot(
         ChatBotThreadLocalShellToolkitBuilder,
         ChatBotThreadOpenAIImageGenerationTool,
         ChatBotThreadLocalShellTool,
+        ChatBotThreadShellTool,
+        ChatBotThreadShellToolkitBuilder,
         ImageGenerationConfig,
     )
 
@@ -205,6 +210,13 @@ def build_chatbot(
                     )
                 )
 
+            if require_shell:
+                providers.append(
+                    ChatBotThreadShellTool(
+                        thread_context=thread_context,
+                        config=ShellConfig(name="shell"),
+                    )
+                )
             if require_mcp:
                 raise Exception(
                     "mcp tool cannot be required by cli currently, use 'optional' instead"
@@ -243,6 +255,11 @@ def build_chatbot(
             if local_shell:
                 providers.append(
                     ChatBotThreadLocalShellToolkitBuilder(thread_context=thread_context)
+                )
+
+            if shell:
+                providers.append(
+                    ChatBotThreadShellToolkitBuilder(thread_context=thread_context)
                 )
 
             if mcp:
@@ -299,6 +316,9 @@ async def make_call(
     local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
+    shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable function shell tool calling")
+    ] = False,
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
@@ -322,6 +342,10 @@ async def make_call(
     require_local_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable local shell tool calling", hidden=True),
+    ] = False,
+    require_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable function shell tool calling", hidden=True),
     ] = False,
     require_web_search: Annotated[
         Optional[bool],
@@ -374,6 +398,7 @@ async def make_call(
                 computer_use=computer_use,
                 model=model,
                 local_shell=local_shell,
+                shell=shell,
                 agent_name=agent_name,
                 rule=rule,
                 toolkit=toolkit,
@@ -385,6 +410,7 @@ async def make_call(
                 storage=storage,
                 require_web_search=require_web_search,
                 require_local_shell=require_local_shell,
+                require_shell=require_shell,
                 require_image_generation=require_image_generation,
                 require_mcp=require_mcp,
                 require_storage=require_storage,
@@ -438,6 +464,9 @@ async def service(
     local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
+    shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable function shell tool calling")
+    ] = False,
     computer_use: Annotated[
         Optional[bool],
         typer.Option(
@@ -468,6 +497,10 @@ async def service(
         Optional[bool],
         typer.Option(..., help="Enable local shell tool calling", hidden=True),
     ] = False,
+    require_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable function shell tool calling", hidden=True),
+    ] = False,
     require_web_search: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable web search tool calling", hidden=True),
@@ -491,6 +524,7 @@ async def service(
             computer_use=computer_use,
             model=model,
             local_shell=local_shell,
+            shell=shell,
             agent_name=agent_name,
             rule=rule,
             toolkit=toolkit,
@@ -501,6 +535,7 @@ async def service(
             mcp=mcp,
             storage=storage,
             require_web_search=require_web_search,
+            require_shell=require_shell,
             require_local_shell=require_local_shell,
             require_image_generation=require_image_generation,
             require_mcp=require_mcp,
