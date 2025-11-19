@@ -77,6 +77,7 @@ def build_chatbot(
     require_storage: Optional[str] = None,
     rules_file: Optional[str] = None,
     room_rules_path: Optional[str] = None,
+    working_directory: Optional[str] = None,
 ):
     from meshagent.agents.chat import ChatBot
 
@@ -210,6 +211,7 @@ def build_chatbot(
             if require_local_shell:
                 providers.append(
                     ChatBotThreadLocalShellTool(
+                        working_directory=working_directory,
                         thread_context=thread_context,
                         config=LocalShellConfig(name="local_shell"),
                     )
@@ -219,6 +221,7 @@ def build_chatbot(
                 providers.append(
                     ChatBotThreadShellTool(
                         thread_context=thread_context,
+                        working_directory=working_directory,
                         config=ShellConfig(name="shell"),
                     )
                 )
@@ -272,12 +275,18 @@ def build_chatbot(
 
             if local_shell:
                 providers.append(
-                    ChatBotThreadLocalShellToolkitBuilder(thread_context=thread_context)
+                    ChatBotThreadLocalShellToolkitBuilder(
+                        thread_context=thread_context,
+                        working_directory=working_directory,
+                    )
                 )
 
             if shell:
                 providers.append(
-                    ChatBotThreadShellToolkitBuilder(thread_context=thread_context)
+                    ChatBotThreadShellToolkitBuilder(
+                        thread_context=thread_context,
+                        working_directory=working_directory,
+                    )
                 )
 
             if mcp:
@@ -382,6 +391,10 @@ async def make_call(
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
     ] = False,
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="The default working directory for shell commands"),
+    ] = None,
     key: Annotated[
         str,
         typer.Option("--key", help="an api key to sign the token with"),
@@ -442,6 +455,7 @@ async def make_call(
                 require_mcp=require_mcp,
                 require_storage=require_storage,
                 room_rules_path=room_rules,
+                working_directory=working_directory,
             )
 
             bot = CustomChatbot()
@@ -532,7 +546,7 @@ async def service(
         typer.Option(..., help="Enable function shell tool calling", hidden=True),
     ] = False,
     require_apply_patch: Annotated[
-        Optional[bool], typer.Option(..., help="Enable apply patch tool")
+        Optional[bool], typer.Option(..., help="Enable apply patch tool", hidden=True)
     ] = False,
     require_web_search: Annotated[
         Optional[bool],
@@ -544,6 +558,10 @@ async def service(
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
     ] = False,
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="The default working directory for shell commands"),
+    ] = None,
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
     path: Annotated[str, typer.Option()] = "/agent",
@@ -576,6 +594,7 @@ async def service(
             require_mcp=require_mcp,
             require_storage=require_storage,
             room_rules_path=room_rules,
+            working_directory=working_directory,
         ),
     )
 
