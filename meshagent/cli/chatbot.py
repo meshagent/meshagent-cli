@@ -37,6 +37,9 @@ from meshagent.openai.tools.responses_adapter import (
     LocalShellConfig,
     ShellConfig,
     WebSearchConfig,
+    ApplyPatchConfig,
+    ApplyPatchTool,
+    ApplyPatchToolkitBuilder,
 )
 
 from meshagent.api import RequiredToolkit, RequiredSchema
@@ -59,6 +62,7 @@ def build_chatbot(
     image_generation: Optional[str] = None,
     local_shell: Optional[str] = None,
     shell: Optional[str] = None,
+    apply_patch: Optional[str] = None,
     computer_use: Optional[str] = None,
     web_search: Optional[str] = None,
     mcp: Optional[str] = None,
@@ -66,6 +70,7 @@ def build_chatbot(
     require_image_generation: Optional[str] = None,
     require_local_shell: Optional[str] = None,
     require_shell: Optional[str] = None,
+    require_apply_patch: Optional[str] = None,
     require_computer_use: Optional[str] = None,
     require_web_search: Optional[str] = None,
     require_mcp: Optional[str] = None,
@@ -217,6 +222,14 @@ def build_chatbot(
                         config=ShellConfig(name="shell"),
                     )
                 )
+
+            if require_apply_patch:
+                providers.append(
+                    ApplyPatchTool(
+                        config=ApplyPatchConfig(name="apply_patch"),
+                    )
+                )
+
             if require_mcp:
                 raise Exception(
                     "mcp tool cannot be required by cli currently, use 'optional' instead"
@@ -250,6 +263,11 @@ def build_chatbot(
                     ChatBotThreadOpenAIImageGenerationToolkitBuilder(
                         thread_context=thread_context
                     )
+                )
+
+            if apply_patch:
+                providers.append(
+                    ApplyPatchToolkitBuilder(thread_context=thread_context)
                 )
 
             if local_shell:
@@ -319,6 +337,9 @@ async def make_call(
     shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable function shell tool calling")
     ] = False,
+    apply_patch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable apply patch tool")
+    ] = False,
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
@@ -346,6 +367,10 @@ async def make_call(
     require_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling", hidden=True),
+    ] = False,
+    require_apply_patch: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable apply patch tool calling", hidden=True),
     ] = False,
     require_web_search: Annotated[
         Optional[bool],
@@ -399,6 +424,7 @@ async def make_call(
                 model=model,
                 local_shell=local_shell,
                 shell=shell,
+                apply_patch=apply_patch,
                 agent_name=agent_name,
                 rule=rule,
                 toolkit=toolkit,
@@ -408,6 +434,7 @@ async def make_call(
                 web_search=web_search,
                 mcp=mcp,
                 storage=storage,
+                require_apply_patch=require_apply_patch,
                 require_web_search=require_web_search,
                 require_local_shell=require_local_shell,
                 require_shell=require_shell,
@@ -467,6 +494,9 @@ async def service(
     shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable function shell tool calling")
     ] = False,
+    apply_patch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable apply patch tool")
+    ] = False,
     computer_use: Annotated[
         Optional[bool],
         typer.Option(
@@ -501,6 +531,9 @@ async def service(
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling", hidden=True),
     ] = False,
+    require_apply_patch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable apply patch tool")
+    ] = False,
     require_web_search: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable web search tool calling", hidden=True),
@@ -525,6 +558,7 @@ async def service(
             model=model,
             local_shell=local_shell,
             shell=shell,
+            apply_patch=apply_patch,
             agent_name=agent_name,
             rule=rule,
             toolkit=toolkit,
@@ -536,6 +570,7 @@ async def service(
             storage=storage,
             require_web_search=require_web_search,
             require_shell=require_shell,
+            require_apply_patch=require_apply_patch,
             require_local_shell=require_local_shell,
             require_image_generation=require_image_generation,
             require_mcp=require_mcp,
