@@ -15,6 +15,7 @@ from meshagent.api import (
     ParticipantToken,
     ApiScope,
     RoomException,
+    RemoteParticipant,
 )
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.cli import async_typer
@@ -76,7 +77,7 @@ def build_chatbot(
     require_mcp: Optional[str] = None,
     require_storage: Optional[str] = None,
     rules_file: Optional[str] = None,
-    room_rules_path: Optional[str] = None,
+    room_rules_path: Optional[list[str]] = None,
     working_directory: Optional[str] = None,
 ):
     from meshagent.agents.chat import ChatBot
@@ -147,6 +148,58 @@ def build_chatbot(
                 client_rules=client_rules,
             )
 
+        async def start(self, *, room: RoomClient):
+            await super().start(room=room)
+
+            if room_rules_path is not None:
+                for p in room_rules_path:
+                    await self._load_room_rules(room=room, path=p)
+
+        async def _load_room_rules(
+            self,
+            *,
+            room: RoomClient,
+            path: str,
+            participant: Optional[RemoteParticipant] = None,
+        ):
+            rules = []
+            try:
+                room_rules = await self.room.storage.download(path=path)
+
+                rules_txt = room_rules.data.decode()
+
+                rules_config = RulesConfig.parse(rules_txt)
+
+                if rules_config.rules is not None:
+                    rules.extend(rules_config.rules)
+
+                if participant is not None:
+                    client = participant.get_attribute("client")
+
+                    if rules_config.client_rules is not None and client is not None:
+                        cr = rules_config.client_rules.get(client)
+                        if cr is not None:
+                            rules.extend(cr)
+
+            except RoomException:
+                try:
+                    logger.info("attempting to initialize rules file")
+                    handle = await self.room.storage.open(path=path, overwrite=False)
+                    await self.room.storage.write(
+                        handle=handle,
+                        data="# Add rules to this file to customize your agent's behavior, lines starting with # will be ignored.\n\n".encode(),
+                    )
+                    await self.room.storage.close(handle=handle)
+
+                except RoomException:
+                    pass
+                logger.info(
+                    f"unable to load rules from {path}, continuing with default rules"
+                )
+                pass
+
+            return rules
+
         async def get_rules(self, *, thread_context, participant):
             rules = await super().get_rules(
                 thread_context=thread_context, participant=participant
@@ -154,43 +207,13 @@ def build_chatbot(
 
             if room_rules_path is not None:
                 for p in room_rules_path:
-                    try:
-                        room_rules = await self.room.storage.download(path=p)
-
-                        rules_txt = room_rules.data.decode()
-
-                        rules_config = RulesConfig.parse(rules_txt)
-
-                        if rules_config.rules is not None:
-                            rules.extend(rules_config.rules)
-
-                        client = participant.get_attribute("client")
-
-                        if rules_config.client_rules is not None and client is not None:
-                            cr = rules_config.client_rules.get(client)
-                            if cr is not None:
-                                rules.extend(cr)
-
-                    except RoomException:
-                        try:
-                            logger.info("attempting to initialize rules file")
-                            handle = await self.room.storage.open(
-                                path=p, overwrite=False
-                            )
-                            await self.room.storage.write(
-                                handle=handle,
-                                data="# Add rules to this file to customize your agent's behavior, lines starting with # will be ignored.\n\n".encode(),
-                            )
-                            await self.room.storage.close(handle=handle)
-
-                        except RoomException:
-                            pass
-                        logger.info(
-                            f"unable to load rules from {room_rules_path}, continuing with default rules"
+                    rules.extend(
+                        await self._load_room_rules(
+                            room=self.room, path=p, participant=participant
                         )
-                        pass
+                    )
 
-            print(f"using rules {rules}", flush=True)
+            logging.info(f"using rules {rules}")
 
             return rules
 
