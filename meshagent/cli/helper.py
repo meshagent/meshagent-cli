@@ -140,7 +140,7 @@ async def resolve_key(project_id: str | None, key: str | None):
 
     if key is None:
         print(
-            "[red]--key is required if MESHGENT_API_KEY is not set. You can use meshagent api-key create to create a new api key."
+            "[red]--key is required if MESHAGENT_API_KEY is not set. You can use meshagent api-key create to create a new api key."
         )
         raise typer.Exit(1)
 
