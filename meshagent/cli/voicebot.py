@@ -13,7 +13,6 @@ from meshagent.cli.helper import (
     resolve_key,
 )
 from typing import List
-from meshagent.tools import ToolContext
 from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.api.services import ServiceHost
 from pathlib import Path
