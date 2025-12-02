@@ -11,7 +11,7 @@ app = async_typer.AsyncTyper(help="Join a mailbot to a room")
 
 @app.async_command("service")
 async def helpers_service():
-    from meshagent.agents.planning import DynamicPlanningResponder, PlanningResponder
+    from meshagent.agents.llmrunner import LLMTaskRunner, DynamicLLMTaskRunner
     from meshagent.openai.tools import OpenAIResponsesAdapter
     from meshagent.tools.storage import StorageToolkit
     from meshagent.api.services import ServiceHost
@@ -32,7 +32,7 @@ async def helpers_service():
     service = ServiceHost(port=9000)
 
     @service.path("/planner")
-    class Planner(PlanningResponder):
+    class Planner(LLMTaskRunner):
         def __init__(self, **kwargs):
             super().__init__(
                 name="meshagent.planner",
@@ -50,7 +50,7 @@ async def helpers_service():
             )
 
     @service.path("/schema_planner")
-    class DynamicPlanner(DynamicPlanningResponder):
+    class DynamicPlanner(DynamicLLMTaskRunner):
         def __init__(self, **kwargs):
             super().__init__(
                 name="meshagent.schema_planner",
