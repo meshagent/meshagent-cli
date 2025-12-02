@@ -37,7 +37,7 @@ async def helpers_service():
                 name="meshagent.planner",
                 title="Generic Task Runner",
                 description="an agent that will perform a task with the selected tools",
-                llm_adapter=OpenAIResponsesAdapter(model="gpt-4.1"),
+                llm_adapter=OpenAIResponsesAdapter(model="gpt-5.1"),
                 supports_tools=True,
                 input_prompt=True,
                 output_schema={
@@ -55,7 +55,7 @@ async def helpers_service():
                 name="meshagent.schema_planner",
                 title="Schema Task Runner",
                 description="an agent that can produces output that matches a schema",
-                llm_adapter=OpenAIResponsesAdapter(model="gpt-4.1"),
+                llm_adapter=OpenAIResponsesAdapter(model="gpt-5.1"),
             )
 
     @service.path("/schemas/document")

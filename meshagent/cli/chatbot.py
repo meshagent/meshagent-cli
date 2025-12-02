@@ -3,7 +3,12 @@ from rich import print
 from typing import Annotated, Optional
 from meshagent.tools import Toolkit
 from meshagent.tools.storage import StorageToolkitBuilder
+from meshagent.tools.document_tools import (
+    DocumentAuthoringToolkit,
+    DocumentTypeAuthoringToolkit,
+)
 from meshagent.agents.config import RulesConfig
+from meshagent.agents.widget_schema import widget_schema
 
 from meshagent.cli.common_options import (
     ProjectIdOption,
@@ -78,6 +83,8 @@ def build_chatbot(
     require_storage: Optional[str] = None,
     rules_file: Optional[str] = None,
     room_rules_path: Optional[list[str]] = None,
+    require_discovery: Optional[str] = None,
+    require_document_authoring: Optional[str] = None,
     working_directory: Optional[str] = None,
 ):
     from meshagent.agents.chat import ChatBot
@@ -269,6 +276,19 @@ def build_chatbot(
             if require_storage:
                 providers.extend(StorageToolkit().tools)
 
+            if require_document_authoring:
+                providers.extend(DocumentAuthoringToolkit().tools)
+                providers.extend(
+                    DocumentTypeAuthoringToolkit(
+                        schema=widget_schema, document_type="widget"
+                    ).tools
+                )
+
+            if require_discovery:
+                from meshagent.tools.discovery import DiscoveryToolkit
+
+                providers.extend(DiscoveryToolkit().tools)
+
             tk = await super().get_thread_toolkits(
                 thread_context=thread_context, participant=participant
             )
@@ -414,6 +434,14 @@ async def make_call(
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
     ] = False,
+    require_document_authoring: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable MeshDocument authoring", hidden=True),
+    ] = False,
+    require_discovery: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable discovery of agents and tools", hidden=True),
+    ] = False,
     working_directory: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
@@ -478,6 +506,8 @@ async def make_call(
                 require_mcp=require_mcp,
                 require_storage=require_storage,
                 room_rules_path=room_rules,
+                require_document_authoring=require_document_authoring,
+                require_discovery=require_discovery,
                 working_directory=working_directory,
             )
 
@@ -585,6 +615,14 @@ async def service(
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
+    require_document_authoring: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable document authoring", hidden=True),
+    ] = False,
+    require_discovery: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable discovery of agents and tools", hidden=True),
+    ] = False,
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
     path: Annotated[str, typer.Option()] = "/agent",
@@ -618,6 +656,8 @@ async def service(
             require_storage=require_storage,
             room_rules_path=room_rules,
             working_directory=working_directory,
+            require_document_authoring=require_document_authoring,
+            require_discovery=require_discovery,
         ),
     )
 
