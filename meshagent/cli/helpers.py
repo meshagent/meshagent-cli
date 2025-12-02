@@ -114,7 +114,6 @@ async def helpers_service():
                 schemas=[SchemaRegistration(name=name, schema=schema)],
             )
 
-
     @service.path("/schemas/presentation")
     class PresentationDocumentSchemaRegistry(SchemaRegistry):
         def __init__(presentation):
