@@ -24,6 +24,7 @@ async def helpers_service():
     )
     from meshagent.agents.schemas.presentation import presentation_schema
     from meshagent.agents import thread_schema
+    from meshagent.agents.widget_schema import widget_schema
 
     logging.getLogger("openai").setLevel(logging.ERROR)
     logging.getLogger("httpx").setLevel(logging.ERROR)
@@ -101,6 +102,18 @@ async def helpers_service():
                 validate_webhook_secret=False,
                 schemas=[SchemaRegistration(name=name, schema=schema)],
             )
+
+    @service.path("/schemas/widget")
+    class WidgetDocumentSchemaRegistry(SchemaRegistry):
+        def __init__(self):
+            name = "widget"
+            schema = widget_schema
+            super().__init__(
+                name=f"meshagent.schema.{name}",
+                validate_webhook_secret=False,
+                schemas=[SchemaRegistration(name=name, schema=schema)],
+            )
+
 
     @service.path("/schemas/presentation")
     class PresentationDocumentSchemaRegistry(SchemaRegistry):
