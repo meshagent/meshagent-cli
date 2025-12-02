@@ -49,6 +49,18 @@ async def helpers_service():
                 },
             )
 
+        async def get_toolkit_builders(self):
+            from meshagent.tools.storage import StorageToolkitBuilder
+            from meshagent.openai.tools.responses_adapter import WebSearchToolkitBuilder
+
+            providers = [
+                WebSearchToolkitBuilder(),
+                StorageToolkitBuilder(),
+                *await super().get_toolkit_builders(),
+            ]
+
+            return providers
+
     @service.path("/schema_planner")
     class DynamicPlanner(DynamicLLMTaskRunner):
         def __init__(self, **kwargs):
@@ -58,6 +70,18 @@ async def helpers_service():
                 description="an agent that can produces output that matches a schema",
                 llm_adapter=OpenAIResponsesAdapter(model="gpt-5.1"),
             )
+
+        async def get_toolkit_builders(self):
+            from meshagent.tools.storage import StorageToolkitBuilder
+            from meshagent.openai.tools.responses_adapter import WebSearchToolkitBuilder
+
+            providers = [
+                WebSearchToolkitBuilder(),
+                StorageToolkitBuilder(),
+                *await super().get_toolkit_builders(),
+            ]
+
+            return providers
 
     @service.path("/schemas/document")
     class DocumentSchemaRegistry(SchemaRegistry):
