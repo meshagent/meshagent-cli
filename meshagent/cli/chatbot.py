@@ -81,6 +81,7 @@ def build_chatbot(
     require_web_search: Optional[str] = None,
     require_mcp: Optional[str] = None,
     require_storage: Optional[str] = None,
+    require_read_only_storage: Optional[str] = None,
     rules_file: Optional[str] = None,
     room_rules_path: Optional[list[str]] = None,
     require_discovery: Optional[str] = None,
@@ -276,6 +277,9 @@ def build_chatbot(
             if require_storage:
                 providers.extend(StorageToolkit().tools)
 
+            if require_read_only_storage:
+                providers.extend(StorageToolkit(read_only=True).tools)
+
             if require_document_authoring:
                 providers.extend(DocumentAuthoringToolkit().tools)
                 providers.extend(
@@ -434,6 +438,10 @@ async def make_call(
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
     ] = False,
+    require_read_only_storage: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable read only storage toolkit", hidden=True),
+    ] = False,
     require_document_authoring: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable MeshDocument authoring", hidden=True),
@@ -505,6 +513,7 @@ async def make_call(
                 require_image_generation=require_image_generation,
                 require_mcp=require_mcp,
                 require_storage=require_storage,
+                require_read_only_storage=require_read_only_storage,
                 room_rules_path=room_rules,
                 require_document_authoring=require_document_authoring,
                 require_discovery=require_discovery,
@@ -611,6 +620,10 @@ async def service(
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
     ] = False,
+    require_read_only_storage: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable read only storage toolkit", hidden=True),
+    ] = False,
     working_directory: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
@@ -654,6 +667,7 @@ async def service(
             require_image_generation=require_image_generation,
             require_mcp=require_mcp,
             require_storage=require_storage,
+            require_read_only_storage=require_read_only_storage,
             room_rules_path=room_rules,
             working_directory=working_directory,
             require_document_authoring=require_document_authoring,
