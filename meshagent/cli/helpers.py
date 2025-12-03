@@ -31,34 +31,17 @@ async def helpers_service():
 
     service = ServiceHost(port=9000)
 
-    @service.path("/planner")
-    class Planner(LLMTaskRunner):
-        def __init__(self, **kwargs):
-            super().__init__(
-                name="meshagent.planner",
-                title="Generic Task Runner",
-                description="an agent that will perform a task with the selected tools",
-                llm_adapter=OpenAIResponsesAdapter(model="gpt-5.1"),
-                supports_tools=True,
-                input_prompt=True,
-                output_schema={
-                    "type": "object",
-                    "required": ["result"],
-                    "additionalProperties": False,
-                    "properties": {"result": {"type": "string"}},
-                },
-            )
-
     @service.path("/runner")
     class Runner(LLMTaskRunner):
         def __init__(self, **kwargs):
             super().__init__(
                 name="meshagent.runner",
-                title="",
+                title="Generic Task Runner",
                 description="an agent that will perform a task with the selected tools",
                 llm_adapter=OpenAIResponsesAdapter(model="gpt-5.1"),
                 supports_tools=True,
                 input_prompt=True,
+                input_tools=True,
                 output_schema={
                     "type": "object",
                     "required": ["result"],
@@ -78,6 +61,24 @@ async def helpers_service():
             ]
 
             return providers
+
+    @service.path("/planner")
+    class Planner(LLMTaskRunner):
+        def __init__(self, **kwargs):
+            super().__init__(
+                name="meshagent.planner",
+                title="Generic Task Runner (Legacy)",
+                description="an agent that will perform a task with the selected tools",
+                llm_adapter=OpenAIResponsesAdapter(model="gpt-5.1"),
+                supports_tools=True,
+                input_prompt=True,
+                output_schema={
+                    "type": "object",
+                    "required": ["result"],
+                    "additionalProperties": False,
+                    "properties": {"result": {"type": "string"}},
+                },
+            )
 
     @service.path("/schema_planner")
     class DynamicPlanner(DynamicLLMTaskRunner):

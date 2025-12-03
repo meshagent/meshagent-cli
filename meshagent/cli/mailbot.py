@@ -47,6 +47,7 @@ def build_mailbot(
     ] = False,
     queue: str,
     email_address: str,
+    toolkit_name: Optional[str] = None,
 ):
     from meshagent.agents.mail import MailWorker
 
@@ -82,6 +83,7 @@ def build_mailbot(
                 toolkits=toolkits,
                 queue=queue,
                 email_address=email_address,
+                toolkit_name=toolkit_name,
                 rules=rule if len(rule) > 0 else None,
             )
 
@@ -154,6 +156,10 @@ async def make_call(
     email_address: Annotated[
         str, typer.Option(..., help="the email address of the agent")
     ],
+    toolkit_name: Annotated[
+        Optional[str],
+        typer.Option(..., help="the name of a toolkit to expose mail operations"),
+    ],
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -202,6 +208,7 @@ async def make_call(
                 rules_file=rules_file,
                 queue=queue,
                 email_address=email_address,
+                toolkit_name=toolkit_name,
             )
 
             bot = CustomMailbot()
@@ -246,6 +253,10 @@ async def service(
     email_address: Annotated[
         str, typer.Option(..., help="the email address of the agent")
     ],
+    toolkit_name: Annotated[
+        Optional[str],
+        typer.Option(..., help="the name of a toolkit to expose mail operations"),
+    ],
 ):
     print("[bold green]Connecting to room...[/bold green]", flush=True)
 
@@ -264,6 +275,7 @@ async def service(
             image_generation=None,
             rules_file=rules_file,
             email_address=email_address,
+            toolkit_name=toolkit_name,
         ),
     )
 
