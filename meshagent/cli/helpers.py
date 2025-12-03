@@ -1,5 +1,5 @@
 from meshagent.cli import async_typer
-
+from meshagent.agents import AgentCallContext
 
 from meshagent.api import SchemaRegistry, SchemaRegistration
 
@@ -49,14 +49,32 @@ async def helpers_service():
                 },
             )
 
-        async def get_toolkit_builders(self):
+    @service.path("/runner")
+    class Runner(LLMTaskRunner):
+        def __init__(self, **kwargs):
+            super().__init__(
+                name="meshagent.runner",
+                title="",
+                description="an agent that will perform a task with the selected tools",
+                llm_adapter=OpenAIResponsesAdapter(model="gpt-5.1"),
+                supports_tools=True,
+                input_prompt=True,
+                output_schema={
+                    "type": "object",
+                    "required": ["result"],
+                    "additionalProperties": False,
+                    "properties": {"result": {"type": "string"}},
+                },
+            )
+
+        async def get_toolkit_builders(self, *, context: AgentCallContext):
             from meshagent.tools.storage import StorageToolkitBuilder
             from meshagent.openai.tools.responses_adapter import WebSearchToolkitBuilder
 
             providers = [
                 WebSearchToolkitBuilder(),
                 StorageToolkitBuilder(),
-                *await super().get_toolkit_builders(),
+                *await super().get_toolkit_builders(context=context),
             ]
 
             return providers
