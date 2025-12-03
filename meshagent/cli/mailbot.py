@@ -142,11 +142,12 @@ async def make_call(
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
     ] = "gpt-5",
-    local_shell: Annotated[
+    require_local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
-    web_search: Annotated[
-        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    require_web_search: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable web search tool calling", hidden=True),
     ] = False,
     key: Annotated[
         str,
@@ -198,13 +199,13 @@ async def make_call(
             CustomMailbot = build_mailbot(
                 computer_use=None,
                 model=model,
-                local_shell=local_shell,
+                local_shell=require_local_shell,
                 agent_name=agent_name,
                 rule=rule,
                 toolkit=toolkit,
                 schema=schema,
                 image_generation=None,
-                web_search=web_search,
+                web_search=require_web_search,
                 rules_file=rules_file,
                 queue=queue,
                 email_address=email_address,
@@ -243,8 +244,12 @@ async def service(
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
     ] = "gpt-5",
-    local_shell: Annotated[
+    require_local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
+    ] = False,
+    require_web_search: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable web search tool calling", hidden=True),
     ] = False,
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
@@ -267,7 +272,8 @@ async def service(
             queue=queue,
             computer_use=None,
             model=model,
-            local_shell=local_shell,
+            local_shell=require_local_shell,
+            web_search=require_web_search,
             agent_name=agent_name,
             rule=rule,
             toolkit=toolkit,
