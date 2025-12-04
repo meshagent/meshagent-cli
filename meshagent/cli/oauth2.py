@@ -162,7 +162,9 @@ async def delete(
     project_id: ProjectIdOption = None,
     room: RoomOption,
     id: str,
-    delegated_to: Annotated[Optional[str], typer.Option()] = None,
+    delegated_to: Annotated[
+        str, typer.Option(help="The value of the delegated_to field of the secret")
+    ],
 ):
     """
     delete a secret
