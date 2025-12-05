@@ -198,7 +198,7 @@ async def _make_call(
                     "room_url": websocket_room_url(room_name=room),
                     "room_name": room,
                     "token": token.to_jwt(api_key=key),
-                    "arguments": arguments,
+                    "arguments": json.loads(arguments),
                 }
 
                 await send_webhook(
