@@ -90,6 +90,7 @@ def build_chatbot(
     require_document_authoring: Optional[str] = None,
     working_directory: Optional[str] = None,
     llm_participant: Optional[str] = None,
+    always_reply: Optional[bool] = None,
 ):
     from meshagent.agents.chat import ChatBot
 
@@ -162,6 +163,7 @@ def build_chatbot(
                 toolkits=toolkits,
                 rules=rule if len(rule) > 0 else None,
                 client_rules=client_rules,
+                always_reply=always_reply,
             )
 
         async def start(self, *, room: RoomClient):
@@ -472,6 +474,10 @@ async def make_call(
             ..., help="Delegate LLM interactions to a remote participant", hidden=True
         ),
     ] = None,
+    always_reply: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Always reply", hidden=True),
+    ] = None,
 ):
     key = await resolve_key(project_id=project_id, key=key)
     account_client = await get_client()
@@ -533,6 +539,7 @@ async def make_call(
                 require_discovery=require_discovery,
                 working_directory=working_directory,
                 llm_participant=llm_participant,
+                always_reply=always_reply,
             )
 
             bot = CustomChatbot()
@@ -660,6 +667,10 @@ async def service(
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
     path: Annotated[str, typer.Option()] = "/agent",
+    always_reply: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Always reply", hidden=True),
+    ] = None,
 ):
     print("[bold green]Connecting to room...[/bold green]", flush=True)
 
@@ -694,6 +705,7 @@ async def service(
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
             llm_participant=llm_participant,
+            always_reply=always_reply,
         ),
     )
 
