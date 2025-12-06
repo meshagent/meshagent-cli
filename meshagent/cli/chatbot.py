@@ -48,6 +48,8 @@ from meshagent.openai.tools.responses_adapter import (
     ApplyPatchToolkitBuilder,
 )
 
+from meshagent.agents.adapter import MessageStreamLLMAdapter
+
 from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.api.services import ServiceHost
 import logging
@@ -87,6 +89,7 @@ def build_chatbot(
     require_discovery: Optional[str] = None,
     require_document_authoring: Optional[str] = None,
     working_directory: Optional[str] = None,
+    llm_participant: Optional[str] = None,
 ):
     from meshagent.agents.chat import ChatBot
 
@@ -125,25 +128,30 @@ def build_chatbot(
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
 
     BaseClass = ChatBot
-    if computer_use:
-        from meshagent.computers.agent import ComputerAgent
-
-        if ComputerAgent is None:
-            raise RuntimeError(
-                "Computer use is enabled, but meshagent.computers is not installed."
-            )
-        BaseClass = ComputerAgent
-        llm_adapter = OpenAIResponsesAdapter(
-            model=model,
-            response_options={
-                "reasoning": {"generate_summary": "concise"},
-                "truncation": "auto",
-            },
+    if llm_participant:
+        llm_adapter = MessageStreamLLMAdapter(
+            participant_name=llm_participant,
         )
     else:
-        llm_adapter = OpenAIResponsesAdapter(
-            model=model,
-        )
+        if computer_use:
+            from meshagent.computers.agent import ComputerAgent
+
+            if ComputerAgent is None:
+                raise RuntimeError(
+                    "Computer use is enabled, but meshagent.computers is not installed."
+                )
+            BaseClass = ComputerAgent
+            llm_adapter = OpenAIResponsesAdapter(
+                model=model,
+                response_options={
+                    "reasoning": {"generate_summary": "concise"},
+                    "truncation": "auto",
+                },
+            )
+        else:
+            llm_adapter = OpenAIResponsesAdapter(
+                model=model,
+            )
 
     class CustomChatbot(BaseClass):
         def __init__(self):
@@ -458,6 +466,12 @@ async def make_call(
         str,
         typer.Option("--key", help="an api key to sign the token with"),
     ] = None,
+    llm_participant: Annotated[
+        Optional[str],
+        typer.Option(
+            ..., help="Delegate LLM interactions to a remote participant", hidden=True
+        ),
+    ] = None,
 ):
     key = await resolve_key(project_id=project_id, key=key)
     account_client = await get_client()
@@ -518,6 +532,7 @@ async def make_call(
                 require_document_authoring=require_document_authoring,
                 require_discovery=require_discovery,
                 working_directory=working_directory,
+                llm_participant=llm_participant,
             )
 
             bot = CustomChatbot()
@@ -636,6 +651,12 @@ async def service(
         Optional[bool],
         typer.Option(..., help="Enable discovery of agents and tools", hidden=True),
     ] = False,
+    llm_participant: Annotated[
+        Optional[str],
+        typer.Option(
+            ..., help="Delegate LLM interactions to a remote participant", hidden=True
+        ),
+    ] = None,
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
     path: Annotated[str, typer.Option()] = "/agent",
@@ -672,6 +693,7 @@ async def service(
             working_directory=working_directory,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
+            llm_participant=llm_participant,
         ),
     )
 
