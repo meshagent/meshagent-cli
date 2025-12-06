@@ -238,11 +238,26 @@ async def service_run(
             run_tasks = []
 
             async def run_service(port: int):
-                code, output = await _run_process(
-                    cmd=shlex.split("python3 " + command),
-                    log=True,
-                    env={**os.environ, "MESHAGENT_PORT": str(port)},
-                )
+                if command.endswith(".py"):
+                    code, output = await _run_process(
+                        cmd=shlex.split("python3 " + command),
+                        log=True,
+                        env={**os.environ, "MESHAGENT_PORT": str(port)},
+                    )
+
+                elif command.endswith(".dart"):
+                    code, output = await _run_process(
+                        cmd=shlex.split("dart run " + command),
+                        log=True,
+                        env={**os.environ, "MESHAGENT_PORT": str(port)},
+                    )
+
+                else:
+                    code, output = await _run_process(
+                        cmd=shlex.split(command),
+                        log=True,
+                        env={**os.environ, "MESHAGENT_PORT": str(port)},
+                    )
 
                 if code != 0:
                     print(f"[red]{output}[/red]")
@@ -274,6 +289,7 @@ async def service_run(
                             print("[red]unable to read service spec[/red]")
                             raise typer.Exit(-1)
 
+            print(f"getting spec {port}", flush=True)
             spec = await get_spec(port)
 
             sys.stdout.write("\n")
