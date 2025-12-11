@@ -30,8 +30,9 @@ from meshagent.openai.tools.responses_adapter import WebSearchTool
 
 import logging
 
-logger = logging.getLogger("mailbot")
+from meshagent.tools.storage import StorageToolkit
 
+logger = logging.getLogger("mailbot")
 
 app = async_typer.AsyncTyper(help="Join a mailbot to a room")
 
@@ -50,12 +51,21 @@ def build_mailbot(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    toolkit_name: Optional[str] = None,
     queue: str,
     email_address: str,
-    toolkit_name: Optional[str] = None,
     room_rules_paths: list[str],
+    whitelist=list[str],
+    require_storage: Optional[str] = None,
+    require_read_only_storage: Optional[str] = None,
 ):
     from meshagent.agents.mail import MailWorker
+
+    if (require_storage or require_read_only_storage) and len(whitelist) == 0:
+        logger.error("you may only enable storage tools when you also provide a whitelist, storage will not be enabled")
+        require_storage = False
+        require_read_only_storage = False
+        
 
     requirements = []
 
@@ -91,6 +101,7 @@ def build_mailbot(
                 email_address=email_address,
                 toolkit_name=toolkit_name,
                 rules=rule if len(rule) > 0 else None,
+                whitelist=whitelist if len(whitelist) > 0 else None,
             )
 
         async def start(self, *, room: RoomClient):
@@ -165,6 +176,12 @@ def build_mailbot(
             if web_search:
                 thread_toolkit.tools.append(WebSearchTool())
 
+            if require_storage:
+                thread_toolkit.tools.extend(StorageToolkit().tools)
+
+            if require_read_only_storage:
+                thread_toolkit.tools.extend(StorageToolkit(read_only=True).tools)
+
             toolkits.append(thread_toolkit)
             return toolkits
 
@@ -190,7 +207,7 @@ async def make_call(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
-    ] = "gpt-5",
+    ] = "gpt-5.2",
     require_local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
@@ -218,6 +235,20 @@ async def make_call(
             help="a path to a rules file within the room that can be used to customize the agent's behavior",
         ),
     ] = [],
+    whitelist: Annotated[
+        List[str],
+        typer.Option(
+            "--whitelist",
+            help="an email to whitelist",
+        ),
+    ] = [],
+    require_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
+    ] = False,
+    require_read_only_storage: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable read only storage toolkit", hidden=True),
+    ] = False,
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -268,6 +299,9 @@ async def make_call(
                 email_address=email_address,
                 toolkit_name=toolkit_name,
                 room_rules_paths=room_rules,
+                whitelist=whitelist,
+                require_storage=require_storage,
+                require_read_only_storage=require_read_only_storage,
             )
 
             bot = CustomMailbot()
@@ -301,7 +335,7 @@ async def service(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
-    ] = "gpt-5",
+    ] = "gpt-5.2",
     require_local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
@@ -328,6 +362,20 @@ async def service(
             help="a path to a rules file within the room that can be used to customize the agent's behavior",
         ),
     ] = [],
+    whitelist: Annotated[
+        List[str],
+        typer.Option(
+            "--whitelist",
+            help="an email to whitelist",
+        ),
+    ] = [],
+    require_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
+    ] = False,
+    require_read_only_storage: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable read only storage toolkit", hidden=True),
+    ] = False,
 ):
     print("[bold green]Connecting to room...[/bold green]", flush=True)
 
@@ -349,6 +397,9 @@ async def service(
             email_address=email_address,
             toolkit_name=toolkit_name,
             room_rules_paths=room_rules,
+            whitelist=whitelist,
+            require_storage=require_storage,
+            require_read_only_storage=require_read_only_storage,
         ),
     )
 
