@@ -46,6 +46,13 @@ from meshagent.openai.tools.responses_adapter import (
     ApplyPatchConfig,
     ApplyPatchTool,
     ApplyPatchToolkitBuilder,
+    ShellToolkitBuilder,
+    ShellTool,
+    LocalShellToolkitBuilder,
+    LocalShellTool,
+    ImageGenerationConfig,
+    ImageGenerationToolkitBuilder,
+    ImageGenerationTool,
 )
 
 from meshagent.agents.adapter import MessageStreamLLMAdapter
@@ -96,16 +103,6 @@ def build_chatbot(
 
     from meshagent.tools.storage import StorageToolkit
 
-    from meshagent.agents.chat import (
-        ChatBotThreadOpenAIImageGenerationToolkitBuilder,
-        ChatBotThreadLocalShellToolkitBuilder,
-        ChatBotThreadOpenAIImageGenerationTool,
-        ChatBotThreadLocalShellTool,
-        ChatBotThreadShellTool,
-        ChatBotThreadShellToolkitBuilder,
-        ImageGenerationConfig,
-    )
-
     requirements = []
 
     toolkits = []
@@ -122,7 +119,7 @@ def build_chatbot(
         try:
             with open(Path(os.path.expanduser(rules_file)).resolve(), "r") as f:
                 rules_config = RulesConfig.parse(f.read())
-                rule = rules_config.rules
+                rule.extend(rules_config.rules)
                 client_rules = rules_config.client_rules
 
         except FileNotFoundError:
@@ -240,8 +237,7 @@ def build_chatbot(
 
             if require_image_generation:
                 providers.append(
-                    ChatBotThreadOpenAIImageGenerationTool(
-                        thread_context=thread_context,
+                    ImageGenerationTool(
                         config=ImageGenerationConfig(
                             name="image_generation",
                             partial_images=3,
@@ -251,17 +247,15 @@ def build_chatbot(
 
             if require_local_shell:
                 providers.append(
-                    ChatBotThreadLocalShellTool(
+                    LocalShellTool(
                         working_directory=working_directory,
-                        thread_context=thread_context,
                         config=LocalShellConfig(name="local_shell"),
                     )
                 )
 
             if require_shell:
                 providers.append(
-                    ChatBotThreadShellTool(
-                        thread_context=thread_context,
+                    ShellTool(
                         working_directory=working_directory,
                         config=ShellConfig(name="shell"),
                     )
@@ -319,11 +313,7 @@ def build_chatbot(
             providers = []
 
             if image_generation:
-                providers.append(
-                    ChatBotThreadOpenAIImageGenerationToolkitBuilder(
-                        thread_context=thread_context
-                    )
-                )
+                providers.append(ImageGenerationToolkitBuilder())
 
             if apply_patch:
                 providers.append(
@@ -332,15 +322,14 @@ def build_chatbot(
 
             if local_shell:
                 providers.append(
-                    ChatBotThreadLocalShellToolkitBuilder(
-                        thread_context=thread_context,
+                    LocalShellToolkitBuilder(
                         working_directory=working_directory,
                     )
                 )
 
             if shell:
                 providers.append(
-                    ChatBotThreadShellToolkitBuilder(
+                    ShellToolkitBuilder(
                         thread_context=thread_context,
                         working_directory=working_directory,
                     )
