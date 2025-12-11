@@ -90,14 +90,14 @@ async def helpers_service():
                 llm_adapter=OpenAIResponsesAdapter(model="gpt-5.1"),
             )
 
-        async def get_toolkit_builders(self):
+        async def get_toolkit_builders(self, *, context: AgentCallContext):
             from meshagent.tools.storage import StorageToolkitBuilder
             from meshagent.openai.tools.responses_adapter import WebSearchToolkitBuilder
 
             providers = [
                 WebSearchToolkitBuilder(),
                 StorageToolkitBuilder(),
-                *await super().get_toolkit_builders(),
+                *await super().get_toolkit_builders(context=context),
             ]
 
             return providers
