@@ -20,12 +20,17 @@ from meshagent.openai import OpenAIResponsesAdapter
 from meshagent.openai.tools.responses_adapter import ImageGenerationTool, LocalShellTool
 from meshagent.api.services import ServiceHost
 
+from meshagent.agents.config import RulesConfig
 
 from typing import List
 from pathlib import Path
 
-from meshagent.api import RequiredToolkit, RequiredSchema
+from meshagent.api import RequiredToolkit, RequiredSchema, RoomException
 from meshagent.openai.tools.responses_adapter import WebSearchTool
+
+import logging
+
+logger = logging.getLogger("mailbot")
 
 
 app = async_typer.AsyncTyper(help="Join a mailbot to a room")
@@ -48,6 +53,7 @@ def build_mailbot(
     queue: str,
     email_address: str,
     toolkit_name: Optional[str] = None,
+    room_rules_paths: list[str],
 ):
     from meshagent.agents.mail import MailWorker
 
@@ -91,7 +97,50 @@ def build_mailbot(
             print(
                 "[bold green]Configure and send an email interact with your mailbot[/bold green]"
             )
-            return await super().start(room=room)
+            await super().start(room=room)
+
+        async def get_rules(self):
+            rules = [*await super().get_rules()]
+            if room_rules_paths is not None:
+                for p in room_rules_paths:
+                    rules.extend(await self._load_room_rules(path=p))
+
+            return rules
+
+        async def _load_room_rules(
+            self,
+            *,
+            path: str,
+        ):
+            rules = []
+            try:
+                room_rules = await self.room.storage.download(path=path)
+
+                rules_txt = room_rules.data.decode()
+
+                rules_config = RulesConfig.parse(rules_txt)
+
+                if rules_config.rules is not None:
+                    rules.extend(rules_config.rules)
+
+            except RoomException:
+                try:
+                    logger.info("attempting to initialize rules file")
+                    handle = await self.room.storage.open(path=path, overwrite=False)
+                    await self.room.storage.write(
+                        handle=handle,
+                        data="# Add rules to this file to customize your agent's behavior, lines starting with # will be ignored.\n\n".encode(),
+                    )
+                    await self.room.storage.close(handle=handle)
+
+                except RoomException:
+                    pass
+                logger.info(
+                    f"unable to load rules from {path}, continuing with default rules"
+                )
+                pass
+
+            return rules
 
         async def get_thread_toolkits(self, *, thread_context):
             toolkits = await super().get_thread_toolkits(thread_context=thread_context)
@@ -161,6 +210,14 @@ async def make_call(
         Optional[str],
         typer.Option(..., help="the name of a toolkit to expose mail operations"),
     ],
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="a path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -210,6 +267,7 @@ async def make_call(
                 queue=queue,
                 email_address=email_address,
                 toolkit_name=toolkit_name,
+                room_rules_paths=room_rules,
             )
 
             bot = CustomMailbot()
@@ -262,6 +320,14 @@ async def service(
         Optional[str],
         typer.Option(..., help="the name of a toolkit to expose mail operations"),
     ],
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="a path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
 ):
     print("[bold green]Connecting to room...[/bold green]", flush=True)
 
@@ -282,6 +348,7 @@ async def service(
             rules_file=rules_file,
             email_address=email_address,
             toolkit_name=toolkit_name,
+            room_rules_paths=room_rules,
         ),
     )
 
