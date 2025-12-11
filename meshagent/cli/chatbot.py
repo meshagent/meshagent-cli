@@ -119,7 +119,7 @@ def build_chatbot(
         try:
             with open(Path(os.path.expanduser(rules_file)).resolve(), "r") as f:
                 rules_config = RulesConfig.parse(f.read())
-                rule = rules_config.rules
+                rule.extend(rules_config.rules)
                 client_rules = rules_config.client_rules
 
         except FileNotFoundError:
