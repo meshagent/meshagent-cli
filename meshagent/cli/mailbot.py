@@ -62,10 +62,11 @@ def build_mailbot(
     from meshagent.agents.mail import MailWorker
 
     if (require_storage or require_read_only_storage) and len(whitelist) == 0:
-        logger.error("you may only enable storage tools when you also provide a whitelist, storage will not be enabled")
+        logger.error(
+            "you may only enable storage tools when you also provide a whitelist, storage will not be enabled"
+        )
         require_storage = False
         require_read_only_storage = False
-        
 
     requirements = []
 
