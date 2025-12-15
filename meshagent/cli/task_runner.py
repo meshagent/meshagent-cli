@@ -1,4 +1,5 @@
 import typer
+import json
 from rich import print
 from typing import Annotated, Optional
 from meshagent.tools import Toolkit
@@ -20,7 +21,6 @@ from meshagent.api import (
     ParticipantToken,
     ApiScope,
     RoomException,
-    RemoteParticipant,
 )
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.cli import async_typer
@@ -57,18 +57,21 @@ from meshagent.openai.tools.responses_adapter import (
 
 from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
 from meshagent.agents.adapter import MessageStreamLLMAdapter
+from meshagent.agents.context import AgentCallContext
 
 from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.api.services import ServiceHost
 import logging
 import os.path
 
-logger = logging.getLogger("chatbot")
+from urllib.request import urlopen
 
-app = async_typer.AsyncTyper(help="Join a chatbot to a room")
+logger = logging.getLogger("taskrunner")
+
+app = async_typer.AsyncTyper(help="Join a taskrunner to a room")
 
 
-def build_chatbot(
+def build_task_runner(
     *,
     model: str,
     agent_name: str,
@@ -79,7 +82,6 @@ def build_chatbot(
     local_shell: Optional[str] = None,
     shell: Optional[str] = None,
     apply_patch: Optional[str] = None,
-    computer_use: Optional[str] = None,
     web_search: Optional[str] = None,
     mcp: Optional[str] = None,
     storage: Optional[str] = None,
@@ -87,7 +89,6 @@ def build_chatbot(
     require_local_shell: Optional[str] = None,
     require_shell: Optional[str] = None,
     require_apply_patch: Optional[str] = None,
-    require_computer_use: Optional[str] = None,
     require_web_search: Optional[str] = None,
     require_mcp: Optional[str] = None,
     require_storage: Optional[str] = None,
@@ -100,9 +101,23 @@ def build_chatbot(
     require_document_authoring: Optional[str] = None,
     working_directory: Optional[str] = None,
     llm_participant: Optional[str] = None,
-    always_reply: Optional[bool] = None,
+    output_schema_path: Optional[str] = None,
+    output_schema_str: Optional[str] = None,
 ):
-    from meshagent.agents.chat import ChatBot
+    output_schema = None
+    if output_schema_str is not None:
+        output_schema = json.loads(output_schema_str)
+    elif output_schema_path is not None:
+        if output_schema_path.startswith("http://") or output_schema_path.startswith(
+            "https://"
+        ):
+            with urlopen(output_schema_path) as r:
+                output_schema = json.loads(r.read())
+        else:
+            with open(Path(os.path.expanduser(rules_file)).resolve(), "r") as f:
+                output_schema = json.loads(f.read())
+
+    from meshagent.agents.llmrunner import LLMTaskRunner
 
     from meshagent.tools.storage import StorageToolkit
 
@@ -128,33 +143,17 @@ def build_chatbot(
         except FileNotFoundError:
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
 
-    BaseClass = ChatBot
+    BaseClass = LLMTaskRunner
     if llm_participant:
         llm_adapter = MessageStreamLLMAdapter(
             participant_name=llm_participant,
         )
     else:
-        if computer_use:
-            from meshagent.computers.agent import ComputerAgent
+        llm_adapter = OpenAIResponsesAdapter(
+            model=model,
+        )
 
-            if ComputerAgent is None:
-                raise RuntimeError(
-                    "Computer use is enabled, but meshagent.computers is not installed."
-                )
-            BaseClass = ComputerAgent
-            llm_adapter = OpenAIResponsesAdapter(
-                model=model,
-                response_options={
-                    "reasoning": {"generate_summary": "concise"},
-                    "truncation": "auto",
-                },
-            )
-        else:
-            llm_adapter = OpenAIResponsesAdapter(
-                model=model,
-            )
-
-    class CustomChatbot(BaseClass):
+    class CustomTaskRunner(BaseClass):
         def __init__(self):
             super().__init__(
                 llm_adapter=llm_adapter,
@@ -163,7 +162,7 @@ def build_chatbot(
                 toolkits=toolkits,
                 rules=rule if len(rule) > 0 else None,
                 client_rules=client_rules,
-                always_reply=always_reply,
+                output_schema=output_schema,
             )
 
         async def start(self, *, room: RoomClient):
@@ -178,8 +177,9 @@ def build_chatbot(
             *,
             room: RoomClient,
             path: str,
-            participant: Optional[RemoteParticipant] = None,
+            context: AgentCallContext,
         ):
+            participant = context.caller
             rules = []
             try:
                 room_rules = await self.room.storage.download(path=path)
@@ -218,16 +218,14 @@ def build_chatbot(
 
             return rules
 
-        async def get_rules(self, *, thread_context, participant):
-            rules = await super().get_rules(
-                thread_context=thread_context, participant=participant
-            )
+        async def get_rules(self, *, context: AgentCallContext):
+            rules = await super().get_rules(context=context)
 
             if room_rules_path is not None:
                 for p in room_rules_path:
                     rules.extend(
                         await self._load_room_rules(
-                            room=self.room, path=p, participant=participant
+                            room=self.room, path=p, context=context
                         )
                     )
 
@@ -235,7 +233,7 @@ def build_chatbot(
 
             return rules
 
-        async def get_thread_toolkits(self, *, thread_context, participant):
+        async def get_context_toolkits(self, *, context: AgentCallContext):
             providers = []
 
             if require_image_generation:
@@ -326,9 +324,7 @@ def build_chatbot(
 
                 providers.extend(DiscoveryToolkit().tools)
 
-            tk = await super().get_thread_toolkits(
-                thread_context=thread_context, participant=participant
-            )
+            tk = await super().get_context_toolkits(context=context)
             return [
                 *(
                     [Toolkit(name="tools", tools=providers)]
@@ -338,7 +334,7 @@ def build_chatbot(
                 *tk,
             ]
 
-        async def get_thread_toolkit_builders(self, *, thread_context, participant):
+        async def get_toolkit_builders(self, *, context: AgentCallContext):
             providers = []
 
             if image_generation:
@@ -372,7 +368,7 @@ def build_chatbot(
 
             return providers
 
-    return CustomChatbot
+    return CustomTaskRunner
 
 
 @app.async_command("join")
@@ -401,17 +397,11 @@ async def make_call(
         typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
-        str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
+        str, typer.Option(..., help="Name of the LLM model to use for the task runner")
     ] = "gpt-5.2",
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
-    computer_use: Annotated[
-        Optional[bool],
-        typer.Option(
-            ..., help="Enable computer use (requires computer-use-preview model)"
-        ),
-    ] = False,
     local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
@@ -433,14 +423,6 @@ async def make_call(
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model", hidden=True)
     ] = None,
-    require_computer_use: Annotated[
-        Optional[bool],
-        typer.Option(
-            ...,
-            help="Enable computer use (requires computer-use-preview model)",
-            hidden=True,
-        ),
-    ] = False,
     require_local_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable local shell tool calling", hidden=True),
@@ -501,9 +483,13 @@ async def make_call(
             ..., help="Delegate LLM interactions to a remote participant", hidden=True
         ),
     ] = None,
-    always_reply: Annotated[
-        Optional[bool],
-        typer.Option(..., help="Always reply", hidden=True),
+    output_schema: Annotated[
+        Optional[str],
+        typer.Option(..., help="an output schema to use", hidden=True),
+    ] = None,
+    output_schema_path: Annotated[
+        Optional[str],
+        typer.Option(..., help="the path or url to output schema to use", hidden=True),
     ] = None,
 ):
     key = await resolve_key(project_id=project_id, key=key)
@@ -538,8 +524,7 @@ async def make_call(
             for t in schema:
                 requirements.append(RequiredSchema(name=t))
 
-            CustomChatbot = build_chatbot(
-                computer_use=computer_use,
+            CustomTaskRunner = build_task_runner(
                 model=model,
                 local_shell=local_shell,
                 shell=shell,
@@ -568,10 +553,11 @@ async def make_call(
                 require_discovery=require_discovery,
                 working_directory=working_directory,
                 llm_participant=llm_participant,
-                always_reply=always_reply,
+                output_schema_str=output_schema,
+                output_schema_path=output_schema_path,
             )
 
-            bot = CustomChatbot()
+            bot = CustomTaskRunner()
 
             await bot.start(room=client)
             try:
@@ -610,7 +596,7 @@ async def service(
         typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
-        str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
+        str, typer.Option(..., help="Name of the LLM model to use for the task runner")
     ] = "gpt-5.2",
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
@@ -624,12 +610,6 @@ async def service(
     apply_patch: Annotated[
         Optional[bool], typer.Option(..., help="Enable apply patch tool")
     ] = False,
-    computer_use: Annotated[
-        Optional[bool],
-        typer.Option(
-            ..., help="Enable computer use (requires computer-use-preview model)"
-        ),
-    ] = False,
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
@@ -642,14 +622,6 @@ async def service(
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model", hidden=True)
     ] = None,
-    require_computer_use: Annotated[
-        Optional[bool],
-        typer.Option(
-            ...,
-            help="Enable computer use (requires computer-use-preview model)",
-            hidden=True,
-        ),
-    ] = False,
     require_local_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable local shell tool calling", hidden=True),
@@ -708,9 +680,13 @@ async def service(
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
     path: Annotated[str, typer.Option()] = "/agent",
-    always_reply: Annotated[
-        Optional[bool],
-        typer.Option(..., help="Always reply", hidden=True),
+    output_schema: Annotated[
+        Optional[str],
+        typer.Option(..., help="an output schema to use", hidden=True),
+    ] = None,
+    output_schema_path: Annotated[
+        Optional[str],
+        typer.Option(..., help="the path or url to output schema to use", hidden=True),
     ] = None,
 ):
     print("[bold green]Connecting to room...[/bold green]", flush=True)
@@ -718,8 +694,7 @@ async def service(
     service = ServiceHost(host=host, port=port)
     service.add_path(
         path=path,
-        cls=build_chatbot(
-            computer_use=computer_use,
+        cls=build_task_runner(
             model=model,
             local_shell=local_shell,
             shell=shell,
@@ -748,7 +723,8 @@ async def service(
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
             llm_participant=llm_participant,
-            always_reply=always_reply,
+            output_schema_str=output_schema,
+            output_schema_path=output_schema_path,
         ),
     )
 

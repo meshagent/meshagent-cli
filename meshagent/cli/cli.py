@@ -21,6 +21,7 @@ from meshagent.cli import cli_mcp
 from meshagent.cli import chatbot
 from meshagent.cli import voicebot
 from meshagent.cli import mailbot
+from meshagent.cli import task_runner
 from meshagent.cli import containers
 from meshagent.cli import oauth2
 from meshagent.cli import helpers
@@ -64,6 +65,7 @@ app.add_typer(cli_secrets.app, name="secret")
 app.add_typer(queue.app, name="queue")
 app.add_typer(cli_mcp.app, name="mcp")
 app.add_typer(chatbot.app, name="chatbot")
+app.add_typer(task_runner.app, name="task-runner")
 app.add_typer(voicebot.app, name="voicebot")
 app.add_typer(mailbot.app, name="mailbot")
 app.add_typer(containers.app, name="container")
