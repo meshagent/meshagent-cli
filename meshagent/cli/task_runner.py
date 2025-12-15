@@ -103,6 +103,9 @@ def build_task_runner(
     llm_participant: Optional[str] = None,
     output_schema_path: Optional[str] = None,
     output_schema_str: Optional[str] = None,
+    annotations: list[dict[str, str]],
+    title: Optional[str] = None,
+    description: Optional[str] = None,
 ):
     output_schema = None
     if output_schema_str is not None:
@@ -163,6 +166,9 @@ def build_task_runner(
                 rules=rule if len(rule) > 0 else None,
                 client_rules=client_rules,
                 output_schema=output_schema,
+                annotations=annotations,
+                title=title,
+                description=description,
             )
 
         async def start(self, *, room: RoomClient):
@@ -491,6 +497,18 @@ async def make_call(
         Optional[str],
         typer.Option(..., help="the path or url to output schema to use", hidden=True),
     ] = None,
+    annotations: Annotated[
+        str,
+        typer.Option(
+            "--annotations", "-a", help='annotations in json format {"name":"value"}'
+        ),
+    ] = '{"meshagent.task-runner.attachment-format":"tar"}',
+    title: Annotated[
+        Optional[str], typer.Option(..., help="a friendly name for the task runner")
+    ] = None,
+    description: Annotated[
+        Optional[str], typer.Option(..., help="a description for the task runner")
+    ] = None,
 ):
     key = await resolve_key(project_id=project_id, key=key)
     account_client = await get_client()
@@ -525,6 +543,8 @@ async def make_call(
                 requirements.append(RequiredSchema(name=t))
 
             CustomTaskRunner = build_task_runner(
+                title=title,
+                description=description,
                 model=model,
                 local_shell=local_shell,
                 shell=shell,
@@ -555,6 +575,7 @@ async def make_call(
                 llm_participant=llm_participant,
                 output_schema_str=output_schema,
                 output_schema_path=output_schema_path,
+                annotations=json.loads(annotations) if annotations != "" else {},
             )
 
             bot = CustomTaskRunner()
@@ -688,6 +709,18 @@ async def service(
         Optional[str],
         typer.Option(..., help="the path or url to output schema to use", hidden=True),
     ] = None,
+    annotations: Annotated[
+        str,
+        typer.Option(
+            "--annotations", "-a", help='annotations in json format {"name":"value"}'
+        ),
+    ] = '{"meshagent.task-runner.attachment-format":"tar"}',
+    title: Annotated[
+        Optional[str], typer.Option(..., help="a friendly name for the task runner")
+    ] = None,
+    description: Annotated[
+        Optional[str], typer.Option(..., help="a description for the task runner")
+    ] = None,
 ):
     print("[bold green]Connecting to room...[/bold green]", flush=True)
 
@@ -700,6 +733,8 @@ async def service(
             shell=shell,
             apply_patch=apply_patch,
             agent_name=agent_name,
+            title=title,
+            description=description,
             rule=rule,
             toolkit=toolkit,
             schema=schema,
@@ -725,6 +760,7 @@ async def service(
             llm_participant=llm_participant,
             output_schema_str=output_schema,
             output_schema_path=output_schema_path,
+            annotations=json.loads(annotations) if annotations != "" else {},
         ),
     )
 
