@@ -30,6 +30,8 @@ from meshagent.openai.tools.responses_adapter import WebSearchTool
 
 import logging
 
+from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
+
 from meshagent.tools.storage import StorageToolkit
 
 logger = logging.getLogger("mailbot")
@@ -58,6 +60,8 @@ def build_mailbot(
     whitelist=list[str],
     require_storage: Optional[str] = None,
     require_read_only_storage: Optional[str] = None,
+    require_table_read: bool,
+    require_table_write: bool,
 ):
     from meshagent.agents.mail import MailWorker
 
@@ -183,6 +187,31 @@ def build_mailbot(
             if require_read_only_storage:
                 thread_toolkit.tools.extend(StorageToolkit(read_only=True).tools)
 
+            if len(require_table_read) > 0:
+                thread_toolkit.tools.extend(
+                    (
+                        await DatabaseToolkitBuilder().make(
+                            room=self.room,
+                            model=model,
+                            config=DatabaseToolkitConfig(
+                                tables=require_table_read, read_only=True
+                            ),
+                        )
+                    ).tools
+                )
+
+            if len(require_table_write) > 0:
+                thread_toolkit.tools.extend(
+                    (
+                        await DatabaseToolkitBuilder().make(
+                            room=self.room,
+                            model=model,
+                            config=DatabaseToolkitConfig(
+                                tables=require_table_write, read_only=False
+                            ),
+                        )
+                    ).tools
+                )
             toolkits.append(thread_toolkit)
             return toolkits
 
@@ -250,6 +279,18 @@ async def make_call(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit", hidden=True),
     ] = False,
+    require_table_read: Annotated[
+        list[str],
+        typer.Option(
+            ..., help="Enable table read tools for a specific table", hidden=True
+        ),
+    ] = [],
+    require_table_write: Annotated[
+        list[str],
+        typer.Option(
+            ..., help="Enable table write tools for a specific table", hidden=True
+        ),
+    ] = [],
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -303,6 +344,8 @@ async def make_call(
                 whitelist=whitelist,
                 require_storage=require_storage,
                 require_read_only_storage=require_read_only_storage,
+                require_table_read=require_table_read,
+                require_table_write=require_table_write,
             )
 
             bot = CustomMailbot()
@@ -377,6 +420,18 @@ async def service(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit", hidden=True),
     ] = False,
+    require_table_read: Annotated[
+        list[str],
+        typer.Option(
+            ..., help="Enable table read tools for a specific table", hidden=True
+        ),
+    ] = [],
+    require_table_write: Annotated[
+        list[str],
+        typer.Option(
+            ..., help="Enable table write tools for a specific table", hidden=True
+        ),
+    ] = [],
 ):
     print("[bold green]Connecting to room...[/bold green]", flush=True)
 
@@ -401,6 +456,8 @@ async def service(
             whitelist=whitelist,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
+            require_table_read=require_table_read,
+            require_table_write=require_table_write,
         ),
     )
 

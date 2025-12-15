@@ -55,6 +55,7 @@ from meshagent.openai.tools.responses_adapter import (
     ImageGenerationTool,
 )
 
+from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
 from meshagent.agents.adapter import MessageStreamLLMAdapter
 
 from meshagent.api import RequiredToolkit, RequiredSchema
@@ -90,6 +91,8 @@ def build_chatbot(
     require_web_search: Optional[str] = None,
     require_mcp: Optional[str] = None,
     require_storage: Optional[str] = None,
+    require_table_read: list[str] = None,
+    require_table_write: list[str] = None,
     require_read_only_storage: Optional[str] = None,
     rules_file: Optional[str] = None,
     room_rules_path: Optional[list[str]] = None,
@@ -281,6 +284,32 @@ def build_chatbot(
             if require_storage:
                 providers.extend(StorageToolkit().tools)
 
+            if len(require_table_read) > 0:
+                providers.extend(
+                    (
+                        await DatabaseToolkitBuilder().make(
+                            room=self.room,
+                            model=model,
+                            config=DatabaseToolkitConfig(
+                                tables=require_table_read, read_only=True
+                            ),
+                        )
+                    ).tools
+                )
+
+            if len(require_table_write) > 0:
+                providers.extend(
+                    (
+                        await DatabaseToolkitBuilder().make(
+                            room=self.room,
+                            model=model,
+                            config=DatabaseToolkitConfig(
+                                tables=require_table_write, read_only=False
+                            ),
+                        )
+                    ).tools
+                )
+
             if require_read_only_storage:
                 providers.extend(StorageToolkit(read_only=True).tools)
 
@@ -437,6 +466,18 @@ async def make_call(
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
     ] = False,
+    require_table_read: Annotated[
+        list[str],
+        typer.Option(
+            ..., help="Enable table read tools for a specific table", hidden=True
+        ),
+    ] = [],
+    require_table_write: Annotated[
+        list[str],
+        typer.Option(
+            ..., help="Enable table write tools for a specific table", hidden=True
+        ),
+    ] = [],
     require_read_only_storage: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit", hidden=True),
@@ -522,6 +563,8 @@ async def make_call(
                 require_image_generation=require_image_generation,
                 require_mcp=require_mcp,
                 require_storage=require_storage,
+                require_table_read=require_table_read,
+                require_table_write=require_table_write,
                 require_read_only_storage=require_read_only_storage,
                 room_rules_path=room_rules,
                 require_document_authoring=require_document_authoring,
@@ -631,6 +674,18 @@ async def service(
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
     ] = False,
+    require_table_read: Annotated[
+        list[str],
+        typer.Option(
+            ..., help="Enable table read tools for a specific table", hidden=True
+        ),
+    ] = [],
+    require_table_write: Annotated[
+        list[str],
+        typer.Option(
+            ..., help="Enable table write tools for a specific table", hidden=True
+        ),
+    ] = [],
     require_read_only_storage: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit", hidden=True),
@@ -688,6 +743,8 @@ async def service(
             require_image_generation=require_image_generation,
             require_mcp=require_mcp,
             require_storage=require_storage,
+            require_table_write=require_table_write,
+            require_table_read=require_table_read,
             require_read_only_storage=require_read_only_storage,
             room_rules_path=room_rules,
             working_directory=working_directory,

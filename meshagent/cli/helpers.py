@@ -14,6 +14,7 @@ async def helpers_service():
     from meshagent.agents.llmrunner import LLMTaskRunner, DynamicLLMTaskRunner
     from meshagent.openai.tools import OpenAIResponsesAdapter
     from meshagent.tools.storage import StorageToolkit
+    from meshagent.tools.database import DatabaseToolkitBuilder
     from meshagent.api.services import ServiceHost
 
     from meshagent.agents.schemas.gallery import gallery_schema
@@ -57,6 +58,7 @@ async def helpers_service():
             providers = [
                 WebSearchToolkitBuilder(),
                 StorageToolkitBuilder(),
+                DatabaseToolkitBuilder(),
                 *await super().get_toolkit_builders(context=context),
             ]
 
