@@ -41,7 +41,6 @@ async def helpers_service():
                 llm_adapter=OpenAIResponsesAdapter(model="gpt-5.2"),
                 supports_tools=True,
                 input_prompt=True,
-                input_tools=True,
                 output_schema={
                     "type": "object",
                     "required": ["result"],
