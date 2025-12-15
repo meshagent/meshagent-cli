@@ -47,6 +47,7 @@ async def helpers_service():
                     "additionalProperties": False,
                     "properties": {"result": {"type": "string"}},
                 },
+                annotations={"meshagent.task-runner.attachment-format": "tar"},
             )
 
         def get_toolkit_builders(self):
