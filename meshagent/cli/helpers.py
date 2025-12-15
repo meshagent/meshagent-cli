@@ -1,5 +1,4 @@
 from meshagent.cli import async_typer
-from meshagent.agents import AgentCallContext
 
 from meshagent.api import SchemaRegistry, SchemaRegistration
 
@@ -51,7 +50,7 @@ async def helpers_service():
                 },
             )
 
-        async def get_toolkit_builders(self, *, context: AgentCallContext):
+        def get_toolkit_builders(self):
             from meshagent.tools.storage import StorageToolkitBuilder
             from meshagent.openai.tools.responses_adapter import WebSearchToolkitBuilder
 
@@ -59,7 +58,7 @@ async def helpers_service():
                 WebSearchToolkitBuilder(),
                 StorageToolkitBuilder(),
                 DatabaseToolkitBuilder(),
-                *await super().get_toolkit_builders(context=context),
+                *super().get_toolkit_builders(),
             ]
 
             return providers
@@ -92,14 +91,14 @@ async def helpers_service():
                 llm_adapter=OpenAIResponsesAdapter(model="gpt-5.2"),
             )
 
-        async def get_toolkit_builders(self):
+        def get_toolkit_builders(self):
             from meshagent.tools.storage import StorageToolkitBuilder
             from meshagent.openai.tools.responses_adapter import WebSearchToolkitBuilder
 
             providers = [
                 WebSearchToolkitBuilder(),
                 StorageToolkitBuilder(),
-                *await super().get_toolkit_builders(),
+                *super().get_toolkit_builders(),
             ]
 
             return providers
