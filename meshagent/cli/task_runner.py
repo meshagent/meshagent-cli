@@ -340,7 +340,7 @@ def build_task_runner(
                 *tk,
             ]
 
-        async def get_toolkit_builders(self, *, context: AgentCallContext):
+        def get_toolkit_builders(self):
             providers = []
 
             if image_generation:

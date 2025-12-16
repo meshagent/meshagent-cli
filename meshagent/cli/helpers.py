@@ -1,5 +1,4 @@
 from meshagent.cli import async_typer
-from meshagent.agents import AgentCallContext
 
 from meshagent.api import SchemaRegistry, SchemaRegistration
 
@@ -42,16 +41,16 @@ async def helpers_service():
                 llm_adapter=OpenAIResponsesAdapter(model="gpt-5.2"),
                 supports_tools=True,
                 input_prompt=True,
-                input_tools=True,
                 output_schema={
                     "type": "object",
                     "required": ["result"],
                     "additionalProperties": False,
                     "properties": {"result": {"type": "string"}},
                 },
+                annotations={"meshagent.task-runner.attachment-format": "tar"},
             )
 
-        async def get_toolkit_builders(self, *, context: AgentCallContext):
+        def get_toolkit_builders(self):
             from meshagent.tools.storage import StorageToolkitBuilder
             from meshagent.openai.tools.responses_adapter import WebSearchToolkitBuilder
 
@@ -59,7 +58,7 @@ async def helpers_service():
                 WebSearchToolkitBuilder(),
                 StorageToolkitBuilder(),
                 DatabaseToolkitBuilder(),
-                *await super().get_toolkit_builders(context=context),
+                *super().get_toolkit_builders(),
             ]
 
             return providers
@@ -92,14 +91,14 @@ async def helpers_service():
                 llm_adapter=OpenAIResponsesAdapter(model="gpt-5.2"),
             )
 
-        async def get_toolkit_builders(self, *, context: AgentCallContext):
+        def get_toolkit_builders(self):
             from meshagent.tools.storage import StorageToolkitBuilder
             from meshagent.openai.tools.responses_adapter import WebSearchToolkitBuilder
 
             providers = [
                 WebSearchToolkitBuilder(),
                 StorageToolkitBuilder(),
-                *await super().get_toolkit_builders(context=context),
+                *super().get_toolkit_builders(),
             ]
 
             return providers

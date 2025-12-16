@@ -338,7 +338,7 @@ def build_chatbot(
                 *tk,
             ]
 
-        async def get_thread_toolkit_builders(self, *, thread_context, participant):
+        def get_toolkit_builders(self):
             providers = []
 
             if image_generation:
