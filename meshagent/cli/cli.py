@@ -15,6 +15,7 @@ from meshagent.cli import storage
 from meshagent.cli import developer
 from meshagent.cli import webhook
 from meshagent.cli import services
+from meshagent.cli import mailboxes
 from meshagent.cli import cli_secrets
 from meshagent.cli import call
 from meshagent.cli import cli_mcp
@@ -72,6 +73,7 @@ app.add_typer(containers.app, name="container")
 app.add_typer(oauth2.app, name="oauth2")
 app.add_typer(helpers.app, name="helpers")
 app.add_typer(room.app, name="room")
+app.add_typer(mailboxes.app, name="mailbox")
 app.add_typer(meeting_transcriber.app, name="meeting-transcriber")
 
 register_exec(app)
