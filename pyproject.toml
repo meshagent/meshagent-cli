@@ -29,7 +29,7 @@ all = [
   "meshagent-openai~=0.15.0",
   "meshagent-mcp~=0.15.0",
   "meshagent-tools~=0.15.0",
-  "supabase-auth~=2.12.3",
+  "supabase-auth~=2.22.3",
 ]
 
 mcp-service = [
@@ -37,7 +37,7 @@ mcp-service = [
     "meshagent-api~=0.15.0",
     "meshagent-mcp~=0.15.0",
     "meshagent-tools~=0.15.0",
-    "supabase-auth~=2.12.3",
+    "supabase-auth~=2.22.3",
 ]
 
 [project.scripts]            
