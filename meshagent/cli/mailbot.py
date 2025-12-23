@@ -62,6 +62,7 @@ def build_mailbot(
     require_read_only_storage: Optional[str] = None,
     require_table_read: bool,
     require_table_write: bool,
+    reply_all: bool,
 ):
     from meshagent.agents.mail import MailWorker
 
@@ -107,6 +108,7 @@ def build_mailbot(
                 toolkit_name=toolkit_name,
                 rules=rule if len(rule) > 0 else None,
                 whitelist=whitelist if len(whitelist) > 0 else None,
+                reply_all=reply_all,
             )
 
         async def start(self, *, room: RoomClient):
@@ -291,6 +293,7 @@ async def make_call(
             ..., help="Enable table write tools for a specific table", hidden=True
         ),
     ] = [],
+    reply_all: Annotated[bool, typer.Option()] = False,
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -346,6 +349,7 @@ async def make_call(
                 require_read_only_storage=require_read_only_storage,
                 require_table_read=require_table_read,
                 require_table_write=require_table_write,
+                reply_all=reply_all,
             )
 
             bot = CustomMailbot()
@@ -432,6 +436,7 @@ async def service(
             ..., help="Enable table write tools for a specific table", hidden=True
         ),
     ] = [],
+    reply_all: Annotated[bool, typer.Option()] = False,
 ):
     print("[bold green]Connecting to room...[/bold green]", flush=True)
 
@@ -458,6 +463,7 @@ async def service(
             require_read_only_storage=require_read_only_storage,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
+            reply_all=reply_all,
         ),
     )
 
