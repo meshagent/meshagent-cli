@@ -1,5 +1,5 @@
 import json as _json
-from typing import Annotated, Optional, List, Dict, Any
+from typing import Annotated, Optional, List, Any
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
@@ -20,6 +20,7 @@ app = async_typer.AsyncTyper(help="Manage database tables in a room")
 # Helpers
 # ---------------------------
 
+
 def _parse_json_arg(json_str: Optional[str], *, name: str) -> Any:
     if json_str is None:
         return None
@@ -27,6 +28,7 @@ def _parse_json_arg(json_str: Optional[str], *, name: str) -> Any:
         return _json.loads(json_str)
     except Exception as e:
         raise typer.BadParameter(f"Invalid JSON for {name}: {e}")
+
 
 def _load_json_file(path: Optional[str], *, name: str) -> Any:
     """
@@ -50,10 +52,9 @@ def _load_json_file(path: Optional[str], *, name: str) -> Any:
             return _json.load(f)
 
     except Exception as e:
-        raise typer.BadParameter(
-            f"Unable to read {name} from {path}: {e}"
-        )
-        
+        raise typer.BadParameter(f"Unable to read {name} from {path}: {e}")
+
+
 def _ns(namespace: Optional[List[str]]) -> Optional[List[str]]:
     return namespace or None
 
@@ -72,6 +73,7 @@ NamespaceOption = Annotated[
 # Commands
 # ---------------------------
 
+
 @app.async_command("tables")
 async def list_tables(
     *,
@@ -83,11 +85,15 @@ async def list_tables(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
-        connection = await account_client.connect_room(project_id=project_id, room=room_name)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room_name, base_url=meshagent_base_url()),
+                url=websocket_room_url(
+                    room_name=room_name, base_url=meshagent_base_url()
+                ),
                 token=connection.jwt,
             )
         ) as client:
@@ -112,21 +118,29 @@ async def inspect(
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     namespace: NamespaceOption = None,
-    json: Annotated[bool, typer.Option("--json", help="Output raw schema JSON")] = False,
+    json: Annotated[
+        bool, typer.Option("--json", help="Output raw schema JSON")
+    ] = False,
 ):
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
-        connection = await account_client.connect_room(project_id=project_id, room=room_name)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room_name, base_url=meshagent_base_url()),
+                url=websocket_room_url(
+                    room_name=room_name, base_url=meshagent_base_url()
+                ),
                 token=connection.jwt,
             )
         ) as client:
-            schema = await client.database.inspect(table=table, namespace=_ns(namespace))
+            schema = await client.database.inspect(
+                table=table, namespace=_ns(namespace)
+            )
 
             if json:
                 # schema values are DataType objects; they expose to_json()
@@ -150,12 +164,23 @@ async def create_table(
     project_id: ProjectIdOption = None,
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
-    mode: Annotated[str, typer.Option("--mode", help="create | overwrite | create_if_not_exists")] = "create",
+    mode: Annotated[
+        str, typer.Option("--mode", help="create | overwrite | create_if_not_exists")
+    ] = "create",
     namespace: NamespaceOption = None,
-    schema_json: Annotated[Optional[str], typer.Option("--schema-json", help="Schema JSON as a string")] = None,
-    schema_file: Annotated[Optional[str], typer.Option("--schema-file", help="Path to schema JSON file")] = None,
-    data_json: Annotated[Optional[str], typer.Option("--data-json", help="Initial rows (JSON list)")] = None,
-    data_file: Annotated[Optional[str], typer.Option("--data-file", help="Path to JSON file with initial rows")] = None,
+    schema_json: Annotated[
+        Optional[str], typer.Option("--schema-json", help="Schema JSON as a string")
+    ] = None,
+    schema_file: Annotated[
+        Optional[str], typer.Option("--schema-file", help="Path to schema JSON file")
+    ] = None,
+    data_json: Annotated[
+        Optional[str], typer.Option("--data-json", help="Initial rows (JSON list)")
+    ] = None,
+    data_file: Annotated[
+        Optional[str],
+        typer.Option("--data-file", help="Path to JSON file with initial rows"),
+    ] = None,
 ):
     """
     Create a table with optional schema + optional initial data.
@@ -167,24 +192,41 @@ async def create_table(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
-        connection = await account_client.connect_room(project_id=project_id, room=room_name)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
 
         schema_obj = _parse_json_arg(schema_json, name="--schema-json")
-        schema_obj = schema_obj if schema_obj is not None else _load_json_file(schema_file, name="--schema-file")
+        schema_obj = (
+            schema_obj
+            if schema_obj is not None
+            else _load_json_file(schema_file, name="--schema-file")
+        )
 
         data_obj = _parse_json_arg(data_json, name="--data-json")
-        data_obj = data_obj if data_obj is not None else _load_json_file(data_file, name="--data-file")
+        data_obj = (
+            data_obj
+            if data_obj is not None
+            else _load_json_file(data_file, name="--data-file")
+        )
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room_name, base_url=meshagent_base_url()),
+                url=websocket_room_url(
+                    room_name=room_name, base_url=meshagent_base_url()
+                ),
                 token=connection.jwt,
             )
         ) as client:
             # Build DataType objects from json if schema provided
             schema = None
             if schema_obj is not None:
-                schema = {k: client.database.__class__.__mro__[0].__globals__["DataType"].from_json(v) for k, v in schema_obj.items()}  # hacky but local import-safe
+                schema = {
+                    k: client.database.__class__.__mro__[0]
+                    .__globals__["DataType"]
+                    .from_json(v)
+                    for k, v in schema_obj.items()
+                }  # hacky but local import-safe
 
             if schema is not None:
                 await client.database.create_table_with_schema(
@@ -218,21 +260,29 @@ async def drop_table(
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     namespace: NamespaceOption = None,
-    ignore_missing: Annotated[bool, typer.Option("--ignore-missing", help="Ignore missing table")] = False,
+    ignore_missing: Annotated[
+        bool, typer.Option("--ignore-missing", help="Ignore missing table")
+    ] = False,
 ):
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
-        connection = await account_client.connect_room(project_id=project_id, room=room_name)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room_name, base_url=meshagent_base_url()),
+                url=websocket_room_url(
+                    room_name=room_name, base_url=meshagent_base_url()
+                ),
                 token=connection.jwt,
             )
         ) as client:
-            await client.database.drop_table(name=table, ignore_missing=ignore_missing, namespace=_ns(namespace))
+            await client.database.drop_table(
+                name=table, ignore_missing=ignore_missing, namespace=_ns(namespace)
+            )
             print(f"[bold green]Dropped table:[/bold green] {table}")
 
     except RoomException as e:
@@ -249,7 +299,9 @@ async def add_columns(
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t")],
     namespace: NamespaceOption = None,
-    columns_json: Annotated[str, typer.Option(..., "--columns-json", help="JSON object of new columns")] = None,
+    columns_json: Annotated[
+        str, typer.Option(..., "--columns-json", help="JSON object of new columns")
+    ] = None,
 ):
     """
     Add columns. JSON supports either:
@@ -264,11 +316,15 @@ async def add_columns(
 
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
-        connection = await account_client.connect_room(project_id=project_id, room=room_name)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room_name, base_url=meshagent_base_url()),
+                url=websocket_room_url(
+                    room_name=room_name, base_url=meshagent_base_url()
+                ),
                 token=connection.jwt,
             )
         ) as client:
@@ -281,7 +337,9 @@ async def add_columns(
                 else:
                     new_cols[k] = v
 
-            await client.database.add_columns(table=table, new_columns=new_cols, namespace=_ns(namespace))
+            await client.database.add_columns(
+                table=table, new_columns=new_cols, namespace=_ns(namespace)
+            )
             print(f"[bold green]Added columns to[/bold green] {table}")
 
     except (RoomException, typer.BadParameter) as e:
@@ -298,21 +356,30 @@ async def drop_columns(
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t")],
     namespace: NamespaceOption = None,
-    columns: Annotated[List[str], typer.Option(..., "--column", "-c", help="Column to drop (repeatable)")] = None,
+    columns: Annotated[
+        List[str],
+        typer.Option(..., "--column", "-c", help="Column to drop (repeatable)"),
+    ] = None,
 ):
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
-        connection = await account_client.connect_room(project_id=project_id, room=room_name)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room_name, base_url=meshagent_base_url()),
+                url=websocket_room_url(
+                    room_name=room_name, base_url=meshagent_base_url()
+                ),
                 token=connection.jwt,
             )
         ) as client:
-            await client.database.drop_columns(table=table, columns=columns, namespace=_ns(namespace))
+            await client.database.drop_columns(
+                table=table, columns=columns, namespace=_ns(namespace)
+            )
             print(f"[bold green]Dropped columns from[/bold green] {table}")
 
     except RoomException as e:
@@ -329,28 +396,43 @@ async def insert(
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t")],
     namespace: NamespaceOption = None,
-    json: Annotated[Optional[str], typer.Option("--json", help="JSON list of records")] = None,
-    file: Annotated[Optional[str], typer.Option("--file", "-f", help="Path to JSON file (list of records)")] = None,
+    json: Annotated[
+        Optional[str], typer.Option("--json", help="JSON list of records")
+    ] = None,
+    file: Annotated[
+        Optional[str],
+        typer.Option("--file", "-f", help="Path to JSON file (list of records)"),
+    ] = None,
 ):
     account_client = await get_client()
     try:
         records = _parse_json_arg(json, name="--json")
-        records = records if records is not None else _load_json_file(file, name="--file")
+        records = (
+            records if records is not None else _load_json_file(file, name="--file")
+        )
         if not isinstance(records, list):
             raise typer.BadParameter("insert expects a JSON list of records")
 
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
-        connection = await account_client.connect_room(project_id=project_id, room=room_name)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room_name, base_url=meshagent_base_url()),
+                url=websocket_room_url(
+                    room_name=room_name, base_url=meshagent_base_url()
+                ),
                 token=connection.jwt,
             )
         ) as client:
-            await client.database.insert(table=table, records=records, namespace=_ns(namespace))
-            print(f"[bold green]Inserted[/bold green] {len(records)} record(s) into {table}")
+            await client.database.insert(
+                table=table, records=records, namespace=_ns(namespace)
+            )
+            print(
+                f"[bold green]Inserted[/bold green] {len(records)} record(s) into {table}"
+            )
 
     except (RoomException, typer.BadParameter) as e:
         print(f"[red]{e}[/red]")
@@ -367,28 +449,42 @@ async def merge(
     table: Annotated[str, typer.Option(..., "--table", "-t")],
     on: Annotated[str, typer.Option(..., "--on", help="Column to match for upsert")],
     namespace: NamespaceOption = None,
-    json: Annotated[Optional[str], typer.Option("--json", help="JSON records (list)")] = None,
-    file: Annotated[Optional[str], typer.Option("--file", "-f", help="Path to JSON file (list)")] = None,
+    json: Annotated[
+        Optional[str], typer.Option("--json", help="JSON records (list)")
+    ] = None,
+    file: Annotated[
+        Optional[str], typer.Option("--file", "-f", help="Path to JSON file (list)")
+    ] = None,
 ):
     account_client = await get_client()
     try:
         records = _parse_json_arg(json, name="--json")
-        records = records if records is not None else _load_json_file(file, name="--file")
+        records = (
+            records if records is not None else _load_json_file(file, name="--file")
+        )
         if not isinstance(records, list):
             raise typer.BadParameter("merge expects a JSON list of records")
 
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
-        connection = await account_client.connect_room(project_id=project_id, room=room_name)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room_name, base_url=meshagent_base_url()),
+                url=websocket_room_url(
+                    room_name=room_name, base_url=meshagent_base_url()
+                ),
                 token=connection.jwt,
             )
         ) as client:
-            await client.database.merge(table=table, on=on, records=records, namespace=_ns(namespace))
-            print(f"[bold green]Merged[/bold green] {len(records)} record(s) into {table} on {on}")
+            await client.database.merge(
+                table=table, on=on, records=records, namespace=_ns(namespace)
+            )
+            print(
+                f"[bold green]Merged[/bold green] {len(records)} record(s) into {table} on {on}"
+            )
 
     except (RoomException, typer.BadParameter) as e:
         print(f"[red]{e}[/red]")
@@ -403,10 +499,18 @@ async def update(
     project_id: ProjectIdOption = None,
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t")],
-    where: Annotated[str, typer.Option(..., "--where", help="SQL WHERE clause, e.g. \"id = 1\"")],
+    where: Annotated[
+        str, typer.Option(..., "--where", help='SQL WHERE clause, e.g. "id = 1"')
+    ],
     namespace: NamespaceOption = None,
-    values_json: Annotated[Optional[str], typer.Option("--values-json", help="JSON object of literal values")] = None,
-    values_sql_json: Annotated[Optional[str], typer.Option("--values-sql-json", help="JSON object of SQL expressions")] = None,
+    values_json: Annotated[
+        Optional[str],
+        typer.Option("--values-json", help="JSON object of literal values"),
+    ] = None,
+    values_sql_json: Annotated[
+        Optional[str],
+        typer.Option("--values-sql-json", help="JSON object of SQL expressions"),
+    ] = None,
 ):
     account_client = await get_client()
     try:
@@ -417,11 +521,15 @@ async def update(
 
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
-        connection = await account_client.connect_room(project_id=project_id, room=room_name)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room_name, base_url=meshagent_base_url()),
+                url=websocket_room_url(
+                    room_name=room_name, base_url=meshagent_base_url()
+                ),
                 token=connection.jwt,
             )
         ) as client:
@@ -454,15 +562,21 @@ async def delete(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
-        connection = await account_client.connect_room(project_id=project_id, room=room_name)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room_name, base_url=meshagent_base_url()),
+                url=websocket_room_url(
+                    room_name=room_name, base_url=meshagent_base_url()
+                ),
                 token=connection.jwt,
             )
         ) as client:
-            await client.database.delete(table=table, where=where, namespace=_ns(namespace))
+            await client.database.delete(
+                table=table, where=where, namespace=_ns(namespace)
+            )
             print(f"[bold green]Deleted[/bold green] from {table} where {where}")
 
     except RoomException as e:
@@ -479,14 +593,28 @@ async def search(
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t")],
     namespace: NamespaceOption = None,
-    text: Annotated[Optional[str], typer.Option("--text", help="Full-text query")] = None,
-    vector_json: Annotated[Optional[str], typer.Option("--vector-json", help="Vector JSON array")] = None,
-    where: Annotated[Optional[str], typer.Option("--where", help="SQL WHERE clause")] = None,
-    where_json: Annotated[Optional[str], typer.Option("--where-json", help="JSON object converted to equality ANDs")] = None,
-    select: Annotated[Optional[List[str]], typer.Option("--select", help="Columns to select (repeatable)")] = None,
+    text: Annotated[
+        Optional[str], typer.Option("--text", help="Full-text query")
+    ] = None,
+    vector_json: Annotated[
+        Optional[str], typer.Option("--vector-json", help="Vector JSON array")
+    ] = None,
+    where: Annotated[
+        Optional[str], typer.Option("--where", help="SQL WHERE clause")
+    ] = None,
+    where_json: Annotated[
+        Optional[str],
+        typer.Option("--where-json", help="JSON object converted to equality ANDs"),
+    ] = None,
+    select: Annotated[
+        Optional[List[str]],
+        typer.Option("--select", help="Columns to select (repeatable)"),
+    ] = None,
     limit: Annotated[Optional[int], typer.Option("--limit")] = None,
     offset: Annotated[Optional[int], typer.Option("--offset")] = None,
-    pretty: Annotated[bool, typer.Option("--pretty/--no-pretty", help="Pretty-print JSON")] = True,
+    pretty: Annotated[
+        bool, typer.Option("--pretty/--no-pretty", help="Pretty-print JSON")
+    ] = True,
 ):
     account_client = await get_client()
     try:
@@ -499,11 +627,15 @@ async def search(
 
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
-        connection = await account_client.connect_room(project_id=project_id, room=room_name)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room_name, base_url=meshagent_base_url()),
+                url=websocket_room_url(
+                    room_name=room_name, base_url=meshagent_base_url()
+                ),
                 token=connection.jwt,
             )
         ) as client:
@@ -538,11 +670,15 @@ async def optimize(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
-        connection = await account_client.connect_room(project_id=project_id, room=room_name)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room_name, base_url=meshagent_base_url()),
+                url=websocket_room_url(
+                    room_name=room_name, base_url=meshagent_base_url()
+                ),
                 token=connection.jwt,
             )
         ) as client:
@@ -569,15 +705,21 @@ async def list_versions(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
-        connection = await account_client.connect_room(project_id=project_id, room=room_name)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room_name, base_url=meshagent_base_url()),
+                url=websocket_room_url(
+                    room_name=room_name, base_url=meshagent_base_url()
+                ),
                 token=connection.jwt,
             )
         ) as client:
-            versions = await client.database.list_versions(table=table, namespace=_ns(namespace))
+            versions = await client.database.list_versions(
+                table=table, namespace=_ns(namespace)
+            )
             out = [v.model_dump(mode="json") for v in versions]
             print(_json.dumps(out, indent=2 if pretty else None))
 
@@ -601,15 +743,21 @@ async def checkout(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
-        connection = await account_client.connect_room(project_id=project_id, room=room_name)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room_name, base_url=meshagent_base_url()),
+                url=websocket_room_url(
+                    room_name=room_name, base_url=meshagent_base_url()
+                ),
                 token=connection.jwt,
             )
         ) as client:
-            await client.database.checkout(table=table, version=version, namespace=_ns(namespace))
+            await client.database.checkout(
+                table=table, version=version, namespace=_ns(namespace)
+            )
             print(f"[bold green]Checked out[/bold green] {table} @ version {version}")
 
     except RoomException as e:
@@ -632,15 +780,21 @@ async def restore(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
-        connection = await account_client.connect_room(project_id=project_id, room=room_name)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room_name, base_url=meshagent_base_url()),
+                url=websocket_room_url(
+                    room_name=room_name, base_url=meshagent_base_url()
+                ),
                 token=connection.jwt,
             )
         ) as client:
-            await client.database.restore(table=table, version=version, namespace=_ns(namespace))
+            await client.database.restore(
+                table=table, version=version, namespace=_ns(namespace)
+            )
             print(f"[bold green]Restored[/bold green] {table} to version {version}")
 
     except RoomException as e:
@@ -663,15 +817,21 @@ async def list_indexes(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
-        connection = await account_client.connect_room(project_id=project_id, room=room_name)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room_name, base_url=meshagent_base_url()),
+                url=websocket_room_url(
+                    room_name=room_name, base_url=meshagent_base_url()
+                ),
                 token=connection.jwt,
             )
         ) as client:
-            idxs = await client.database.list_indexes(table=table, namespace=_ns(namespace))
+            idxs = await client.database.list_indexes(
+                table=table, namespace=_ns(namespace)
+            )
             out = [i.model_dump(mode="json") for i in idxs]
             print(_json.dumps(out, indent=2 if pretty else None))
 
@@ -689,7 +849,9 @@ async def create_index(
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t")],
     column: Annotated[str, typer.Option(..., "--column", "-c")],
-    kind: Annotated[str, typer.Option(..., "--kind", help="vector | scalar | fts")] = "scalar",
+    kind: Annotated[
+        str, typer.Option(..., "--kind", help="vector | scalar | fts")
+    ] = "scalar",
     replace: Annotated[Optional[bool], typer.Option("--replace/--no-replace")] = None,
     namespace: NamespaceOption = None,
 ):
@@ -697,20 +859,39 @@ async def create_index(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
-        connection = await account_client.connect_room(project_id=project_id, room=room_name)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room_name, base_url=meshagent_base_url()),
+                url=websocket_room_url(
+                    room_name=room_name, base_url=meshagent_base_url()
+                ),
                 token=connection.jwt,
             )
         ) as client:
             if kind == "vector":
-                await client.database.create_vector_index(table=table, column=column, replace=replace, namespace=_ns(namespace))
+                await client.database.create_vector_index(
+                    table=table,
+                    column=column,
+                    replace=replace,
+                    namespace=_ns(namespace),
+                )
             elif kind == "scalar":
-                await client.database.create_scalar_index(table=table, column=column, replace=replace, namespace=_ns(namespace))
+                await client.database.create_scalar_index(
+                    table=table,
+                    column=column,
+                    replace=replace,
+                    namespace=_ns(namespace),
+                )
             elif kind in ("fts", "full_text", "full-text"):
-                await client.database.create_full_text_search_index(table=table, column=column, replace=replace, namespace=_ns(namespace))
+                await client.database.create_full_text_search_index(
+                    table=table,
+                    column=column,
+                    replace=replace,
+                    namespace=_ns(namespace),
+                )
             else:
                 raise typer.BadParameter("--kind must be one of: vector, scalar, fts")
 
@@ -736,15 +917,21 @@ async def drop_index(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
-        connection = await account_client.connect_room(project_id=project_id, room=room_name)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room_name, base_url=meshagent_base_url()),
+                url=websocket_room_url(
+                    room_name=room_name, base_url=meshagent_base_url()
+                ),
                 token=connection.jwt,
             )
         ) as client:
-            await client.database.drop_index(table=table, name=name, namespace=_ns(namespace))
+            await client.database.drop_index(
+                table=table, name=name, namespace=_ns(namespace)
+            )
             print(f"[bold green]Dropped index[/bold green] {name} on {table}")
 
     except RoomException as e:
