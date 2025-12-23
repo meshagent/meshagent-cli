@@ -29,7 +29,7 @@ all = [
   "meshagent-openai~=0.16.0",
   "meshagent-mcp~=0.16.0",
   "meshagent-tools~=0.16.0",
-  "supabase-auth~=2.22.3
+  "supabase-auth~=2.22.3"
 ]
 
 mcp-service = [
