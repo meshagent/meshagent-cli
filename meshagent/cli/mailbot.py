@@ -250,7 +250,7 @@ async def make_call(
     ] = False,
     require_web_search: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable web search tool calling", hidden=True),
+        typer.Option(..., help="Enable web search tool calling"),
     ] = False,
     key: Annotated[
         str,
@@ -280,26 +280,26 @@ async def make_call(
         ),
     ] = [],
     require_storage: Annotated[
-        Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit", hidden=True),
+        typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
     database_namespace: Annotated[
         Optional[str],
-        typer.Option(..., help="Use a specific database namespace", hidden=True),
+        typer.Option(..., help="Use a specific database namespace"),
     ] = None,
     require_table_read: Annotated[
         list[str],
         typer.Option(
-            ..., help="Enable table read tools for a specific table", hidden=True
+            ..., help="Enable table read tools for a specific table"
         ),
     ] = [],
     require_table_write: Annotated[
         list[str],
         typer.Option(
-            ..., help="Enable table write tools for a specific table", hidden=True
+            ..., help="Enable table write tools for a specific table"
         ),
     ] = [],
     reply_all: Annotated[bool, typer.Option()] = False,
@@ -399,7 +399,7 @@ async def service(
     ] = False,
     require_web_search: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable web search tool calling", hidden=True),
+        typer.Option(..., help="Enable web search tool calling"),
     ] = False,
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
@@ -428,26 +428,26 @@ async def service(
         ),
     ] = [],
     require_storage: Annotated[
-        Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit", hidden=True),
+        typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
     database_namespace: Annotated[
         Optional[str],
-        typer.Option(..., help="Use a specific database namespace", hidden=True),
+        typer.Option(..., help="Use a specific database namespace"),
     ] = None,
     require_table_read: Annotated[
         list[str],
         typer.Option(
-            ..., help="Enable table read tools for a specific table", hidden=True
+            ..., help="Enable table read tools for a specific table"
         ),
     ] = [],
     require_table_write: Annotated[
         list[str],
         typer.Option(
-            ..., help="Enable table write tools for a specific table", hidden=True
+            ..., help="Enable table write tools for a specific table"
         ),
     ] = [],
     reply_all: Annotated[bool, typer.Option()] = False,

@@ -436,7 +436,7 @@ async def make_call(
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
     require_image_generation: Annotated[
-        Optional[str], typer.Option(..., help="Name of an image gen model", hidden=True)
+        Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
     require_computer_use: Annotated[
         Optional[bool],
@@ -448,53 +448,53 @@ async def make_call(
     ] = False,
     require_local_shell: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable local shell tool calling", hidden=True),
+        typer.Option(..., help="Enable local shell tool calling"),
     ] = False,
     require_shell: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable function shell tool calling", hidden=True),
+        typer.Option(..., help="Enable function shell tool calling"),
     ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable apply patch tool calling", hidden=True),
+        typer.Option(..., help="Enable apply patch tool calling"),
     ] = False,
     require_web_search: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable web search tool calling", hidden=True),
+        typer.Option(..., help="Enable web search tool calling"),
     ] = False,
     require_mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling", hidden=True)
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
     require_storage: Annotated[
-        Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
     database_namespace: Annotated[
         Optional[str],
-        typer.Option(..., help="Use a specific database namespace", hidden=True),
+        typer.Option(..., help="Use a specific database namespace"),
     ] = None,
     require_table_read: Annotated[
         list[str],
         typer.Option(
-            ..., help="Enable table read tools for a specific table", hidden=True
+            ..., help="Enable table read tools for a specific table"
         ),
     ] = [],
     require_table_write: Annotated[
         list[str],
         typer.Option(
-            ..., help="Enable table write tools for a specific table", hidden=True
+            ..., help="Enable table write tools for a specific table"
         ),
     ] = [],
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit", hidden=True),
+        typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
     require_document_authoring: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable MeshDocument authoring", hidden=True),
+        typer.Option(..., help="Enable MeshDocument authoring"),
     ] = False,
     require_discovery: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable discovery of agents and tools", hidden=True),
+        typer.Option(..., help="Enable discovery of agents and tools"),
     ] = False,
     working_directory: Annotated[
         Optional[str],
@@ -507,12 +507,12 @@ async def make_call(
     llm_participant: Annotated[
         Optional[str],
         typer.Option(
-            ..., help="Delegate LLM interactions to a remote participant", hidden=True
+            ..., help="Delegate LLM interactions to a remote participant"
         ),
     ] = None,
     always_reply: Annotated[
         Optional[bool],
-        typer.Option(..., help="Always reply", hidden=True),
+        typer.Option(..., help="Always reply"),
     ] = None,
 ):
     if database_namespace is not None:
@@ -653,7 +653,7 @@ async def service(
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
     require_image_generation: Annotated[
-        Optional[str], typer.Option(..., help="Name of an image gen model", hidden=True)
+        Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
     require_computer_use: Annotated[
         Optional[bool],
@@ -665,44 +665,44 @@ async def service(
     ] = False,
     require_local_shell: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable local shell tool calling", hidden=True),
+        typer.Option(..., help="Enable local shell tool calling"),
     ] = False,
     require_shell: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable function shell tool calling", hidden=True),
+        typer.Option(..., help="Enable function shell tool calling"),
     ] = False,
     require_apply_patch: Annotated[
-        Optional[bool], typer.Option(..., help="Enable apply patch tool", hidden=True)
+        Optional[bool], typer.Option(..., help="Enable apply patch tool")
     ] = False,
     require_web_search: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable web search tool calling", hidden=True),
+        typer.Option(..., help="Enable web search tool calling"),
     ] = False,
     require_mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling", hidden=True)
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
     require_storage: Annotated[
-        Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
     database_namespace: Annotated[
         Optional[str],
-        typer.Option(..., help="Use a specific database namespace", hidden=True),
+        typer.Option(..., help="Use a specific database namespace"),
     ] = None,
     require_table_read: Annotated[
         list[str],
         typer.Option(
-            ..., help="Enable table read tools for a specific table", hidden=True
+            ..., help="Enable table read tools for a specific table"
         ),
     ] = [],
     require_table_write: Annotated[
         list[str],
         typer.Option(
-            ..., help="Enable table write tools for a specific table", hidden=True
+            ..., help="Enable table write tools for a specific table"
         ),
     ] = [],
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit", hidden=True),
+        typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
     working_directory: Annotated[
         Optional[str],
@@ -710,16 +710,16 @@ async def service(
     ] = None,
     require_document_authoring: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable document authoring", hidden=True),
+        typer.Option(..., help="Enable document authoring"),
     ] = False,
     require_discovery: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable discovery of agents and tools", hidden=True),
+        typer.Option(..., help="Enable discovery of agents and tools"),
     ] = False,
     llm_participant: Annotated[
         Optional[str],
         typer.Option(
-            ..., help="Delegate LLM interactions to a remote participant", hidden=True
+            ..., help="Delegate LLM interactions to a remote participant"
         ),
     ] = None,
     host: Annotated[Optional[str], typer.Option()] = None,
@@ -727,7 +727,7 @@ async def service(
     path: Annotated[str, typer.Option()] = "/agent",
     always_reply: Annotated[
         Optional[bool],
-        typer.Option(..., help="Always reply", hidden=True),
+        typer.Option(..., help="Always reply"),
     ] = None,
 ):
     print("[bold green]Connecting to room...[/bold green]", flush=True)
