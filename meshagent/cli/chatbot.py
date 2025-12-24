@@ -100,6 +100,7 @@ def build_chatbot(
     require_document_authoring: Optional[str] = None,
     working_directory: Optional[str] = None,
     llm_participant: Optional[str] = None,
+    database_namespace: Optional[list[str]] = None,
     always_reply: Optional[bool] = None,
 ):
     from meshagent.agents.chat import ChatBot
@@ -291,7 +292,9 @@ def build_chatbot(
                             room=self.room,
                             model=model,
                             config=DatabaseToolkitConfig(
-                                tables=require_table_read, read_only=True
+                                tables=require_table_read,
+                                read_only=True,
+                                namespace=database_namespace,
                             ),
                         )
                     ).tools
@@ -304,7 +307,9 @@ def build_chatbot(
                             room=self.room,
                             model=model,
                             config=DatabaseToolkitConfig(
-                                tables=require_table_write, read_only=False
+                                tables=require_table_write,
+                                read_only=False,
+                                namespace=database_namespace,
                             ),
                         )
                     ).tools
@@ -463,6 +468,10 @@ async def make_call(
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
     ] = False,
+    database_namespace: Annotated[
+        Optional[str],
+        typer.Option(..., help="Use a specific database namespace", hidden=True),
+    ] = None,
     require_table_read: Annotated[
         list[str],
         typer.Option(
@@ -506,6 +515,9 @@ async def make_call(
         typer.Option(..., help="Always reply", hidden=True),
     ] = None,
 ):
+    if database_namespace is not None:
+        database_namespace = database_namespace.split("::")
+
     key = await resolve_key(project_id=project_id, key=key)
     account_client = await get_client()
     try:
@@ -569,6 +581,7 @@ async def make_call(
                 working_directory=working_directory,
                 llm_participant=llm_participant,
                 always_reply=always_reply,
+                database_namespace=database_namespace,
             )
 
             bot = CustomChatbot()
@@ -671,6 +684,10 @@ async def service(
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
     ] = False,
+    database_namespace: Annotated[
+        Optional[str],
+        typer.Option(..., help="Use a specific database namespace", hidden=True),
+    ] = None,
     require_table_read: Annotated[
         list[str],
         typer.Option(
@@ -715,6 +732,9 @@ async def service(
 ):
     print("[bold green]Connecting to room...[/bold green]", flush=True)
 
+    if database_namespace is not None:
+        database_namespace = database_namespace.split("::")
+
     service = ServiceHost(host=host, port=port)
     service.add_path(
         path=path,
@@ -733,6 +753,7 @@ async def service(
             image_generation=image_generation,
             mcp=mcp,
             storage=storage,
+            database_namespace=database_namespace,
             require_web_search=require_web_search,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,

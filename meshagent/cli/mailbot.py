@@ -63,6 +63,7 @@ def build_mailbot(
     require_table_read: bool,
     require_table_write: bool,
     reply_all: bool,
+    database_namespace: Optional[list[str]] = None,
 ):
     from meshagent.agents.mail import MailWorker
 
@@ -196,7 +197,9 @@ def build_mailbot(
                             room=self.room,
                             model=model,
                             config=DatabaseToolkitConfig(
-                                tables=require_table_read, read_only=True
+                                tables=require_table_read,
+                                read_only=True,
+                                namespace=database_namespace,
                             ),
                         )
                     ).tools
@@ -209,7 +212,9 @@ def build_mailbot(
                             room=self.room,
                             model=model,
                             config=DatabaseToolkitConfig(
-                                tables=require_table_write, read_only=False
+                                tables=require_table_write,
+                                read_only=False,
+                                namespace=database_namespace,
                             ),
                         )
                     ).tools
@@ -281,6 +286,10 @@ async def make_call(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit", hidden=True),
     ] = False,
+    database_namespace: Annotated[
+        Optional[str],
+        typer.Option(..., help="Use a specific database namespace", hidden=True),
+    ] = None,
     require_table_read: Annotated[
         list[str],
         typer.Option(
@@ -350,6 +359,7 @@ async def make_call(
                 require_table_read=require_table_read,
                 require_table_write=require_table_write,
                 reply_all=reply_all,
+                database_namespace=database_namespace,
             )
 
             bot = CustomMailbot()
@@ -424,6 +434,10 @@ async def service(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit", hidden=True),
     ] = False,
+    database_namespace: Annotated[
+        Optional[str],
+        typer.Option(..., help="Use a specific database namespace", hidden=True),
+    ] = None,
     require_table_read: Annotated[
         list[str],
         typer.Option(
@@ -464,6 +478,7 @@ async def service(
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             reply_all=reply_all,
+            database_namespace=database_namespace,
         ),
     )
 
