@@ -474,15 +474,11 @@ async def make_call(
     ] = None,
     require_table_read: Annotated[
         list[str],
-        typer.Option(
-            ..., help="Enable table read tools for a specific table"
-        ),
+        typer.Option(..., help="Enable table read tools for a specific table"),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(
-            ..., help="Enable table write tools for a specific table"
-        ),
+        typer.Option(..., help="Enable table write tools for a specific table"),
     ] = [],
     require_read_only_storage: Annotated[
         Optional[bool],
@@ -506,9 +502,7 @@ async def make_call(
     ] = None,
     llm_participant: Annotated[
         Optional[str],
-        typer.Option(
-            ..., help="Delegate LLM interactions to a remote participant"
-        ),
+        typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
     always_reply: Annotated[
         Optional[bool],
@@ -690,15 +684,11 @@ async def service(
     ] = None,
     require_table_read: Annotated[
         list[str],
-        typer.Option(
-            ..., help="Enable table read tools for a specific table"
-        ),
+        typer.Option(..., help="Enable table read tools for a specific table"),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(
-            ..., help="Enable table write tools for a specific table"
-        ),
+        typer.Option(..., help="Enable table write tools for a specific table"),
     ] = [],
     require_read_only_storage: Annotated[
         Optional[bool],
@@ -718,9 +708,7 @@ async def service(
     ] = False,
     llm_participant: Annotated[
         Optional[str],
-        typer.Option(
-            ..., help="Delegate LLM interactions to a remote participant"
-        ),
+        typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
