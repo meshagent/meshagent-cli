@@ -11,6 +11,7 @@ from meshagent.cli import async_typer
 from meshagent.cli.helper import resolve_project_id, resolve_room, get_client
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.api import RoomClient, WebSocketClientProtocol
+from meshagent.api.room_server_client import DataType
 from meshagent.api import RoomException  # or wherever you defined it
 
 app = async_typer.AsyncTyper(help="Manage database tables in a room")
@@ -222,10 +223,7 @@ async def create_table(
             schema = None
             if schema_obj is not None:
                 schema = {
-                    k: client.database.__class__.__mro__[0]
-                    .__globals__["DataType"]
-                    .from_json(v)
-                    for k, v in schema_obj.items()
+                    k: DataType.from_json(v) for k, v in schema_obj.items()
                 }  # hacky but local import-safe
 
             if schema is not None:
@@ -329,7 +327,6 @@ async def add_columns(
             )
         ) as client:
             # Convert DataType json objects into DataType instances; pass strings through.
-            DataType = client.database.__class__.__mro__[0].__globals__["DataType"]
             new_cols = {}
             for k, v in cols_obj.items():
                 if isinstance(v, dict) and "type" in v:
