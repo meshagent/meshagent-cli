@@ -6,6 +6,9 @@ from urllib.request import urlopen
 import typer
 from rich import print
 
+from meshagent.api import RequiredTable
+from meshagent.agents.agent import install_required_table
+
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.cli import async_typer
 from meshagent.cli.helper import resolve_project_id, resolve_room, get_client
@@ -151,6 +154,48 @@ async def inspect(
                 print(f"[bold]{table}[/bold]")
                 for k, v in schema.items():
                     print(f"  [cyan]{k}[/cyan]: {v.to_json()}")
+
+    except RoomException as e:
+        print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+    finally:
+        await account_client.close()
+
+
+@app.async_command("install")
+async def install_requirements(
+    *,
+    project_id: ProjectIdOption = None,
+    room: RoomOption,
+    file: Annotated[
+        Optional[str], typer.Option("--file", help="Path to requirements JSON file")
+    ] = None,
+):
+    """
+    Create a database from a json file containing a list of RequiredTables.
+    """
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        room_name = resolve_room(room)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
+
+        requirements = _load_json_file(file, name="--file")
+
+        async with RoomClient(
+            protocol=WebSocketClientProtocol(
+                url=websocket_room_url(
+                    room_name=room_name, base_url=meshagent_base_url()
+                ),
+                token=connection.jwt,
+            )
+        ) as client:
+            for rt in requirements["tables"]:
+                rt = RequiredTable.from_json(rt)
+                print(f"installing table {rt.name} in namespace {rt.namespace}")
+                await install_required_table(room=client, table=rt)
 
     except RoomException as e:
         print(f"[red]{e}[/red]")
