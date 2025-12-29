@@ -5,7 +5,7 @@ from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.api import RoomClient, WebSocketClientProtocol, RoomException
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.cli import async_typer
-from meshagent.api import ParticipantToken, ApiScope, RemoteParticipant, MeshDocument
+from meshagent.api import ParticipantToken, ApiScope, RemoteParticipant
 from meshagent.cli.helper import (
     get_client,
     resolve_project_id,
@@ -18,21 +18,6 @@ from meshagent.api.services import ServiceHost
 from pathlib import Path
 from meshagent.agents.config import RulesConfig
 import logging
-import re
-from collections import defaultdict
-from datetime import datetime, timezone
-from livekit.agents.llm import ChatMessage
-from livekit.agents.voice import ConversationItemAddedEvent
-from meshagent.livekit.agents.voice import VoiceConnection
-from meshagent.tools import ToolContext
-from livekit.agents import (
-    AgentSession,
-    RoomInputOptions,
-    RoomOutputOptions,
-    BackgroundAudioPlayer,
-    AudioConfig,
-    BuiltinAudioClip,
-)
 
 app = async_typer.AsyncTyper(help="Join a voicebot to a room")
 
@@ -175,7 +160,7 @@ def build_voicebot(
             try:
                 self._transcript_doc = await self.room.sync.open(path=path, create=True)
             except Exception:
-                logger.info(f"unable to open document for transcription")
+                logger.info("unable to open document for transcription")
                 self._transcript_doc = None
                 return
 
