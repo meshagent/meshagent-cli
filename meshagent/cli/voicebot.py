@@ -51,8 +51,7 @@ def build_voicebot(
     auto_greet_message: Optional[str] = None,
     auto_greet_prompt: Optional[str] = None,
     room_rules_paths: list[str],
-    save_transcript: bool = False,
-    transcript_path: str = DEFAULT_TRANSCRIPT_PATH,
+    save_transcript_path: Optional[str],
 ):
     requirements = []
 
@@ -81,9 +80,6 @@ def build_voicebot(
 
     class CustomVoiceBot(VoiceBot):
         def __init__(self):
-            self._save_transcript = save_transcript
-            self._transcript_path_template = transcript_path or DEFAULT_TRANSCRIPT_PATH
-
             super().__init__(
                 auto_greet_message=auto_greet_message,
                 auto_greet_prompt=auto_greet_prompt,
@@ -91,6 +87,11 @@ def build_voicebot(
                 requires=requirements,
                 rules=rules if len(rules) > 0 else None,
             )
+
+            self._transcript_template_path = save_transcript_path
+            self._transcript_doc = None
+            self._transcript_handler = None
+            self._transcript_path = None
 
         async def start(self, *, room: RoomClient):
             await super().start(room=room)
@@ -158,213 +159,50 @@ def build_voicebot(
 
             return rules
 
-        @staticmethod
-        def _sanitize_for_path(value: str) -> str:
-            return re.sub(r"[^a-zA-Z0-9._-]+", "_", value)
+        async def on_session_created(
+            self, *, session, context, participant, breakout_room
+        ):
+            if not self._transcript_template_path:
+                return
 
-        @staticmethod
-        def _iso_utc_from_unix(ts: float) -> str:
-            return (
-                datetime.fromtimestamp(ts, tz=timezone.utc)
-                .isoformat()
-                .replace("+00:00", "Z")
+            path = self._format_transcript_path(
+                template=self._transcript_template_path,
+                participant=participant,
+                agent_name=self.name,
             )
+            self._transcript_path = path
 
-        def _format_transcript_path(self, *, participant: RemoteParticipant) -> str:
-            now = datetime.now(timezone.utc)
-
-            placeholders = defaultdict(
-                str,
-                {
-                    "participant_name": self._sanitize_for_path(
-                        participant.get_attribute("name") or participant.id
-                    ),
-                    "participant_id": self._sanitize_for_path(participant.id),
-                    "agent_name": self._sanitize_for_path(self.name or "agent"),
-                    "date": now.strftime("%Y-%m-%d"),
-                    "time": now.strftime("%H-%M-%S"),
-                },
-            )
-
-            template = self._transcript_path_template or DEFAULT_TRANSCRIPT_PATH
             try:
-                return template.format_map(placeholders)
+                self._transcript_doc = await self.room.sync.open(path=path, create=True)
             except Exception:
-                logger.warning(
-                    "unable to format transcript path using template '%s', falling back to default",
-                    template,
-                )
-                return DEFAULT_TRANSCRIPT_PATH.format_map(placeholders)
+                logger.info(f"unable to open document for transcription")
+                self._transcript_doc = None
+                return
 
-        def _attach_transcript_logger(
-            self,
-            *,
-            session: AgentSession,
-            doc: MeshDocument,
-            user_participant: RemoteParticipant,
-            agent_name: str,
-            agent_participant_id: str = "agent",
+            self._transcript_handler = self._attach_transcript_logger(
+                session=session,
+                doc=self._transcript_doc,
+                user_participant=participant,
+                agent_name=self.name,  # this should be the agent name we pass in the build context
+            )
+
+        async def on_session_ended(
+            self, *, session, context, participant, breakout_room
         ):
-            """
-            Attach a listener to AgentSession that adds all user+assistant ChatMessages
-            into the Mesh transcript document.
-            """
-
-            def _append_segment(*, role: str, text: str, created_at: float):
-                if not text:
-                    return
-
-                if role == "user":
-                    participant_id = user_participant.id
-                    # Try to fetch a friendly name from attributes; fall back to id if missing.
-                    participant_name = (
-                        user_participant.get_attribute("name") or user_participant.id
-                    )
-                elif role == "assistant":
-                    participant_id = agent_participant_id
-                    participant_name = agent_name
-                else:
-                    # skip system / developer / function_call, etc
-                    return
-
-                segments = doc.root
-                segments.append_child(
-                    "segment",
-                    {
-                        "text": text,
-                        "participant_name": participant_name,
-                        "participant_id": participant_id,
-                        "time": self._iso_utc_from_unix(created_at),
-                    },
-                )
-
-            def _on_conversation_item(event: ConversationItemAddedEvent):
-                item = event.item
-                # Only care about ChatMessages (ignore tool calls, etc.)
-                if not isinstance(item, ChatMessage):
-                    return
-
-                text = item.text_content
-                if text is None:
-                    return
-
-                # item.role is Literal["developer", "system", "user", "assistant"]
-                _append_segment(role=item.role, text=text, created_at=item.created_at)
-
-            # Event name is the "type" defined on ConversationItemAddedEvent
-            session.on("conversation_item_added", _on_conversation_item)
-            return _on_conversation_item  # so we can detach later if we want
-
-        async def run_voice_agent(
-            self, *, participant: RemoteParticipant, breakout_room: str
-        ):
-            """
-            If transcript saving is disabled, fall back to base VoiceBot behavior.
-            If enabled, run the voice agent and capture transcript to a MeshDocument.
-            """
-
-            if not self._save_transcript:
-                return await super().run_voice_agent(
-                    participant=participant, breakout_room=breakout_room
-                )
-
-            transcript_path = self._format_transcript_path(participant=participant)
-            # Open MeshDocument Transcript
+            if not self._transcript_doc or not self._transcript_path:
+                return
             try:
-                doc = await self.room.sync.open(
-                    path=transcript_path,
-                    create=True,
-                )
+                if session and self._transcript_handler:
+                    session.off("conversation_item_added", self._transcript_handler)
+            except Exception:
+                pass
+
+            # Close the MeshDocument
+            try:
+                await self.room.sync.close(path=self._transcript_path)
+                logger.info("transcript saved at %s", self._transcript_path)
             except Exception as e:
-                logger.error(
-                    "unable to initialize transcript at %s: %s; falling back to base VoiceBot",
-                    transcript_path,
-                    e,
-                    exc_info=e,
-                )
-                return await super().run_voice_agent(
-                    participant=participant, breakout_room=breakout_room
-                )
-
-            session = None
-            transcript_handler = None
-
-            try:
-                async with VoiceConnection(
-                    room=self.room, breakout_room=breakout_room
-                ) as connection:
-                    logger.info(
-                        "starting voice agent with transcript at %s", transcript_path
-                    )
-
-                    context = ToolContext(
-                        room=self.room,
-                        caller=self.room.local_participant,
-                        on_behalf_of=participant,
-                    )
-
-                    session = self.create_session(context=context)
-                    agent = await self.create_agent(context=context, session=session)
-
-                    transcript_handler = self._attach_transcript_logger(
-                        session=session,
-                        doc=doc,
-                        user_participant=participant,
-                        agent_name=self.title or self.name or "Agent",
-                        agent_participant_id="agent",  # or self.room.local_participant.id
-                    )
-
-                    background_audio = BackgroundAudioPlayer(
-                        thinking_sound=[
-                            AudioConfig(BuiltinAudioClip.KEYBOARD_TYPING, volume=0.3),
-                            AudioConfig(BuiltinAudioClip.KEYBOARD_TYPING2, volume=0.4),
-                        ],
-                    )
-                    await background_audio.start(
-                        room=connection.livekit_room,
-                        agent_session=session,
-                    )
-
-                    await session.start(
-                        agent=agent,
-                        room=connection.livekit_room,
-                        room_input_options=RoomInputOptions(
-                            text_enabled=False,
-                            delete_room_on_close=False,
-                        ),
-                        room_output_options=RoomOutputOptions(
-                            transcription_enabled=True,
-                            audio_enabled=True,
-                        ),
-                    )
-
-                    if self.auto_greet_prompt is not None:
-                        session.generate_reply(user_input=self.auto_greet_prompt)
-
-                    if self.auto_greet_message is not None:
-                        session.say(self.auto_greet_message)
-
-                    logger.info("started voice agent")
-                    await self._wait_for_disconnect(room=connection.livekit_room)
-
-            finally:
-                # detach handler
-                if session is not None and transcript_handler is not None:
-                    try:
-                        session.off("conversation_item_added", transcript_handler)
-                    except Exception:
-                        pass
-                # close transcript doc
-                try:
-                    await self.room.sync.close(path=transcript_path)
-                    logger.info("transcript saved at %s", transcript_path)
-                except Exception as close_error:
-                    logger.warning(
-                        "failed to close transcript %s: %s",
-                        transcript_path,
-                        close_error,
-                        exc_info=close_error,
-                    )
+                logger.warning("failed to close transcript doc: %s", e)
 
     return CustomVoiceBot
 
@@ -399,24 +237,18 @@ async def make_call(
             help="a path to a rules file within the room that can be used to customize the agent's behavior",
         ),
     ] = [],
-    save_transcript: Annotated[
-        bool,
+    save_transcript_path: Annotated[
+        Optional[str],
         typer.Option(
-            "--save-transcript/--no-save-transcript",
-            help="Save voice conversation transcript as a MeshDocument",
-        ),
-    ] = False,
-    transcript_path: Annotated[
-        str,
-        typer.Option(
-            "--transcript-path-template",
-            "-tpt",
+            "--save-transcript-path",
+            "-st",
             help=(
-                "Path template for transcript MeshDocument. Supports "
-                "{participant_name}, {participant_id}, {agent_name}, {date}, {time}"
+                "Save voice conversation transcript as a MeshDocument at this path template. "
+                "Template supports {participant_name}, {participant_id}, "
+                "{agent_name}, {date}, {time}."
             ),
         ),
-    ] = DEFAULT_TRANSCRIPT_PATH,
+    ] = None,
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -443,8 +275,7 @@ async def make_call(
             auto_greet_message=auto_greet_message,
             auto_greet_prompt=auto_greet_prompt,
             room_rules_paths=room_rules,
-            save_transcript=save_transcript,
-            transcript_path=transcript_path,
+            save_transcript_path=save_transcript_path,
         )
 
         jwt = token.to_jwt(api_key=key)
@@ -500,24 +331,18 @@ async def service(
             help="a path to a rules file within the room that can be used to customize the agent's behavior",
         ),
     ] = [],
-    save_transcript: Annotated[
-        bool,
+    save_transcript_path: Annotated[
+        Optional[str],
         typer.Option(
-            "--save-transcript/--no-save-transcript",
-            help="Save voice conversation transcript as a MeshDocument",
-        ),
-    ] = False,
-    transcript_path: Annotated[
-        str,
-        typer.Option(
-            "--transcript-path-template",
-            "-tpt",
+            "--save-transcript-path",
+            "-st",
             help=(
-                "Path template for transcript MeshDocument. Supports "
-                "{participant_name}, {participant_id}, {agent_name}, {date}, {time}"
+                "Save voice conversation transcript as a MeshDocument at this path template. "
+                "Template supports {participant_name}, {participant_id}, "
+                "{agent_name}, {date}, {time}."
             ),
         ),
-    ] = DEFAULT_TRANSCRIPT_PATH,
+    ] = None,
 ):
     CustomVoiceBot = build_voicebot(
         agent_name=agent_name,
@@ -528,8 +353,7 @@ async def service(
         auto_greet_message=auto_greet_message,
         auto_greet_prompt=auto_greet_prompt,
         room_rules_paths=room_rules,
-        save_transcript=save_transcript,
-        transcript_path=transcript_path,
+        save_transcript_path=save_transcript_path,
     )
 
     service = ServiceHost(host=host, port=port)
