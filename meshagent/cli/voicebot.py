@@ -22,7 +22,7 @@ import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from livekit.agents.llm import ChatMessage
-from livekit.agents.voice import ConversationItemAddedEvent 
+from livekit.agents.voice import ConversationItemAddedEvent
 from meshagent.livekit.agents.voice import VoiceConnection
 from meshagent.tools import ToolContext
 from livekit.agents import (
@@ -38,7 +38,8 @@ app = async_typer.AsyncTyper(help="Join a voicebot to a room")
 
 logger = logging.getLogger("voicebot")
 
-DEFAULT_TRANSCRIPT_PATH= "transcripts/{participant_name}/{date}/{time}.transcript"
+DEFAULT_TRANSCRIPT_PATH = "transcripts/{participant_name}/{date}/{time}.transcript"
+
 
 def build_voicebot(
     *,
@@ -80,8 +81,8 @@ def build_voicebot(
 
     class CustomVoiceBot(VoiceBot):
         def __init__(self):
-            self._save_transcript=save_transcript
-            self._transcript_path_template=transcript_path or DEFAULT_TRANSCRIPT_PATH
+            self._save_transcript = save_transcript
+            self._transcript_path_template = transcript_path or DEFAULT_TRANSCRIPT_PATH
 
             super().__init__(
                 auto_greet_message=auto_greet_message,
@@ -156,11 +157,11 @@ def build_voicebot(
             logger.info(f"voicebot using rules {rules}")
 
             return rules
-        
+
         @staticmethod
         def _sanitize_for_path(value: str) -> str:
             return re.sub(r"[^a-zA-Z0-9._-]+", "_", value)
-        
+
         @staticmethod
         def _iso_utc_from_unix(ts: float) -> str:
             return (
@@ -168,7 +169,7 @@ def build_voicebot(
                 .isoformat()
                 .replace("+00:00", "Z")
             )
-        
+
         def _format_transcript_path(self, *, participant: RemoteParticipant) -> str:
             now = datetime.now(timezone.utc)
 
@@ -194,7 +195,7 @@ def build_voicebot(
                     template,
                 )
                 return DEFAULT_TRANSCRIPT_PATH.format_map(placeholders)
-        
+
         def _attach_transcript_logger(
             self,
             *,
@@ -217,8 +218,7 @@ def build_voicebot(
                     participant_id = user_participant.id
                     # Try to fetch a friendly name from attributes; fall back to id if missing.
                     participant_name = (
-                        user_participant.get_attribute("name")
-                        or user_participant.id
+                        user_participant.get_attribute("name") or user_participant.id
                     )
                 elif role == "assistant":
                     participant_id = agent_participant_id
@@ -254,19 +254,23 @@ def build_voicebot(
             # Event name is the "type" defined on ConversationItemAddedEvent
             session.on("conversation_item_added", _on_conversation_item)
             return _on_conversation_item  # so we can detach later if we want
-        
-        async def run_voice_agent(self, *, participant:RemoteParticipant, breakout_room:str):
+
+        async def run_voice_agent(
+            self, *, participant: RemoteParticipant, breakout_room: str
+        ):
             """
             If transcript saving is disabled, fall back to base VoiceBot behavior.
             If enabled, run the voice agent and capture transcript to a MeshDocument.
             """
 
             if not self._save_transcript:
-                return await super().run_voice_agent(participant=participant, breakout_room=breakout_room)
+                return await super().run_voice_agent(
+                    participant=participant, breakout_room=breakout_room
+                )
 
             transcript_path = self._format_transcript_path(participant=participant)
             # Open MeshDocument Transcript
-            try: 
+            try:
                 doc = await self.room.sync.open(
                     path=transcript_path,
                     create=True,
@@ -278,14 +282,20 @@ def build_voicebot(
                     e,
                     exc_info=e,
                 )
-                return await super().run_voice_agent(participant=participant, breakout_room=breakout_room)
-            
+                return await super().run_voice_agent(
+                    participant=participant, breakout_room=breakout_room
+                )
+
             session = None
             transcript_handler = None
 
             try:
-                async with VoiceConnection(room=self.room, breakout_room=breakout_room) as connection:
-                    logger.info("starting voice agent with transcript at %s", transcript_path)
+                async with VoiceConnection(
+                    room=self.room, breakout_room=breakout_room
+                ) as connection:
+                    logger.info(
+                        "starting voice agent with transcript at %s", transcript_path
+                    )
 
                     context = ToolContext(
                         room=self.room,
@@ -355,7 +365,7 @@ def build_voicebot(
                         close_error,
                         exc_info=close_error,
                     )
-                    
+
     return CustomVoiceBot
 
 
@@ -434,7 +444,7 @@ async def make_call(
             auto_greet_prompt=auto_greet_prompt,
             room_rules_paths=room_rules,
             save_transcript=save_transcript,
-            transcript_path=transcript_path
+            transcript_path=transcript_path,
         )
 
         jwt = token.to_jwt(api_key=key)
@@ -519,7 +529,7 @@ async def service(
         auto_greet_prompt=auto_greet_prompt,
         room_rules_paths=room_rules,
         save_transcript=save_transcript,
-        transcript_path=transcript_path
+        transcript_path=transcript_path,
     )
 
     service = ServiceHost(host=host, port=port)
