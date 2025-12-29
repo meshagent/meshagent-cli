@@ -62,6 +62,8 @@ def build_mailbot(
     require_read_only_storage: Optional[str] = None,
     require_table_read: bool,
     require_table_write: bool,
+    reply_all: bool,
+    database_namespace: Optional[list[str]] = None,
 ):
     from meshagent.agents.mail import MailWorker
 
@@ -107,6 +109,7 @@ def build_mailbot(
                 toolkit_name=toolkit_name,
                 rules=rule if len(rule) > 0 else None,
                 whitelist=whitelist if len(whitelist) > 0 else None,
+                reply_all=reply_all,
             )
 
         async def start(self, *, room: RoomClient):
@@ -194,7 +197,9 @@ def build_mailbot(
                             room=self.room,
                             model=model,
                             config=DatabaseToolkitConfig(
-                                tables=require_table_read, read_only=True
+                                tables=require_table_read,
+                                read_only=True,
+                                namespace=database_namespace,
                             ),
                         )
                     ).tools
@@ -207,7 +212,9 @@ def build_mailbot(
                             room=self.room,
                             model=model,
                             config=DatabaseToolkitConfig(
-                                tables=require_table_write, read_only=False
+                                tables=require_table_write,
+                                read_only=False,
+                                namespace=database_namespace,
                             ),
                         )
                     ).tools
@@ -243,7 +250,7 @@ async def make_call(
     ] = False,
     require_web_search: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable web search tool calling", hidden=True),
+        typer.Option(..., help="Enable web search tool calling"),
     ] = False,
     key: Annotated[
         str,
@@ -273,24 +280,25 @@ async def make_call(
         ),
     ] = [],
     require_storage: Annotated[
-        Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit", hidden=True),
+        typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    database_namespace: Annotated[
+        Optional[str],
+        typer.Option(..., help="Use a specific database namespace"),
+    ] = None,
     require_table_read: Annotated[
         list[str],
-        typer.Option(
-            ..., help="Enable table read tools for a specific table", hidden=True
-        ),
+        typer.Option(..., help="Enable table read tools for a specific table"),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(
-            ..., help="Enable table write tools for a specific table", hidden=True
-        ),
+        typer.Option(..., help="Enable table write tools for a specific table"),
     ] = [],
+    reply_all: Annotated[bool, typer.Option()] = False,
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -346,6 +354,8 @@ async def make_call(
                 require_read_only_storage=require_read_only_storage,
                 require_table_read=require_table_read,
                 require_table_write=require_table_write,
+                reply_all=reply_all,
+                database_namespace=database_namespace,
             )
 
             bot = CustomMailbot()
@@ -385,7 +395,7 @@ async def service(
     ] = False,
     require_web_search: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable web search tool calling", hidden=True),
+        typer.Option(..., help="Enable web search tool calling"),
     ] = False,
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
@@ -414,24 +424,25 @@ async def service(
         ),
     ] = [],
     require_storage: Annotated[
-        Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit", hidden=True),
+        typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    database_namespace: Annotated[
+        Optional[str],
+        typer.Option(..., help="Use a specific database namespace"),
+    ] = None,
     require_table_read: Annotated[
         list[str],
-        typer.Option(
-            ..., help="Enable table read tools for a specific table", hidden=True
-        ),
+        typer.Option(..., help="Enable table read tools for a specific table"),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(
-            ..., help="Enable table write tools for a specific table", hidden=True
-        ),
+        typer.Option(..., help="Enable table write tools for a specific table"),
     ] = [],
+    reply_all: Annotated[bool, typer.Option()] = False,
 ):
     print("[bold green]Connecting to room...[/bold green]", flush=True)
 
@@ -458,6 +469,8 @@ async def service(
             require_read_only_storage=require_read_only_storage,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
+            reply_all=reply_all,
+            database_namespace=database_namespace,
         ),
     )
 

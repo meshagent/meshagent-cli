@@ -8,6 +8,7 @@ from meshagent.cli import auth
 from meshagent.cli import api_keys
 from meshagent.cli import projects
 from meshagent.cli import sessions
+from meshagent.cli import database
 from meshagent.cli import participant_token
 from meshagent.cli import agent
 from meshagent.cli import messaging
@@ -74,6 +75,7 @@ app.add_typer(oauth2.app, name="oauth2")
 app.add_typer(helpers.app, name="helpers")
 app.add_typer(room.app, name="room")
 app.add_typer(mailboxes.app, name="mailbox")
+app.add_typer(database.app, name="database")
 app.add_typer(meeting_transcriber.app, name="meeting-transcriber")
 
 register_exec(app)
