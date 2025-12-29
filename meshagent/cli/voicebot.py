@@ -74,9 +74,6 @@ def build_voicebot(
             )
 
             self._transcript_template_path = save_transcript_path
-            self._transcript_doc = None
-            self._transcript_handler = None
-            self._transcript_path = None
 
         async def start(self, *, room: RoomClient):
             await super().start(room=room)
@@ -155,39 +152,36 @@ def build_voicebot(
                 participant=participant,
                 agent_name=self.name,
             )
-            self._transcript_path = path
 
-            try:
-                self._transcript_doc = await self.room.sync.open(path=path, create=True)
-            except Exception:
-                logger.info("unable to open document for transcription")
-                self._transcript_doc = None
-                return
+            doc = await self.room.sync.open(path=path, create=True)
 
-            self._transcript_handler = self._attach_transcript_logger(
+            handler = self._attach_transcript_logger(
                 session=session,
-                doc=self._transcript_doc,
+                doc=doc,
                 user_participant=participant,
                 agent_name=self.name,  # this should be the agent name we pass in the build context
             )
 
-        async def on_session_ended(
-            self, *, session, context, participant, breakout_room
-        ):
-            if not self._transcript_doc or not self._transcript_path:
-                return
-            try:
-                if session and self._transcript_handler:
-                    session.off("conversation_item_added", self._transcript_handler)
-            except Exception:
-                pass
+            return {"path":path, "doc":doc, "handler":handler}
 
-            # Close the MeshDocument
-            try:
-                await self.room.sync.close(path=self._transcript_path)
-                logger.info("transcript saved at %s", self._transcript_path)
-            except Exception as e:
-                logger.warning("failed to close transcript doc: %s", e)
+        async def on_session_ended(
+            self, *, session, context, participant, breakout_room, state=None
+        ):
+            if not state:
+                return
+            handler = state.get("handler")
+            if handler:
+                try:
+                    session.off("conversation_item_added", handler)
+                except Exception:
+                    pass
+            path = state.get("path")
+            if path: 
+                try: 
+                    await self.room.sync.close(path=path)
+                    logger.info("transcript saved at %s", path)
+                except Exception as e:
+                    logger.warning("failed to close transcript doc: %s", e)
 
     return CustomVoiceBot
 
