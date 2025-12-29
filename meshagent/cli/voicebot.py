@@ -23,8 +23,6 @@ app = async_typer.AsyncTyper(help="Join a voicebot to a room")
 
 logger = logging.getLogger("voicebot")
 
-DEFAULT_TRANSCRIPT_PATH = "transcripts/{participant_name}/{date}/{time}.transcript"
-
 
 def build_voicebot(
     *,
@@ -153,7 +151,21 @@ def build_voicebot(
                 agent_name=self.name,
             )
 
-            doc = await self.room.sync.open(path=path, create=True)
+            if not path:
+                logger.warning(
+                    "transcript path could not be formatted; skipping transcription"
+                )
+                return None
+
+            try:
+                doc = await self.room.sync.open(path=path, create=True)
+            except Exception as e:
+                logger.warning(
+                    "failed to open transcription doc at %s: %s; skipping transcription",
+                    path,
+                    e,
+                )
+                return None
 
             handler = self._attach_transcript_logger(
                 session=session,
@@ -162,7 +174,7 @@ def build_voicebot(
                 agent_name=self.name,  # this should be the agent name we pass in the build context
             )
 
-            return {"path":path, "doc":doc, "handler":handler}
+            return {"path": path, "doc": doc, "handler": handler}
 
         async def on_session_ended(
             self, *, session, context, participant, breakout_room, state=None
@@ -176,8 +188,8 @@ def build_voicebot(
                 except Exception:
                     pass
             path = state.get("path")
-            if path: 
-                try: 
+            if path:
+                try:
                     await self.room.sync.close(path=path)
                     logger.info("transcript saved at %s", path)
                 except Exception as e:
