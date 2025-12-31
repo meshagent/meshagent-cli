@@ -59,9 +59,10 @@ from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConf
 from meshagent.agents.adapter import MessageStreamLLMAdapter
 
 from meshagent.api import RequiredToolkit, RequiredSchema
-from meshagent.api.services import ServiceHost
 import logging
 import os.path
+
+from meshagent.cli.host import get_service, run_services, get_deferred
 
 logger = logging.getLogger("chatbot")
 
@@ -736,18 +737,26 @@ async def service(
     ] = None,
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[str, typer.Option()] = "/agent",
+    path: Annotated[Optional[str], typer.Option()] = None,
     always_reply: Annotated[
         Optional[bool],
         typer.Option(..., help="Always reply"),
     ] = None,
 ):
-    print("[bold green]Connecting to room...[/bold green]", flush=True)
-
     if database_namespace is not None:
         database_namespace = database_namespace.split("::")
 
-    service = ServiceHost(host=host, port=port)
+    service = get_service(host=host, port=port)
+
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    print(f"[bold green]Starting chatbot service at {path}[/bold green]", flush=True)
+
     service.add_path(
         path=path,
         cls=build_chatbot(
@@ -785,4 +794,5 @@ async def service(
         ),
     )
 
-    await service.run()
+    if not get_deferred():
+        await run_services()

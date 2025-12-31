@@ -14,10 +14,12 @@ from meshagent.cli.helper import (
 )
 from typing import List
 from meshagent.api import RequiredToolkit, RequiredSchema
-from meshagent.api.services import ServiceHost
 from pathlib import Path
 from meshagent.agents.config import RulesConfig
 import logging
+
+from meshagent.cli.host import get_service, run_services, get_deferred
+
 
 app = async_typer.AsyncTyper(help="Join a voicebot to a room")
 
@@ -273,7 +275,7 @@ async def service(
     auto_greet_prompt: Annotated[Optional[str], typer.Option()] = None,
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[str, typer.Option()] = "/agent",
+    path: Annotated[Optional[str], typer.Option()] = None,
     room_rules: Annotated[
         List[str],
         typer.Option(
@@ -294,8 +296,18 @@ async def service(
         room_rules_paths=room_rules,
     )
 
-    service = ServiceHost(host=host, port=port)
+    service = get_service(host=host, port=port)
+
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    print(f"[bold green]Starting voicebot service at {path}[/bold green]", flush=True)
 
     service.add_path(path, cls=CustomVoiceBot)
 
-    await service.run()
+    if not get_deferred():
+        await run_services()

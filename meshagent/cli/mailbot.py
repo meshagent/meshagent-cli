@@ -1,6 +1,8 @@
 import typer
-from meshagent.api import ParticipantToken
+from meshagent.cli import async_typer
 from rich import print
+
+from meshagent.api import ParticipantToken
 from typing import Annotated, Optional
 from meshagent.cli.common_options import (
     ProjectIdOption,
@@ -9,7 +11,6 @@ from meshagent.cli.common_options import (
 from meshagent.tools import Toolkit
 from meshagent.api import RoomClient, WebSocketClientProtocol, ApiScope
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
-from meshagent.cli import async_typer
 from meshagent.cli.helper import (
     get_client,
     resolve_project_id,
@@ -17,7 +18,6 @@ from meshagent.cli.helper import (
     resolve_key,
 )
 from meshagent.openai import OpenAIResponsesAdapter
-from meshagent.api.services import ServiceHost
 
 from meshagent.agents.config import RulesConfig
 
@@ -42,6 +42,8 @@ from meshagent.openai.tools.responses_adapter import (
     LocalShellTool,
     ImageGenerationTool,
 )
+
+from meshagent.cli.host import get_service, run_services, get_deferred
 
 
 logger = logging.getLogger("mailbot")
@@ -310,7 +312,7 @@ async def make_call(
     toolkit_name: Annotated[
         Optional[str],
         typer.Option(..., help="the name of a toolkit to expose mail operations"),
-    ],
+    ] = None,
     room_rules: Annotated[
         List[str],
         typer.Option(
@@ -468,7 +470,7 @@ async def service(
     ] = False,
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[str, typer.Option()] = "/agent",
+    path: Annotated[Optional[str], typer.Option()] = None,
     queue: Annotated[str, typer.Option(..., help="the name of the mail queue")],
     email_address: Annotated[
         str, typer.Option(..., help="the email address of the agent")
@@ -476,7 +478,7 @@ async def service(
     toolkit_name: Annotated[
         Optional[str],
         typer.Option(..., help="the name of a toolkit to expose mail operations"),
-    ],
+    ] = None,
     room_rules: Annotated[
         List[str],
         typer.Option(
@@ -518,9 +520,16 @@ async def service(
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
 ):
-    print("[bold green]Connecting to room...[/bold green]", flush=True)
+    service = get_service(host=host, port=port)
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
 
-    service = ServiceHost(host=host, port=port)
+    print(f"[bold green]Starting mailbot service at {path}[/bold green]", flush=True)
+
     service.add_path(
         path=path,
         cls=build_mailbot(
@@ -552,4 +561,5 @@ async def service(
         ),
     )
 
-    await service.run()
+    if not get_deferred():
+        await run_services()

@@ -26,7 +26,6 @@ from meshagent.api import (
 )
 
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
-from meshagent.api.services import ServiceHost
 
 from meshagent.agents.config import RulesConfig
 from meshagent.tools import Toolkit
@@ -55,6 +54,7 @@ from meshagent.openai.tools.responses_adapter import (
     ImageGenerationTool,
 )
 
+from meshagent.cli.host import get_service, run_services, get_deferred
 
 logger = logging.getLogger("worker_cli")
 
@@ -549,7 +549,7 @@ async def service(
     ] = False,
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[str, typer.Option()] = "/worker",
+    path: Annotated[Optional[str], typer.Option()] = None,
     queue: Annotated[str, typer.Option(..., help="the queue to consume")],
     toolkit_name: Annotated[Optional[str], typer.Option(...)] = None,
     room_rules: Annotated[List[str], typer.Option("--room-rules", "-rr")] = [],
@@ -571,9 +571,16 @@ async def service(
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
 ):
-    print("[bold green]Starting worker service...[/bold green]", flush=True)
+    service = get_service(host=host, port=port)
 
-    service = ServiceHost(host=host, port=port)
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    print(f"[bold green]Starting worker service at {path}[/bold green]", flush=True)
 
     # Plug in your specific worker implementation here:
     from meshagent.agents.worker import (
@@ -615,4 +622,5 @@ async def service(
         ),
     )
 
-    await service.run()
+    if not get_deferred():
+        await run_services()
