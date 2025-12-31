@@ -64,6 +64,7 @@ def build_mailbot(
     require_table_write: bool,
     reply_all: bool,
     database_namespace: Optional[list[str]] = None,
+    enable_attachments: bool,
 ):
     from meshagent.agents.mail import MailWorker
 
@@ -110,6 +111,7 @@ def build_mailbot(
                 rules=rule if len(rule) > 0 else None,
                 whitelist=whitelist if len(whitelist) > 0 else None,
                 reply_all=reply_all,
+                enable_attachments=enable_attachments,
             )
 
         async def start(self, *, room: RoomClient):
@@ -299,6 +301,7 @@ async def make_call(
         typer.Option(..., help="Enable table write tools for a specific table"),
     ] = [],
     reply_all: Annotated[bool, typer.Option()] = False,
+    enable_attachments: Annotated[bool, typer.Option()] = False,
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -356,6 +359,7 @@ async def make_call(
                 require_table_write=require_table_write,
                 reply_all=reply_all,
                 database_namespace=database_namespace,
+                enable_attachments=enable_attachments,
             )
 
             bot = CustomMailbot()
@@ -443,6 +447,7 @@ async def service(
         typer.Option(..., help="Enable table write tools for a specific table"),
     ] = [],
     reply_all: Annotated[bool, typer.Option()] = False,
+    enable_attachments: Annotated[bool, typer.Option()] = False,
 ):
     print("[bold green]Connecting to room...[/bold green]", flush=True)
 
@@ -471,6 +476,7 @@ async def service(
             require_table_write=require_table_write,
             reply_all=reply_all,
             database_namespace=database_namespace,
+            enable_attachments=enable_attachments,
         ),
     )
 
