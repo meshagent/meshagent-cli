@@ -397,13 +397,29 @@ async def make_call(
         ),
     ] = [],
     rules_file: Optional[str] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="the name or url of a required schema"
+        ),
+    ] = [],
     toolkit: Annotated[
         List[str],
-        typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option("--schema", "-s", help="the name or url of a required schema"),
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
@@ -536,25 +552,17 @@ async def make_call(
                 token=jwt,
             )
         ) as client:
-            requirements = []
-
-            for t in toolkit:
-                requirements.append(RequiredToolkit(name=t))
-
-            for t in schema:
-                requirements.append(RequiredSchema(name=t))
-
             CustomChatbot = build_chatbot(
                 computer_use=computer_use,
                 model=model,
+                agent_name=agent_name,
+                rule=rule,
+                toolkit=require_toolkit + toolkit,
+                schema=require_schema + schema,
+                rules_file=rules_file,
                 local_shell=local_shell,
                 shell=shell,
                 apply_patch=apply_patch,
-                agent_name=agent_name,
-                rule=rule,
-                toolkit=toolkit,
-                schema=schema,
-                rules_file=rules_file,
                 image_generation=image_generation,
                 web_search=web_search,
                 mcp=mcp,
@@ -608,13 +616,29 @@ async def service(
             help="a path to a rules file within the room that can be used to customize the agent's behavior",
         ),
     ] = [],
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="the name or url of a required schema"
+        ),
+    ] = [],
     toolkit: Annotated[
         List[str],
-        typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option("--schema", "-s", help="the name or url of a required schema"),
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
@@ -734,8 +758,8 @@ async def service(
             apply_patch=apply_patch,
             agent_name=agent_name,
             rule=rule,
-            toolkit=toolkit,
-            schema=schema,
+            toolkit=require_toolkit + toolkit,
+            schema=require_schema + schema,
             rules_file=rules_file,
             web_search=web_search,
             image_generation=image_generation,
