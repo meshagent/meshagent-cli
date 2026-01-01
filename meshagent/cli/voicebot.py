@@ -69,9 +69,8 @@ def build_voicebot(
                 name=agent_name,
                 requires=requirements,
                 rules=rules if len(rules) > 0 else None,
+                save_transcript_path=save_transcript_path,
             )
-
-            self._transcript_template_path = save_transcript_path
 
         async def start(self, *, room: RoomClient):
             await super().start(room=room)
@@ -138,62 +137,6 @@ def build_voicebot(
             logger.info(f"voicebot using rules {rules}")
 
             return rules
-
-        async def on_session_created(
-            self, *, session, context, participant, breakout_room
-        ):
-            if not self._transcript_template_path:
-                return
-
-            path = self._format_transcript_path(
-                template=self._transcript_template_path,
-                participant=participant,
-                agent_name=self.name,
-            )
-
-            if not path:
-                logger.warning(
-                    "transcript path could not be formatted; skipping transcription"
-                )
-                return None
-
-            try:
-                doc = await self.room.sync.open(path=path, create=True)
-            except Exception as e:
-                logger.warning(
-                    "failed to open transcription doc at %s: %s; skipping transcription",
-                    path,
-                    e,
-                )
-                return None
-
-            handler = self._attach_transcript_logger(
-                session=session,
-                doc=doc,
-                user_participant=participant,
-                agent_name=self.name,  # this should be the agent name we pass in the build context
-            )
-
-            return {"path": path, "doc": doc, "handler": handler}
-
-        async def on_session_ended(
-            self, *, session, context, participant, breakout_room, state=None
-        ):
-            if not state:
-                return
-            handler = state.get("handler")
-            if handler:
-                try:
-                    session.off("conversation_item_added", handler)
-                except Exception:
-                    pass
-            path = state.get("path")
-            if path:
-                try:
-                    await self.room.sync.close(path=path)
-                    logger.info("transcript saved at %s", path)
-                except Exception as e:
-                    logger.warning("failed to close transcript doc: %s", e)
 
     return CustomVoiceBot
 
