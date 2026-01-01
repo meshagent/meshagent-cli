@@ -33,6 +33,8 @@ from meshagent.api.room_server_client import (
     DockerSecret,
 )
 
+import sys
+
 app = async_typer.AsyncTyper(help="Manage containers and images inside a room")
 
 # -------------------------
@@ -353,7 +355,6 @@ async def _with_client(
 
         connection = await account_client.connect_room(project_id=project_id, room=room)
 
-        print("[bold green]Connecting to room...[/bold green]", flush=True)
         proto = WebSocketClientProtocol(
             url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
             token=connection.jwt,
@@ -443,8 +444,121 @@ async def container_logs(
         await account_client.close()
 
 
+@app.async_command("exec")
+async def exec_container(
+    *,
+    project_id: ProjectIdOption = None,
+    room: RoomOption,
+    container_id: Annotated[str, typer.Option(..., help="container id")],
+    command: Annotated[Optional[str], typer.Option(...)] = None,
+    tty: Annotated[bool, typer.Option(...)] = False,
+):
+    account_client, client = await _with_client(
+        project_id=project_id,
+        room=room,
+    )
+    result = 1
+
+    try:
+        import termios
+
+        from contextlib import contextmanager
+
+        container = await client.containers.exec(
+            container_id=container_id,
+            command=command,
+            tty=tty,
+        )
+
+        async def write_all(fd, data: bytes) -> None:
+            loop = asyncio.get_running_loop()
+            mv = memoryview(data)
+
+            while mv:
+                try:
+                    n = os.write(fd, mv)
+                    mv = mv[n:]
+                except BlockingIOError:
+                    fut = loop.create_future()
+                    loop.add_writer(fd, fut.set_result, None)
+                    try:
+                        await fut
+                    finally:
+                        loop.remove_writer(fd)
+
+        async def read_stderr():
+            async for output in container.stderr():
+                await write_all(sys.stderr.fileno(), output)
+
+        async def read_stdout():
+            async for output in container.stdoutput():
+                await write_all(sys.stdout.fileno(), output)
+
+        @contextmanager
+        def raw_mode(fd: int):
+            import tty
+
+            old = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)  # immediate bytes
+                yield
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+        async def read_stdin(bufsize: int = 1024):
+            # If stdin is piped, just read normally (blocking is fine; no TTY semantics)
+            if not sys.stdin.isatty():
+                while True:
+                    chunk = sys.stdin.buffer.read(bufsize)
+                    if not chunk:
+                        return
+                    await container.write(chunk)
+                return
+
+            fd = sys.stdin.fileno()
+
+            # Make reads non-blocking so we never hang shutdown
+            prev_blocking = os.get_blocking(fd)
+            os.set_blocking(fd, False)
+
+            try:
+                with raw_mode(fd):
+                    while True:
+                        try:
+                            chunk = os.read(fd, bufsize)
+                        except BlockingIOError:
+                            # nothing typed yet
+                            await asyncio.sleep(0.01)
+                            continue
+
+                        if chunk == b"":
+                            return
+
+                        # optional: allow Ctrl-C to exit
+                        if chunk == b"\x03":
+                            return
+
+                        await container.write(chunk)
+            finally:
+                os.set_blocking(fd, prev_blocking)
+
+        if not tty:
+            await asyncio.gather(read_stdout(), read_stderr())
+        else:
+            reader = asyncio.create_task(read_stdin())
+            await asyncio.gather(read_stdout(), read_stderr())
+            reader.cancel()
+
+        result = await container.result
+    finally:
+        await client.__aexit__(None, None, None)
+        await account_client.close()
+
+    sys.exit(result)
+
+
 # -------------------------
-# Run (detached) and run-attached
+# Run (detached)
 # -------------------------
 
 
