@@ -103,6 +103,7 @@ def build_chatbot(
     llm_participant: Optional[str] = None,
     database_namespace: Optional[list[str]] = None,
     always_reply: Optional[bool] = None,
+    skill_dirs: Optional[list[str]] = None,
 ):
     from meshagent.agents.chat import ChatBot
 
@@ -166,6 +167,7 @@ def build_chatbot(
                 rules=rule if len(rule) > 0 else None,
                 client_rules=client_rules,
                 always_reply=always_reply,
+                skill_dirs=skill_dirs,
             )
 
         async def start(self, *, room: RoomClient):
@@ -525,6 +527,10 @@ async def make_call(
         Optional[bool],
         typer.Option(..., help="Always reply"),
     ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
 ):
     if database_namespace is not None:
         database_namespace = database_namespace.split("::")
@@ -585,6 +591,7 @@ async def make_call(
                 llm_participant=llm_participant,
                 always_reply=always_reply,
                 database_namespace=database_namespace,
+                skill_dirs=skill_dir,
             )
 
             bot = CustomChatbot()
@@ -742,6 +749,10 @@ async def service(
         Optional[bool],
         typer.Option(..., help="Always reply"),
     ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
 ):
     if database_namespace is not None:
         database_namespace = database_namespace.split("::")
@@ -791,6 +802,7 @@ async def service(
             require_discovery=require_discovery,
             llm_participant=llm_participant,
             always_reply=always_reply,
+            skill_dirs=skill_dir,
         ),
     )
 

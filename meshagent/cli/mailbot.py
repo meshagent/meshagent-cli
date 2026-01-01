@@ -80,6 +80,7 @@ def build_mailbot(
     database_namespace: Optional[list[str]] = None,
     enable_attachments: bool,
     working_directory: Optional[str] = None,
+    skill_dirs: Optional[list[str]] = None,
 ):
     from meshagent.agents.mail import MailWorker
 
@@ -127,6 +128,7 @@ def build_mailbot(
                 whitelist=whitelist if len(whitelist) > 0 else None,
                 reply_all=reply_all,
                 enable_attachments=enable_attachments,
+                skill_dirs=skill_dirs,
             )
 
         async def start(self, *, room: RoomClient):
@@ -353,6 +355,10 @@ async def make_call(
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -406,6 +412,7 @@ async def make_call(
                 database_namespace=database_namespace,
                 enable_attachments=enable_attachments,
                 working_directory=working_directory,
+                skill_dirs=skill_dir,
             )
 
             bot = CustomMailbot()
@@ -519,6 +526,10 @@ async def service(
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
 ):
     service = get_service(host=host, port=port)
     if path is None:
@@ -558,6 +569,7 @@ async def service(
             database_namespace=database_namespace,
             enable_attachments=enable_attachments,
             working_directory=working_directory,
+            skill_dirs=skill_dir,
         ),
     )
 

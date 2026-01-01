@@ -96,6 +96,7 @@ def build_worker(
     require_table_read: list[str] | None = None,
     require_table_write: list[str] | None = None,
     toolkit_name: Optional[str] = None,
+    skill_dirs: Optional[list[str]] = None,
 ):
     """
     Returns a Worker subclass
@@ -137,6 +138,7 @@ def build_worker(
                 description=description,
                 rules=rule if len(rule) > 0 else None,
                 toolkit_name=toolkit_name,
+                skill_dirs=skill_dirs,
             )
             self._room_rules_paths = room_rules_paths or []
 
@@ -413,6 +415,10 @@ async def join(
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -472,6 +478,7 @@ async def join(
                 title=title,
                 description=description,
                 working_directory=working_directory,
+                skill_dirs=skill_dir,
             )
 
             worker = CustomWorker()
@@ -570,6 +577,10 @@ async def service(
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
 ):
     service = get_service(host=host, port=port)
 
@@ -619,6 +630,7 @@ async def service(
             title=title,
             description=description,
             working_directory=working_directory,
+            skill_dirs=skill_dir,
         ),
     )
 
