@@ -104,7 +104,7 @@ def build_chatbot(
     database_namespace: Optional[list[str]] = None,
     always_reply: Optional[bool] = None,
     skill_dirs: Optional[list[str]] = None,
-    shell_image: Optional[str] = None
+    shell_image: Optional[str] = None,
 ):
     from meshagent.agents.chat import ChatBot
 

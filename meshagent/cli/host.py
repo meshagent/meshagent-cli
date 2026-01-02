@@ -1,4 +1,5 @@
 from meshagent.api.services import ServiceHost
+from meshagent.api.specs.service import ServiceSpec
 import asyncio
 
 
@@ -19,6 +20,13 @@ def get_service(port: int, host: str) -> ServiceHost:
         services[port] = ServiceHost(host=host, port=port)
 
     return services[port]
+
+
+def service_specs() -> list[ServiceSpec]:
+    specs = []
+    for port, s in services.items():
+        specs.append(s.get_service_spec(image=""))
+    return specs
 
 
 async def run_services():
