@@ -86,7 +86,7 @@ def build_chatbot(
     storage: Optional[str] = None,
     require_image_generation: Optional[str] = None,
     require_local_shell: Optional[str] = None,
-    require_shell: Optional[str] = None,
+    require_shell: Optional[bool] = None,
     require_apply_patch: Optional[str] = None,
     require_computer_use: Optional[str] = None,
     require_web_search: Optional[str] = None,
@@ -104,6 +104,7 @@ def build_chatbot(
     database_namespace: Optional[list[str]] = None,
     always_reply: Optional[bool] = None,
     skill_dirs: Optional[list[str]] = None,
+    shell_image: Optional[str] = None,
 ):
     from meshagent.agents.chat import ChatBot
 
@@ -265,6 +266,7 @@ def build_chatbot(
                     ShellTool(
                         working_directory=working_directory,
                         config=ShellConfig(name="shell"),
+                        image=shell_image or "ubuntu:latest",
                     )
                 )
 
@@ -366,6 +368,7 @@ def build_chatbot(
                 providers.append(
                     ShellToolkitBuilder(
                         working_directory=working_directory,
+                        shell_image=shell_image,
                     )
                 )
 
@@ -531,6 +534,10 @@ async def make_call(
         list[str],
         typer.Option(..., help="an agent skills directory"),
     ] = [],
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
 ):
     if database_namespace is not None:
         database_namespace = database_namespace.split("::")
@@ -592,6 +599,7 @@ async def make_call(
                 always_reply=always_reply,
                 database_namespace=database_namespace,
                 skill_dirs=skill_dir,
+                shell_image=shell_image,
             )
 
             bot = CustomChatbot()
@@ -753,6 +761,10 @@ async def service(
         list[str],
         typer.Option(..., help="an agent skills directory"),
     ] = [],
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
 ):
     if database_namespace is not None:
         database_namespace = database_namespace.split("::")
@@ -803,6 +815,7 @@ async def service(
             llm_participant=llm_participant,
             always_reply=always_reply,
             skill_dirs=skill_dir,
+            shell_image=shell_image,
         ),
     )
 

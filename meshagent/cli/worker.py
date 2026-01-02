@@ -97,6 +97,7 @@ def build_worker(
     require_table_write: list[str] | None = None,
     toolkit_name: Optional[str] = None,
     skill_dirs: Optional[list[str]] = None,
+    shell_image: Optional[str] = None,
 ):
     """
     Returns a Worker subclass
@@ -204,6 +205,7 @@ def build_worker(
                 providers.append(
                     ShellToolkitBuilder(
                         working_directory=working_directory,
+                        shell_image=shell_image,
                     )
                 )
 
@@ -236,6 +238,7 @@ def build_worker(
                     ShellTool(
                         working_directory=working_directory,
                         config=ShellConfig(name="shell"),
+                        shell_image=shell_image,
                     )
                 )
 
@@ -419,6 +422,10 @@ async def join(
         list[str],
         typer.Option(..., help="an agent skills directory"),
     ] = [],
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -479,6 +486,7 @@ async def join(
                 description=description,
                 working_directory=working_directory,
                 skill_dirs=skill_dir,
+                shell_image=shell_image,
             )
 
             worker = CustomWorker()
@@ -581,6 +589,10 @@ async def service(
         list[str],
         typer.Option(..., help="an agent skills directory"),
     ] = [],
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
 ):
     service = get_service(host=host, port=port)
 
@@ -631,6 +643,7 @@ async def service(
             description=description,
             working_directory=working_directory,
             skill_dirs=skill_dir,
+            shell_image=shell_image,
         ),
     )
 

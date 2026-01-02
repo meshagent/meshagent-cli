@@ -81,6 +81,7 @@ def build_mailbot(
     enable_attachments: bool,
     working_directory: Optional[str] = None,
     skill_dirs: Optional[list[str]] = None,
+    shell_image: Optional[str] = None,
 ):
     from meshagent.agents.mail import MailWorker
 
@@ -195,6 +196,7 @@ def build_mailbot(
                     ShellTool(
                         working_directory=working_directory,
                         config=ShellConfig(name="shell"),
+                        shell_image=shell_image,
                     )
                 )
 
@@ -359,6 +361,10 @@ async def make_call(
         list[str],
         typer.Option(..., help="an agent skills directory"),
     ] = [],
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -413,6 +419,7 @@ async def make_call(
                 enable_attachments=enable_attachments,
                 working_directory=working_directory,
                 skill_dirs=skill_dir,
+                shell_image=shell_image,
             )
 
             bot = CustomMailbot()
@@ -530,6 +537,10 @@ async def service(
         list[str],
         typer.Option(..., help="an agent skills directory"),
     ] = [],
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
 ):
     service = get_service(host=host, port=port)
     if path is None:
@@ -570,6 +581,7 @@ async def service(
             enable_attachments=enable_attachments,
             working_directory=working_directory,
             skill_dirs=skill_dir,
+            shell_image=shell_image,
         ),
     )
 
