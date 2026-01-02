@@ -92,7 +92,7 @@ async def host(
 ):
     set_deferred(True)
 
-    for c in command.split("|"):
+    for c in command.split(";"):
         if execute_via_root(cli, c, prog_name="meshagent") != 0:
             print(f"[red]{c} failed[/red]")
             raise typer.Exit(1)
@@ -143,7 +143,7 @@ async def join(
 ):
     set_deferred(True)
 
-    for c in command.split("|"):
+    for c in command.split(";"):
         if execute_via_root(cli, c, prog_name="meshagent") != 0:
             print(f"[red]{c} failed[/red]")
             raise typer.Exit(1)
