@@ -491,7 +491,7 @@ async def exec_container(
                 await write_all(sys.stderr.fileno(), output)
 
         async def read_stdout():
-            async for output in container.stdoutput():
+            async for output in container.stdout():
                 await write_all(sys.stdout.fileno(), output)
 
         @contextmanager
