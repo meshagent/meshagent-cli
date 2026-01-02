@@ -59,9 +59,10 @@ from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConf
 from meshagent.agents.adapter import MessageStreamLLMAdapter
 
 from meshagent.api import RequiredToolkit, RequiredSchema
-from meshagent.api.services import ServiceHost
 import logging
 import os.path
+
+from meshagent.cli.host import get_service, run_services, get_deferred
 
 logger = logging.getLogger("chatbot")
 
@@ -102,6 +103,7 @@ def build_chatbot(
     llm_participant: Optional[str] = None,
     database_namespace: Optional[list[str]] = None,
     always_reply: Optional[bool] = None,
+    skill_dirs: Optional[list[str]] = None,
 ):
     from meshagent.agents.chat import ChatBot
 
@@ -165,6 +167,7 @@ def build_chatbot(
                 rules=rule if len(rule) > 0 else None,
                 client_rules=client_rules,
                 always_reply=always_reply,
+                skill_dirs=skill_dirs,
             )
 
         async def start(self, *, room: RoomClient):
@@ -397,13 +400,29 @@ async def make_call(
         ),
     ] = [],
     rules_file: Optional[str] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="the name or url of a required schema"
+        ),
+    ] = [],
     toolkit: Annotated[
         List[str],
-        typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option("--schema", "-s", help="the name or url of a required schema"),
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
@@ -508,6 +527,10 @@ async def make_call(
         Optional[bool],
         typer.Option(..., help="Always reply"),
     ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
 ):
     if database_namespace is not None:
         database_namespace = database_namespace.split("::")
@@ -536,25 +559,17 @@ async def make_call(
                 token=jwt,
             )
         ) as client:
-            requirements = []
-
-            for t in toolkit:
-                requirements.append(RequiredToolkit(name=t))
-
-            for t in schema:
-                requirements.append(RequiredSchema(name=t))
-
             CustomChatbot = build_chatbot(
                 computer_use=computer_use,
                 model=model,
+                agent_name=agent_name,
+                rule=rule,
+                toolkit=require_toolkit + toolkit,
+                schema=require_schema + schema,
+                rules_file=rules_file,
                 local_shell=local_shell,
                 shell=shell,
                 apply_patch=apply_patch,
-                agent_name=agent_name,
-                rule=rule,
-                toolkit=toolkit,
-                schema=schema,
-                rules_file=rules_file,
                 image_generation=image_generation,
                 web_search=web_search,
                 mcp=mcp,
@@ -576,6 +591,7 @@ async def make_call(
                 llm_participant=llm_participant,
                 always_reply=always_reply,
                 database_namespace=database_namespace,
+                skill_dirs=skill_dir,
             )
 
             bot = CustomChatbot()
@@ -608,13 +624,29 @@ async def service(
             help="a path to a rules file within the room that can be used to customize the agent's behavior",
         ),
     ] = [],
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="the name or url of a required schema"
+        ),
+    ] = [],
     toolkit: Annotated[
         List[str],
-        typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option("--schema", "-s", help="the name or url of a required schema"),
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
@@ -712,18 +744,30 @@ async def service(
     ] = None,
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[str, typer.Option()] = "/agent",
+    path: Annotated[Optional[str], typer.Option()] = None,
     always_reply: Annotated[
         Optional[bool],
         typer.Option(..., help="Always reply"),
     ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
 ):
-    print("[bold green]Connecting to room...[/bold green]", flush=True)
-
     if database_namespace is not None:
         database_namespace = database_namespace.split("::")
 
-    service = ServiceHost(host=host, port=port)
+    service = get_service(host=host, port=port)
+
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    print(f"[bold green]Starting chatbot service at {path}[/bold green]", flush=True)
+
     service.add_path(
         path=path,
         cls=build_chatbot(
@@ -734,8 +778,8 @@ async def service(
             apply_patch=apply_patch,
             agent_name=agent_name,
             rule=rule,
-            toolkit=toolkit,
-            schema=schema,
+            toolkit=require_toolkit + toolkit,
+            schema=require_schema + schema,
             rules_file=rules_file,
             web_search=web_search,
             image_generation=image_generation,
@@ -758,7 +802,9 @@ async def service(
             require_discovery=require_discovery,
             llm_participant=llm_participant,
             always_reply=always_reply,
+            skill_dirs=skill_dir,
         ),
     )
 
-    await service.run()
+    if not get_deferred():
+        await run_services()

@@ -4,6 +4,8 @@ from typing import Annotated, Optional, List, Type
 from pathlib import Path
 import logging
 
+from meshagent.tools.storage import StorageToolkitBuilder
+
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.cli.helper import (
@@ -24,22 +26,35 @@ from meshagent.api import (
 )
 
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
-from meshagent.api.services import ServiceHost
 
 from meshagent.agents.config import RulesConfig
 from meshagent.tools import Toolkit
 from meshagent.tools.storage import StorageToolkit
 from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
 from meshagent.openai import OpenAIResponsesAdapter
-from meshagent.openai.tools.responses_adapter import (
-    LocalShellTool,
-    ImageGenerationTool,
-    WebSearchTool,
-)
+
 
 # Your Worker base (the one you pasted) + adapters
 from meshagent.agents.worker import Worker  # adjust import
 from meshagent.agents.adapter import LLMAdapter, ToolResponseAdapter  # adjust import
+
+from meshagent.openai.tools.responses_adapter import (
+    WebSearchToolkitBuilder,
+    MCPToolkitBuilder,
+    WebSearchTool,
+    ShellConfig,
+    ApplyPatchConfig,
+    ApplyPatchTool,
+    ApplyPatchToolkitBuilder,
+    ShellToolkitBuilder,
+    ShellTool,
+    LocalShellToolkitBuilder,
+    LocalShellTool,
+    ImageGenerationToolkitBuilder,
+    ImageGenerationTool,
+)
+
+from meshagent.cli.host import get_service, run_services, get_deferred
 
 logger = logging.getLogger("worker_cli")
 
@@ -63,14 +78,25 @@ def build_worker(
     room_rules_paths: list[str] | None = None,
     # thread/tool controls (mirrors mailbot)
     image_generation: Optional[str] = None,
-    local_shell: bool = False,
-    web_search: bool = False,
+    local_shell: Optional[str] = None,
+    shell: Optional[str] = None,
+    apply_patch: Optional[str] = None,
+    web_search: Optional[str] = None,
+    mcp: Optional[str] = None,
+    storage: Optional[str] = None,
+    working_directory: Optional[str] = None,
+    require_image_generation: Optional[str] = None,
+    require_local_shell: bool = False,
+    require_web_search: bool = False,
+    require_apply_patch: bool = False,
+    require_shell: bool = False,
     require_storage: bool = False,
     require_read_only_storage: bool = False,
     database_namespace: Optional[list[str]] = None,
     require_table_read: list[str] | None = None,
     require_table_write: list[str] | None = None,
     toolkit_name: Optional[str] = None,
+    skill_dirs: Optional[list[str]] = None,
 ):
     """
     Returns a Worker subclass
@@ -112,6 +138,7 @@ def build_worker(
                 description=description,
                 rules=rule if len(rule) > 0 else None,
                 toolkit_name=toolkit_name,
+                skill_dirs=skill_dirs,
             )
             self._room_rules_paths = room_rules_paths or []
 
@@ -158,8 +185,38 @@ def build_worker(
             return rules
 
         def get_toolkit_builders(self):
-            # keep your base behavior unless you want to add defaults here
-            return super().get_toolkit_builders()
+            providers = []
+
+            if image_generation:
+                providers.append(ImageGenerationToolkitBuilder())
+
+            if apply_patch:
+                providers.append(ApplyPatchToolkitBuilder())
+
+            if local_shell:
+                providers.append(
+                    LocalShellToolkitBuilder(
+                        working_directory=working_directory,
+                    )
+                )
+
+            if shell:
+                providers.append(
+                    ShellToolkitBuilder(
+                        working_directory=working_directory,
+                    )
+                )
+
+            if mcp:
+                providers.append(MCPToolkitBuilder())
+
+            if web_search:
+                providers.append(WebSearchToolkitBuilder())
+
+            if storage:
+                providers.append(StorageToolkitBuilder())
+
+            return providers
 
         async def get_thread_toolkits(self, *, thread_context):
             """
@@ -169,21 +226,36 @@ def build_worker(
             toolkits_out = []
             thread_toolkit = Toolkit(name="thread_toolkit", tools=[])
 
-            if local_shell:
+            if require_local_shell:
                 thread_toolkit.tools.append(
                     LocalShellTool(thread_context=thread_context)
                 )
 
-            if image_generation is not None:
+            if require_shell:
+                thread_toolkit.tools.append(
+                    ShellTool(
+                        working_directory=working_directory,
+                        config=ShellConfig(name="shell"),
+                    )
+                )
+
+            if require_apply_patch:
+                thread_toolkit.tools.append(
+                    ApplyPatchTool(
+                        config=ApplyPatchConfig(name="apply_patch"),
+                    )
+                )
+
+            if require_image_generation is not None:
                 thread_toolkit.tools.append(
                     ImageGenerationTool(
-                        model=image_generation,
+                        model=require_image_generation,
                         thread_context=thread_context,
                         partial_images=3,
                     )
                 )
 
-            if web_search:
+            if require_web_search:
                 thread_toolkit.tools.append(WebSearchTool())
 
             if require_storage:
@@ -237,22 +309,44 @@ async def join(
     agent_name: Annotated[str, typer.Option(..., help="Name of the worker agent")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[str] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="the name or url of a required schema"
+        ),
+    ] = [],
     toolkit: Annotated[
         List[str],
-        typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option("--schema", "-s", help="the name or url of a required schema"),
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use")
     ] = "gpt-5.2",
+    require_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable function shell tool calling"),
+    ] = False,
     require_local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
-    require_web_search: Annotated[
-        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_apply_patch: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable apply patch tool calling"),
     ] = False,
     key: Annotated[
         str, typer.Option("--key", help="an api key to sign the token with")
@@ -270,6 +364,27 @@ async def join(
             help="path(s) in room storage to load rules from",
         ),
     ] = [],
+    image_generation: Annotated[
+        Optional[str], typer.Option(..., help="Name of an image gen model")
+    ] = None,
+    local_shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
+    ] = False,
+    shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable function shell tool calling")
+    ] = False,
+    apply_patch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable apply patch tool")
+    ] = False,
+    web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    mcp: Annotated[
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
+    ] = False,
+    storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
+    ] = False,
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
@@ -296,6 +411,14 @@ async def join(
         Optional[str],
         typer.Option(..., help="a description for the agent"),
     ] = None,
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="The default working directory for shell commands"),
+    ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -330,13 +453,22 @@ async def join(
                 model=model,
                 agent_name=agent_name,
                 rule=rule,
-                toolkit=toolkit,
-                schema=schema,
+                toolkit=require_toolkit + toolkit,
+                schema=require_schema + schema,
                 rules_file=rules_file,
                 room_rules_paths=room_rules,
                 queue=queue,
-                local_shell=require_local_shell,
-                web_search=require_web_search,
+                local_shell=local_shell,
+                shell=shell,
+                apply_patch=apply_patch,
+                image_generation=image_generation,
+                web_search=web_search,
+                mcp=mcp,
+                storage=storage,
+                require_local_shell=require_local_shell,
+                require_web_search=require_web_search,
+                require_shell=require_shell,
+                require_apply_patch=require_apply_patch,
                 toolkit_name=toolkit_name,
                 require_storage=require_storage,
                 require_read_only_storage=require_read_only_storage,
@@ -345,6 +477,8 @@ async def join(
                 database_namespace=[database_namespace] if database_namespace else None,
                 title=title,
                 description=description,
+                working_directory=working_directory,
+                skill_dirs=skill_dir,
             )
 
             worker = CustomWorker()
@@ -364,20 +498,65 @@ async def service(
     agent_name: Annotated[str, typer.Option(..., help="Name of the worker agent")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[str] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="the name or url of a required schema"
+        ),
+    ] = [],
     toolkit: Annotated[
         List[str],
-        typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option("--schema", "-s", help="the name or url of a required schema"),
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
     ] = [],
     model: Annotated[str, typer.Option(...)] = "gpt-5.2",
+    image_generation: Annotated[
+        Optional[str], typer.Option(..., help="Name of an image gen model")
+    ] = None,
+    require_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable function shell tool calling"),
+    ] = False,
+    local_shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
+    ] = False,
+    shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable function shell tool calling")
+    ] = False,
+    apply_patch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable apply patch tool")
+    ] = False,
+    web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    mcp: Annotated[
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
+    ] = False,
+    storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
+    ] = False,
     require_local_shell: Annotated[Optional[bool], typer.Option(...)] = False,
     require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_apply_patch: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable apply patch tool calling"),
+    ] = False,
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[str, typer.Option()] = "/worker",
+    path: Annotated[Optional[str], typer.Option()] = None,
     queue: Annotated[str, typer.Option(..., help="the queue to consume")],
     toolkit_name: Annotated[Optional[str], typer.Option(...)] = None,
     room_rules: Annotated[List[str], typer.Option("--room-rules", "-rr")] = [],
@@ -394,10 +573,25 @@ async def service(
         Optional[str],
         typer.Option(..., help="a description for the agent"),
     ] = None,
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="The default working directory for shell commands"),
+    ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
 ):
-    print("[bold green]Starting worker service...[/bold green]", flush=True)
+    service = get_service(host=host, port=port)
 
-    service = ServiceHost(host=host, port=port)
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    print(f"[bold green]Starting worker service at {path}[/bold green]", flush=True)
 
     # Plug in your specific worker implementation here:
     from meshagent.agents.worker import (
@@ -411,13 +605,22 @@ async def service(
             model=model,
             agent_name=agent_name,
             rule=rule,
-            toolkit=toolkit,
-            schema=schema,
+            toolkit=require_toolkit + toolkit,
+            schema=require_schema + schema,
             rules_file=rules_file,
             room_rules_paths=room_rules,
             queue=queue,
-            local_shell=require_local_shell,
-            web_search=require_web_search,
+            local_shell=local_shell,
+            shell=shell,
+            apply_patch=apply_patch,
+            image_generation=image_generation,
+            web_search=web_search,
+            mcp=mcp,
+            storage=storage,
+            require_shell=require_shell,
+            require_apply_patch=require_apply_patch,
+            require_local_shell=require_local_shell,
+            require_web_search=require_web_search,
             toolkit_name=toolkit_name,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
@@ -426,7 +629,10 @@ async def service(
             database_namespace=[database_namespace] if database_namespace else None,
             title=title,
             description=description,
+            working_directory=working_directory,
+            skill_dirs=skill_dir,
         ),
     )
 
-    await service.run()
+    if not get_deferred():
+        await run_services()

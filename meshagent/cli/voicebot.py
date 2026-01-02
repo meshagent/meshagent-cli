@@ -14,10 +14,12 @@ from meshagent.cli.helper import (
 )
 from typing import List
 from meshagent.api import RequiredToolkit, RequiredSchema
-from meshagent.api.services import ServiceHost
 from pathlib import Path
 from meshagent.agents.config import RulesConfig
 import logging
+
+from meshagent.cli.host import get_service, run_services, get_deferred
+
 
 app = async_typer.AsyncTyper(help="Join a voicebot to a room")
 
@@ -147,13 +149,29 @@ async def make_call(
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[str] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="the name or url of a required schema"
+        ),
+    ] = [],
     toolkit: Annotated[
         List[str],
-        typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option("--schema", "-s", help="the name or url of a required schema"),
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
     ] = [],
     auto_greet_message: Annotated[Optional[str], typer.Option()] = None,
     auto_greet_prompt: Annotated[Optional[str], typer.Option()] = None,
@@ -190,8 +208,8 @@ async def make_call(
             agent_name=agent_name,
             rules=rule,
             rules_file=rules_file,
-            toolkits=toolkit,
-            schemas=schema,
+            toolkits=require_toolkit + toolkit,
+            schemas=require_schema + schema,
             auto_greet_message=auto_greet_message,
             auto_greet_prompt=auto_greet_prompt,
             room_rules_paths=room_rules,
@@ -229,19 +247,35 @@ async def service(
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[str] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="the name or url of a required schema"
+        ),
+    ] = [],
     toolkit: Annotated[
         List[str],
-        typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option("--schema", "-s", help="the name or url of a required schema"),
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
     ] = [],
     auto_greet_message: Annotated[Optional[str], typer.Option()] = None,
     auto_greet_prompt: Annotated[Optional[str], typer.Option()] = None,
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[str, typer.Option()] = "/agent",
+    path: Annotated[Optional[str], typer.Option()] = None,
     room_rules: Annotated[
         List[str],
         typer.Option(
@@ -255,15 +289,25 @@ async def service(
         agent_name=agent_name,
         rules=rule,
         rules_file=rules_file,
-        toolkits=toolkit,
-        schemas=schema,
+        toolkits=require_toolkit + toolkit,
+        schemas=require_schema + schema,
         auto_greet_message=auto_greet_message,
         auto_greet_prompt=auto_greet_prompt,
         room_rules_paths=room_rules,
     )
 
-    service = ServiceHost(host=host, port=port)
+    service = get_service(host=host, port=port)
+
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    print(f"[bold green]Starting voicebot service at {path}[/bold green]", flush=True)
 
     service.add_path(path, cls=CustomVoiceBot)
 
-    await service.run()
+    if not get_deferred():
+        await run_services()

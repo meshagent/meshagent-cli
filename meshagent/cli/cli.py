@@ -3,6 +3,7 @@ import asyncio
 
 from meshagent.cli import async_typer
 
+from meshagent.cli import team
 from meshagent.cli import queue
 from meshagent.cli import auth
 from meshagent.cli import api_keys
@@ -35,7 +36,6 @@ from meshagent.cli.version import __version__
 from meshagent.cli.helper import get_active_api_key
 from meshagent.otel import otel_config
 
-
 from art import tprint
 
 import logging
@@ -51,7 +51,7 @@ otel_config(service_name="meshagent-cli")
 logging.getLogger("openai").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.ERROR)
 
-app = async_typer.AsyncTyper(no_args_is_help=True)
+app = async_typer.AsyncTyper(no_args_is_help=True, name="meshagent")
 app.add_typer(call.app, name="call")
 app.add_typer(auth.app, name="auth")
 app.add_typer(projects.app, name="project")
@@ -79,8 +79,11 @@ app.add_typer(room.app, name="room")
 app.add_typer(mailboxes.app, name="mailbox")
 app.add_typer(database.app, name="database")
 app.add_typer(meeting_transcriber.app, name="meeting-transcriber")
+app.add_typer(team.app, name="team")
 
 register_exec(app)
+
+team.register_cli(app)
 
 
 def _run_async(coro):

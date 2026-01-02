@@ -1,6 +1,8 @@
 import typer
-from meshagent.api import ParticipantToken
+from meshagent.cli import async_typer
 from rich import print
+
+from meshagent.api import ParticipantToken
 from typing import Annotated, Optional
 from meshagent.cli.common_options import (
     ProjectIdOption,
@@ -9,7 +11,6 @@ from meshagent.cli.common_options import (
 from meshagent.tools import Toolkit
 from meshagent.api import RoomClient, WebSocketClientProtocol, ApiScope
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
-from meshagent.cli import async_typer
 from meshagent.cli.helper import (
     get_client,
     resolve_project_id,
@@ -17,8 +18,6 @@ from meshagent.cli.helper import (
     resolve_key,
 )
 from meshagent.openai import OpenAIResponsesAdapter
-from meshagent.openai.tools.responses_adapter import ImageGenerationTool, LocalShellTool
-from meshagent.api.services import ServiceHost
 
 from meshagent.agents.config import RulesConfig
 
@@ -26,13 +25,26 @@ from typing import List
 from pathlib import Path
 
 from meshagent.api import RequiredToolkit, RequiredSchema, RoomException
-from meshagent.openai.tools.responses_adapter import WebSearchTool
 
 import logging
 
 from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
 
 from meshagent.tools.storage import StorageToolkit
+
+
+from meshagent.openai.tools.responses_adapter import (
+    WebSearchTool,
+    ShellConfig,
+    ApplyPatchConfig,
+    ApplyPatchTool,
+    ShellTool,
+    LocalShellTool,
+    ImageGenerationTool,
+)
+
+from meshagent.cli.host import get_service, run_services, get_deferred
+
 
 logger = logging.getLogger("mailbot")
 
@@ -58,12 +70,17 @@ def build_mailbot(
     email_address: str,
     room_rules_paths: list[str],
     whitelist=list[str],
+    require_shell: Optional[bool] = None,
+    require_apply_patch: Optional[bool] = None,
     require_storage: Optional[str] = None,
     require_read_only_storage: Optional[str] = None,
     require_table_read: bool,
     require_table_write: bool,
     reply_all: bool,
     database_namespace: Optional[list[str]] = None,
+    enable_attachments: bool,
+    working_directory: Optional[str] = None,
+    skill_dirs: Optional[list[str]] = None,
 ):
     from meshagent.agents.mail import MailWorker
 
@@ -110,6 +127,8 @@ def build_mailbot(
                 rules=rule if len(rule) > 0 else None,
                 whitelist=whitelist if len(whitelist) > 0 else None,
                 reply_all=reply_all,
+                enable_attachments=enable_attachments,
+                skill_dirs=skill_dirs,
             )
 
         async def start(self, *, room: RoomClient):
@@ -169,6 +188,21 @@ def build_mailbot(
             if local_shell:
                 thread_toolkit.tools.append(
                     LocalShellTool(thread_context=thread_context)
+                )
+
+            if require_shell:
+                thread_toolkit.tools.append(
+                    ShellTool(
+                        working_directory=working_directory,
+                        config=ShellConfig(name="shell"),
+                    )
+                )
+
+            if require_apply_patch:
+                thread_toolkit.tools.append(
+                    ApplyPatchTool(
+                        config=ApplyPatchConfig(name="apply_patch"),
+                    )
                 )
 
             if image_generation is not None:
@@ -234,6 +268,18 @@ async def make_call(
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[str] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="the name or url of a required schema"
+        ),
+    ] = [],
     toolkit: Annotated[
         List[str],
         typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
@@ -245,12 +291,17 @@ async def make_call(
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
     ] = "gpt-5.2",
+    require_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable function shell tool calling"),
+    ] = False,
     require_local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
-    require_web_search: Annotated[
+    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_apply_patch: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable web search tool calling"),
+        typer.Option(..., help="Enable apply patch tool calling"),
     ] = False,
     key: Annotated[
         str,
@@ -263,7 +314,7 @@ async def make_call(
     toolkit_name: Annotated[
         Optional[str],
         typer.Option(..., help="the name of a toolkit to expose mail operations"),
-    ],
+    ] = None,
     room_rules: Annotated[
         List[str],
         typer.Option(
@@ -299,6 +350,15 @@ async def make_call(
         typer.Option(..., help="Enable table write tools for a specific table"),
     ] = [],
     reply_all: Annotated[bool, typer.Option()] = False,
+    enable_attachments: Annotated[bool, typer.Option()] = False,
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="The default working directory for shell commands"),
+    ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -326,22 +386,14 @@ async def make_call(
                 token=jwt,
             )
         ) as client:
-            requirements = []
-
-            for t in toolkit:
-                requirements.append(RequiredToolkit(name=t))
-
-            for t in schema:
-                requirements.append(RequiredSchema(name=t))
-
             CustomMailbot = build_mailbot(
                 computer_use=None,
                 model=model,
                 local_shell=require_local_shell,
                 agent_name=agent_name,
                 rule=rule,
-                toolkit=toolkit,
-                schema=schema,
+                schema=require_schema + schema,
+                toolkit=require_toolkit + toolkit,
                 image_generation=None,
                 web_search=require_web_search,
                 rules_file=rules_file,
@@ -350,12 +402,17 @@ async def make_call(
                 toolkit_name=toolkit_name,
                 room_rules_paths=room_rules,
                 whitelist=whitelist,
+                require_shell=require_shell,
+                require_apply_patch=require_apply_patch,
                 require_storage=require_storage,
                 require_read_only_storage=require_read_only_storage,
                 require_table_read=require_table_read,
                 require_table_write=require_table_write,
                 reply_all=reply_all,
                 database_namespace=database_namespace,
+                enable_attachments=enable_attachments,
+                working_directory=working_directory,
+                skill_dirs=skill_dir,
             )
 
             bot = CustomMailbot()
@@ -379,27 +436,48 @@ async def service(
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[str] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="the name or url of a required schema"
+        ),
+    ] = [],
     toolkit: Annotated[
         List[str],
-        typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option("--schema", "-s", help="the name or url of a required schema"),
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
     ] = "gpt-5.2",
+    require_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable function shell tool calling"),
+    ] = False,
     require_local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
-    require_web_search: Annotated[
+    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_apply_patch: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable web search tool calling"),
+        typer.Option(..., help="Enable apply patch tool calling"),
     ] = False,
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[str, typer.Option()] = "/agent",
+    path: Annotated[Optional[str], typer.Option()] = None,
     queue: Annotated[str, typer.Option(..., help="the name of the mail queue")],
     email_address: Annotated[
         str, typer.Option(..., help="the email address of the agent")
@@ -407,7 +485,7 @@ async def service(
     toolkit_name: Annotated[
         Optional[str],
         typer.Option(..., help="the name of a toolkit to expose mail operations"),
-    ],
+    ] = None,
     room_rules: Annotated[
         List[str],
         typer.Option(
@@ -443,10 +521,26 @@ async def service(
         typer.Option(..., help="Enable table write tools for a specific table"),
     ] = [],
     reply_all: Annotated[bool, typer.Option()] = False,
+    enable_attachments: Annotated[bool, typer.Option()] = False,
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="The default working directory for shell commands"),
+    ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
 ):
-    print("[bold green]Connecting to room...[/bold green]", flush=True)
+    service = get_service(host=host, port=port)
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
 
-    service = ServiceHost(host=host, port=port)
+    print(f"[bold green]Starting mailbot service at {path}[/bold green]", flush=True)
+
     service.add_path(
         path=path,
         cls=build_mailbot(
@@ -457,21 +551,27 @@ async def service(
             web_search=require_web_search,
             agent_name=agent_name,
             rule=rule,
-            toolkit=toolkit,
-            schema=schema,
+            schema=require_schema + schema,
+            toolkit=require_toolkit + toolkit,
             image_generation=None,
             rules_file=rules_file,
             email_address=email_address,
             toolkit_name=toolkit_name,
             room_rules_paths=room_rules,
             whitelist=whitelist,
+            require_shell=require_shell,
+            require_apply_patch=require_apply_patch,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             reply_all=reply_all,
             database_namespace=database_namespace,
+            enable_attachments=enable_attachments,
+            working_directory=working_directory,
+            skill_dirs=skill_dir,
         ),
     )
 
-    await service.run()
+    if not get_deferred():
+        await run_services()
