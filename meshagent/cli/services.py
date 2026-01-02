@@ -41,7 +41,6 @@ from pydantic_yaml import parse_yaml_raw_as
 from meshagent.cli.call import _make_call
 
 
-
 app = async_typer.AsyncTyper(help="Manage services for your project")
 
 
