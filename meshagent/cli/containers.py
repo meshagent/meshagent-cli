@@ -505,6 +505,16 @@ async def exec_container(
             finally:
                 termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
+        async def read_piped_stdin(bufsize: int = 1024):
+            while True:
+                chunk = await asyncio.to_thread(sys.stdin.buffer.read, bufsize)
+
+                if not chunk or len(chunk) == 0:
+                    await container.close_stdin()
+                    break
+
+                await container.write(chunk)
+
         async def read_stdin(bufsize: int = 1024):
             # If stdin is piped, just read normally (blocking is fine; no TTY semantics)
             if not sys.stdin.isatty():
@@ -542,9 +552,13 @@ async def exec_container(
             finally:
                 os.set_blocking(fd, prev_blocking)
 
-        if not tty:
-            await asyncio.gather(read_stdout(), read_stderr())
+        if not tty and not sys.stdin.isatty():
+            await asyncio.gather(read_stdout(), read_stderr(), read_piped_stdin())
         else:
+            if not sys.stdin.isatty():
+                print("[red]TTY requested but not a TTY[/red]")
+                raise typer.Exit(-1)
+
             reader = asyncio.create_task(read_stdin())
             await asyncio.gather(read_stdout(), read_stderr())
             reader.cancel()
