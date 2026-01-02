@@ -43,8 +43,8 @@ cli.command("worker")(worker_service)
 cli.command("mailbot")(mailbot_service)
 
 
-@cli.async_command("custom")
-async def custom(
+@cli.async_command("python")
+async def python(
     *,
     module: str,
     host: Annotated[Optional[str], typer.Option()] = None,
