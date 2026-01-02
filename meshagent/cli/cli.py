@@ -83,8 +83,6 @@ app.add_typer(team.app, name="team")
 
 register_exec(app)
 
-team.register_cli(app)
-
 
 def _run_async(coro):
     asyncio.run(coro)

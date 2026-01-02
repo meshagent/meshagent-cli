@@ -30,9 +30,46 @@ import asyncio
 
 from meshagent.api.keys import parse_api_key
 
+from meshagent.cli.chatbot import service as chatbot_service
+from meshagent.cli.worker import service as worker_service
+from meshagent.cli.mailbot import service as mailbot_service
+
 app = async_typer.AsyncTyper(help="Run a team of agents")
 
-cli = None
+cli = async_typer.AsyncTyper(help="Add agents to a team")
+
+cli.command("chatbot")(chatbot_service)
+cli.command("worker")(worker_service)
+cli.command("mailbot")(mailbot_service)
+
+
+@cli.async_command("custom")
+async def custom(
+    *,
+    module: str,
+    host: Annotated[Optional[str], typer.Option()] = None,
+    port: Annotated[Optional[int], typer.Option()] = None,
+    path: Annotated[
+        Optional[str],
+        typer.Option(help="A path to add the service at"),
+    ] = None,
+    identity: Annotated[
+        Optional[str],
+        typer.Option(help="The desired identity for the service"),
+    ] = None,
+    name: Annotated[str, typer.Option()] = "main",
+):
+    service = get_service(host=host, port=port)
+
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    module = import_from_path(module)
+    service.add_path(path=path, identity=identity, cls=getattr(module, name or "main"))
 
 
 def execute_via_root(app, line: str, *, prog_name="meshagent") -> int:
@@ -74,35 +111,6 @@ def import_from_path(path: str, module_name: str | None = None):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-@app.async_command("add")
-async def add(
-    *,
-    module: str,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[
-        Optional[str],
-        typer.Option(help="A path to add the service at"),
-    ] = None,
-    identity: Annotated[
-        Optional[str],
-        typer.Option(help="The desired identity for the service"),
-    ] = None,
-    name: Annotated[str, typer.Option()] = "main",
-):
-    service = get_service(host=host, port=port)
-
-    if path is None:
-        path = "/agent"
-        i = 0
-        while service.has_path(path):
-            i += 1
-            path = f"/agent{i}"
-
-    module = import_from_path(module)
-    service.add_path(path=path, identity=identity, cls=getattr(module, name or "main"))
 
 
 @app.async_command("join")
@@ -216,8 +224,3 @@ async def join(
 
     finally:
         await my_client.close()
-
-
-def register_cli(c):
-    global cli
-    cli = c
