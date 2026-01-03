@@ -33,6 +33,10 @@ from meshagent.api.keys import parse_api_key
 from meshagent.cli.chatbot import service as chatbot_service
 from meshagent.cli.worker import service as worker_service
 from meshagent.cli.mailbot import service as mailbot_service
+from meshagent.cli.voicebot import service as voicebot_service
+
+import yaml
+
 
 app = async_typer.AsyncTyper(
     help="connect agents and tools to a room for testing or host them as a mesh service"
@@ -43,6 +47,7 @@ cli = async_typer.AsyncTyper(help="Add agents to a team")
 cli.command("chatbot")(chatbot_service)
 cli.command("worker")(worker_service)
 cli.command("mailbot")(mailbot_service)
+cli.command("voicebot")(voicebot_service)
 
 
 @cli.async_command("python")
@@ -91,10 +96,162 @@ available sub commands:
 chatbot ...;
 mailbot ...;
 worker ...;
+voicebot ...;
 python path-to-python-file.py --name=NameOfModule;
 
-chatbot, worker, and mailbot command arguments mirror those of the respective meshagent chatbot service, meshagent mailbot service, and meshagent worker service commands.
+chatbot, worker, and mailbot command arguments mirror those of the respective meshagent chatbot service, meshagent mailbot service, meshagent voicebot service, and meshagent worker service commands.
 """
+
+
+def build_spec(
+    *,
+    command: Annotated[str, typer.Option("-c", help=subcommand_help)],
+    service_name: Annotated[str, typer.Option("--service-name", help="service name")],
+    service_description: Annotated[
+        Optional[str], typer.Option("--service-description", help="service description")
+    ] = None,
+    service_title: Annotated[
+        Optional[str],
+        typer.Option("--service-title", help="a display name for the service"),
+    ] = None,
+):
+    for c in command.split(";"):
+        if execute_via_root(cli, c, prog_name="meshagent") != 0:
+            print(f"[red]{c} failed[/red]")
+            raise typer.Exit(1)
+
+    specs = service_specs()
+    if len(specs) == 0:
+        print("[red]found no services, specify at least one agent or tool to run[/red]")
+        raise typer.Exit(1)
+
+    if len(specs) > 1:
+        print(
+            "[red]found multiple services leave host and port empty or use the same port for each command[/red]"
+        )
+        raise typer.Exit(1)
+
+    spec = specs[0]
+    spec.metadata.annotations = {
+        "meshagent.service.id": service_name,
+    }
+    for port in spec.ports:
+        port.num = "*"
+
+    spec.metadata.name = service_name
+    spec.metadata.description = service_description
+    spec.container.image = (
+        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}"
+    )
+    spec.container.command = (
+        f'meshagent multi service -c "{command.replace('"', '\\"')}"'
+    )
+
+
+@app.async_command("spec")
+async def spec(
+    command: Annotated[str, typer.Option("-c", help=subcommand_help)],
+    service_name: Annotated[str, typer.Option("--service-name", help="service name")],
+    service_description: Annotated[
+        Optional[str], typer.Option("--service-description", help="service description")
+    ] = None,
+    service_title: Annotated[
+        Optional[str],
+        typer.Option("--service-title", help="a display name for the service"),
+    ] = None,
+):
+    set_deferred(True)
+
+    spec = build_spec(
+        command=command,
+        service_name=service_name,
+        service_description=service_description,
+        service_title=service_title,
+    )
+
+    print(yaml.dump(spec.model_dump(mode="json", exclude_none=True), sort_keys=False))
+
+
+@app.async_command("deploy")
+async def deploy(
+    command: Annotated[str, typer.Option("-c", help=subcommand_help)],
+    service_name: Annotated[str, typer.Option("--service-name", help="service name")],
+    service_description: Annotated[
+        Optional[str], typer.Option("--service-description", help="service description")
+    ] = None,
+    service_title: Annotated[
+        Optional[str],
+        typer.Option("--service-title", help="a display name for the service"),
+    ] = None,
+    project_id: ProjectIdOption = None,
+    room: Annotated[
+        Optional[str],
+        typer.Option("--room", help="The name of a room to create the service for"),
+    ] = None,
+):
+    project_id = await resolve_project_id(project_id)
+
+    client = await get_client()
+    try:
+        set_deferred(True)
+
+        spec = build_spec(
+            command=command,
+            service_name=service_name,
+            service_description=service_description,
+            service_title=service_title,
+        )
+
+        spec.container.secrets = []
+
+        id = None
+        try:
+            if id is None:
+                if room is None:
+                    services = await client.list_services(project_id=project_id)
+                else:
+                    services = await client.list_room_services(
+                        project_id=project_id, room_name=room
+                    )
+
+                for s in services:
+                    if s.metadata.name == spec.metadata.name:
+                        id = s.id
+
+            if id is None:
+                if room is None:
+                    id = await client.create_service(
+                        project_id=project_id, service=spec
+                    )
+                else:
+                    id = await client.create_room_service(
+                        project_id=project_id, service=spec, room_name=room
+                    )
+
+            else:
+                spec.id = id
+                if room is None:
+                    await client.update_service(
+                        project_id=project_id, service_id=id, service=spec
+                    )
+                else:
+                    await client.update_room_service(
+                        project_id=project_id,
+                        service_id=id,
+                        service=spec,
+                        room_name=room,
+                    )
+
+        except ClientResponseError as exc:
+            if exc.status == 409:
+                print(f"[red]Service name already in use: {spec.metadata.name}[/red]")
+                raise typer.Exit(code=1)
+            raise
+        else:
+            print(f"[green]Updated service:[/] {id}")
+
+    finally:
+        await client.close()
 
 
 @app.async_command("service")

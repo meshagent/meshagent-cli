@@ -11,6 +11,7 @@ from meshagent.cli.helper import (
     resolve_project_id,
     resolve_room,
     resolve_key,
+    cleanup_args,
 )
 from typing import List
 from meshagent.api import RequiredToolkit, RequiredSchema
@@ -18,8 +19,15 @@ from pathlib import Path
 from meshagent.agents.config import RulesConfig
 import logging
 
-from meshagent.cli.host import get_service, run_services, get_deferred
+from meshagent.cli.host import get_service, run_services, get_deferred, service_specs
+from meshagent.api.specs.service import AgentSpec, ANNOTATION_AGENT_TYPE
 
+import yaml
+
+import shlex
+import sys
+
+from meshagent.api.client import ConflictError
 
 app = async_typer.AsyncTyper(help="Join a voicebot to a room")
 
@@ -298,6 +306,10 @@ async def service(
 
     service = get_service(host=host, port=port)
 
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+    )
+
     if path is None:
         path = "/agent"
         i = 0
@@ -305,9 +317,249 @@ async def service(
             i += 1
             path = f"/agent{i}"
 
-    print(f"[bold green]Starting voicebot service at {path}[/bold green]", flush=True)
-
-    service.add_path(path, cls=CustomVoiceBot)
+    service.add_path(identity=agent_name, path=path, cls=CustomVoiceBot)
 
     if not get_deferred():
         await run_services()
+
+
+@app.async_command("spec")
+async def spec(
+    *,
+    service_name: Annotated[str, typer.Option("--service-name", help="service name")],
+    service_description: Annotated[
+        Optional[str], typer.Option("--service-description", help="service description")
+    ] = None,
+    service_title: Annotated[
+        Optional[str],
+        typer.Option("--service-title", help="a display name for the service"),
+    ] = None,
+    agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
+    rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
+    rules_file: Optional[str] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="the name or url of a required schema"
+        ),
+    ] = [],
+    toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
+    ] = [],
+    schema: Annotated[
+        List[str],
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
+    ] = [],
+    auto_greet_message: Annotated[Optional[str], typer.Option()] = None,
+    auto_greet_prompt: Annotated[Optional[str], typer.Option()] = None,
+    host: Annotated[Optional[str], typer.Option()] = None,
+    port: Annotated[Optional[int], typer.Option()] = None,
+    path: Annotated[Optional[str], typer.Option()] = None,
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="a path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
+):
+    CustomVoiceBot = build_voicebot(
+        agent_name=agent_name,
+        rules=rule,
+        rules_file=rules_file,
+        toolkits=require_toolkit + toolkit,
+        schemas=require_schema + schema,
+        auto_greet_message=auto_greet_message,
+        auto_greet_prompt=auto_greet_prompt,
+        room_rules_paths=room_rules,
+    )
+
+    service = get_service(host=host, port=port)
+
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+    )
+
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    service.add_path(identity=agent_name, path=path, cls=CustomVoiceBot)
+
+    spec = service_specs()[0]
+    spec.metadata.annotations = {
+        "meshagent.service.id": service_name,
+    }
+    spec.metadata.name = service_name
+    spec.metadata.description = service_description
+    spec.container.image = (
+        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}"
+    )
+    spec.container.command = shlex.join(
+        ["meshagent", "voicebot", "service", *cleanup_args(sys.argv[2:])]
+    )
+
+    print(yaml.dump(spec.model_dump(mode="json", exclude_none=True), sort_keys=False))
+
+
+@app.async_command("deploy")
+async def deploy(
+    *,
+    service_name: Annotated[str, typer.Option("--service-name", help="service name")],
+    service_description: Annotated[
+        Optional[str], typer.Option("--service-description", help="service description")
+    ] = None,
+    service_title: Annotated[
+        Optional[str],
+        typer.Option("--service-title", help="a display name for the service"),
+    ] = None,
+    agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
+    rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
+    rules_file: Optional[str] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="the name or url of a required schema"
+        ),
+    ] = [],
+    toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
+    ] = [],
+    schema: Annotated[
+        List[str],
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
+    ] = [],
+    auto_greet_message: Annotated[Optional[str], typer.Option()] = None,
+    auto_greet_prompt: Annotated[Optional[str], typer.Option()] = None,
+    host: Annotated[Optional[str], typer.Option()] = None,
+    port: Annotated[Optional[int], typer.Option()] = None,
+    path: Annotated[Optional[str], typer.Option()] = None,
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="a path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
+    project_id: ProjectIdOption = None,
+    room: Annotated[
+        Optional[str],
+        typer.Option("--room", help="The name of a room to create the service for"),
+    ] = None,
+):
+    project_id = await resolve_project_id(project_id=project_id)
+
+    CustomVoiceBot = build_voicebot(
+        agent_name=agent_name,
+        rules=rule,
+        rules_file=rules_file,
+        toolkits=require_toolkit + toolkit,
+        schemas=require_schema + schema,
+        auto_greet_message=auto_greet_message,
+        auto_greet_prompt=auto_greet_prompt,
+        room_rules_paths=room_rules,
+    )
+
+    service = get_service(host=host, port=port)
+
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+    )
+
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    service.add_path(identity=agent_name, path=path, cls=CustomVoiceBot)
+
+    spec = service_specs()[0]
+    spec.metadata.annotations = {
+        "meshagent.service.id": service_name,
+    }
+    spec.metadata.name = service_name
+    spec.metadata.description = service_description
+    spec.container.image = (
+        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}"
+    )
+    spec.container.command = shlex.join(
+        ["meshagent", "voicebot", "service", *cleanup_args(sys.argv[2:])]
+    )
+
+    client = await get_client()
+    try:
+        id = None
+        try:
+            if id is None:
+                if room is None:
+                    services = await client.list_services(project_id=project_id)
+                else:
+                    services = await client.list_room_services(
+                        project_id=project_id, room_name=room
+                    )
+
+                for s in services:
+                    if s.metadata.name == spec.metadata.name:
+                        id = s.id
+
+            if id is None:
+                if room is None:
+                    id = await client.create_service(
+                        project_id=project_id, service=spec
+                    )
+                else:
+                    id = await client.create_room_service(
+                        project_id=project_id, service=spec, room_name=room
+                    )
+
+            else:
+                spec.id = id
+                if room is None:
+                    await client.update_service(
+                        project_id=project_id, service_id=id, service=spec
+                    )
+                else:
+                    await client.update_room_service(
+                        project_id=project_id,
+                        service_id=id,
+                        service=spec,
+                        room_name=room,
+                    )
+
+        except ConflictError:
+            print(f"[red]Service name already in use: {spec.metadata.name}[/red]")
+            raise typer.Exit(code=1)
+        else:
+            print(f"[green]Updated service:[/] {id}")
+
+    finally:
+        await client.close()

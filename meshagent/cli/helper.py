@@ -145,3 +145,33 @@ async def resolve_key(project_id: str | None, key: str | None):
         raise typer.Exit(1)
 
     return key
+
+
+def cleanup_args(args: list[str]):
+    out = []
+    i = 0
+    while i < len(args):
+        if args[i] == "--service-name":
+            i += 1
+        elif args[i] == "--service-title":
+            i += 1
+        elif args[i] == "--service-description":
+            i += 1
+        elif args[i] == "--project-id":
+            i += 1
+        elif args[i] == "--room":
+            i += 1
+        elif args[i].startswith("--service-name="):
+            pass
+        elif args[i].startswith("--service-title="):
+            pass
+        elif args[i].startswith("--service-description="):
+            pass
+        elif args[i].startswith("--project-id="):
+            pass
+        elif args[i].startswith("--room="):
+            pass
+        else:
+            out.append(args[i])
+        i += 1
+    return out

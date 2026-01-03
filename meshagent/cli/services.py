@@ -54,9 +54,7 @@ async def service_create(
     ],
     room: Annotated[
         Optional[str],
-        typer.Option(
-            "--room", "-r", help="The name of a room to create the service for"
-        ),
+        typer.Option("--room", help="The name of a room to create the service for"),
     ] = None,
 ):
     """Create a service attached to the project."""
@@ -109,9 +107,7 @@ async def service_update(
     ] = False,
     room: Annotated[
         Optional[str],
-        typer.Option(
-            "--room", "-r", help="The name of a room to update the service for"
-        ),
+        typer.Option("--room", help="The name of a room to update the service for"),
     ] = None,
 ):
     """Create a service attached to the project."""
@@ -358,9 +354,7 @@ async def service_list(
     o: OutputFormatOption = "table",
     room: Annotated[
         Optional[str],
-        typer.Option(
-            "--room", "-r", help="The name of a room to list the services for"
-        ),
+        typer.Option("--room", help="The name of a room to list the services for"),
     ] = None,
 ):
     """List all services for the project."""
@@ -406,9 +400,7 @@ async def service_delete(
     service_id: Annotated[str, typer.Argument(help="ID of the service to delete")],
     room: Annotated[
         Optional[str],
-        typer.Option(
-            "--room", "-r", help="The name of a room to delete the service for"
-        ),
+        typer.Option("--room", help="The name of a room to delete the service for"),
     ] = None,
 ):
     """Delete a service."""
