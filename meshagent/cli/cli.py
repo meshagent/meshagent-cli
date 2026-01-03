@@ -3,7 +3,7 @@ import asyncio
 
 from meshagent.cli import async_typer
 
-from meshagent.cli import team
+from meshagent.cli import mesh
 from meshagent.cli import queue
 from meshagent.cli import auth
 from meshagent.cli import api_keys
@@ -79,7 +79,7 @@ app.add_typer(room.app, name="room")
 app.add_typer(mailboxes.app, name="mailbox")
 app.add_typer(database.app, name="database")
 app.add_typer(meeting_transcriber.app, name="meeting-transcriber")
-app.add_typer(team.app, name="team")
+app.add_typer(mesh.app, name="mesh")
 
 register_exec(app)
 
