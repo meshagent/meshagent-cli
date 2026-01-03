@@ -34,7 +34,7 @@ from meshagent.cli.chatbot import service as chatbot_service
 from meshagent.cli.worker import service as worker_service
 from meshagent.cli.mailbot import service as mailbot_service
 
-app = async_typer.AsyncTyper(help="Run a team of agents")
+app = async_typer.AsyncTyper(help="connect agents and tools to a room for testing or host them as a mesh service")
 
 cli = async_typer.AsyncTyper(help="Add agents to a team")
 
