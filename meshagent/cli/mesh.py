@@ -34,7 +34,9 @@ from meshagent.cli.chatbot import service as chatbot_service
 from meshagent.cli.worker import service as worker_service
 from meshagent.cli.mailbot import service as mailbot_service
 
-app = async_typer.AsyncTyper(help="connect agents and tools to a room for testing or host them as a mesh service")
+app = async_typer.AsyncTyper(
+    help="connect agents and tools to a room for testing or host them as a mesh service"
+)
 
 cli = async_typer.AsyncTyper(help="Add agents to a team")
 
@@ -82,13 +84,24 @@ def execute_via_root(app, line: str, *, prog_name="meshagent") -> int:
         return e.exit_code
 
 
+subcommand_help = """a list of sub commands to run, seperated by semicolons
+
+available sub commands:
+
+chatbot ...;
+mailbot ...;
+worker ...;
+python path-to-python-file.py --name=NameOfModule;
+
+chatbot, worker, and mailbot command arguments mirror those of the respective meshagent chatbot service, meshagent mailbot service, and meshagent worker service commands.
+"""
+
+
 @app.async_command("service")
 async def host(
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
-    command: Annotated[
-        str, typer.Option("-c", help="a list of commands to run, seperated by pipes")
-    ] = [],
+    command: Annotated[str, typer.Option("-c", help=subcommand_help)] = [],
 ):
     set_deferred(True)
 
@@ -117,9 +130,7 @@ def import_from_path(path: str, module_name: str | None = None):
 async def join(
     *,
     project_id: ProjectIdOption = None,
-    command: Annotated[
-        str, typer.Option("-c", help="a list of commands to run, seperated by pipes")
-    ] = [],
+    command: Annotated[str, typer.Option("-c", help=subcommand_help)] = [],
     port: Annotated[
         int,
         typer.Option(
