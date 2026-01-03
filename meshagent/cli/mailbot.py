@@ -145,6 +145,9 @@ def build_mailbot(
                 "[bold green]Configure and send an email interact with your mailbot[/bold green]"
             )
             await super().start(room=room)
+            if room_rules_paths is not None:
+                for p in room_rules_paths:
+                    await self._load_room_rules(room=room, path=p)
 
         async def get_rules(self):
             rules = [*await super().get_rules()]

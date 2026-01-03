@@ -157,6 +157,9 @@ def build_worker(
                 "[bold green]Worker connected. It will consume queue messages.[/bold green]"
             )
             await super().start(room=room)
+            if room_rules_paths is not None:
+                for p in room_rules_paths:
+                    await self._load_room_rules(room=room, path=p)
 
         async def get_rules(self):
             rules = [*await super().get_rules()]
