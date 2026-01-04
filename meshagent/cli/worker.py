@@ -104,6 +104,7 @@ def build_worker(
     database_namespace: Optional[list[str]] = None,
     require_table_read: list[str] | None = None,
     require_table_write: list[str] | None = None,
+    require_computer_use: bool,
     toolkit_name: Optional[str] = None,
     skill_dirs: Optional[list[str]] = None,
     shell_image: Optional[str] = None,
@@ -133,7 +134,16 @@ def build_worker(
         except FileNotFoundError:
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
 
-    llm_adapter: LLMAdapter = OpenAIResponsesAdapter(model=model)
+    if require_computer_use:
+        llm_adapter: LLMAdapter = OpenAIResponsesAdapter(
+            model=model,
+            response_options={
+                "reasoning": {"summary": "concise"},
+                "truncation": "auto",
+            },
+        )
+    else:
+        llm_adapter: LLMAdapter = OpenAIResponsesAdapter(model=model)
 
     class CustomWorker(WorkerBase):
         def __init__(self):
@@ -232,7 +242,7 @@ def build_worker(
 
             return providers
 
-        async def get_thread_toolkits(self, *, thread_context):
+        async def get_message_toolkits(self, *, message: dict):
             """
             Optional hook if your WorkerBase supports thread contexts.
             If not, you can remove this; I left it to mirror mailbot's pattern.
@@ -241,9 +251,7 @@ def build_worker(
             thread_toolkit = Toolkit(name="thread_toolkit", tools=[])
 
             if require_local_shell:
-                thread_toolkit.tools.append(
-                    LocalShellTool(thread_context=thread_context)
-                )
+                thread_toolkit.tools.append(LocalShellTool())
 
             if require_shell:
                 thread_toolkit.tools.append(
@@ -265,7 +273,6 @@ def build_worker(
                 thread_toolkit.tools.append(
                     ImageGenerationTool(
                         model=require_image_generation,
-                        thread_context=thread_context,
                         partial_images=3,
                     )
                 )
@@ -308,6 +315,13 @@ def build_worker(
                         )
                     ).tools
                 )
+
+            if require_computer_use:
+                from meshagent.computers.agent import ComputerToolkit
+
+                computer_toolkit = ComputerToolkit(room=self.room, render_screen=None)
+
+                toolkits_out.append(computer_toolkit)
 
             toolkits_out.append(thread_toolkit)
             return toolkits_out
@@ -418,6 +432,14 @@ async def join(
     require_table_write: Annotated[
         list[str], typer.Option(..., help="Enable table write tools for these tables")
     ] = [],
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+            hidden=True,
+        ),
+    ] = False,
     title: Annotated[
         Optional[str],
         typer.Option(..., help="a display name for the agent"),
@@ -493,6 +515,7 @@ async def join(
                 require_read_only_storage=require_read_only_storage,
                 require_table_read=require_table_read,
                 require_table_write=require_table_write,
+                require_computer_use=require_computer_use,
                 database_namespace=[database_namespace] if database_namespace else None,
                 title=title,
                 description=description,
@@ -585,6 +608,14 @@ async def service(
     database_namespace: Annotated[Optional[str], typer.Option(...)] = None,
     require_table_read: Annotated[list[str], typer.Option(...)] = [],
     require_table_write: Annotated[list[str], typer.Option(...)] = [],
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+            hidden=True,
+        ),
+    ] = False,
     title: Annotated[
         Optional[str],
         typer.Option(..., help="a display name for the agent"),
@@ -653,6 +684,7 @@ async def service(
             require_read_only_storage=require_read_only_storage,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
+            require_computer_use=require_computer_use,
             database_namespace=[database_namespace] if database_namespace else None,
             title=title,
             description=description,
@@ -747,6 +779,14 @@ async def spec(
     database_namespace: Annotated[Optional[str], typer.Option(...)] = None,
     require_table_read: Annotated[list[str], typer.Option(...)] = [],
     require_table_write: Annotated[list[str], typer.Option(...)] = [],
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+            hidden=True,
+        ),
+    ] = False,
     title: Annotated[
         Optional[str],
         typer.Option(..., help="a display name for the agent"),
@@ -815,6 +855,7 @@ async def spec(
             require_read_only_storage=require_read_only_storage,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
+            require_computer_use=require_computer_use,
             database_namespace=[database_namespace] if database_namespace else None,
             title=title,
             description=description,
@@ -922,6 +963,14 @@ async def deploy(
     database_namespace: Annotated[Optional[str], typer.Option(...)] = None,
     require_table_read: Annotated[list[str], typer.Option(...)] = [],
     require_table_write: Annotated[list[str], typer.Option(...)] = [],
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+            hidden=True,
+        ),
+    ] = False,
     title: Annotated[
         Optional[str],
         typer.Option(..., help="a display name for the agent"),
@@ -997,6 +1046,7 @@ async def deploy(
             require_read_only_storage=require_read_only_storage,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
+            require_computer_use=require_computer_use,
             database_namespace=[database_namespace] if database_namespace else None,
             title=title,
             description=description,

@@ -148,18 +148,11 @@ def build_chatbot(
             participant_name=llm_participant,
         )
     else:
-        if computer_use:
-            from meshagent.computers.agent import ComputerAgent
-
-            if ComputerAgent is None:
-                raise RuntimeError(
-                    "Computer use is enabled, but meshagent.computers is not installed."
-                )
-            BaseClass = ComputerAgent
+        if computer_use or require_computer_use:
             llm_adapter = OpenAIResponsesAdapter(
                 model=model,
                 response_options={
-                    "reasoning": {"generate_summary": "concise"},
+                    "reasoning": {"summary": "concise"},
                     "truncation": "auto",
                 },
             )
@@ -349,6 +342,25 @@ def build_chatbot(
             tk = await super().get_thread_toolkits(
                 thread_context=thread_context, participant=participant
             )
+
+            if require_computer_use:
+                from meshagent.computers.agent import ComputerToolkit
+
+                def render_screen(image_bytes: bytes):
+                    for participant in thread_context.participants:
+                        self.room.messaging.send_message_nowait(
+                            to=participant,
+                            type="computer_screen",
+                            message={},
+                            attachment=image_bytes,
+                        )
+
+                computer_toolkit = ComputerToolkit(
+                    room=self.room, render_screen=render_screen
+                )
+
+                tk.append(computer_toolkit)
+
             return [
                 *(
                     [Toolkit(name="tools", tools=providers)]
@@ -562,7 +574,7 @@ async def make_call(
             name=agent_name,
         )
 
-        token.add_api_grant(ApiScope.agent_default())
+        token.add_api_grant(ApiScope.full())
 
         token.add_role_grant(role=role)
         token.add_room_grant(room)
@@ -578,6 +590,7 @@ async def make_call(
         ) as client:
             CustomChatbot = build_chatbot(
                 computer_use=computer_use,
+                require_computer_use=require_computer_use,
                 model=model,
                 agent_name=agent_name,
                 rule=rule,
@@ -797,6 +810,7 @@ async def service(
         path=path,
         cls=build_chatbot(
             computer_use=computer_use,
+            require_computer_use=require_computer_use,
             model=model,
             local_shell=local_shell,
             shell=shell,
@@ -1013,6 +1027,7 @@ async def spec(
         path=path,
         cls=build_chatbot(
             computer_use=computer_use,
+            require_computer_use=require_computer_use,
             model=model,
             local_shell=local_shell,
             shell=shell,
@@ -1249,6 +1264,7 @@ async def deploy(
         path=path,
         cls=build_chatbot(
             computer_use=computer_use,
+            require_computer_use=require_computer_use,
             model=model,
             local_shell=local_shell,
             shell=shell,

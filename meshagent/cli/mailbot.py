@@ -84,6 +84,7 @@ def build_mailbot(
     require_read_only_storage: Optional[str] = None,
     require_table_read: bool,
     require_table_write: bool,
+    require_computer_use: bool,
     reply_all: bool,
     database_namespace: Optional[list[str]] = None,
     enable_attachments: bool,
@@ -118,8 +119,15 @@ def build_mailbot(
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
 
     BaseClass = MailWorker
-    if computer_use:
-        raise ValueError("computer use is not yet supported for the mail agent")
+    if computer_use or require_computer_use:
+        llm_adapter = OpenAIResponsesAdapter(
+            model=model,
+            response_options={
+                "reasoning": {"summary": "concise"},
+                "truncation": "auto",
+            },
+        )
+
     else:
         llm_adapter = OpenAIResponsesAdapter(model=model)
 
@@ -266,6 +274,16 @@ def build_mailbot(
                         )
                     ).tools
                 )
+
+            if require_computer_use:
+                from meshagent.computers.agent import ComputerToolkit
+
+                computer_toolkit = ComputerToolkit(room=self.room, render_screen=None)
+
+                toolkits.append(computer_toolkit)
+
+            toolkits.append(thread_toolkit)
+
             toolkits.append(thread_toolkit)
             return toolkits
 
@@ -362,6 +380,14 @@ async def make_call(
         list[str],
         typer.Option(..., help="Enable table write tools for a specific table"),
     ] = [],
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+            hidden=True,
+        ),
+    ] = False,
     reply_all: Annotated[bool, typer.Option()] = False,
     enable_attachments: Annotated[bool, typer.Option()] = False,
     working_directory: Annotated[
@@ -425,6 +451,7 @@ async def make_call(
                 require_read_only_storage=require_read_only_storage,
                 require_table_read=require_table_read,
                 require_table_write=require_table_write,
+                require_computer_use=require_computer_use,
                 reply_all=reply_all,
                 database_namespace=database_namespace,
                 enable_attachments=enable_attachments,
@@ -538,6 +565,14 @@ async def service(
         list[str],
         typer.Option(..., help="Enable table write tools for a specific table"),
     ] = [],
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+            hidden=True,
+        ),
+    ] = False,
     reply_all: Annotated[bool, typer.Option()] = False,
     enable_attachments: Annotated[bool, typer.Option()] = False,
     working_directory: Annotated[
@@ -590,6 +625,7 @@ async def service(
             require_read_only_storage=require_read_only_storage,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
+            require_computer_use=require_computer_use,
             reply_all=reply_all,
             database_namespace=database_namespace,
             enable_attachments=enable_attachments,
@@ -701,6 +737,14 @@ async def spec(
         list[str],
         typer.Option(..., help="Enable table write tools for a specific table"),
     ] = [],
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+            hidden=True,
+        ),
+    ] = False,
     reply_all: Annotated[bool, typer.Option()] = False,
     enable_attachments: Annotated[bool, typer.Option()] = False,
     working_directory: Annotated[
@@ -753,6 +797,7 @@ async def spec(
             require_read_only_storage=require_read_only_storage,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
+            require_computer_use=require_computer_use,
             reply_all=reply_all,
             database_namespace=database_namespace,
             enable_attachments=enable_attachments,
@@ -877,6 +922,14 @@ async def deploy(
         list[str],
         typer.Option(..., help="Enable table write tools for a specific table"),
     ] = [],
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+            hidden=True,
+        ),
+    ] = False,
     reply_all: Annotated[bool, typer.Option()] = False,
     enable_attachments: Annotated[bool, typer.Option()] = False,
     working_directory: Annotated[
@@ -936,6 +989,7 @@ async def deploy(
             require_read_only_storage=require_read_only_storage,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
+            require_computer_use=require_computer_use,
             reply_all=reply_all,
             database_namespace=database_namespace,
             enable_attachments=enable_attachments,
