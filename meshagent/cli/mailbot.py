@@ -415,7 +415,7 @@ async def make_call(
             name=agent_name,
         )
 
-        token.add_api_grant(ApiScope.agent_default())
+        token.add_api_grant(ApiScope.agent_default(tunnels=require_computer_use))
 
         token.add_role_grant(role=role)
         token.add_room_grant(room)
