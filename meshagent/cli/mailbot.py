@@ -283,8 +283,6 @@ def build_mailbot(
                 toolkits.append(computer_toolkit)
 
             toolkits.append(thread_toolkit)
-
-            toolkits.append(thread_toolkit)
             return toolkits
 
     return CustomMailbot
