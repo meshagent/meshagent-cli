@@ -31,6 +31,7 @@ from meshagent.cli import oauth2
 from meshagent.cli import helpers
 from meshagent.cli import meeting_transcriber
 from meshagent.cli import room
+from meshagent.cli import port
 from meshagent.cli.exec import register as register_exec
 from meshagent.cli.version import __version__
 from meshagent.cli.helper import get_active_api_key
@@ -80,6 +81,7 @@ app.add_typer(mailboxes.app, name="mailbox")
 app.add_typer(database.app, name="database")
 app.add_typer(meeting_transcriber.app, name="meeting-transcriber")
 app.add_typer(multi.app, name="multi")
+app.add_typer(port.app, name="port")
 
 register_exec(app)
 
