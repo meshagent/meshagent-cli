@@ -13,6 +13,7 @@ from meshagent.cli.helper import (
     resolve_project_id,
     resolve_room,
     resolve_key,
+    cleanup_args,
 )
 
 from meshagent.api import (
@@ -54,7 +55,15 @@ from meshagent.openai.tools.responses_adapter import (
     ImageGenerationTool,
 )
 
-from meshagent.cli.host import get_service, run_services, get_deferred
+from meshagent.cli.host import get_service, run_services, get_deferred, service_specs
+from meshagent.api.specs.service import AgentSpec, ANNOTATION_AGENT_TYPE
+
+import yaml
+
+import shlex
+import sys
+
+from meshagent.api.client import ConflictError
 
 logger = logging.getLogger("worker_cli")
 
@@ -95,8 +104,10 @@ def build_worker(
     database_namespace: Optional[list[str]] = None,
     require_table_read: list[str] | None = None,
     require_table_write: list[str] | None = None,
+    require_computer_use: bool,
     toolkit_name: Optional[str] = None,
     skill_dirs: Optional[list[str]] = None,
+    shell_image: Optional[str] = None,
 ):
     """
     Returns a Worker subclass
@@ -123,7 +134,16 @@ def build_worker(
         except FileNotFoundError:
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
 
-    llm_adapter: LLMAdapter = OpenAIResponsesAdapter(model=model)
+    if require_computer_use:
+        llm_adapter: LLMAdapter = OpenAIResponsesAdapter(
+            model=model,
+            response_options={
+                "reasoning": {"summary": "concise"},
+                "truncation": "auto",
+            },
+        )
+    else:
+        llm_adapter: LLMAdapter = OpenAIResponsesAdapter(model=model)
 
     class CustomWorker(WorkerBase):
         def __init__(self):
@@ -147,6 +167,9 @@ def build_worker(
                 "[bold green]Worker connected. It will consume queue messages.[/bold green]"
             )
             await super().start(room=room)
+            if room_rules_paths is not None:
+                for p in room_rules_paths:
+                    await self._load_room_rules(room=room, path=p)
 
         async def get_rules(self):
             rules = [*await super().get_rules()]
@@ -204,6 +227,7 @@ def build_worker(
                 providers.append(
                     ShellToolkitBuilder(
                         working_directory=working_directory,
+                        shell_image=shell_image,
                     )
                 )
 
@@ -218,7 +242,7 @@ def build_worker(
 
             return providers
 
-        async def get_thread_toolkits(self, *, thread_context):
+        async def get_message_toolkits(self, *, message: dict):
             """
             Optional hook if your WorkerBase supports thread contexts.
             If not, you can remove this; I left it to mirror mailbot's pattern.
@@ -227,15 +251,14 @@ def build_worker(
             thread_toolkit = Toolkit(name="thread_toolkit", tools=[])
 
             if require_local_shell:
-                thread_toolkit.tools.append(
-                    LocalShellTool(thread_context=thread_context)
-                )
+                thread_toolkit.tools.append(LocalShellTool())
 
             if require_shell:
                 thread_toolkit.tools.append(
                     ShellTool(
                         working_directory=working_directory,
                         config=ShellConfig(name="shell"),
+                        shell_image=shell_image,
                     )
                 )
 
@@ -250,7 +273,6 @@ def build_worker(
                 thread_toolkit.tools.append(
                     ImageGenerationTool(
                         model=require_image_generation,
-                        thread_context=thread_context,
                         partial_images=3,
                     )
                 )
@@ -293,6 +315,13 @@ def build_worker(
                         )
                     ).tools
                 )
+
+            if require_computer_use:
+                from meshagent.computers.agent import ComputerToolkit
+
+                computer_toolkit = ComputerToolkit(room=self.room, render_screen=None)
+
+                toolkits_out.append(computer_toolkit)
 
             toolkits_out.append(thread_toolkit)
             return toolkits_out
@@ -403,6 +432,14 @@ async def join(
     require_table_write: Annotated[
         list[str], typer.Option(..., help="Enable table write tools for these tables")
     ] = [],
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+            hidden=True,
+        ),
+    ] = False,
     title: Annotated[
         Optional[str],
         typer.Option(..., help="a display name for the agent"),
@@ -419,6 +456,10 @@ async def join(
         list[str],
         typer.Option(..., help="an agent skills directory"),
     ] = [],
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -428,7 +469,7 @@ async def join(
         room_name = resolve_room(room)
 
         token = ParticipantToken(name=agent_name)
-        token.add_api_grant(ApiScope.agent_default())
+        token.add_api_grant(ApiScope.agent_default(tunnels=require_computer_use))
         token.add_role_grant(role=role)
         token.add_room_grant(room_name)
 
@@ -474,11 +515,13 @@ async def join(
                 require_read_only_storage=require_read_only_storage,
                 require_table_read=require_table_read,
                 require_table_write=require_table_write,
+                require_computer_use=require_computer_use,
                 database_namespace=[database_namespace] if database_namespace else None,
                 title=title,
                 description=description,
                 working_directory=working_directory,
                 skill_dirs=skill_dir,
+                shell_image=shell_image,
             )
 
             worker = CustomWorker()
@@ -565,6 +608,14 @@ async def service(
     database_namespace: Annotated[Optional[str], typer.Option(...)] = None,
     require_table_read: Annotated[list[str], typer.Option(...)] = [],
     require_table_write: Annotated[list[str], typer.Option(...)] = [],
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+            hidden=True,
+        ),
+    ] = False,
     title: Annotated[
         Optional[str],
         typer.Option(..., help="a display name for the agent"),
@@ -581,6 +632,10 @@ async def service(
         list[str],
         typer.Option(..., help="an agent skills directory"),
     ] = [],
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
 ):
     service = get_service(host=host, port=port)
 
@@ -591,14 +646,17 @@ async def service(
             i += 1
             path = f"/agent{i}"
 
-    print(f"[bold green]Starting worker service at {path}[/bold green]", flush=True)
-
     # Plug in your specific worker implementation here:
     from meshagent.agents.worker import (
         Worker as WorkerBase,
     )  # replace with your concrete worker class
 
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+    )
+
     service.add_path(
+        identity=agent_name,
         path=path,
         cls=build_worker(
             WorkerBase=WorkerBase,
@@ -626,13 +684,437 @@ async def service(
             require_read_only_storage=require_read_only_storage,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
+            require_computer_use=require_computer_use,
             database_namespace=[database_namespace] if database_namespace else None,
             title=title,
             description=description,
             working_directory=working_directory,
             skill_dirs=skill_dir,
+            shell_image=shell_image,
         ),
     )
 
     if not get_deferred():
         await run_services()
+
+
+@app.async_command("spec")
+async def spec(
+    *,
+    service_name: Annotated[str, typer.Option("--service-name", help="service name")],
+    service_description: Annotated[
+        Optional[str], typer.Option("--service-description", help="service description")
+    ] = None,
+    service_title: Annotated[
+        Optional[str],
+        typer.Option("--service-title", help="a display name for the service"),
+    ] = None,
+    agent_name: Annotated[str, typer.Option(..., help="Name of the worker agent")],
+    rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
+    rules_file: Optional[str] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="the name or url of a required schema"
+        ),
+    ] = [],
+    toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
+    ] = [],
+    schema: Annotated[
+        List[str],
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
+    ] = [],
+    model: Annotated[str, typer.Option(...)] = "gpt-5.2",
+    image_generation: Annotated[
+        Optional[str], typer.Option(..., help="Name of an image gen model")
+    ] = None,
+    require_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable function shell tool calling"),
+    ] = False,
+    local_shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
+    ] = False,
+    shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable function shell tool calling")
+    ] = False,
+    apply_patch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable apply patch tool")
+    ] = False,
+    web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    mcp: Annotated[
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
+    ] = False,
+    storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
+    ] = False,
+    require_local_shell: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_apply_patch: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable apply patch tool calling"),
+    ] = False,
+    host: Annotated[Optional[str], typer.Option()] = None,
+    port: Annotated[Optional[int], typer.Option()] = None,
+    path: Annotated[Optional[str], typer.Option()] = None,
+    queue: Annotated[str, typer.Option(..., help="the queue to consume")],
+    toolkit_name: Annotated[Optional[str], typer.Option(...)] = None,
+    room_rules: Annotated[List[str], typer.Option("--room-rules", "-rr")] = [],
+    require_storage: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_read_only_storage: Annotated[Optional[bool], typer.Option(...)] = False,
+    database_namespace: Annotated[Optional[str], typer.Option(...)] = None,
+    require_table_read: Annotated[list[str], typer.Option(...)] = [],
+    require_table_write: Annotated[list[str], typer.Option(...)] = [],
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+            hidden=True,
+        ),
+    ] = False,
+    title: Annotated[
+        Optional[str],
+        typer.Option(..., help="a display name for the agent"),
+    ] = None,
+    description: Annotated[
+        Optional[str],
+        typer.Option(..., help="a description for the agent"),
+    ] = None,
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="The default working directory for shell commands"),
+    ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
+):
+    service = get_service(host=host, port=port)
+
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    # Plug in your specific worker implementation here:
+    from meshagent.agents.worker import (
+        Worker as WorkerBase,
+    )  # replace with your concrete worker class
+
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+    )
+
+    service.add_path(
+        identity=agent_name,
+        path=path,
+        cls=build_worker(
+            WorkerBase=WorkerBase,
+            model=model,
+            agent_name=agent_name,
+            rule=rule,
+            toolkit=require_toolkit + toolkit,
+            schema=require_schema + schema,
+            rules_file=rules_file,
+            room_rules_paths=room_rules,
+            queue=queue,
+            local_shell=local_shell,
+            shell=shell,
+            apply_patch=apply_patch,
+            image_generation=image_generation,
+            web_search=web_search,
+            mcp=mcp,
+            storage=storage,
+            require_shell=require_shell,
+            require_apply_patch=require_apply_patch,
+            require_local_shell=require_local_shell,
+            require_web_search=require_web_search,
+            toolkit_name=toolkit_name,
+            require_storage=require_storage,
+            require_read_only_storage=require_read_only_storage,
+            require_table_read=require_table_read,
+            require_table_write=require_table_write,
+            require_computer_use=require_computer_use,
+            database_namespace=[database_namespace] if database_namespace else None,
+            title=title,
+            description=description,
+            working_directory=working_directory,
+            skill_dirs=skill_dir,
+            shell_image=shell_image,
+        ),
+    )
+
+    spec = service_specs()[0]
+    spec.metadata.annotations = {
+        "meshagent.service.id": service_name,
+    }
+
+    spec.metadata.name = service_name
+    spec.metadata.description = service_description
+    spec.container.image = (
+        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
+    )
+    spec.container.command = shlex.join(
+        ["meshagent", "worker", "service", *cleanup_args(sys.argv[2:])]
+    )
+
+    print(yaml.dump(spec.model_dump(mode="json", exclude_none=True), sort_keys=False))
+
+
+@app.async_command("deploy")
+async def deploy(
+    *,
+    service_name: Annotated[str, typer.Option("--service-name", help="service name")],
+    service_description: Annotated[
+        Optional[str], typer.Option("--service-description", help="service description")
+    ] = None,
+    service_title: Annotated[
+        Optional[str],
+        typer.Option("--service-title", help="a display name for the service"),
+    ] = None,
+    agent_name: Annotated[str, typer.Option(..., help="Name of the worker agent")],
+    rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
+    rules_file: Optional[str] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="the name or url of a required schema"
+        ),
+    ] = [],
+    toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
+    ] = [],
+    schema: Annotated[
+        List[str],
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
+    ] = [],
+    model: Annotated[str, typer.Option(...)] = "gpt-5.2",
+    image_generation: Annotated[
+        Optional[str], typer.Option(..., help="Name of an image gen model")
+    ] = None,
+    require_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable function shell tool calling"),
+    ] = False,
+    local_shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
+    ] = False,
+    shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable function shell tool calling")
+    ] = False,
+    apply_patch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable apply patch tool")
+    ] = False,
+    web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    mcp: Annotated[
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
+    ] = False,
+    storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
+    ] = False,
+    require_local_shell: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_apply_patch: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable apply patch tool calling"),
+    ] = False,
+    host: Annotated[Optional[str], typer.Option()] = None,
+    port: Annotated[Optional[int], typer.Option()] = None,
+    path: Annotated[Optional[str], typer.Option()] = None,
+    queue: Annotated[str, typer.Option(..., help="the queue to consume")],
+    toolkit_name: Annotated[Optional[str], typer.Option(...)] = None,
+    room_rules: Annotated[List[str], typer.Option("--room-rules", "-rr")] = [],
+    require_storage: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_read_only_storage: Annotated[Optional[bool], typer.Option(...)] = False,
+    database_namespace: Annotated[Optional[str], typer.Option(...)] = None,
+    require_table_read: Annotated[list[str], typer.Option(...)] = [],
+    require_table_write: Annotated[list[str], typer.Option(...)] = [],
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+            hidden=True,
+        ),
+    ] = False,
+    title: Annotated[
+        Optional[str],
+        typer.Option(..., help="a display name for the agent"),
+    ] = None,
+    description: Annotated[
+        Optional[str],
+        typer.Option(..., help="a description for the agent"),
+    ] = None,
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="The default working directory for shell commands"),
+    ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
+    project_id: ProjectIdOption = None,
+    room: Annotated[
+        Optional[str],
+        typer.Option("--room", help="The name of a room to create the service for"),
+    ] = None,
+):
+    project_id = await resolve_project_id(project_id=project_id)
+
+    service = get_service(host=host, port=port)
+
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    # Plug in your specific worker implementation here:
+    from meshagent.agents.worker import (
+        Worker as WorkerBase,
+    )  # replace with your concrete worker class
+
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+    )
+
+    service.add_path(
+        identity=agent_name,
+        path=path,
+        cls=build_worker(
+            WorkerBase=WorkerBase,
+            model=model,
+            agent_name=agent_name,
+            rule=rule,
+            toolkit=require_toolkit + toolkit,
+            schema=require_schema + schema,
+            rules_file=rules_file,
+            room_rules_paths=room_rules,
+            queue=queue,
+            local_shell=local_shell,
+            shell=shell,
+            apply_patch=apply_patch,
+            image_generation=image_generation,
+            web_search=web_search,
+            mcp=mcp,
+            storage=storage,
+            require_shell=require_shell,
+            require_apply_patch=require_apply_patch,
+            require_local_shell=require_local_shell,
+            require_web_search=require_web_search,
+            toolkit_name=toolkit_name,
+            require_storage=require_storage,
+            require_read_only_storage=require_read_only_storage,
+            require_table_read=require_table_read,
+            require_table_write=require_table_write,
+            require_computer_use=require_computer_use,
+            database_namespace=[database_namespace] if database_namespace else None,
+            title=title,
+            description=description,
+            working_directory=working_directory,
+            skill_dirs=skill_dir,
+            shell_image=shell_image,
+        ),
+    )
+
+    spec = service_specs()[0]
+    spec.metadata.annotations = {
+        "meshagent.service.id": service_name,
+    }
+
+    spec.metadata.name = service_name
+    spec.metadata.description = service_description
+    spec.container.image = (
+        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
+    )
+    spec.container.command = shlex.join(
+        ["meshagent", "worker", "service", *cleanup_args(sys.argv[2:])]
+    )
+
+    client = await get_client()
+    try:
+        id = None
+        try:
+            if id is None:
+                if room is None:
+                    services = await client.list_services(project_id=project_id)
+                else:
+                    services = await client.list_room_services(
+                        project_id=project_id, room_name=room
+                    )
+
+                for s in services:
+                    if s.metadata.name == spec.metadata.name:
+                        id = s.id
+
+            if id is None:
+                if room is None:
+                    id = await client.create_service(
+                        project_id=project_id, service=spec
+                    )
+                else:
+                    id = await client.create_room_service(
+                        project_id=project_id, service=spec, room_name=room
+                    )
+
+            else:
+                spec.id = id
+                if room is None:
+                    await client.update_service(
+                        project_id=project_id, service_id=id, service=spec
+                    )
+                else:
+                    await client.update_room_service(
+                        project_id=project_id,
+                        service_id=id,
+                        service=spec,
+                        room_name=room,
+                    )
+
+        except ConflictError:
+            print(f"[red]Service name already in use: {spec.metadata.name}[/red]")
+            raise typer.Exit(code=1)
+        else:
+            print(f"[green]Updated service:[/] {id}")
+
+    finally:
+        await client.close()

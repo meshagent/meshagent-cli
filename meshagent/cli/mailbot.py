@@ -16,6 +16,7 @@ from meshagent.cli.helper import (
     resolve_project_id,
     resolve_room,
     resolve_key,
+    cleanup_args,
 )
 from meshagent.openai import OpenAIResponsesAdapter
 
@@ -43,8 +44,15 @@ from meshagent.openai.tools.responses_adapter import (
     ImageGenerationTool,
 )
 
-from meshagent.cli.host import get_service, run_services, get_deferred
+from meshagent.cli.host import get_service, run_services, get_deferred, service_specs
+from meshagent.api.specs.service import AgentSpec, ANNOTATION_AGENT_TYPE
 
+import yaml
+
+import shlex
+import sys
+
+from meshagent.api.client import ConflictError
 
 logger = logging.getLogger("mailbot")
 
@@ -76,11 +84,13 @@ def build_mailbot(
     require_read_only_storage: Optional[str] = None,
     require_table_read: bool,
     require_table_write: bool,
+    require_computer_use: bool,
     reply_all: bool,
     database_namespace: Optional[list[str]] = None,
     enable_attachments: bool,
     working_directory: Optional[str] = None,
     skill_dirs: Optional[list[str]] = None,
+    shell_image: Optional[str] = None,
 ):
     from meshagent.agents.mail import MailWorker
 
@@ -109,8 +119,15 @@ def build_mailbot(
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
 
     BaseClass = MailWorker
-    if computer_use:
-        raise ValueError("computer use is not yet supported for the mail agent")
+    if computer_use or require_computer_use:
+        llm_adapter = OpenAIResponsesAdapter(
+            model=model,
+            response_options={
+                "reasoning": {"summary": "concise"},
+                "truncation": "auto",
+            },
+        )
+
     else:
         llm_adapter = OpenAIResponsesAdapter(model=model)
 
@@ -136,6 +153,9 @@ def build_mailbot(
                 "[bold green]Configure and send an email interact with your mailbot[/bold green]"
             )
             await super().start(room=room)
+            if room_rules_paths is not None:
+                for p in room_rules_paths:
+                    await self._load_room_rules(room=room, path=p)
 
         async def get_rules(self):
             rules = [*await super().get_rules()]
@@ -195,6 +215,7 @@ def build_mailbot(
                     ShellTool(
                         working_directory=working_directory,
                         config=ShellConfig(name="shell"),
+                        shell_image=shell_image,
                     )
                 )
 
@@ -253,6 +274,16 @@ def build_mailbot(
                         )
                     ).tools
                 )
+
+            if require_computer_use:
+                from meshagent.computers.agent import ComputerToolkit
+
+                computer_toolkit = ComputerToolkit(room=self.room, render_screen=None)
+
+                toolkits.append(computer_toolkit)
+
+            toolkits.append(thread_toolkit)
+
             toolkits.append(thread_toolkit)
             return toolkits
 
@@ -349,6 +380,14 @@ async def make_call(
         list[str],
         typer.Option(..., help="Enable table write tools for a specific table"),
     ] = [],
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+            hidden=True,
+        ),
+    ] = False,
     reply_all: Annotated[bool, typer.Option()] = False,
     enable_attachments: Annotated[bool, typer.Option()] = False,
     working_directory: Annotated[
@@ -359,6 +398,10 @@ async def make_call(
         list[str],
         typer.Option(..., help="an agent skills directory"),
     ] = [],
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -372,7 +415,7 @@ async def make_call(
             name=agent_name,
         )
 
-        token.add_api_grant(ApiScope.agent_default())
+        token.add_api_grant(ApiScope.agent_default(tunnels=require_computer_use))
 
         token.add_role_grant(role=role)
         token.add_room_grant(room)
@@ -408,11 +451,13 @@ async def make_call(
                 require_read_only_storage=require_read_only_storage,
                 require_table_read=require_table_read,
                 require_table_write=require_table_write,
+                require_computer_use=require_computer_use,
                 reply_all=reply_all,
                 database_namespace=database_namespace,
                 enable_attachments=enable_attachments,
                 working_directory=working_directory,
                 skill_dirs=skill_dir,
+                shell_image=shell_image,
             )
 
             bot = CustomMailbot()
@@ -520,6 +565,14 @@ async def service(
         list[str],
         typer.Option(..., help="Enable table write tools for a specific table"),
     ] = [],
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+            hidden=True,
+        ),
+    ] = False,
     reply_all: Annotated[bool, typer.Option()] = False,
     enable_attachments: Annotated[bool, typer.Option()] = False,
     working_directory: Annotated[
@@ -530,6 +583,10 @@ async def service(
         list[str],
         typer.Option(..., help="an agent skills directory"),
     ] = [],
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
 ):
     service = get_service(host=host, port=port)
     if path is None:
@@ -539,9 +596,12 @@ async def service(
             i += 1
             path = f"/agent{i}"
 
-    print(f"[bold green]Starting mailbot service at {path}[/bold green]", flush=True)
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+    )
 
     service.add_path(
+        identity=agent_name,
         path=path,
         cls=build_mailbot(
             queue=queue,
@@ -565,13 +625,439 @@ async def service(
             require_read_only_storage=require_read_only_storage,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
+            require_computer_use=require_computer_use,
             reply_all=reply_all,
             database_namespace=database_namespace,
             enable_attachments=enable_attachments,
             working_directory=working_directory,
             skill_dirs=skill_dir,
+            shell_image=shell_image,
         ),
     )
 
     if not get_deferred():
         await run_services()
+
+
+@app.async_command("spec")
+async def spec(
+    *,
+    service_name: Annotated[str, typer.Option("--service-name", help="service name")],
+    service_description: Annotated[
+        Optional[str], typer.Option("--service-description", help="service description")
+    ] = None,
+    service_title: Annotated[
+        Optional[str],
+        typer.Option("--service-title", help="a display name for the service"),
+    ] = None,
+    agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
+    rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
+    rules_file: Optional[str] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="the name or url of a required schema"
+        ),
+    ] = [],
+    toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
+    ] = [],
+    schema: Annotated[
+        List[str],
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
+    ] = [],
+    model: Annotated[
+        str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
+    ] = "gpt-5.2",
+    require_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable function shell tool calling"),
+    ] = False,
+    require_local_shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
+    ] = False,
+    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_apply_patch: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable apply patch tool calling"),
+    ] = False,
+    host: Annotated[Optional[str], typer.Option()] = None,
+    port: Annotated[Optional[int], typer.Option()] = None,
+    path: Annotated[Optional[str], typer.Option()] = None,
+    queue: Annotated[str, typer.Option(..., help="the name of the mail queue")],
+    email_address: Annotated[
+        str, typer.Option(..., help="the email address of the agent")
+    ],
+    toolkit_name: Annotated[
+        Optional[str],
+        typer.Option(..., help="the name of a toolkit to expose mail operations"),
+    ] = None,
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="a path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
+    whitelist: Annotated[
+        List[str],
+        typer.Option(
+            "--whitelist",
+            help="an email to whitelist",
+        ),
+    ] = [],
+    require_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
+    ] = False,
+    require_read_only_storage: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable read only storage toolkit"),
+    ] = False,
+    database_namespace: Annotated[
+        Optional[str],
+        typer.Option(..., help="Use a specific database namespace"),
+    ] = None,
+    require_table_read: Annotated[
+        list[str],
+        typer.Option(..., help="Enable table read tools for a specific table"),
+    ] = [],
+    require_table_write: Annotated[
+        list[str],
+        typer.Option(..., help="Enable table write tools for a specific table"),
+    ] = [],
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+            hidden=True,
+        ),
+    ] = False,
+    reply_all: Annotated[bool, typer.Option()] = False,
+    enable_attachments: Annotated[bool, typer.Option()] = False,
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="The default working directory for shell commands"),
+    ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
+):
+    service = get_service(host=host, port=port)
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+    )
+
+    service.add_path(
+        identity=agent_name,
+        path=path,
+        cls=build_mailbot(
+            queue=queue,
+            computer_use=None,
+            model=model,
+            local_shell=require_local_shell,
+            web_search=require_web_search,
+            agent_name=agent_name,
+            rule=rule,
+            schema=require_schema + schema,
+            toolkit=require_toolkit + toolkit,
+            image_generation=None,
+            rules_file=rules_file,
+            email_address=email_address,
+            toolkit_name=toolkit_name,
+            room_rules_paths=room_rules,
+            whitelist=whitelist,
+            require_shell=require_shell,
+            require_apply_patch=require_apply_patch,
+            require_storage=require_storage,
+            require_read_only_storage=require_read_only_storage,
+            require_table_read=require_table_read,
+            require_table_write=require_table_write,
+            require_computer_use=require_computer_use,
+            reply_all=reply_all,
+            database_namespace=database_namespace,
+            enable_attachments=enable_attachments,
+            working_directory=working_directory,
+            skill_dirs=skill_dir,
+            shell_image=shell_image,
+        ),
+    )
+
+    spec = service_specs()[0]
+    spec.metadata.annotations = {
+        "meshagent.service.id": service_name,
+    }
+
+    spec.metadata.name = service_name
+    spec.metadata.description = service_description
+    spec.container.image = (
+        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
+    )
+    spec.container.command = shlex.join(
+        ["meshagent", "mailbot", "service", *cleanup_args(sys.argv[2:])]
+    )
+
+    print(yaml.dump(spec.model_dump(mode="json", exclude_none=True), sort_keys=False))
+
+
+@app.async_command("deploy")
+async def deploy(
+    *,
+    service_name: Annotated[str, typer.Option("--service-name", help="service name")],
+    service_description: Annotated[
+        Optional[str], typer.Option("--service-description", help="service description")
+    ] = None,
+    service_title: Annotated[
+        Optional[str],
+        typer.Option("--service-title", help="a display name for the service"),
+    ] = None,
+    agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
+    rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
+    rules_file: Optional[str] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="the name or url of a required schema"
+        ),
+    ] = [],
+    toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
+    ] = [],
+    schema: Annotated[
+        List[str],
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
+    ] = [],
+    model: Annotated[
+        str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
+    ] = "gpt-5.2",
+    require_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable function shell tool calling"),
+    ] = False,
+    require_local_shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
+    ] = False,
+    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_apply_patch: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable apply patch tool calling"),
+    ] = False,
+    host: Annotated[Optional[str], typer.Option()] = None,
+    port: Annotated[Optional[int], typer.Option()] = None,
+    path: Annotated[Optional[str], typer.Option()] = None,
+    queue: Annotated[str, typer.Option(..., help="the name of the mail queue")],
+    email_address: Annotated[
+        str, typer.Option(..., help="the email address of the agent")
+    ],
+    toolkit_name: Annotated[
+        Optional[str],
+        typer.Option(..., help="the name of a toolkit to expose mail operations"),
+    ] = None,
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="a path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
+    whitelist: Annotated[
+        List[str],
+        typer.Option(
+            "--whitelist",
+            help="an email to whitelist",
+        ),
+    ] = [],
+    require_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
+    ] = False,
+    require_read_only_storage: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable read only storage toolkit"),
+    ] = False,
+    database_namespace: Annotated[
+        Optional[str],
+        typer.Option(..., help="Use a specific database namespace"),
+    ] = None,
+    require_table_read: Annotated[
+        list[str],
+        typer.Option(..., help="Enable table read tools for a specific table"),
+    ] = [],
+    require_table_write: Annotated[
+        list[str],
+        typer.Option(..., help="Enable table write tools for a specific table"),
+    ] = [],
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+            hidden=True,
+        ),
+    ] = False,
+    reply_all: Annotated[bool, typer.Option()] = False,
+    enable_attachments: Annotated[bool, typer.Option()] = False,
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="The default working directory for shell commands"),
+    ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
+    project_id: ProjectIdOption = None,
+    room: Annotated[
+        Optional[str],
+        typer.Option("--room", help="The name of a room to create the service for"),
+    ] = None,
+):
+    project_id = await resolve_project_id(project_id=project_id)
+
+    service = get_service(host=host, port=port)
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+    )
+
+    service.add_path(
+        identity=agent_name,
+        path=path,
+        cls=build_mailbot(
+            queue=queue,
+            computer_use=None,
+            model=model,
+            local_shell=require_local_shell,
+            web_search=require_web_search,
+            agent_name=agent_name,
+            rule=rule,
+            schema=require_schema + schema,
+            toolkit=require_toolkit + toolkit,
+            image_generation=None,
+            rules_file=rules_file,
+            email_address=email_address,
+            toolkit_name=toolkit_name,
+            room_rules_paths=room_rules,
+            whitelist=whitelist,
+            require_shell=require_shell,
+            require_apply_patch=require_apply_patch,
+            require_storage=require_storage,
+            require_read_only_storage=require_read_only_storage,
+            require_table_read=require_table_read,
+            require_table_write=require_table_write,
+            require_computer_use=require_computer_use,
+            reply_all=reply_all,
+            database_namespace=database_namespace,
+            enable_attachments=enable_attachments,
+            working_directory=working_directory,
+            skill_dirs=skill_dir,
+            shell_image=shell_image,
+        ),
+    )
+
+    spec = service_specs()[0]
+    spec.metadata.annotations = {
+        "meshagent.service.id": service_name,
+    }
+
+    spec.metadata.name = service_name
+    spec.metadata.description = service_description
+    spec.container.image = (
+        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
+    )
+    spec.container.command = shlex.join(
+        ["meshagent", "mailbot", *cleanup_args(sys.argv[:2])]
+    )
+
+    client = await get_client()
+    try:
+        id = None
+        try:
+            if id is None:
+                if room is None:
+                    services = await client.list_services(project_id=project_id)
+                else:
+                    services = await client.list_room_services(
+                        project_id=project_id, room_name=room
+                    )
+
+                for s in services:
+                    if s.metadata.name == spec.metadata.name:
+                        id = s.id
+
+            if id is None:
+                if room is None:
+                    id = await client.create_service(
+                        project_id=project_id, service=spec
+                    )
+                else:
+                    id = await client.create_room_service(
+                        project_id=project_id, service=spec, room_name=room
+                    )
+
+            else:
+                spec.id = id
+                if room is None:
+                    await client.update_service(
+                        project_id=project_id, service_id=id, service=spec
+                    )
+                else:
+                    await client.update_room_service(
+                        project_id=project_id,
+                        service_id=id,
+                        service=spec,
+                        room_name=room,
+                    )
+
+        except ConflictError:
+            print(f"[red]Service name already in use: {spec.metadata.name}[/red]")
+            raise typer.Exit(code=1)
+        else:
+            print(f"[green]Updated service:[/] {id}")
+
+    finally:
+        await client.close()
