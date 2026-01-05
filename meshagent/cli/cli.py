@@ -3,6 +3,7 @@ import asyncio
 
 from meshagent.cli import async_typer
 
+from meshagent.cli import multi
 from meshagent.cli import queue
 from meshagent.cli import auth
 from meshagent.cli import api_keys
@@ -23,17 +24,18 @@ from meshagent.cli import cli_mcp
 from meshagent.cli import chatbot
 from meshagent.cli import voicebot
 from meshagent.cli import mailbot
+from meshagent.cli import worker
 from meshagent.cli import task_runner
 from meshagent.cli import containers
 from meshagent.cli import oauth2
 from meshagent.cli import helpers
 from meshagent.cli import meeting_transcriber
 from meshagent.cli import room
+from meshagent.cli import port
 from meshagent.cli.exec import register as register_exec
 from meshagent.cli.version import __version__
 from meshagent.cli.helper import get_active_api_key
 from meshagent.otel import otel_config
-
 
 from art import tprint
 
@@ -50,7 +52,7 @@ otel_config(service_name="meshagent-cli")
 logging.getLogger("openai").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.ERROR)
 
-app = async_typer.AsyncTyper(no_args_is_help=True)
+app = async_typer.AsyncTyper(no_args_is_help=True, name="meshagent")
 app.add_typer(call.app, name="call")
 app.add_typer(auth.app, name="auth")
 app.add_typer(projects.app, name="project")
@@ -70,6 +72,7 @@ app.add_typer(chatbot.app, name="chatbot")
 app.add_typer(task_runner.app, name="task-runner")
 app.add_typer(voicebot.app, name="voicebot")
 app.add_typer(mailbot.app, name="mailbot")
+app.add_typer(worker.app, name="worker")
 app.add_typer(containers.app, name="container")
 app.add_typer(oauth2.app, name="oauth2")
 app.add_typer(helpers.app, name="helpers")
@@ -77,6 +80,8 @@ app.add_typer(room.app, name="room")
 app.add_typer(mailboxes.app, name="mailbox")
 app.add_typer(database.app, name="database")
 app.add_typer(meeting_transcriber.app, name="meeting-transcriber")
+app.add_typer(multi.app, name="multi")
+app.add_typer(port.app, name="port")
 
 register_exec(app)
 

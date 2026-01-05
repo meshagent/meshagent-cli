@@ -87,7 +87,7 @@ def build_task_runner(
     storage: Optional[str] = None,
     require_image_generation: Optional[str] = None,
     require_local_shell: Optional[str] = None,
-    require_shell: Optional[str] = None,
+    require_shell: Optional[bool] = None,
     require_apply_patch: Optional[str] = None,
     require_web_search: Optional[str] = None,
     require_mcp: Optional[str] = None,

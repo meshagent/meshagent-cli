@@ -29,6 +29,7 @@ from meshagent.cli.helper import (
     resolve_project_id,
     resolve_room,
     resolve_key,
+    cleanup_args,
 )
 
 from meshagent.openai import OpenAIResponsesAdapter
@@ -59,9 +60,19 @@ from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConf
 from meshagent.agents.adapter import MessageStreamLLMAdapter
 
 from meshagent.api import RequiredToolkit, RequiredSchema
-from meshagent.api.services import ServiceHost
 import logging
 import os.path
+
+from meshagent.api.specs.service import AgentSpec, ANNOTATION_AGENT_TYPE
+
+from meshagent.cli.host import get_service, run_services, get_deferred, service_specs
+
+import yaml
+
+import shlex
+import sys
+
+from meshagent.api.client import ConflictError
 
 logger = logging.getLogger("chatbot")
 
@@ -85,7 +96,7 @@ def build_chatbot(
     storage: Optional[str] = None,
     require_image_generation: Optional[str] = None,
     require_local_shell: Optional[str] = None,
-    require_shell: Optional[str] = None,
+    require_shell: Optional[bool] = None,
     require_apply_patch: Optional[str] = None,
     require_computer_use: Optional[str] = None,
     require_web_search: Optional[str] = None,
@@ -102,6 +113,8 @@ def build_chatbot(
     llm_participant: Optional[str] = None,
     database_namespace: Optional[list[str]] = None,
     always_reply: Optional[bool] = None,
+    skill_dirs: Optional[list[str]] = None,
+    shell_image: Optional[str] = None,
 ):
     from meshagent.agents.chat import ChatBot
 
@@ -135,18 +148,11 @@ def build_chatbot(
             participant_name=llm_participant,
         )
     else:
-        if computer_use:
-            from meshagent.computers.agent import ComputerAgent
-
-            if ComputerAgent is None:
-                raise RuntimeError(
-                    "Computer use is enabled, but meshagent.computers is not installed."
-                )
-            BaseClass = ComputerAgent
+        if computer_use or require_computer_use:
             llm_adapter = OpenAIResponsesAdapter(
                 model=model,
                 response_options={
-                    "reasoning": {"generate_summary": "concise"},
+                    "reasoning": {"summary": "concise"},
                     "truncation": "auto",
                 },
             )
@@ -165,6 +171,7 @@ def build_chatbot(
                 rules=rule if len(rule) > 0 else None,
                 client_rules=client_rules,
                 always_reply=always_reply,
+                skill_dirs=skill_dirs,
             )
 
         async def start(self, *, room: RoomClient):
@@ -262,6 +269,7 @@ def build_chatbot(
                     ShellTool(
                         working_directory=working_directory,
                         config=ShellConfig(name="shell"),
+                        image=shell_image or "ubuntu:latest",
                     )
                 )
 
@@ -334,6 +342,25 @@ def build_chatbot(
             tk = await super().get_thread_toolkits(
                 thread_context=thread_context, participant=participant
             )
+
+            if require_computer_use:
+                from meshagent.computers.agent import ComputerToolkit
+
+                def render_screen(image_bytes: bytes):
+                    for participant in thread_context.participants:
+                        self.room.messaging.send_message_nowait(
+                            to=participant,
+                            type="computer_screen",
+                            message={},
+                            attachment=image_bytes,
+                        )
+
+                computer_toolkit = ComputerToolkit(
+                    room=self.room, render_screen=render_screen
+                )
+
+                tk.append(computer_toolkit)
+
             return [
                 *(
                     [Toolkit(name="tools", tools=providers)]
@@ -363,6 +390,7 @@ def build_chatbot(
                 providers.append(
                     ShellToolkitBuilder(
                         working_directory=working_directory,
+                        shell_image=shell_image,
                     )
                 )
 
@@ -397,13 +425,29 @@ async def make_call(
         ),
     ] = [],
     rules_file: Optional[str] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="the name or url of a required schema"
+        ),
+    ] = [],
     toolkit: Annotated[
         List[str],
-        typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option("--schema", "-s", help="the name or url of a required schema"),
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
@@ -508,6 +552,14 @@ async def make_call(
         Optional[bool],
         typer.Option(..., help="Always reply"),
     ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
 ):
     if database_namespace is not None:
         database_namespace = database_namespace.split("::")
@@ -522,7 +574,7 @@ async def make_call(
             name=agent_name,
         )
 
-        token.add_api_grant(ApiScope.agent_default())
+        token.add_api_grant(ApiScope.agent_default(tunnels=require_computer_use))
 
         token.add_role_grant(role=role)
         token.add_room_grant(room)
@@ -536,25 +588,18 @@ async def make_call(
                 token=jwt,
             )
         ) as client:
-            requirements = []
-
-            for t in toolkit:
-                requirements.append(RequiredToolkit(name=t))
-
-            for t in schema:
-                requirements.append(RequiredSchema(name=t))
-
             CustomChatbot = build_chatbot(
                 computer_use=computer_use,
+                require_computer_use=require_computer_use,
                 model=model,
+                agent_name=agent_name,
+                rule=rule,
+                toolkit=require_toolkit + toolkit,
+                schema=require_schema + schema,
+                rules_file=rules_file,
                 local_shell=local_shell,
                 shell=shell,
                 apply_patch=apply_patch,
-                agent_name=agent_name,
-                rule=rule,
-                toolkit=toolkit,
-                schema=schema,
-                rules_file=rules_file,
                 image_generation=image_generation,
                 web_search=web_search,
                 mcp=mcp,
@@ -576,6 +621,8 @@ async def make_call(
                 llm_participant=llm_participant,
                 always_reply=always_reply,
                 database_namespace=database_namespace,
+                skill_dirs=skill_dir,
+                shell_image=shell_image,
             )
 
             bot = CustomChatbot()
@@ -608,13 +655,29 @@ async def service(
             help="a path to a rules file within the room that can be used to customize the agent's behavior",
         ),
     ] = [],
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="the name or url of a required schema"
+        ),
+    ] = [],
     toolkit: Annotated[
         List[str],
-        typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option("--schema", "-s", help="the name or url of a required schema"),
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
@@ -712,30 +775,50 @@ async def service(
     ] = None,
     host: Annotated[Optional[str], typer.Option()] = None,
     port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[str, typer.Option()] = "/agent",
+    path: Annotated[Optional[str], typer.Option()] = None,
     always_reply: Annotated[
         Optional[bool],
         typer.Option(..., help="Always reply"),
     ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
 ):
-    print("[bold green]Connecting to room...[/bold green]", flush=True)
-
     if database_namespace is not None:
         database_namespace = database_namespace.split("::")
 
-    service = ServiceHost(host=host, port=port)
+    service = get_service(host=host, port=port)
+
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+    )
+
     service.add_path(
+        identity=agent_name,
         path=path,
         cls=build_chatbot(
             computer_use=computer_use,
+            require_computer_use=require_computer_use,
             model=model,
             local_shell=local_shell,
             shell=shell,
             apply_patch=apply_patch,
             agent_name=agent_name,
             rule=rule,
-            toolkit=toolkit,
-            schema=schema,
+            toolkit=require_toolkit + toolkit,
+            schema=require_schema + schema,
             rules_file=rules_file,
             web_search=web_search,
             image_generation=image_generation,
@@ -758,7 +841,527 @@ async def service(
             require_discovery=require_discovery,
             llm_participant=llm_participant,
             always_reply=always_reply,
+            skill_dirs=skill_dir,
+            shell_image=shell_image,
         ),
     )
 
-    await service.run()
+    if not get_deferred():
+        await run_services()
+
+
+@app.async_command("spec")
+async def spec(
+    *,
+    service_name: Annotated[str, typer.Option("--service-name", help="service name")],
+    service_description: Annotated[
+        Optional[str], typer.Option("--service-description", help="service description")
+    ] = None,
+    service_title: Annotated[
+        Optional[str],
+        typer.Option("--service-title", help="a display name for the service"),
+    ] = None,
+    agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
+    rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
+    rules_file: Optional[str] = None,
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="a path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="the name or url of a required schema"
+        ),
+    ] = [],
+    toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
+    ] = [],
+    schema: Annotated[
+        List[str],
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
+    ] = [],
+    model: Annotated[
+        str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
+    ] = "gpt-5.2",
+    image_generation: Annotated[
+        Optional[str], typer.Option(..., help="Name of an image gen model")
+    ] = None,
+    local_shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
+    ] = False,
+    shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable function shell tool calling")
+    ] = False,
+    apply_patch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable apply patch tool")
+    ] = False,
+    computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ..., help="Enable computer use (requires computer-use-preview model)"
+        ),
+    ] = False,
+    web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    mcp: Annotated[
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
+    ] = False,
+    storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
+    ] = False,
+    require_image_generation: Annotated[
+        Optional[str], typer.Option(..., help="Name of an image gen model")
+    ] = None,
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+            hidden=True,
+        ),
+    ] = False,
+    require_local_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable local shell tool calling"),
+    ] = False,
+    require_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable function shell tool calling"),
+    ] = False,
+    require_apply_patch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable apply patch tool")
+    ] = False,
+    require_web_search: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable web search tool calling"),
+    ] = False,
+    require_mcp: Annotated[
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
+    ] = False,
+    require_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
+    ] = False,
+    database_namespace: Annotated[
+        Optional[str],
+        typer.Option(..., help="Use a specific database namespace"),
+    ] = None,
+    require_table_read: Annotated[
+        list[str],
+        typer.Option(..., help="Enable table read tools for a specific table"),
+    ] = [],
+    require_table_write: Annotated[
+        list[str],
+        typer.Option(..., help="Enable table write tools for a specific table"),
+    ] = [],
+    require_read_only_storage: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable read only storage toolkit"),
+    ] = False,
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="The default working directory for shell commands"),
+    ] = None,
+    require_document_authoring: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable document authoring"),
+    ] = False,
+    require_discovery: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable discovery of agents and tools"),
+    ] = False,
+    llm_participant: Annotated[
+        Optional[str],
+        typer.Option(..., help="Delegate LLM interactions to a remote participant"),
+    ] = None,
+    host: Annotated[Optional[str], typer.Option()] = None,
+    port: Annotated[Optional[int], typer.Option()] = None,
+    path: Annotated[Optional[str], typer.Option()] = None,
+    always_reply: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Always reply"),
+    ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
+):
+    if database_namespace is not None:
+        database_namespace = database_namespace.split("::")
+
+    service = get_service(host=host, port=port)
+
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+    )
+
+    service.add_path(
+        identity=agent_name,
+        path=path,
+        cls=build_chatbot(
+            computer_use=computer_use,
+            require_computer_use=require_computer_use,
+            model=model,
+            local_shell=local_shell,
+            shell=shell,
+            apply_patch=apply_patch,
+            agent_name=agent_name,
+            rule=rule,
+            toolkit=require_toolkit + toolkit,
+            schema=require_schema + schema,
+            rules_file=rules_file,
+            web_search=web_search,
+            image_generation=image_generation,
+            mcp=mcp,
+            storage=storage,
+            database_namespace=database_namespace,
+            require_web_search=require_web_search,
+            require_shell=require_shell,
+            require_apply_patch=require_apply_patch,
+            require_local_shell=require_local_shell,
+            require_image_generation=require_image_generation,
+            require_mcp=require_mcp,
+            require_storage=require_storage,
+            require_table_write=require_table_write,
+            require_table_read=require_table_read,
+            require_read_only_storage=require_read_only_storage,
+            room_rules_path=room_rules,
+            working_directory=working_directory,
+            require_document_authoring=require_document_authoring,
+            require_discovery=require_discovery,
+            llm_participant=llm_participant,
+            always_reply=always_reply,
+            skill_dirs=skill_dir,
+            shell_image=shell_image,
+        ),
+    )
+
+    spec = service_specs()[0]
+    spec.metadata.annotations = {
+        "meshagent.service.id": service_name,
+    }
+
+    spec.metadata.name = service_name
+    spec.metadata.description = service_description
+    spec.container.image = (
+        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
+    )
+    spec.container.command = shlex.join(
+        ["meshagent", "chatbot", "service", *cleanup_args(sys.argv[2:])]
+    )
+
+    print(yaml.dump(spec.model_dump(mode="json", exclude_none=True), sort_keys=False))
+
+
+@app.async_command("deploy")
+async def deploy(
+    *,
+    service_name: Annotated[str, typer.Option("--service-name", help="service name")],
+    service_description: Annotated[
+        Optional[str], typer.Option("--service-description", help="service description")
+    ] = None,
+    service_title: Annotated[
+        Optional[str],
+        typer.Option("--service-title", help="a display name for the service"),
+    ] = None,
+    agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
+    rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
+    rules_file: Optional[str] = None,
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="a path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="the name or url of a required schema"
+        ),
+    ] = [],
+    toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
+    ] = [],
+    schema: Annotated[
+        List[str],
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
+    ] = [],
+    model: Annotated[
+        str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
+    ] = "gpt-5.2",
+    image_generation: Annotated[
+        Optional[str], typer.Option(..., help="Name of an image gen model")
+    ] = None,
+    local_shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
+    ] = False,
+    shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable function shell tool calling")
+    ] = False,
+    apply_patch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable apply patch tool")
+    ] = False,
+    computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ..., help="Enable computer use (requires computer-use-preview model)"
+        ),
+    ] = False,
+    web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    mcp: Annotated[
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
+    ] = False,
+    storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
+    ] = False,
+    require_image_generation: Annotated[
+        Optional[str], typer.Option(..., help="Name of an image gen model")
+    ] = None,
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+            hidden=True,
+        ),
+    ] = False,
+    require_local_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable local shell tool calling"),
+    ] = False,
+    require_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable function shell tool calling"),
+    ] = False,
+    require_apply_patch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable apply patch tool")
+    ] = False,
+    require_web_search: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable web search tool calling"),
+    ] = False,
+    require_mcp: Annotated[
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
+    ] = False,
+    require_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
+    ] = False,
+    database_namespace: Annotated[
+        Optional[str],
+        typer.Option(..., help="Use a specific database namespace"),
+    ] = None,
+    require_table_read: Annotated[
+        list[str],
+        typer.Option(..., help="Enable table read tools for a specific table"),
+    ] = [],
+    require_table_write: Annotated[
+        list[str],
+        typer.Option(..., help="Enable table write tools for a specific table"),
+    ] = [],
+    require_read_only_storage: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable read only storage toolkit"),
+    ] = False,
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="The default working directory for shell commands"),
+    ] = None,
+    require_document_authoring: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable document authoring"),
+    ] = False,
+    require_discovery: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable discovery of agents and tools"),
+    ] = False,
+    llm_participant: Annotated[
+        Optional[str],
+        typer.Option(..., help="Delegate LLM interactions to a remote participant"),
+    ] = None,
+    host: Annotated[Optional[str], typer.Option()] = None,
+    port: Annotated[Optional[int], typer.Option()] = None,
+    path: Annotated[Optional[str], typer.Option()] = None,
+    always_reply: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Always reply"),
+    ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
+    project_id: ProjectIdOption = None,
+    room: Annotated[
+        Optional[str],
+        typer.Option("--room", help="The name of a room to create the service for"),
+    ] = None,
+):
+    project_id = await resolve_project_id(project_id=project_id)
+
+    if database_namespace is not None:
+        database_namespace = database_namespace.split("::")
+
+    service = get_service(host=host, port=port)
+
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+    )
+
+    service.add_path(
+        identity=agent_name,
+        path=path,
+        cls=build_chatbot(
+            computer_use=computer_use,
+            require_computer_use=require_computer_use,
+            model=model,
+            local_shell=local_shell,
+            shell=shell,
+            apply_patch=apply_patch,
+            agent_name=agent_name,
+            rule=rule,
+            toolkit=require_toolkit + toolkit,
+            schema=require_schema + schema,
+            rules_file=rules_file,
+            web_search=web_search,
+            image_generation=image_generation,
+            mcp=mcp,
+            storage=storage,
+            database_namespace=database_namespace,
+            require_web_search=require_web_search,
+            require_shell=require_shell,
+            require_apply_patch=require_apply_patch,
+            require_local_shell=require_local_shell,
+            require_image_generation=require_image_generation,
+            require_mcp=require_mcp,
+            require_storage=require_storage,
+            require_table_write=require_table_write,
+            require_table_read=require_table_read,
+            require_read_only_storage=require_read_only_storage,
+            room_rules_path=room_rules,
+            working_directory=working_directory,
+            require_document_authoring=require_document_authoring,
+            require_discovery=require_discovery,
+            llm_participant=llm_participant,
+            always_reply=always_reply,
+            skill_dirs=skill_dir,
+            shell_image=shell_image,
+        ),
+    )
+
+    spec = service_specs()[0]
+
+    spec.metadata.annotations = {
+        "meshagent.service.id": service_name,
+    }
+
+    spec.metadata.name = service_name
+    spec.metadata.description = service_description
+    spec.container.image = (
+        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
+    )
+    spec.container.command = shlex.join(
+        ["meshagent", "chatbot", "service", *cleanup_args(sys.argv[2:])]
+    )
+
+    project_id = await resolve_project_id(project_id)
+
+    client = await get_client()
+    try:
+        id = None
+        try:
+            if id is None:
+                if room is None:
+                    services = await client.list_services(project_id=project_id)
+                else:
+                    services = await client.list_room_services(
+                        project_id=project_id, room_name=room
+                    )
+
+                for s in services:
+                    if s.metadata.name == spec.metadata.name:
+                        id = s.id
+
+            if id is None:
+                if room is None:
+                    id = await client.create_service(
+                        project_id=project_id, service=spec
+                    )
+                else:
+                    id = await client.create_room_service(
+                        project_id=project_id, service=spec, room_name=room
+                    )
+
+            else:
+                spec.id = id
+                if room is None:
+                    await client.update_service(
+                        project_id=project_id, service_id=id, service=spec
+                    )
+                else:
+                    await client.update_room_service(
+                        project_id=project_id,
+                        service_id=id,
+                        service=spec,
+                        room_name=room,
+                    )
+
+        except ConflictError:
+            print(f"[red]Service name already in use: {spec.metadata.name}[/red]")
+            raise typer.Exit(code=1)
+        else:
+            print(f"[green]Updated service:[/] {id}")
+
+    finally:
+        await client.close()
