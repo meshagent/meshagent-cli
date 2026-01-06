@@ -85,12 +85,11 @@ def build_voicebot(
 
             if room_rules_paths is not None:
                 for p in room_rules_paths:
-                    await self._load_room_rules(room=room, path=p)
+                    await self._load_room_rules(path=p)
 
         async def _load_room_rules(
             self,
             *,
-            room: RoomClient,
             path: str,
             participant: Optional[RemoteParticipant] = None,
         ):
@@ -137,9 +136,7 @@ def build_voicebot(
             if room_rules_paths is not None:
                 for p in room_rules_paths:
                     rules.extend(
-                        await self._load_room_rules(
-                            room=self.room, participant=participant, path=p
-                        )
+                        await self._load_room_rules(participant=participant, path=p)
                     )
 
             logger.info(f"voicebot using rules {rules}")

@@ -176,12 +176,11 @@ def build_task_runner(
 
             if room_rules_path is not None:
                 for p in room_rules_path:
-                    await self._load_room_rules(room=room, path=p)
+                    await self._load_room_rules(path=p)
 
         async def _load_room_rules(
             self,
             *,
-            room: RoomClient,
             path: str,
             context: AgentCallContext,
         ):
@@ -229,11 +228,7 @@ def build_task_runner(
 
             if room_rules_path is not None:
                 for p in room_rules_path:
-                    rules.extend(
-                        await self._load_room_rules(
-                            room=self.room, path=p, context=context
-                        )
-                    )
+                    rules.extend(await self._load_room_rules(path=p, context=context))
 
             logging.info(f"using rules {rules}")
 

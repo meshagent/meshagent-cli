@@ -179,12 +179,11 @@ def build_chatbot(
 
             if room_rules_path is not None:
                 for p in room_rules_path:
-                    await self._load_room_rules(room=room, path=p)
+                    await self._load_room_rules(path=p)
 
         async def _load_room_rules(
             self,
             *,
-            room: RoomClient,
             path: str,
             participant: Optional[RemoteParticipant] = None,
         ):
@@ -234,9 +233,7 @@ def build_chatbot(
             if room_rules_path is not None:
                 for p in room_rules_path:
                     rules.extend(
-                        await self._load_room_rules(
-                            room=self.room, path=p, participant=participant
-                        )
+                        await self._load_room_rules(path=p, participant=participant)
                     )
 
             logging.info(f"using rules {rules}")
