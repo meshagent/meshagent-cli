@@ -44,7 +44,6 @@ def build_voicebot(
     auto_greet_message: Optional[str] = None,
     auto_greet_prompt: Optional[str] = None,
     room_rules_paths: list[str],
-    save_transcript_path: Optional[str],
 ):
     requirements = []
 
@@ -79,7 +78,6 @@ def build_voicebot(
                 name=agent_name,
                 requires=requirements,
                 rules=rules if len(rules) > 0 else None,
-                save_transcript_path=save_transcript_path,
             )
 
         async def start(self, *, room: RoomClient):
@@ -197,18 +195,6 @@ async def make_call(
             help="a path to a rules file within the room that can be used to customize the agent's behavior",
         ),
     ] = [],
-    save_transcript_path: Annotated[
-        Optional[str],
-        typer.Option(
-            "--save-transcript-path",
-            "-st",
-            help=(
-                "Save voice conversation transcript as a MeshDocument at this path template. "
-                "Template supports {participant_name}, {participant_id}, "
-                "{agent_name}, {date}, {time}."
-            ),
-        ),
-    ] = None,
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -235,7 +221,6 @@ async def make_call(
             auto_greet_message=auto_greet_message,
             auto_greet_prompt=auto_greet_prompt,
             room_rules_paths=room_rules,
-            save_transcript_path=save_transcript_path,
         )
 
         jwt = token.to_jwt(api_key=key)
@@ -307,18 +292,6 @@ async def service(
             help="a path to a rules file within the room that can be used to customize the agent's behavior",
         ),
     ] = [],
-    save_transcript_path: Annotated[
-        Optional[str],
-        typer.Option(
-            "--save-transcript-path",
-            "-st",
-            help=(
-                "Save voice conversation transcript as a MeshDocument at this path template. "
-                "Template supports {participant_name}, {participant_id}, "
-                "{agent_name}, {date}, {time}."
-            ),
-        ),
-    ] = None,
 ):
     CustomVoiceBot = build_voicebot(
         agent_name=agent_name,
@@ -329,7 +302,6 @@ async def service(
         auto_greet_message=auto_greet_message,
         auto_greet_prompt=auto_greet_prompt,
         room_rules_paths=room_rules,
-        save_transcript_path=save_transcript_path,
     )
 
     service = get_service(host=host, port=port)
