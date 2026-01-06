@@ -390,7 +390,7 @@ def build_chatbot(
                 providers.append(
                     ShellToolkitBuilder(
                         working_directory=working_directory,
-                        shell_image=shell_image,
+                        image=shell_image,
                     )
                 )
 
@@ -1361,7 +1361,7 @@ async def deploy(
             print(f"[red]Service name already in use: {spec.metadata.name}[/red]")
             raise typer.Exit(code=1)
         else:
-            print(f"[green]Updated service:[/] {id}")
+            print(f"[green]Deployed service:[/] {id}")
 
     finally:
         await client.close()

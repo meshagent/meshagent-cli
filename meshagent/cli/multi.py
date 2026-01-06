@@ -248,7 +248,7 @@ async def deploy(
                 raise typer.Exit(code=1)
             raise
         else:
-            print(f"[green]Updated service:[/] {id}")
+            print(f"[green]Deployed service:[/] {id}")
 
     finally:
         await client.close()
