@@ -247,7 +247,8 @@ def build_worker(
             Optional hook if your WorkerBase supports thread contexts.
             If not, you can remove this; I left it to mirror mailbot's pattern.
             """
-            toolkits_out = []
+            toolkits_out = await super().get_message_toolkits(message=message)
+
             thread_toolkit = Toolkit(name="thread_toolkit", tools=[])
 
             if require_local_shell:
