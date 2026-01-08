@@ -53,6 +53,7 @@ import shlex
 import sys
 
 from meshagent.api.client import ConflictError
+from meshagent.agents.adapter import MessageStreamLLMAdapter
 
 logger = logging.getLogger("mailbot")
 
@@ -91,6 +92,7 @@ def build_mailbot(
     working_directory: Optional[str] = None,
     skill_dirs: Optional[list[str]] = None,
     shell_image: Optional[str] = None,
+    llm_participant: Optional[str] = None,
 ):
     from meshagent.agents.mail import MailWorker
 
@@ -119,17 +121,22 @@ def build_mailbot(
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
 
     BaseClass = MailWorker
-    if computer_use or require_computer_use:
-        llm_adapter = OpenAIResponsesAdapter(
-            model=model,
-            response_options={
-                "reasoning": {"summary": "concise"},
-                "truncation": "auto",
-            },
+    if llm_participant:
+        llm_adapter = MessageStreamLLMAdapter(
+            participant_name=llm_participant,
         )
-
     else:
-        llm_adapter = OpenAIResponsesAdapter(model=model)
+        if computer_use or require_computer_use:
+            llm_adapter = OpenAIResponsesAdapter(
+                model=model,
+                response_options={
+                    "reasoning": {"summary": "concise"},
+                    "truncation": "auto",
+                },
+            )
+
+        else:
+            llm_adapter = OpenAIResponsesAdapter(model=model)
 
     class CustomMailbot(BaseClass):
         def __init__(self):
@@ -146,6 +153,7 @@ def build_mailbot(
                 reply_all=reply_all,
                 enable_attachments=enable_attachments,
                 skill_dirs=skill_dirs,
+                llm_participant=llm_participant,
             )
 
         async def start(self, *, room: RoomClient):
@@ -396,6 +404,10 @@ async def make_call(
         list[str],
         typer.Option(..., help="an agent skills directory"),
     ] = [],
+    llm_participant: Annotated[
+        Optional[str],
+        typer.Option(..., help="Delegate LLM interactions to a remote participant"),
+    ] = None,
     shell_image: Annotated[
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
@@ -456,6 +468,7 @@ async def make_call(
                 working_directory=working_directory,
                 skill_dirs=skill_dir,
                 shell_image=shell_image,
+                llm_participant=llm_participant,
             )
 
             bot = CustomMailbot()
@@ -581,6 +594,10 @@ async def service(
         list[str],
         typer.Option(..., help="an agent skills directory"),
     ] = [],
+    llm_participant: Annotated[
+        Optional[str],
+        typer.Option(..., help="Delegate LLM interactions to a remote participant"),
+    ] = None,
     shell_image: Annotated[
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
@@ -630,6 +647,7 @@ async def service(
             working_directory=working_directory,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            llm_participant=llm_participant,
         ),
     )
 
@@ -753,6 +771,10 @@ async def spec(
         list[str],
         typer.Option(..., help="an agent skills directory"),
     ] = [],
+    llm_participant: Annotated[
+        Optional[str],
+        typer.Option(..., help="Delegate LLM interactions to a remote participant"),
+    ] = None,
     shell_image: Annotated[
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
@@ -802,6 +824,7 @@ async def spec(
             working_directory=working_directory,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            llm_participant=llm_participant,
         ),
     )
 
@@ -938,6 +961,10 @@ async def deploy(
         list[str],
         typer.Option(..., help="an agent skills directory"),
     ] = [],
+    llm_participant: Annotated[
+        Optional[str],
+        typer.Option(..., help="Delegate LLM interactions to a remote participant"),
+    ] = None,
     shell_image: Annotated[
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
@@ -994,6 +1021,7 @@ async def deploy(
             working_directory=working_directory,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            llm_participant=llm_participant,
         ),
     )
 
