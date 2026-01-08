@@ -106,6 +106,7 @@ def build_task_runner(
     annotations: list[dict[str, str]],
     title: Optional[str] = None,
     description: Optional[str] = None,
+    shell_image: Optional[str] = None,
 ):
     output_schema = None
     if output_schema_str is not None:
@@ -260,6 +261,7 @@ def build_task_runner(
                     ShellTool(
                         working_directory=working_directory,
                         config=ShellConfig(name="shell"),
+                        image=shell_image or "python:3.13",
                     )
                 )
 

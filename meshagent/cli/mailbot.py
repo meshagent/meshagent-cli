@@ -222,7 +222,7 @@ def build_mailbot(
                     ShellTool(
                         working_directory=working_directory,
                         config=ShellConfig(name="shell"),
-                        image=shell_image,
+                        image=shell_image or "python:3.13",
                     )
                 )
 
