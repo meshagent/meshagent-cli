@@ -153,7 +153,6 @@ def build_mailbot(
                 reply_all=reply_all,
                 enable_attachments=enable_attachments,
                 skill_dirs=skill_dirs,
-                llm_participant=llm_participant,
             )
 
         async def start(self, *, room: RoomClient):
