@@ -108,6 +108,7 @@ def build_worker(
     toolkit_name: Optional[str] = None,
     skill_dirs: Optional[list[str]] = None,
     shell_image: Optional[str] = None,
+    log_llm_requests: Optional[bool] = None,
 ):
     """
     Returns a Worker subclass
@@ -141,9 +142,13 @@ def build_worker(
                 "reasoning": {"summary": "concise"},
                 "truncation": "auto",
             },
+            log_requests=log_llm_requests,
         )
     else:
-        llm_adapter: LLMAdapter = OpenAIResponsesAdapter(model=model)
+        llm_adapter: LLMAdapter = OpenAIResponsesAdapter(
+            model=model,
+            log_requests=log_llm_requests,
+        )
 
     class CustomWorker(WorkerBase):
         def __init__(self):
@@ -461,6 +466,10 @@ async def join(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -523,6 +532,7 @@ async def join(
                 working_directory=working_directory,
                 skill_dirs=skill_dir,
                 shell_image=shell_image,
+                log_llm_requests=log_llm_requests,
             )
 
             worker = CustomWorker()
@@ -637,6 +647,10 @@ async def service(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     service = get_service(host=host, port=port)
 
@@ -692,6 +706,7 @@ async def service(
             working_directory=working_directory,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            log_llm_requests=log_llm_requests,
         ),
     )
 
@@ -808,6 +823,10 @@ async def spec(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     service = get_service(host=host, port=port)
 
@@ -863,6 +882,7 @@ async def spec(
             working_directory=working_directory,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            log_llm_requests=log_llm_requests,
         ),
     )
 
@@ -992,6 +1012,10 @@ async def deploy(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
     project_id: ProjectIdOption = None,
     room: Annotated[
         Optional[str],
@@ -1054,6 +1078,7 @@ async def deploy(
             working_directory=working_directory,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            log_llm_requests=log_llm_requests,
         ),
     )
 

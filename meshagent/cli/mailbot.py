@@ -93,6 +93,7 @@ def build_mailbot(
     skill_dirs: Optional[list[str]] = None,
     shell_image: Optional[str] = None,
     llm_participant: Optional[str] = None,
+    log_llm_requests: Optional[bool] = None,
 ):
     from meshagent.agents.mail import MailWorker
 
@@ -133,10 +134,14 @@ def build_mailbot(
                     "reasoning": {"summary": "concise"},
                     "truncation": "auto",
                 },
+                log_requests=log_llm_requests,
             )
 
         else:
-            llm_adapter = OpenAIResponsesAdapter(model=model)
+            llm_adapter = OpenAIResponsesAdapter(
+                model=model,
+                log_requests=log_llm_requests,
+            )
 
     class CustomMailbot(BaseClass):
         def __init__(self):
@@ -411,6 +416,10 @@ async def make_call(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -468,6 +477,7 @@ async def make_call(
                 skill_dirs=skill_dir,
                 shell_image=shell_image,
                 llm_participant=llm_participant,
+                log_llm_requests=log_llm_requests,
             )
 
             bot = CustomMailbot()
@@ -601,6 +611,10 @@ async def service(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     service = get_service(host=host, port=port)
     if path is None:
@@ -647,6 +661,7 @@ async def service(
             skill_dirs=skill_dir,
             shell_image=shell_image,
             llm_participant=llm_participant,
+            log_llm_requests=log_llm_requests,
         ),
     )
 
@@ -778,6 +793,10 @@ async def spec(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     service = get_service(host=host, port=port)
     if path is None:
@@ -824,6 +843,7 @@ async def spec(
             skill_dirs=skill_dir,
             shell_image=shell_image,
             llm_participant=llm_participant,
+            log_llm_requests=log_llm_requests,
         ),
     )
 
@@ -968,6 +988,10 @@ async def deploy(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
     project_id: ProjectIdOption = None,
     room: Annotated[
         Optional[str],
@@ -1021,6 +1045,7 @@ async def deploy(
             skill_dirs=skill_dir,
             shell_image=shell_image,
             llm_participant=llm_participant,
+            log_llm_requests=log_llm_requests,
         ),
     )
 

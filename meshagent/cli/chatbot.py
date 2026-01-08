@@ -115,6 +115,7 @@ def build_chatbot(
     always_reply: Optional[bool] = None,
     skill_dirs: Optional[list[str]] = None,
     shell_image: Optional[str] = None,
+    log_llm_requests: Optional[bool] = None,
 ):
     from meshagent.agents.chat import ChatBot
 
@@ -155,10 +156,12 @@ def build_chatbot(
                     "reasoning": {"summary": "concise"},
                     "truncation": "auto",
                 },
+                log_requests=log_llm_requests,
             )
         else:
             llm_adapter = OpenAIResponsesAdapter(
                 model=model,
+                log_requests=log_llm_requests,
             )
 
     class CustomChatbot(BaseClass):
@@ -557,6 +560,10 @@ async def make_call(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     if database_namespace is not None:
         database_namespace = database_namespace.split("::")
@@ -620,6 +627,7 @@ async def make_call(
                 database_namespace=database_namespace,
                 skill_dirs=skill_dir,
                 shell_image=shell_image,
+                log_llm_requests=log_llm_requests,
             )
 
             bot = CustomChatbot()
@@ -785,6 +793,10 @@ async def service(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     if database_namespace is not None:
         database_namespace = database_namespace.split("::")
@@ -840,6 +852,7 @@ async def service(
             always_reply=always_reply,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            log_llm_requests=log_llm_requests,
         ),
     )
 
@@ -1002,6 +1015,10 @@ async def spec(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     if database_namespace is not None:
         database_namespace = database_namespace.split("::")
@@ -1057,6 +1074,7 @@ async def spec(
             always_reply=always_reply,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            log_llm_requests=log_llm_requests,
         ),
     )
 
@@ -1232,6 +1250,10 @@ async def deploy(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
     project_id: ProjectIdOption = None,
     room: Annotated[
         Optional[str],
@@ -1294,6 +1316,7 @@ async def deploy(
             always_reply=always_reply,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            log_llm_requests=log_llm_requests,
         ),
     )
 
