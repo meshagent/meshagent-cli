@@ -43,6 +43,13 @@ async def mailbox_create(
             help="Queue name to deliver inbound messages to",
         ),
     ],
+    public: Annotated[
+        bool,
+        typer.Option(
+            "--public",
+            help="Queue name to deliver inbound messages to",
+        ),
+    ] = False,
 ):
     """Create a mailbox attached to the project."""
     client = await get_client()
@@ -55,6 +62,7 @@ async def mailbox_create(
                 address=address,
                 room=room,
                 queue=queue,
+                public=public,
             )
         except ClientResponseError as exc:
             # Common patterns: 409 conflict on duplicate address, 400 validation, etc.
@@ -92,6 +100,13 @@ async def mailbox_update(
             help="Queue name to deliver inbound messages to",
         ),
     ] = None,
+    public: Annotated[
+        bool,
+        typer.Option(
+            "--public",
+            help="Queue name to deliver inbound messages to",
+        ),
+    ] = False,
 ):
     """Update a mailbox routing configuration."""
     client = await get_client()
@@ -116,6 +131,7 @@ async def mailbox_update(
                 address=address,
                 room=room,
                 queue=queue,
+                public=public,
             )
         except ClientResponseError as exc:
             if exc.status == 404:
@@ -172,6 +188,7 @@ async def mailbox_list(
                         "address": mb.address,
                         "room": mb.room,
                         "queue": mb.queue,
+                        "public": mb.public,
                     }
                     for mb in mailboxes
                 ],
