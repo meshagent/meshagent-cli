@@ -143,6 +143,14 @@ def build_mailbot(
                 log_requests=log_llm_requests,
             )
 
+    parsed_whitelist = []
+    if len(whitelist) > 0:
+        for w in whitelist:
+            for s in w.split(","):
+                s = s.strip()
+                if len(s) > 0:
+                    parsed_whitelist.append(s)
+
     class CustomMailbot(BaseClass):
         def __init__(self):
             super().__init__(
@@ -154,7 +162,7 @@ def build_mailbot(
                 email_address=email_address,
                 toolkit_name=toolkit_name,
                 rules=rule if len(rule) > 0 else None,
-                whitelist=whitelist if len(whitelist) > 0 else None,
+                whitelist=parsed_whitelist if len(parsed_whitelist) > 0 else None,
                 reply_all=reply_all,
                 enable_attachments=enable_attachments,
                 skill_dirs=skill_dirs,
