@@ -1,5 +1,6 @@
 import typer
 from typing import Annotated, Optional
+import os
 
 OutputFormatOption = Annotated[
     str,
@@ -15,13 +16,11 @@ ProjectIdOption = Annotated[
 ]
 
 RoomOption = Annotated[
-    str,
+    Optional[str],
     typer.Option(
-        "--room",
-        help="Room name",
+        "--room", help="Room name", default_factory=os.getenv("MESHAGENT_ROOM")
     ),
 ]
-
 
 RoomCreateOption = Annotated[
     bool,
