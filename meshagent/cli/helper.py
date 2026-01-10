@@ -7,7 +7,7 @@ from typing import Optional
 from meshagent.cli import auth_async
 from meshagent.cli import async_typer
 from meshagent.api.helpers import meshagent_base_url
-from meshagent.api.client import Meshagent
+from meshagent.api.client import Meshagent, RoomConnectionInfo
 import os
 from rich import print
 
@@ -68,16 +68,33 @@ async def get_active_api_key(project_id: str):
 app = async_typer.AsyncTyper()
 
 
+class CustomMeshagentClient(Meshagent):
+    async def connect_room(self, *, project_id: str, room: str) -> RoomConnectionInfo:
+        from urllib.parse import quote
+
+        jwt = os.getenv("MESHAGENT_SESSION_TOKEN")
+
+        if jwt is not None and room == os.getenv("MESHAGENT_ROOM"):
+            return RoomConnectionInfo(
+                jwt=jwt,
+                room_name=room,
+                project_id=os.getenv("MESHAGENT_PROJECT_ID"),
+                room_url=meshagent_base_url() + f"/rooms/{quote(room)}",
+            )
+
+        return await super().connect_room(project_id=project_id, room=room)
+
+
 async def get_client():
     key = os.getenv("MESHAGENT_API_KEY")
-    if key is not None:
-        return Meshagent(
+    if key is not None or os.getenv("MESHAGENT_SESSION_ID") is not None:
+        return CustomMeshagentClient(
             base_url=meshagent_base_url(),
             token=key,
         )
     else:
         access_token = await auth_async.get_access_token()
-        return Meshagent(
+        return CustomMeshagentClient(
             base_url=meshagent_base_url(),
             token=access_token,
         )
