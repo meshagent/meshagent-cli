@@ -136,7 +136,7 @@ def resolve_room(room_name: Optional[str] = None):
 
 async def resolve_project_id(project_id: Optional[str] = None):
     if project_id is None:
-        project_id = await get_active_project()
+        project_id = os.getenv("MESHAGENT_PROJECT_ID") or await get_active_project()
 
     if project_id is None:
         print(

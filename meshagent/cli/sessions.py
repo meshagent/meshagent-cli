@@ -6,7 +6,7 @@ app = async_typer.AsyncTyper()
 
 
 @app.async_command("list")
-async def list(*, project_id: ProjectIdOption = None):
+async def list(*, project_id: ProjectIdOption):
     client = await get_client()
     sessions = await client.list_recent_sessions(
         project_id=await resolve_project_id(project_id=project_id)
@@ -16,7 +16,7 @@ async def list(*, project_id: ProjectIdOption = None):
 
 
 @app.async_command("show")
-async def show(*, project_id: ProjectIdOption = None, session_id: str):
+async def show(*, project_id: ProjectIdOption, session_id: str):
     client = await get_client()
     events = await client.list_session_events(
         project_id=await resolve_project_id(project_id=project_id),

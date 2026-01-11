@@ -21,7 +21,7 @@ app = async_typer.AsyncTyper()
 @app.async_command("ask")
 async def ask(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     agent: Annotated[str, typer.Option()],
     input: Annotated[str, typer.Option()],
@@ -79,7 +79,7 @@ async def ask(
 @app.async_command("invoke-tool")
 async def invoke_tool(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     toolkit: Annotated[str, typer.Option(..., help="Toolkit name")],
     tool: Annotated[str, typer.Option(..., help="Tool name")],
@@ -164,7 +164,7 @@ async def invoke_tool(
 @app.async_command("list-agents")
 async def list_agents_command(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
 ):
     """
@@ -208,7 +208,7 @@ async def list_agents_command(
 @app.async_command("list-toolkits")
 async def list_toolkits_command(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     role: str = "user",
     participant_id: Annotated[

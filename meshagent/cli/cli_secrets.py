@@ -53,7 +53,7 @@ keys_app = async_typer.AsyncTyper(
 @keys_app.async_command("create")
 async def create_keys_secret(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     name: Annotated[str, typer.Option(help="Secret name")],
     data: Annotated[
         str,
@@ -86,7 +86,7 @@ async def create_keys_secret(
 @keys_app.async_command("update")
 async def update_keys_secret(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     secret_id: Annotated[str, typer.Option(help="Existing secret ID")],
     name: Annotated[str, typer.Option(help="Secret name")],
     data: Annotated[
@@ -128,7 +128,7 @@ docker_app = async_typer.AsyncTyper(
 @docker_app.async_command("create")
 async def create_docker_secret(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     name: Annotated[str, typer.Option(help="Secret name")],
     server: Annotated[
         str, typer.Option(help="Docker registry server, e.g. index.docker.io")
@@ -166,7 +166,7 @@ async def create_docker_secret(
 @docker_app.async_command("update")
 async def update_docker_secret(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     secret_id: Annotated[str, typer.Option(help="Existing secret ID")],
     name: Annotated[str, typer.Option(help="Secret name")],
     server: Annotated[str, typer.Option(help="Docker registry server")],
@@ -211,7 +211,7 @@ acr_app = async_typer.AsyncTyper(
 @acr_app.async_command("create")
 async def create_acr_secret(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     name: Annotated[str, typer.Option(help="Secret name")],
     server: Annotated[str, typer.Option(help="ACR server, e.g. myregistry.azurecr.io")],
     username: Annotated[str, typer.Option(help="Service principal ID")],
@@ -241,7 +241,7 @@ async def create_acr_secret(
 @acr_app.async_command("update")
 async def update_acr_secret(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     secret_id: Annotated[str, typer.Option(help="Existing secret ID")],
     name: Annotated[str, typer.Option(help="Secret name")],
     server: Annotated[str, typer.Option(help="ACR server, e.g. myregistry.azurecr.io")],
@@ -281,7 +281,7 @@ gar_app = async_typer.AsyncTyper(
 @gar_app.async_command("create")
 async def create_gar_secret(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     name: Annotated[str, typer.Option(help="Secret name")],
     server: Annotated[str, typer.Option(help="GAR host, e.g. us-west1-docker.pkg.dev")],
     json_key: Annotated[
@@ -314,7 +314,7 @@ async def create_gar_secret(
 @gar_app.async_command("update")
 async def update_gar_secret(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     secret_id: Annotated[str, typer.Option(help="Existing secret ID")],
     name: Annotated[str, typer.Option(help="Secret name")],
     server: Annotated[str, typer.Option(help="GAR host, e.g. us-west1-docker.pkg.dev")],
@@ -348,7 +348,7 @@ async def update_gar_secret(
 
 
 @secrets_app.async_command("list")
-async def secret_list(*, project_id: ProjectIdOption = None):
+async def secret_list(*, project_id: ProjectIdOption):
     """List all secrets in the project (typed as Docker/ACR/GAR or Keys secrets)."""
     client = await get_client()
     try:
@@ -383,7 +383,7 @@ async def secret_list(*, project_id: ProjectIdOption = None):
 @secrets_app.async_command("delete")
 async def secret_delete(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     secret_id: Annotated[str, typer.Argument(help="ID of the secret to delete")],
 ):
     """Delete a secret."""

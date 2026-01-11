@@ -377,7 +377,7 @@ def build_task_runner(
 @app.async_command("join")
 async def make_call(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     role: str = "agent",
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],

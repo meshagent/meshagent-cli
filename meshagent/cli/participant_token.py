@@ -16,7 +16,7 @@ app = async_typer.AsyncTyper()
 @app.async_command("generate")
 async def generate(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     output: Annotated[
         Optional[str],
         typer.Option("--output", "-o", help="File path to a file"),

@@ -149,7 +149,7 @@ def build_voicebot(
 @app.async_command("join")
 async def make_call(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
@@ -465,7 +465,7 @@ async def deploy(
             help="a path to a rules file within the room that can be used to customize the agent's behavior",
         ),
     ] = [],
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: Annotated[
         Optional[str],
         typer.Option("--room", help="The name of a room to create the service for"),

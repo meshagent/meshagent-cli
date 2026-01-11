@@ -17,7 +17,7 @@ app = async_typer.AsyncTyper()
 @app.async_command("create")
 async def webhook_create(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     name: Annotated[str, typer.Option(help="Friendly name for the webhook")],
     url: Annotated[str, typer.Option(help="Target URL that will receive POSTs")],
     event: Annotated[
@@ -64,7 +64,7 @@ async def webhook_create(
 @app.async_command("list")
 async def webhook_list(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
 ):
     """List all webhooks for the project."""
     client = await get_client()
@@ -87,7 +87,7 @@ async def webhook_list(
 @app.async_command("delete")
 async def webhook_delete(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     webhook_id: Annotated[str, typer.Argument(help="ID of the webhook to delete")],
 ):
     """Delete a project webhook."""

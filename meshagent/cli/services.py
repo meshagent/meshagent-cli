@@ -47,7 +47,7 @@ app = async_typer.AsyncTyper(help="Manage services for your project")
 @app.async_command("create")
 async def service_create(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     file: Annotated[
         str,
         typer.Option("--file", "-f", help="File path to a service definition"),
@@ -93,7 +93,7 @@ async def service_create(
 @app.async_command("update")
 async def service_update(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     id: Optional[str] = None,
     file: Annotated[
         str,
@@ -176,7 +176,7 @@ async def service_update(
 @app.async_command("run")
 async def service_run(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     command: str,
     port: Annotated[
         int,
@@ -332,7 +332,7 @@ async def service_run(
 @app.async_command("show")
 async def service_show(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     service_id: Annotated[str, typer.Argument(help="ID of the service to show")],
 ):
     """Show a services for the project."""
@@ -350,7 +350,7 @@ async def service_show(
 @app.async_command("list")
 async def service_list(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     o: OutputFormatOption = "table",
     room: Annotated[
         Optional[str],
@@ -396,7 +396,7 @@ async def service_list(
 @app.async_command("delete")
 async def service_delete(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     service_id: Annotated[str, typer.Argument(help="ID of the service to delete")],
     room: Annotated[
         Optional[str],

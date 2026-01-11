@@ -82,7 +82,7 @@ def register(app: typer.Typer):
     @app.async_command("exec")
     async def exec_command(
         *,
-        project_id: ProjectIdOption = None,
+        project_id: ProjectIdOption,
         room: RoomOption,
         name: Annotated[Optional[str], typer.Option()] = None,
         image: Annotated[Optional[str], typer.Option()] = None,

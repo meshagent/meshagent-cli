@@ -74,7 +74,7 @@ def is_local_url(url: str) -> bool:
 @app.async_command("tool")
 async def make_call(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     role: str = "agent",
     local: Optional[bool] = None,
@@ -136,7 +136,7 @@ async def make_call(
 
 async def _make_call(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     role: str = "agent",
     local: Optional[bool] = None,

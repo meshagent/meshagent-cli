@@ -18,7 +18,7 @@ app = async_typer.AsyncTyper(help="OAuth2 test commands")
 @app.async_command("request")
 async def oauth2(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     from_participant_id: Annotated[str, typer.Option()],
     client_id: Annotated[str, typer.Option()],
@@ -72,7 +72,7 @@ async def oauth2(
 @app.async_command("get")
 async def get(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     delegated_to: Annotated[str, typer.Option()],
     client_id: Annotated[str, typer.Option()],
@@ -124,7 +124,7 @@ async def get(
 @app.async_command("list")
 async def list(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
 ):
     """
@@ -159,7 +159,7 @@ async def list(
 @app.async_command("delete")
 async def delete(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     id: str,
     delegated_to: Annotated[

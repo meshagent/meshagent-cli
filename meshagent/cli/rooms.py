@@ -53,7 +53,7 @@ def _maybe_parse_json(label: str, s: Optional[str]):
 @app.async_command("create")
 async def room_create_command(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     name: Annotated[str, typer.Option(..., help="Room name")],
     if_not_exists: Annotated[
         bool, typer.Option(help="Do not error if the room already exists")
@@ -95,7 +95,7 @@ async def room_create_command(
 @app.async_command("delete")
 async def room_delete_command(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     id: Annotated[Optional[str], typer.Option(help="Room ID (preferred)")] = None,
     name: Optional[str] = None,
 ):
@@ -123,7 +123,7 @@ async def room_delete_command(
 @app.async_command("update")
 async def room_update_command(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     id: Annotated[Optional[str], typer.Option(help="Room ID (preferred)")] = None,
     name: Optional[str] = None,
     new_name: Annotated[str, typer.Option(..., help="New room name")],
@@ -156,7 +156,7 @@ async def room_update_command(
 @app.async_command("list")
 async def room_list_command(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     limit: Annotated[
         int, typer.Option(help="Max rooms to return", min=1, max=500)
     ] = 50,
@@ -191,7 +191,7 @@ async def room_list_command(
 @app.async_command("get")
 async def room_get_command(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     name: Optional[str] = None,
 ):
     """

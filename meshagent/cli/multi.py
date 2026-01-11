@@ -174,6 +174,7 @@ async def spec(
 
 @app.async_command("deploy")
 async def deploy(
+    project_id: ProjectIdOption,
     command: Annotated[str, typer.Option("-c", help=subcommand_help)],
     service_name: Annotated[str, typer.Option("--service-name", help="service name")],
     service_description: Annotated[
@@ -183,7 +184,6 @@ async def deploy(
         Optional[str],
         typer.Option("--service-title", help="a display name for the service"),
     ] = None,
-    project_id: ProjectIdOption = None,
     room: Annotated[
         Optional[str],
         typer.Option("--room", help="The name of a room to create the service for"),
@@ -286,7 +286,7 @@ def import_from_path(path: str, module_name: str | None = None):
 @app.async_command("join")
 async def join(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     command: Annotated[str, typer.Option("-c", help=subcommand_help)] = [],
     port: Annotated[
         int,
