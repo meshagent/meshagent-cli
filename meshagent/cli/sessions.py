@@ -2,10 +2,10 @@ from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client, print_json_table, resolve_project_id
 from meshagent.cli.common_options import ProjectIdOption
 
-app = async_typer.AsyncTyper()
+app = async_typer.AsyncTyper(help="Inspect recent sessions and events")
 
 
-@app.async_command("list")
+@app.async_command("list", help="List recent sessions")
 async def list(*, project_id: ProjectIdOption):
     client = await get_client()
     sessions = await client.list_recent_sessions(
@@ -15,7 +15,7 @@ async def list(*, project_id: ProjectIdOption):
     await client.close()
 
 
-@app.async_command("show")
+@app.async_command("show", help="Show events for a session")
 async def show(*, project_id: ProjectIdOption, session_id: str):
     client = await get_client()
     events = await client.list_session_events(
