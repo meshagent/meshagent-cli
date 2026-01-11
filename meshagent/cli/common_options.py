@@ -2,6 +2,7 @@ import typer
 from typing import Annotated, Optional
 import os
 from meshagent.cli.helper import _load_settings
+
 OutputFormatOption = Annotated[
     str,
     typer.Option("--output", "-o", help="output format [json|table]"),
@@ -19,6 +20,7 @@ else:
 
 def get_default_project_id():
     return os.getenv("MESHAGENT_PROJECT_ID") or default_project_id
+
 
 ProjectIdOption = Annotated[
     Optional[str],
