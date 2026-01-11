@@ -340,7 +340,7 @@ async def add_columns(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
-    table: Annotated[str, typer.Option(..., "--table", "-t")],
+    table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     namespace: NamespaceOption = None,
     columns_json: Annotated[
         str, typer.Option(..., "--columns-json", help="JSON object of new columns")
@@ -396,7 +396,7 @@ async def drop_columns(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
-    table: Annotated[str, typer.Option(..., "--table", "-t")],
+    table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     namespace: NamespaceOption = None,
     columns: Annotated[
         List[str],
@@ -436,7 +436,7 @@ async def insert(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
-    table: Annotated[str, typer.Option(..., "--table", "-t")],
+    table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     namespace: NamespaceOption = None,
     json: Annotated[
         Optional[str], typer.Option("--json", help="JSON list of records")
@@ -488,7 +488,7 @@ async def merge(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
-    table: Annotated[str, typer.Option(..., "--table", "-t")],
+    table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     on: Annotated[str, typer.Option(..., "--on", help="Column to match for upsert")],
     namespace: NamespaceOption = None,
     json: Annotated[
@@ -540,7 +540,7 @@ async def update(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
-    table: Annotated[str, typer.Option(..., "--table", "-t")],
+    table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     where: Annotated[
         str, typer.Option(..., "--where", help='SQL WHERE clause, e.g. "id = 1"')
     ],
@@ -596,7 +596,7 @@ async def delete(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
-    table: Annotated[str, typer.Option(..., "--table", "-t")],
+    table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     where: Annotated[str, typer.Option(..., "--where", help="SQL WHERE clause")],
     namespace: NamespaceOption = None,
 ):
@@ -633,7 +633,7 @@ async def search(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
-    table: Annotated[str, typer.Option(..., "--table", "-t")],
+    table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     namespace: NamespaceOption = None,
     text: Annotated[
         Optional[str], typer.Option("--text", help="Full-text query")
@@ -652,8 +652,12 @@ async def search(
         Optional[List[str]],
         typer.Option("--select", help="Columns to select (repeatable)"),
     ] = None,
-    limit: Annotated[Optional[int], typer.Option("--limit")] = None,
-    offset: Annotated[Optional[int], typer.Option("--offset")] = None,
+    limit: Annotated[
+        Optional[int], typer.Option("--limit", help="Max rows to return")
+    ] = None,
+    offset: Annotated[
+        Optional[int], typer.Option("--offset", help="Rows to skip")
+    ] = None,
     pretty: Annotated[
         bool, typer.Option("--pretty/--no-pretty", help="Pretty-print JSON")
     ] = True,
@@ -705,7 +709,7 @@ async def optimize(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
-    table: Annotated[str, typer.Option(..., "--table", "-t")],
+    table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     namespace: NamespaceOption = None,
 ):
     account_client = await get_client()
@@ -739,9 +743,11 @@ async def list_versions(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
-    table: Annotated[str, typer.Option(..., "--table", "-t")],
+    table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     namespace: NamespaceOption = None,
-    pretty: Annotated[bool, typer.Option("--pretty/--no-pretty")] = True,
+    pretty: Annotated[
+        bool, typer.Option("--pretty/--no-pretty", help="Pretty-print JSON")
+    ] = True,
 ):
     account_client = await get_client()
     try:
@@ -777,8 +783,8 @@ async def checkout(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
-    table: Annotated[str, typer.Option(..., "--table", "-t")],
-    version: Annotated[int, typer.Option(..., "--version", "-v")],
+    table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
+    version: Annotated[int, typer.Option(..., "--version", "-v", help="Table version")],
     namespace: NamespaceOption = None,
 ):
     account_client = await get_client()
@@ -814,8 +820,8 @@ async def restore(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
-    table: Annotated[str, typer.Option(..., "--table", "-t")],
-    version: Annotated[int, typer.Option(..., "--version", "-v")],
+    table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
+    version: Annotated[int, typer.Option(..., "--version", "-v", help="Table version")],
     namespace: NamespaceOption = None,
 ):
     account_client = await get_client()
@@ -851,9 +857,11 @@ async def list_indexes(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
-    table: Annotated[str, typer.Option(..., "--table", "-t")],
+    table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     namespace: NamespaceOption = None,
-    pretty: Annotated[bool, typer.Option("--pretty/--no-pretty")] = True,
+    pretty: Annotated[
+        bool, typer.Option("--pretty/--no-pretty", help="Pretty-print JSON")
+    ] = True,
 ):
     account_client = await get_client()
     try:
@@ -889,12 +897,18 @@ async def create_index(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
-    table: Annotated[str, typer.Option(..., "--table", "-t")],
-    column: Annotated[str, typer.Option(..., "--column", "-c")],
+    table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
+    column: Annotated[str, typer.Option(..., "--column", "-c", help="Column name")],
     kind: Annotated[
         str, typer.Option(..., "--kind", help="vector | scalar | fts")
     ] = "scalar",
-    replace: Annotated[Optional[bool], typer.Option("--replace/--no-replace")] = None,
+    replace: Annotated[
+        Optional[bool],
+        typer.Option(
+            "--replace/--no-replace",
+            help="Replace existing index if it already exists",
+        ),
+    ] = None,
     namespace: NamespaceOption = None,
 ):
     account_client = await get_client()
@@ -951,7 +965,7 @@ async def drop_index(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
-    table: Annotated[str, typer.Option(..., "--table", "-t")],
+    table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     name: Annotated[str, typer.Option(..., "--name", help="Index name")],
     namespace: NamespaceOption = None,
 ):

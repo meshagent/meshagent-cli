@@ -29,11 +29,15 @@ def _save_settings(s: Settings):
 
 
 def _load_settings():
-    _ensure_cache_dir()
-    if SETTINGS_FILE.exists():
-        return Settings.model_validate_json(SETTINGS_FILE.read_text())
-
-    return Settings()
+    try:
+        _ensure_cache_dir()
+        if SETTINGS_FILE.exists():
+            return Settings.model_validate_json(SETTINGS_FILE.read_text())
+    except OSError as ex:
+        if ex.errno == 30:
+            return Settings()
+        else:
+            raise
 
 
 async def get_active_project():

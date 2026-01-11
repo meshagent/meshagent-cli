@@ -84,11 +84,27 @@ def register(app: typer.Typer):
         *,
         project_id: ProjectIdOption,
         room: RoomOption,
-        name: Annotated[Optional[str], typer.Option()] = None,
-        image: Annotated[Optional[str], typer.Option()] = None,
-        command: Annotated[list[str], typer.Argument(...)] = None,
-        tty: bool = False,
-        room_storage_path: str = "/data",
+        name: Annotated[
+            Optional[str], typer.Option(help="Optional exec session name")
+        ] = None,
+        image: Annotated[
+            Optional[str],
+            typer.Option(help="Optional container image to use for the exec session"),
+        ] = None,
+        command: Annotated[
+            list[str],
+            typer.Argument(..., help="Command to execute (omit when using `--tty`)"),
+        ] = None,
+        tty: Annotated[
+            bool,
+            typer.Option(
+                "--tty/--no-tty",
+                help="Allocate an interactive TTY (requires a real terminal)",
+            ),
+        ] = False,
+        room_storage_path: Annotated[
+            str, typer.Option(help="Room storage mount path (default: /data)")
+        ] = "/data",
     ):
         """Open an interactive websocket‑based TTY."""
         client = await get_client()

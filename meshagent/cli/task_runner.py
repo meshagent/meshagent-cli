@@ -695,9 +695,15 @@ async def service(
             ..., help="Delegate LLM interactions to a remote participant", hidden=True
         ),
     ] = None,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[str, typer.Option()] = "/agent",
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        str, typer.Option(help="HTTP path to mount the service at")
+    ] = "/agent",
     output_schema: Annotated[
         Optional[str],
         typer.Option(..., help="an output schema to use", hidden=True),

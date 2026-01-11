@@ -378,7 +378,9 @@ async def join(
     require_local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
-    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Require web search tool")
+    ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable apply patch tool calling"),
@@ -576,7 +578,10 @@ async def service(
             "--schema", "-s", help="the name or url of a required schema", hidden=True
         ),
     ] = [],
-    model: Annotated[str, typer.Option(...)] = "gpt-5.2",
+    model: Annotated[
+        str,
+        typer.Option(..., help="Name of the LLM model to use"),
+    ] = "gpt-5.2",
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -602,23 +607,55 @@ async def service(
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
-    require_local_shell: Annotated[Optional[bool], typer.Option(...)] = False,
-    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_local_shell: Annotated[
+        Optional[bool], typer.Option(..., help="Require local shell tool")
+    ] = False,
+    require_web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Require web search tool")
+    ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable apply patch tool calling"),
     ] = False,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     queue: Annotated[str, typer.Option(..., help="the queue to consume")],
-    toolkit_name: Annotated[Optional[str], typer.Option(...)] = None,
-    room_rules: Annotated[List[str], typer.Option("--room-rules", "-rr")] = [],
-    require_storage: Annotated[Optional[bool], typer.Option(...)] = False,
-    require_read_only_storage: Annotated[Optional[bool], typer.Option(...)] = False,
-    database_namespace: Annotated[Optional[str], typer.Option(...)] = None,
-    require_table_read: Annotated[list[str], typer.Option(...)] = [],
-    require_table_write: Annotated[list[str], typer.Option(...)] = [],
+    toolkit_name: Annotated[
+        Optional[str], typer.Option(..., help="Toolkit name to expose (optional)")
+    ] = None,
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="Path(s) to rules files inside the room",
+        ),
+    ] = [],
+    require_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Require storage toolkit")
+    ] = False,
+    require_read_only_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Require read-only storage toolkit")
+    ] = False,
+    database_namespace: Annotated[
+        Optional[str],
+        typer.Option(..., help="Database namespace (e.g. foo::bar)"),
+    ] = None,
+    require_table_read: Annotated[
+        list[str],
+        typer.Option(..., help="Require table read tool for table (repeatable)"),
+    ] = [],
+    require_table_write: Annotated[
+        list[str],
+        typer.Option(..., help="Require table write tool for table (repeatable)"),
+    ] = [],
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
@@ -752,7 +789,10 @@ async def spec(
             "--schema", "-s", help="the name or url of a required schema", hidden=True
         ),
     ] = [],
-    model: Annotated[str, typer.Option(...)] = "gpt-5.2",
+    model: Annotated[
+        str,
+        typer.Option(..., help="Name of the LLM model to use"),
+    ] = "gpt-5.2",
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -778,23 +818,55 @@ async def spec(
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
-    require_local_shell: Annotated[Optional[bool], typer.Option(...)] = False,
-    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_local_shell: Annotated[
+        Optional[bool], typer.Option(..., help="Require local shell tool")
+    ] = False,
+    require_web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Require web search tool")
+    ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable apply patch tool calling"),
     ] = False,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     queue: Annotated[str, typer.Option(..., help="the queue to consume")],
-    toolkit_name: Annotated[Optional[str], typer.Option(...)] = None,
-    room_rules: Annotated[List[str], typer.Option("--room-rules", "-rr")] = [],
-    require_storage: Annotated[Optional[bool], typer.Option(...)] = False,
-    require_read_only_storage: Annotated[Optional[bool], typer.Option(...)] = False,
-    database_namespace: Annotated[Optional[str], typer.Option(...)] = None,
-    require_table_read: Annotated[list[str], typer.Option(...)] = [],
-    require_table_write: Annotated[list[str], typer.Option(...)] = [],
+    toolkit_name: Annotated[
+        Optional[str], typer.Option(..., help="Toolkit name to expose (optional)")
+    ] = None,
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="Path(s) to rules files inside the room",
+        ),
+    ] = [],
+    require_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Require storage toolkit")
+    ] = False,
+    require_read_only_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Require read-only storage toolkit")
+    ] = False,
+    database_namespace: Annotated[
+        Optional[str],
+        typer.Option(..., help="Database namespace (e.g. foo::bar)"),
+    ] = None,
+    require_table_read: Annotated[
+        list[str],
+        typer.Option(..., help="Require table read tool for table (repeatable)"),
+    ] = [],
+    require_table_write: Annotated[
+        list[str],
+        typer.Option(..., help="Require table write tool for table (repeatable)"),
+    ] = [],
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
@@ -941,7 +1013,10 @@ async def deploy(
             "--schema", "-s", help="the name or url of a required schema", hidden=True
         ),
     ] = [],
-    model: Annotated[str, typer.Option(...)] = "gpt-5.2",
+    model: Annotated[
+        str,
+        typer.Option(..., help="Name of the LLM model to use"),
+    ] = "gpt-5.2",
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -967,23 +1042,55 @@ async def deploy(
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
-    require_local_shell: Annotated[Optional[bool], typer.Option(...)] = False,
-    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_local_shell: Annotated[
+        Optional[bool], typer.Option(..., help="Require local shell tool")
+    ] = False,
+    require_web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Require web search tool")
+    ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable apply patch tool calling"),
     ] = False,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     queue: Annotated[str, typer.Option(..., help="the queue to consume")],
-    toolkit_name: Annotated[Optional[str], typer.Option(...)] = None,
-    room_rules: Annotated[List[str], typer.Option("--room-rules", "-rr")] = [],
-    require_storage: Annotated[Optional[bool], typer.Option(...)] = False,
-    require_read_only_storage: Annotated[Optional[bool], typer.Option(...)] = False,
-    database_namespace: Annotated[Optional[str], typer.Option(...)] = None,
-    require_table_read: Annotated[list[str], typer.Option(...)] = [],
-    require_table_write: Annotated[list[str], typer.Option(...)] = [],
+    toolkit_name: Annotated[
+        Optional[str], typer.Option(..., help="Toolkit name to expose (optional)")
+    ] = None,
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="Path(s) to rules files inside the room",
+        ),
+    ] = [],
+    require_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Require storage toolkit")
+    ] = False,
+    require_read_only_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Require read-only storage toolkit")
+    ] = False,
+    database_namespace: Annotated[
+        Optional[str],
+        typer.Option(..., help="Database namespace (e.g. foo::bar)"),
+    ] = None,
+    require_table_read: Annotated[
+        list[str],
+        typer.Option(..., help="Require table read tool for table (repeatable)"),
+    ] = [],
+    require_table_write: Annotated[
+        list[str],
+        typer.Option(..., help="Require table write tool for table (repeatable)"),
+    ] = [],
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(

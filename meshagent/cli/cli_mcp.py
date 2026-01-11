@@ -45,8 +45,11 @@ async def sse(
     room: RoomOption,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "tool",
-    url: Annotated[str, typer.Option()],
-    toolkit_name: Annotated[Optional[str], typer.Option()] = None,
+    url: Annotated[str, typer.Option(..., help="SSE URL for the MCP server")],
+    toolkit_name: Annotated[
+        Optional[str],
+        typer.Option(help="Toolkit name to register in the room (default: mcp)"),
+    ] = None,
     key: Annotated[
         str,
         typer.Option("--key", help="an api key to sign the token with"),
@@ -123,8 +126,16 @@ async def stdio(
     room: RoomOption,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "tool",
-    command: Annotated[str, typer.Option()],
-    toolkit_name: Annotated[Optional[str], typer.Option()] = None,
+    command: Annotated[
+        str,
+        typer.Option(
+            ..., help="Command to start an MCP server over stdio (quoted string)"
+        ),
+    ],
+    toolkit_name: Annotated[
+        Optional[str],
+        typer.Option(help="Toolkit name to register in the room (default: mcp)"),
+    ] = None,
     env: Annotated[List[str], typer.Option("--env", "-e", help="KEY=VALUE")] = [],
     key: Annotated[
         str,
@@ -208,11 +219,23 @@ async def stdio(
 @app.async_command("http-proxy")
 async def stdio_host(
     *,
-    command: Annotated[str, typer.Option()],
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
-    name: Annotated[Optional[str], typer.Option()] = None,
+    command: Annotated[
+        str,
+        typer.Option(..., help="Command to start the MCP server (stdio transport)"),
+    ],
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the proxy server on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the proxy server on")
+    ] = None,
+    path: Annotated[
+        Optional[str],
+        typer.Option(help="HTTP path to mount the proxy server at"),
+    ] = None,
+    name: Annotated[
+        Optional[str], typer.Option(help="Display name for the proxy server")
+    ] = None,
     env: Annotated[List[str], typer.Option("--env", "-e", help="KEY=VALUE")] = [],
 ):
     from fastmcp import FastMCP, Client
@@ -241,11 +264,22 @@ async def stdio_host(
 @app.async_command("sse-proxy")
 async def sse_proxy(
     *,
-    command: Annotated[str, typer.Option()],
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
-    name: Annotated[Optional[str], typer.Option()] = None,
+    command: Annotated[
+        str,
+        typer.Option(..., help="Command to start the MCP server (stdio transport)"),
+    ],
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the proxy server on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the proxy server on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="SSE path to mount the proxy at")
+    ] = None,
+    name: Annotated[
+        Optional[str], typer.Option(help="Display name for the proxy server")
+    ] = None,
     env: Annotated[List[str], typer.Option("--env", "-e", help="KEY=VALUE")] = [],
 ):
     from fastmcp import FastMCP, Client
@@ -274,12 +308,28 @@ async def sse_proxy(
 @app.async_command("stdio-service")
 async def stdio_service(
     *,
-    command: Annotated[str, typer.Option()],
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    webhook_secret: Annotated[Optional[str], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
-    toolkit_name: Annotated[Optional[str], typer.Option()] = None,
+    command: Annotated[
+        str,
+        typer.Option(
+            ..., help="Command to start an MCP server over stdio (quoted string)"
+        ),
+    ],
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    webhook_secret: Annotated[
+        Optional[str],
+        typer.Option(help="Optional webhook secret for authenticating requests"),
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
+    toolkit_name: Annotated[
+        Optional[str], typer.Option(help="Toolkit name to expose (default: mcp)")
+    ] = None,
     env: Annotated[List[str], typer.Option("--env", "-e", help="KEY=VALUE")] = [],
 ):
     from mcp.client.session import ClientSession
