@@ -14,10 +14,10 @@ from meshagent.api import (
 )
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 
-app = async_typer.AsyncTyper()
+app = async_typer.AsyncTyper(help="Developer utilities for a room")
 
 
-@app.async_command("watch")
+@app.async_command("watch", help="Stream developer logs from a room")
 async def watch_logs(
     *,
     project_id: ProjectIdOption,

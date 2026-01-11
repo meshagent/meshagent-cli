@@ -5,11 +5,12 @@ from meshagent.api import SchemaRegistry, SchemaRegistration
 
 import logging
 
-app = async_typer.AsyncTyper(help="Join a mailbot to a room")
+app = async_typer.AsyncTyper(help="Developer helper services")
 
 
-@app.async_command("service")
+@app.async_command("service", help="Run local helper HTTP services")
 async def helpers_service():
+    """Run local helper services (agents, schemas, toolkits)."""
     from meshagent.agents.llmrunner import LLMTaskRunner, DynamicLLMTaskRunner
     from meshagent.openai.tools import OpenAIResponsesAdapter
     from meshagent.tools.storage import StorageToolkit

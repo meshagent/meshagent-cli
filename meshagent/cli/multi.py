@@ -38,9 +38,7 @@ from meshagent.cli.voicebot import service as voicebot_service
 import yaml
 
 
-app = async_typer.AsyncTyper(
-    help="connect agents and tools to a room for testing or host them as a mesh service"
-)
+app = async_typer.AsyncTyper(help="Connect agents and tools to a room")
 
 cli = async_typer.AsyncTyper(help="Add agents to a team")
 

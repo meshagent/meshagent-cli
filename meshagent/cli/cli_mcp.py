@@ -35,10 +35,12 @@ def _kv_to_dict(pairs: List[str]) -> dict[str, str]:
     return out
 
 
-app = async_typer.AsyncTyper()
+app = async_typer.AsyncTyper(help="Bridge MCP servers into MeshAgent rooms")
 
 
-@app.async_command("sse")
+@app.async_command(
+    "sse", help="Connect an MCP server over SSE and register it as a toolkit"
+)
 async def sse(
     *,
     project_id: ProjectIdOption,
@@ -55,6 +57,8 @@ async def sse(
         typer.Option("--key", help="an api key to sign the token with"),
     ] = None,
 ):
+    """Connect an MCP server over SSE and expose it as a room toolkit."""
+
     from mcp.client.session import ClientSession
     from mcp.client.sse import sse_client
 
@@ -119,7 +123,9 @@ async def sse(
         await account_client.close()
 
 
-@app.async_command("stdio")
+@app.async_command(
+    "stdio", help="Run an MCP server over stdio and register it as a toolkit"
+)
 async def stdio(
     *,
     project_id: ProjectIdOption,
@@ -142,6 +148,8 @@ async def stdio(
         typer.Option("--key", help="an api key to sign the token with"),
     ] = None,
 ):
+    """Run an MCP server over stdio and expose it as a room toolkit."""
+
     from mcp.client.session import ClientSession
     from mcp.client.stdio import stdio_client, StdioServerParameters
 
@@ -216,7 +224,7 @@ async def stdio(
         await account_client.close()
 
 
-@app.async_command("http-proxy")
+@app.async_command("http-proxy", help="Expose a stdio MCP server over streamable HTTP")
 async def stdio_host(
     *,
     command: Annotated[
@@ -238,6 +246,8 @@ async def stdio_host(
     ] = None,
     env: Annotated[List[str], typer.Option("--env", "-e", help="KEY=VALUE")] = [],
 ):
+    """Expose a stdio-based MCP server over streamable HTTP."""
+
     from fastmcp import FastMCP, Client
     from fastmcp.client.transports import StdioTransport
 
@@ -261,7 +271,7 @@ async def stdio_host(
     await proxy.run_async(transport="streamable-http", host=host, port=port, path=path)
 
 
-@app.async_command("sse-proxy")
+@app.async_command("sse-proxy", help="Expose a stdio MCP server over SSE")
 async def sse_proxy(
     *,
     command: Annotated[
@@ -282,6 +292,8 @@ async def sse_proxy(
     ] = None,
     env: Annotated[List[str], typer.Option("--env", "-e", help="KEY=VALUE")] = [],
 ):
+    """Expose a stdio-based MCP server over SSE."""
+
     from fastmcp import FastMCP, Client
     from fastmcp.client.transports import StdioTransport
 
@@ -305,7 +317,7 @@ async def sse_proxy(
     await proxy.run_async(transport="sse", host=host, port=port, path=path)
 
 
-@app.async_command("stdio-service")
+@app.async_command("stdio-service", help="Run a stdio MCP server as an HTTP service")
 async def stdio_service(
     *,
     command: Annotated[
@@ -332,6 +344,8 @@ async def stdio_service(
     ] = None,
     env: Annotated[List[str], typer.Option("--env", "-e", help="KEY=VALUE")] = [],
 ):
+    """Run a stdio-based MCP server as an HTTP service."""
+
     from mcp.client.session import ClientSession
     from mcp.client.stdio import stdio_client, StdioServerParameters
 

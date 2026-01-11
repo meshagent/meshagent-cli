@@ -14,7 +14,7 @@ from meshagent.cli.helper import (
 )
 from meshagent.api import RoomException
 
-app = async_typer.AsyncTyper()
+app = async_typer.AsyncTyper(help="Create, list, and manage rooms in a project")
 
 # ---------------------------
 # Helpers

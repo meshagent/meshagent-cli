@@ -16,10 +16,10 @@ from meshagent.cli.helper import (
     resolve_room,
 )
 
-app = async_typer.AsyncTyper()
+app = async_typer.AsyncTyper(help="Send and receive messages in a room")
 
 
-@app.async_command("list-participants")
+@app.async_command("list-participants", help="List messaging-enabled participants")
 async def messaging_list_participants_command(
     *,
     project_id: ProjectIdOption,
@@ -61,7 +61,7 @@ async def messaging_list_participants_command(
         await account_client.close()
 
 
-@app.async_command("send")
+@app.async_command("send", help="Send a direct message to a participant")
 async def messaging_send_command(
     *,
     project_id: ProjectIdOption,
@@ -120,7 +120,7 @@ async def messaging_send_command(
         await account_client.close()
 
 
-@app.async_command("broadcast")
+@app.async_command("broadcast", help="Broadcast a message to all participants")
 async def messaging_broadcast_command(
     *,
     project_id: ProjectIdOption,
