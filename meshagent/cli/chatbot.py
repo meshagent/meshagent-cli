@@ -778,9 +778,15 @@ async def service(
         Optional[str],
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     always_reply: Annotated[
         Optional[bool],
         typer.Option(..., help="Always reply"),
@@ -1000,9 +1006,15 @@ async def spec(
         Optional[str],
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     always_reply: Annotated[
         Optional[bool],
         typer.Option(..., help="Always reply"),
@@ -1235,9 +1247,15 @@ async def deploy(
         Optional[str],
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     always_reply: Annotated[
         Optional[bool],
         typer.Option(..., help="Always reply"),

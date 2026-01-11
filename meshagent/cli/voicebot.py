@@ -178,8 +178,14 @@ async def make_call(
             "--schema", "-s", help="the name or url of a required schema", hidden=True
         ),
     ] = [],
-    auto_greet_message: Annotated[Optional[str], typer.Option()] = None,
-    auto_greet_prompt: Annotated[Optional[str], typer.Option()] = None,
+    auto_greet_message: Annotated[
+        Optional[str],
+        typer.Option(help="Message to send automatically when the bot joins"),
+    ] = None,
+    auto_greet_prompt: Annotated[
+        Optional[str],
+        typer.Option(help="Prompt to generate an auto-greet message"),
+    ] = None,
     key: Annotated[
         str,
         typer.Option("--key", help="an api key to sign the token with"),
@@ -276,11 +282,23 @@ async def service(
             "--schema", "-s", help="the name or url of a required schema", hidden=True
         ),
     ] = [],
-    auto_greet_message: Annotated[Optional[str], typer.Option()] = None,
-    auto_greet_prompt: Annotated[Optional[str], typer.Option()] = None,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    auto_greet_message: Annotated[
+        Optional[str],
+        typer.Option(help="Message to send automatically when the bot joins"),
+    ] = None,
+    auto_greet_prompt: Annotated[
+        Optional[str],
+        typer.Option(help="Prompt to generate an auto-greet message"),
+    ] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     room_rules: Annotated[
         List[str],
         typer.Option(
@@ -358,11 +376,23 @@ async def spec(
             "--schema", "-s", help="the name or url of a required schema", hidden=True
         ),
     ] = [],
-    auto_greet_message: Annotated[Optional[str], typer.Option()] = None,
-    auto_greet_prompt: Annotated[Optional[str], typer.Option()] = None,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    auto_greet_message: Annotated[
+        Optional[str],
+        typer.Option(help="Message to send automatically when the bot joins"),
+    ] = None,
+    auto_greet_prompt: Annotated[
+        Optional[str],
+        typer.Option(help="Prompt to generate an auto-greet message"),
+    ] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     room_rules: Annotated[
         List[str],
         typer.Option(
@@ -452,11 +482,23 @@ async def deploy(
             "--schema", "-s", help="the name or url of a required schema", hidden=True
         ),
     ] = [],
-    auto_greet_message: Annotated[Optional[str], typer.Option()] = None,
-    auto_greet_prompt: Annotated[Optional[str], typer.Option()] = None,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    auto_greet_message: Annotated[
+        Optional[str],
+        typer.Option(help="Message to send automatically when the bot joins"),
+    ] = None,
+    auto_greet_prompt: Annotated[
+        Optional[str],
+        typer.Option(help="Prompt to generate an auto-greet message"),
+    ] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     room_rules: Annotated[
         List[str],
         typer.Option(

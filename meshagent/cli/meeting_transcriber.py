@@ -93,9 +93,15 @@ async def join(
 async def service(
     *,
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent")],
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[str, typer.Option()] = "/agent",
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        str, typer.Option(help="HTTP path to mount the service at")
+    ] = "/agent",
 ):
     try:
         from meshagent.livekit.agents.meeting_transcriber import MeetingTranscriber

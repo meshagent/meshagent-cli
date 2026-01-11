@@ -23,8 +23,8 @@ async def ask(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
-    agent: Annotated[str, typer.Option()],
-    input: Annotated[str, typer.Option()],
+    agent: Annotated[str, typer.Option(..., help="Agent name to ask")],
+    input: Annotated[str, typer.Option(..., help="JSON string with tool arguments")],
     timeout: Annotated[
         Optional[int],
         typer.Option(

@@ -347,7 +347,9 @@ async def make_call(
     require_local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
-    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable apply patch tool calling"),
@@ -406,8 +408,12 @@ async def make_call(
             hidden=True,
         ),
     ] = False,
-    reply_all: Annotated[bool, typer.Option()] = False,
-    enable_attachments: Annotated[bool, typer.Option()] = False,
+    reply_all: Annotated[
+        bool, typer.Option(help="Reply-all when responding to emails")
+    ] = False,
+    enable_attachments: Annotated[
+        bool, typer.Option(help="Allow downloading and processing email attachments")
+    ] = False,
     working_directory: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
@@ -543,14 +549,22 @@ async def service(
     require_local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
-    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable apply patch tool calling"),
     ] = False,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     queue: Annotated[str, typer.Option(..., help="the name of the mail queue")],
     email_address: Annotated[
         str, typer.Option(..., help="the email address of the agent")
@@ -601,8 +615,12 @@ async def service(
             hidden=True,
         ),
     ] = False,
-    reply_all: Annotated[bool, typer.Option()] = False,
-    enable_attachments: Annotated[bool, typer.Option()] = False,
+    reply_all: Annotated[
+        bool, typer.Option(help="Reply-all when responding to emails")
+    ] = False,
+    enable_attachments: Annotated[
+        bool, typer.Option(help="Allow downloading and processing email attachments")
+    ] = False,
     working_directory: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
@@ -725,14 +743,22 @@ async def spec(
     require_local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
-    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable apply patch tool calling"),
     ] = False,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     queue: Annotated[str, typer.Option(..., help="the name of the mail queue")],
     email_address: Annotated[
         str, typer.Option(..., help="the email address of the agent")
@@ -783,8 +809,12 @@ async def spec(
             hidden=True,
         ),
     ] = False,
-    reply_all: Annotated[bool, typer.Option()] = False,
-    enable_attachments: Annotated[bool, typer.Option()] = False,
+    reply_all: Annotated[
+        bool, typer.Option(help="Reply-all when responding to emails")
+    ] = False,
+    enable_attachments: Annotated[
+        bool, typer.Option(help="Allow downloading and processing email attachments")
+    ] = False,
     working_directory: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
@@ -920,14 +950,22 @@ async def deploy(
     require_local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
-    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable apply patch tool calling"),
     ] = False,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     queue: Annotated[str, typer.Option(..., help="the name of the mail queue")],
     email_address: Annotated[
         str, typer.Option(..., help="the email address of the agent")
@@ -978,8 +1016,12 @@ async def deploy(
             hidden=True,
         ),
     ] = False,
-    reply_all: Annotated[bool, typer.Option()] = False,
-    enable_attachments: Annotated[bool, typer.Option()] = False,
+    reply_all: Annotated[
+        bool, typer.Option(help="Reply-all when responding to emails")
+    ] = False,
+    enable_attachments: Annotated[
+        bool, typer.Option(help="Allow downloading and processing email attachments")
+    ] = False,
     working_directory: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),

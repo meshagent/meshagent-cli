@@ -54,8 +54,12 @@ cli.command("voicebot")(voicebot_service)
 async def python(
     *,
     module: str,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
     path: Annotated[
         Optional[str],
         typer.Option(help="A path to add the service at"),
@@ -64,7 +68,9 @@ async def python(
         Optional[str],
         typer.Option(help="The desired identity for the service"),
     ] = None,
-    name: Annotated[str, typer.Option()] = "main",
+    name: Annotated[
+        str, typer.Option(help="Entry-point name in the Python module")
+    ] = "main",
 ):
     service = get_service(host=host, port=port)
 
@@ -256,8 +262,12 @@ async def deploy(
 
 @app.async_command("service")
 async def host(
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
     command: Annotated[str, typer.Option("-c", help=subcommand_help)] = [],
 ):
     set_deferred(True)
