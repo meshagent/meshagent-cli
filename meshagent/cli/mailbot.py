@@ -311,7 +311,7 @@ def build_mailbot(
 @app.async_command("join")
 async def make_call(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     role: str = "agent",
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
@@ -1000,7 +1000,7 @@ async def deploy(
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: Annotated[
         Optional[str],
         typer.Option("--room", help="The name of a room to create the service for"),

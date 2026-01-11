@@ -22,7 +22,7 @@ app = async_typer.AsyncTyper(help="Join a meeting transcriber to a room")
 @app.async_command("join")
 async def join(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent")],
     key: Annotated[

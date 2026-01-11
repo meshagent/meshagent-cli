@@ -22,7 +22,7 @@ app = async_typer.AsyncTyper()
 @app.async_command("list-participants")
 async def messaging_list_participants_command(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
 ):
     """
@@ -64,7 +64,7 @@ async def messaging_list_participants_command(
 @app.async_command("send")
 async def messaging_send_command(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     to_participant_id: Annotated[
         str, typer.Option(..., help="Participant ID to send a message to")
@@ -123,7 +123,7 @@ async def messaging_send_command(
 @app.async_command("broadcast")
 async def messaging_broadcast_command(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     data: Annotated[str, typer.Option(..., help="JSON message to broadcast")],
 ):

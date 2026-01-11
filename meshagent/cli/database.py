@@ -81,7 +81,7 @@ NamespaceOption = Annotated[
 @app.async_command("tables")
 async def list_tables(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     namespace: NamespaceOption = None,
 ):
@@ -118,7 +118,7 @@ async def list_tables(
 @app.async_command("inspect")
 async def inspect(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     namespace: NamespaceOption = None,
@@ -165,7 +165,7 @@ async def inspect(
 @app.async_command("install")
 async def install_requirements(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     file: Annotated[
         Optional[str], typer.Option("--file", help="Path to requirements JSON file")
@@ -207,7 +207,7 @@ async def install_requirements(
 @app.async_command("create")
 async def create_table(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     mode: Annotated[
@@ -299,7 +299,7 @@ async def create_table(
 @app.async_command("drop")
 async def drop_table(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     namespace: NamespaceOption = None,
@@ -338,7 +338,7 @@ async def drop_table(
 @app.async_command("add-columns")
 async def add_columns(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t")],
     namespace: NamespaceOption = None,
@@ -394,7 +394,7 @@ async def add_columns(
 @app.async_command("drop-columns")
 async def drop_columns(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t")],
     namespace: NamespaceOption = None,
@@ -434,7 +434,7 @@ async def drop_columns(
 @app.async_command("insert")
 async def insert(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t")],
     namespace: NamespaceOption = None,
@@ -486,7 +486,7 @@ async def insert(
 @app.async_command("merge")
 async def merge(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t")],
     on: Annotated[str, typer.Option(..., "--on", help="Column to match for upsert")],
@@ -538,7 +538,7 @@ async def merge(
 @app.async_command("update")
 async def update(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t")],
     where: Annotated[
@@ -594,7 +594,7 @@ async def update(
 @app.async_command("delete")
 async def delete(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t")],
     where: Annotated[str, typer.Option(..., "--where", help="SQL WHERE clause")],
@@ -631,7 +631,7 @@ async def delete(
 @app.async_command("search")
 async def search(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t")],
     namespace: NamespaceOption = None,
@@ -703,7 +703,7 @@ async def search(
 @app.async_command("optimize")
 async def optimize(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t")],
     namespace: NamespaceOption = None,
@@ -737,7 +737,7 @@ async def optimize(
 @app.async_command("versions")
 async def list_versions(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t")],
     namespace: NamespaceOption = None,
@@ -775,7 +775,7 @@ async def list_versions(
 @app.async_command("checkout")
 async def checkout(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t")],
     version: Annotated[int, typer.Option(..., "--version", "-v")],
@@ -812,7 +812,7 @@ async def checkout(
 @app.async_command("restore")
 async def restore(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t")],
     version: Annotated[int, typer.Option(..., "--version", "-v")],
@@ -849,7 +849,7 @@ async def restore(
 @app.async_command("indexes")
 async def list_indexes(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t")],
     namespace: NamespaceOption = None,
@@ -887,7 +887,7 @@ async def list_indexes(
 @app.async_command("index-create")
 async def create_index(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t")],
     column: Annotated[str, typer.Option(..., "--column", "-c")],
@@ -949,7 +949,7 @@ async def create_index(
 @app.async_command("index-drop")
 async def drop_index(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t")],
     name: Annotated[str, typer.Option(..., "--name", help="Index name")],

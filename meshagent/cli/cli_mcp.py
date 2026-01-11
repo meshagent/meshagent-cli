@@ -41,7 +41,7 @@ app = async_typer.AsyncTyper()
 @app.async_command("sse")
 async def sse(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "tool",
@@ -119,7 +119,7 @@ async def sse(
 @app.async_command("stdio")
 async def stdio(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "tool",

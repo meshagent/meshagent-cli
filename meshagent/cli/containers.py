@@ -375,7 +375,7 @@ async def _with_client(
 @app.async_command("ps")
 async def list_containers(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     output: Annotated[Optional[str], typer.Option(help="json | table")] = "json",
 ):
@@ -408,7 +408,7 @@ async def list_containers(
 @app.async_command("stop")
 async def stop_container(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     id: Annotated[str, typer.Option(..., help="Container ID")],
 ):
@@ -427,7 +427,7 @@ async def stop_container(
 @app.async_command("logs")
 async def container_logs(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     id: Annotated[str, typer.Option(..., help="Container ID")],
     follow: Annotated[bool, typer.Option("--follow/--no-follow")] = False,
@@ -447,7 +447,7 @@ async def container_logs(
 @app.async_command("exec")
 async def exec_container(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     container_id: Annotated[str, typer.Option(..., help="container id")],
     command: Annotated[Optional[str], typer.Option(...)] = None,
@@ -579,7 +579,7 @@ async def exec_container(
 @app.async_command("run")
 async def run_container(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     image: Annotated[str, typer.Option(..., help="Image to run")],
     command: Annotated[Optional[str], typer.Option(...)] = None,
@@ -645,7 +645,7 @@ app.add_typer(images_app, name="images")
 @images_app.async_command("list")
 async def images_list(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
 ):
     account_client, client = await _with_client(
@@ -663,7 +663,7 @@ async def images_list(
 @images_app.async_command("delete")
 async def images_delete(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     image: Annotated[str, typer.Option(..., help="Image ref/tag to delete")],
 ):
@@ -682,7 +682,7 @@ async def images_delete(
 @images_app.async_command("pull")
 async def images_pull(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     tag: Annotated[str, typer.Option(..., help="Image tag/ref to pull")],
     cred: Annotated[

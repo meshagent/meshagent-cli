@@ -18,7 +18,7 @@ app = async_typer.AsyncTyper(help="Manage mailboxes for your project")
 @app.async_command("create")
 async def mailbox_create(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     address: Annotated[
         str,
         typer.Option(
@@ -79,7 +79,7 @@ async def mailbox_create(
 @app.async_command("update")
 async def mailbox_update(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     address: Annotated[
         str,
         typer.Argument(help="Mailbox email address to update"),
@@ -147,7 +147,7 @@ async def mailbox_update(
 @app.async_command("show")
 async def mailbox_show(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     address: Annotated[str, typer.Argument(help="Mailbox address to show")],
 ):
     """Show mailbox details."""
@@ -169,7 +169,7 @@ async def mailbox_show(
 @app.async_command("list")
 async def mailbox_list(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     o: OutputFormatOption = "table",
 ):
     """List mailboxes for the project."""
@@ -203,7 +203,7 @@ async def mailbox_list(
 @app.async_command("delete")
 async def mailbox_delete(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     address: Annotated[str, typer.Argument(help="Mailbox address to delete")],
 ):
     """Delete a mailbox."""

@@ -20,7 +20,7 @@ app = async_typer.AsyncTyper()
 @app.async_command("watch")
 async def watch_logs(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
 ):
     """

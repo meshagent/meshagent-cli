@@ -19,7 +19,7 @@ app = async_typer.AsyncTyper(help="Manage mailboxes for your project")
 @app.async_command("forward")
 async def forward(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: Annotated[
         str,
         typer.Option(

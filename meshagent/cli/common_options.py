@@ -12,6 +12,7 @@ ProjectIdOption = Annotated[
     typer.Option(
         "--project-id",
         help="A MeshAgent project id. If empty, the activated project will be used.",
+        default_factory=os.getenv("MESHAGENT_PROJECT_ID"),
     ),
 ]
 
