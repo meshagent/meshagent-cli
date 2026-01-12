@@ -3,6 +3,8 @@ from rich import print
 from typing import Annotated, Optional
 from meshagent.tools import Toolkit
 from meshagent.tools.storage import StorageToolkitBuilder
+from meshagent.tools.datetime import DatetimeToolkit
+from meshagent.tools.uuid import UUIDToolkit
 from meshagent.tools.document_tools import (
     DocumentAuthoringToolkit,
     DocumentTypeAuthoringToolkit,
@@ -105,6 +107,8 @@ def build_chatbot(
     require_table_read: list[str] = None,
     require_table_write: list[str] = None,
     require_read_only_storage: Optional[str] = None,
+    require_time: bool = True,
+    require_uuid: bool = False,
     rules_file: Optional[str] = None,
     room_rules_path: Optional[list[str]] = None,
     require_discovery: Optional[str] = None,
@@ -307,6 +311,12 @@ def build_chatbot(
                         )
                     ).tools
                 )
+
+            if require_time:
+                providers.extend((DatetimeToolkit()).tools)
+
+            if require_uuid:
+                providers.extend((UUIDToolkit()).tools)
 
             if len(require_table_write) > 0:
                 providers.extend(
@@ -528,6 +538,20 @@ async def make_call(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     require_document_authoring: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable MeshDocument authoring"),
@@ -618,6 +642,8 @@ async def make_call(
                 require_table_read=require_table_read,
                 require_table_write=require_table_write,
                 require_read_only_storage=require_read_only_storage,
+                require_time=require_time,
+                require_uuid=require_uuid,
                 room_rules_path=room_rules,
                 require_document_authoring=require_document_authoring,
                 require_discovery=require_discovery,
@@ -762,6 +788,20 @@ async def service(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     working_directory: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
@@ -850,6 +890,8 @@ async def service(
             require_table_write=require_table_write,
             require_table_read=require_table_read,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
             room_rules_path=room_rules,
             working_directory=working_directory,
             require_document_authoring=require_document_authoring,
@@ -990,6 +1032,20 @@ async def spec(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     working_directory: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
@@ -1078,6 +1134,8 @@ async def spec(
             require_table_write=require_table_write,
             require_table_read=require_table_read,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
             room_rules_path=room_rules,
             working_directory=working_directory,
             require_document_authoring=require_document_authoring,
@@ -1231,6 +1289,20 @@ async def deploy(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     working_directory: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
@@ -1326,6 +1398,8 @@ async def deploy(
             require_table_write=require_table_write,
             require_table_read=require_table_read,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
             room_rules_path=room_rules,
             working_directory=working_directory,
             require_document_authoring=require_document_authoring,

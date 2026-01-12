@@ -32,7 +32,8 @@ import logging
 from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
 
 from meshagent.tools.storage import StorageToolkit
-
+from meshagent.tools.datetime import DatetimeToolkit
+from meshagent.tools.uuid import UUIDToolkit
 
 from meshagent.openai.tools.responses_adapter import (
     WebSearchTool,
@@ -83,6 +84,8 @@ def build_mailbot(
     require_apply_patch: Optional[bool] = None,
     require_storage: Optional[str] = None,
     require_read_only_storage: Optional[str] = None,
+    require_time: bool = True,
+    require_uuid: bool = False,
     require_table_read: bool,
     require_table_write: bool,
     require_computer_use: bool,
@@ -295,6 +298,12 @@ def build_mailbot(
                     ).tools
                 )
 
+            if require_time:
+                thread_toolkit.tools.extend(DatetimeToolkit().tools)
+
+            if require_uuid:
+                thread_toolkit.tools.extend(UUIDToolkit().tools)
+
             if require_computer_use:
                 from meshagent.computers.agent import ComputerToolkit
 
@@ -387,6 +396,20 @@ async def make_call(
     require_read_only_storage: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
+    ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
     ] = False,
     database_namespace: Annotated[
         Optional[str],
@@ -481,6 +504,8 @@ async def make_call(
                 require_apply_patch=require_apply_patch,
                 require_storage=require_storage,
                 require_read_only_storage=require_read_only_storage,
+                require_time=require_time,
+                require_uuid=require_uuid,
                 require_table_read=require_table_read,
                 require_table_write=require_table_write,
                 require_computer_use=require_computer_use,
@@ -595,6 +620,20 @@ async def service(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     database_namespace: Annotated[
         Optional[str],
         typer.Option(..., help="Use a specific database namespace"),
@@ -677,6 +716,8 @@ async def service(
             require_apply_patch=require_apply_patch,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
@@ -789,6 +830,20 @@ async def spec(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     database_namespace: Annotated[
         Optional[str],
         typer.Option(..., help="Use a specific database namespace"),
@@ -871,6 +926,8 @@ async def spec(
             require_apply_patch=require_apply_patch,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
@@ -996,6 +1053,20 @@ async def deploy(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     database_namespace: Annotated[
         Optional[str],
         typer.Option(..., help="Use a specific database namespace"),
@@ -1085,6 +1156,8 @@ async def deploy(
             require_apply_patch=require_apply_patch,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
