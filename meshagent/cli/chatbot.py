@@ -538,6 +538,20 @@ async def make_call(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     require_document_authoring: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable MeshDocument authoring"),
@@ -628,6 +642,8 @@ async def make_call(
                 require_table_read=require_table_read,
                 require_table_write=require_table_write,
                 require_read_only_storage=require_read_only_storage,
+                require_time=require_time,
+                require_uuid=require_uuid,
                 room_rules_path=room_rules,
                 require_document_authoring=require_document_authoring,
                 require_discovery=require_discovery,
@@ -772,6 +788,20 @@ async def service(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     working_directory: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
@@ -860,6 +890,8 @@ async def service(
             require_table_write=require_table_write,
             require_table_read=require_table_read,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
             room_rules_path=room_rules,
             working_directory=working_directory,
             require_document_authoring=require_document_authoring,
@@ -1000,6 +1032,20 @@ async def spec(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     working_directory: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
@@ -1088,6 +1134,8 @@ async def spec(
             require_table_write=require_table_write,
             require_table_read=require_table_read,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
             room_rules_path=room_rules,
             working_directory=working_directory,
             require_document_authoring=require_document_authoring,
@@ -1241,6 +1289,20 @@ async def deploy(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     working_directory: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
@@ -1336,6 +1398,8 @@ async def deploy(
             require_table_write=require_table_write,
             require_table_read=require_table_read,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
             room_rules_path=room_rules,
             working_directory=working_directory,
             require_document_authoring=require_document_authoring,

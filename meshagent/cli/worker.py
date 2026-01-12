@@ -32,6 +32,8 @@ from meshagent.agents.config import RulesConfig
 from meshagent.tools import Toolkit
 from meshagent.tools.storage import StorageToolkit
 from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
+from meshagent.tools.datetime import DatetimeToolkit
+from meshagent.tools.uuid import UUIDToolkit
 from meshagent.openai import OpenAIResponsesAdapter
 
 
@@ -101,6 +103,8 @@ def build_worker(
     require_shell: bool = False,
     require_storage: bool = False,
     require_read_only_storage: bool = False,
+    require_time: bool = True,
+    require_uuid: bool = False,
     database_namespace: Optional[list[str]] = None,
     require_table_read: list[str] | None = None,
     require_table_write: list[str] | None = None,
@@ -322,6 +326,12 @@ def build_worker(
                     ).tools
                 )
 
+            if require_time:
+                thread_toolkit.tools.extend(DatetimeToolkit().tools)
+
+            if require_uuid:
+                thread_toolkit.tools.extend(UUIDToolkit().tools)
+
             if require_computer_use:
                 from meshagent.computers.agent import ComputerToolkit
 
@@ -428,6 +438,20 @@ async def join(
     require_read_only_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable read only storage toolkit")
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     database_namespace: Annotated[
         Optional[str],
         typer.Option(
@@ -525,6 +549,8 @@ async def join(
                 toolkit_name=toolkit_name,
                 require_storage=require_storage,
                 require_read_only_storage=require_read_only_storage,
+                require_time=require_time,
+                require_uuid=require_uuid,
                 require_table_read=require_table_read,
                 require_table_write=require_table_write,
                 require_computer_use=require_computer_use,
@@ -644,6 +670,20 @@ async def service(
     require_read_only_storage: Annotated[
         Optional[bool], typer.Option(..., help="Require read-only storage toolkit")
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     database_namespace: Annotated[
         Optional[str],
         typer.Option(..., help="Database namespace (e.g. foo::bar)"),
@@ -734,6 +774,8 @@ async def service(
             toolkit_name=toolkit_name,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
@@ -855,6 +897,20 @@ async def spec(
     require_read_only_storage: Annotated[
         Optional[bool], typer.Option(..., help="Require read-only storage toolkit")
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     database_namespace: Annotated[
         Optional[str],
         typer.Option(..., help="Database namespace (e.g. foo::bar)"),
@@ -945,6 +1001,8 @@ async def spec(
             toolkit_name=toolkit_name,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
@@ -1079,6 +1137,20 @@ async def deploy(
     require_read_only_storage: Annotated[
         Optional[bool], typer.Option(..., help="Require read-only storage toolkit")
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     database_namespace: Annotated[
         Optional[str],
         typer.Option(..., help="Database namespace (e.g. foo::bar)"),
@@ -1176,6 +1248,8 @@ async def deploy(
             toolkit_name=toolkit_name,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
