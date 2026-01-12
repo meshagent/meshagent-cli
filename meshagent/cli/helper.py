@@ -7,7 +7,7 @@ from typing import Optional
 from meshagent.cli import auth_async
 from meshagent.cli import async_typer
 from meshagent.api.helpers import meshagent_base_url
-from meshagent.api.client import Meshagent
+from meshagent.api.client import Meshagent, RoomConnectionInfo
 import os
 from rich import print
 
@@ -29,11 +29,15 @@ def _save_settings(s: Settings):
 
 
 def _load_settings():
-    _ensure_cache_dir()
-    if SETTINGS_FILE.exists():
-        return Settings.model_validate_json(SETTINGS_FILE.read_text())
-
-    return Settings()
+    try:
+        _ensure_cache_dir()
+        if SETTINGS_FILE.exists():
+            return Settings.model_validate_json(SETTINGS_FILE.read_text())
+    except OSError as ex:
+        if ex.errno == 30:
+            return Settings()
+        else:
+            raise
 
 
 async def get_active_project():
@@ -68,16 +72,33 @@ async def get_active_api_key(project_id: str):
 app = async_typer.AsyncTyper()
 
 
+class CustomMeshagentClient(Meshagent):
+    async def connect_room(self, *, project_id: str, room: str) -> RoomConnectionInfo:
+        from urllib.parse import quote
+
+        jwt = os.getenv("MESHAGENT_SESSION_TOKEN")
+
+        if jwt is not None and room == os.getenv("MESHAGENT_ROOM"):
+            return RoomConnectionInfo(
+                jwt=jwt,
+                room_name=room,
+                project_id=os.getenv("MESHAGENT_PROJECT_ID"),
+                room_url=meshagent_base_url() + f"/rooms/{quote(room)}",
+            )
+
+        return await super().connect_room(project_id=project_id, room=room)
+
+
 async def get_client():
     key = os.getenv("MESHAGENT_API_KEY")
-    if key is not None:
-        return Meshagent(
+    if key is not None or os.getenv("MESHAGENT_SESSION_ID") is not None:
+        return CustomMeshagentClient(
             base_url=meshagent_base_url(),
             token=key,
         )
     else:
         access_token = await auth_async.get_access_token()
-        return Meshagent(
+        return CustomMeshagentClient(
             base_url=meshagent_base_url(),
             token=access_token,
         )
@@ -119,7 +140,7 @@ def resolve_room(room_name: Optional[str] = None):
 
 async def resolve_project_id(project_id: Optional[str] = None):
     if project_id is None:
-        project_id = await get_active_project()
+        project_id = os.getenv("MESHAGENT_PROJECT_ID") or await get_active_project()
 
     if project_id is None:
         print(

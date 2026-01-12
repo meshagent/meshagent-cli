@@ -10,13 +10,13 @@ from meshagent.api.participant_token import ParticipantTokenSpec
 from pydantic_yaml import parse_yaml_raw_as
 from meshagent.cli.common_options import ProjectIdOption
 
-app = async_typer.AsyncTyper()
+app = async_typer.AsyncTyper(help="Generate participant tokens (JWTs)")
 
 
-@app.async_command("generate")
+@app.async_command("generate", help="Generate a participant token (JWT) from a spec")
 async def generate(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     output: Annotated[
         Optional[str],
         typer.Option("--output", "-o", help="File path to a file"),
@@ -30,6 +30,8 @@ async def generate(
         typer.Option("--key", help="an api key to sign the token with"),
     ] = None,
 ):
+    """Generate a signed participant token (JWT) from a YAML spec."""
+
     project_id = await resolve_project_id(project_id=project_id)
     key = await resolve_key(project_id=project_id, key=key)
 

@@ -13,19 +13,19 @@ from meshagent.cli.helper import get_client, resolve_project_id
 
 from meshagent.api.port_forward import port_forward
 
-app = async_typer.AsyncTyper(help="Manage mailboxes for your project")
+app = async_typer.AsyncTyper(help="Port forwarding into room containers")
 
 
-@app.async_command("forward")
+@app.async_command("forward", help="Forward a container port to localhost")
 async def forward(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: Annotated[
         str,
         typer.Option(
             "--room",
             "-r",
-            help="Room name to route inbound mail into",
+            help="Room name containing the target container",
         ),
     ],
     container_id: Annotated[
@@ -33,7 +33,7 @@ async def forward(
         typer.Option(
             "--container-id",
             "-c",
-            help="The container which should have it's port forwarded",
+            help="Container ID to port-forward into",
         ),
     ],
     port: Annotated[
@@ -41,10 +41,12 @@ async def forward(
         typer.Option(
             "--port",
             "-p",
-            help="The port to foward and the port to expose local:remote",
+            help="Port mapping in the form LOCAL:REMOTE",
         ),
     ],
 ):
+    """Create a local TCP listener forwarding into a room container."""
+
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)

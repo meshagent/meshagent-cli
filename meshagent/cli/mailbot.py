@@ -32,7 +32,8 @@ import logging
 from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
 
 from meshagent.tools.storage import StorageToolkit
-
+from meshagent.tools.datetime import DatetimeToolkit
+from meshagent.tools.uuid import UUIDToolkit
 
 from meshagent.openai.tools.responses_adapter import (
     WebSearchTool,
@@ -53,6 +54,7 @@ import shlex
 import sys
 
 from meshagent.api.client import ConflictError
+from meshagent.agents.adapter import MessageStreamLLMAdapter
 
 logger = logging.getLogger("mailbot")
 
@@ -82,6 +84,8 @@ def build_mailbot(
     require_apply_patch: Optional[bool] = None,
     require_storage: Optional[str] = None,
     require_read_only_storage: Optional[str] = None,
+    require_time: bool = True,
+    require_uuid: bool = False,
     require_table_read: bool,
     require_table_write: bool,
     require_computer_use: bool,
@@ -91,6 +95,8 @@ def build_mailbot(
     working_directory: Optional[str] = None,
     skill_dirs: Optional[list[str]] = None,
     shell_image: Optional[str] = None,
+    llm_participant: Optional[str] = None,
+    log_llm_requests: Optional[bool] = None,
 ):
     from meshagent.agents.mail import MailWorker
 
@@ -119,17 +125,34 @@ def build_mailbot(
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
 
     BaseClass = MailWorker
-    if computer_use or require_computer_use:
-        llm_adapter = OpenAIResponsesAdapter(
-            model=model,
-            response_options={
-                "reasoning": {"summary": "concise"},
-                "truncation": "auto",
-            },
+    if llm_participant:
+        llm_adapter = MessageStreamLLMAdapter(
+            participant_name=llm_participant,
         )
-
     else:
-        llm_adapter = OpenAIResponsesAdapter(model=model)
+        if computer_use or require_computer_use:
+            llm_adapter = OpenAIResponsesAdapter(
+                model=model,
+                response_options={
+                    "reasoning": {"summary": "concise"},
+                    "truncation": "auto",
+                },
+                log_requests=log_llm_requests,
+            )
+
+        else:
+            llm_adapter = OpenAIResponsesAdapter(
+                model=model,
+                log_requests=log_llm_requests,
+            )
+
+    parsed_whitelist = []
+    if len(whitelist) > 0:
+        for w in whitelist:
+            for s in w.split(","):
+                s = s.strip()
+                if len(s) > 0:
+                    parsed_whitelist.append(s)
 
     class CustomMailbot(BaseClass):
         def __init__(self):
@@ -142,7 +165,7 @@ def build_mailbot(
                 email_address=email_address,
                 toolkit_name=toolkit_name,
                 rules=rule if len(rule) > 0 else None,
-                whitelist=whitelist if len(whitelist) > 0 else None,
+                whitelist=parsed_whitelist if len(parsed_whitelist) > 0 else None,
                 reply_all=reply_all,
                 enable_attachments=enable_attachments,
                 skill_dirs=skill_dirs,
@@ -215,7 +238,7 @@ def build_mailbot(
                     ShellTool(
                         working_directory=working_directory,
                         config=ShellConfig(name="shell"),
-                        shell_image=shell_image,
+                        image=shell_image or "python:3.13",
                     )
                 )
 
@@ -275,6 +298,12 @@ def build_mailbot(
                     ).tools
                 )
 
+            if require_time:
+                thread_toolkit.tools.extend(DatetimeToolkit().tools)
+
+            if require_uuid:
+                thread_toolkit.tools.extend(UUIDToolkit().tools)
+
             if require_computer_use:
                 from meshagent.computers.agent import ComputerToolkit
 
@@ -291,7 +320,7 @@ def build_mailbot(
 @app.async_command("join")
 async def make_call(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     role: str = "agent",
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
@@ -327,7 +356,9 @@ async def make_call(
     require_local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
-    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable apply patch tool calling"),
@@ -366,6 +397,20 @@ async def make_call(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     database_namespace: Annotated[
         Optional[str],
         typer.Option(..., help="Use a specific database namespace"),
@@ -386,8 +431,12 @@ async def make_call(
             hidden=True,
         ),
     ] = False,
-    reply_all: Annotated[bool, typer.Option()] = False,
-    enable_attachments: Annotated[bool, typer.Option()] = False,
+    reply_all: Annotated[
+        bool, typer.Option(help="Reply-all when responding to emails")
+    ] = False,
+    enable_attachments: Annotated[
+        bool, typer.Option(help="Allow downloading and processing email attachments")
+    ] = False,
     working_directory: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
@@ -396,10 +445,18 @@ async def make_call(
         list[str],
         typer.Option(..., help="an agent skills directory"),
     ] = [],
+    llm_participant: Annotated[
+        Optional[str],
+        typer.Option(..., help="Delegate LLM interactions to a remote participant"),
+    ] = None,
     shell_image: Annotated[
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -447,6 +504,8 @@ async def make_call(
                 require_apply_patch=require_apply_patch,
                 require_storage=require_storage,
                 require_read_only_storage=require_read_only_storage,
+                require_time=require_time,
+                require_uuid=require_uuid,
                 require_table_read=require_table_read,
                 require_table_write=require_table_write,
                 require_computer_use=require_computer_use,
@@ -456,6 +515,8 @@ async def make_call(
                 working_directory=working_directory,
                 skill_dirs=skill_dir,
                 shell_image=shell_image,
+                llm_participant=llm_participant,
+                log_llm_requests=log_llm_requests,
             )
 
             bot = CustomMailbot()
@@ -513,14 +574,22 @@ async def service(
     require_local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
-    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable apply patch tool calling"),
     ] = False,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     queue: Annotated[str, typer.Option(..., help="the name of the mail queue")],
     email_address: Annotated[
         str, typer.Option(..., help="the email address of the agent")
@@ -551,6 +620,20 @@ async def service(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     database_namespace: Annotated[
         Optional[str],
         typer.Option(..., help="Use a specific database namespace"),
@@ -571,8 +654,12 @@ async def service(
             hidden=True,
         ),
     ] = False,
-    reply_all: Annotated[bool, typer.Option()] = False,
-    enable_attachments: Annotated[bool, typer.Option()] = False,
+    reply_all: Annotated[
+        bool, typer.Option(help="Reply-all when responding to emails")
+    ] = False,
+    enable_attachments: Annotated[
+        bool, typer.Option(help="Allow downloading and processing email attachments")
+    ] = False,
     working_directory: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
@@ -581,10 +668,18 @@ async def service(
         list[str],
         typer.Option(..., help="an agent skills directory"),
     ] = [],
+    llm_participant: Annotated[
+        Optional[str],
+        typer.Option(..., help="Delegate LLM interactions to a remote participant"),
+    ] = None,
     shell_image: Annotated[
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     service = get_service(host=host, port=port)
     if path is None:
@@ -621,6 +716,8 @@ async def service(
             require_apply_patch=require_apply_patch,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
@@ -630,6 +727,8 @@ async def service(
             working_directory=working_directory,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            llm_participant=llm_participant,
+            log_llm_requests=log_llm_requests,
         ),
     )
 
@@ -685,14 +784,22 @@ async def spec(
     require_local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
-    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable apply patch tool calling"),
     ] = False,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     queue: Annotated[str, typer.Option(..., help="the name of the mail queue")],
     email_address: Annotated[
         str, typer.Option(..., help="the email address of the agent")
@@ -723,6 +830,20 @@ async def spec(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     database_namespace: Annotated[
         Optional[str],
         typer.Option(..., help="Use a specific database namespace"),
@@ -743,8 +864,12 @@ async def spec(
             hidden=True,
         ),
     ] = False,
-    reply_all: Annotated[bool, typer.Option()] = False,
-    enable_attachments: Annotated[bool, typer.Option()] = False,
+    reply_all: Annotated[
+        bool, typer.Option(help="Reply-all when responding to emails")
+    ] = False,
+    enable_attachments: Annotated[
+        bool, typer.Option(help="Allow downloading and processing email attachments")
+    ] = False,
     working_directory: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
@@ -753,10 +878,18 @@ async def spec(
         list[str],
         typer.Option(..., help="an agent skills directory"),
     ] = [],
+    llm_participant: Annotated[
+        Optional[str],
+        typer.Option(..., help="Delegate LLM interactions to a remote participant"),
+    ] = None,
     shell_image: Annotated[
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     service = get_service(host=host, port=port)
     if path is None:
@@ -793,6 +926,8 @@ async def spec(
             require_apply_patch=require_apply_patch,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
@@ -802,6 +937,8 @@ async def spec(
             working_directory=working_directory,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            llm_participant=llm_participant,
+            log_llm_requests=log_llm_requests,
         ),
     )
 
@@ -870,14 +1007,22 @@ async def deploy(
     require_local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
-    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable apply patch tool calling"),
     ] = False,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     queue: Annotated[str, typer.Option(..., help="the name of the mail queue")],
     email_address: Annotated[
         str, typer.Option(..., help="the email address of the agent")
@@ -908,6 +1053,20 @@ async def deploy(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     database_namespace: Annotated[
         Optional[str],
         typer.Option(..., help="Use a specific database namespace"),
@@ -928,8 +1087,12 @@ async def deploy(
             hidden=True,
         ),
     ] = False,
-    reply_all: Annotated[bool, typer.Option()] = False,
-    enable_attachments: Annotated[bool, typer.Option()] = False,
+    reply_all: Annotated[
+        bool, typer.Option(help="Reply-all when responding to emails")
+    ] = False,
+    enable_attachments: Annotated[
+        bool, typer.Option(help="Allow downloading and processing email attachments")
+    ] = False,
     working_directory: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
@@ -938,11 +1101,19 @@ async def deploy(
         list[str],
         typer.Option(..., help="an agent skills directory"),
     ] = [],
+    llm_participant: Annotated[
+        Optional[str],
+        typer.Option(..., help="Delegate LLM interactions to a remote participant"),
+    ] = None,
     shell_image: Annotated[
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
-    project_id: ProjectIdOption = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
+    project_id: ProjectIdOption,
     room: Annotated[
         Optional[str],
         typer.Option("--room", help="The name of a room to create the service for"),
@@ -985,6 +1156,8 @@ async def deploy(
             require_apply_patch=require_apply_patch,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
@@ -994,6 +1167,8 @@ async def deploy(
             working_directory=working_directory,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            llm_participant=llm_participant,
+            log_llm_requests=log_llm_requests,
         ),
     )
 
@@ -1055,7 +1230,7 @@ async def deploy(
             print(f"[red]Service name already in use: {spec.metadata.name}[/red]")
             raise typer.Exit(code=1)
         else:
-            print(f"[green]Updated service:[/] {id}")
+            print(f"[green]Deployed service:[/] {id}")
 
     finally:
         await client.close()

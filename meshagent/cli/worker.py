@@ -32,6 +32,8 @@ from meshagent.agents.config import RulesConfig
 from meshagent.tools import Toolkit
 from meshagent.tools.storage import StorageToolkit
 from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
+from meshagent.tools.datetime import DatetimeToolkit
+from meshagent.tools.uuid import UUIDToolkit
 from meshagent.openai import OpenAIResponsesAdapter
 
 
@@ -101,6 +103,8 @@ def build_worker(
     require_shell: bool = False,
     require_storage: bool = False,
     require_read_only_storage: bool = False,
+    require_time: bool = True,
+    require_uuid: bool = False,
     database_namespace: Optional[list[str]] = None,
     require_table_read: list[str] | None = None,
     require_table_write: list[str] | None = None,
@@ -108,6 +112,7 @@ def build_worker(
     toolkit_name: Optional[str] = None,
     skill_dirs: Optional[list[str]] = None,
     shell_image: Optional[str] = None,
+    log_llm_requests: Optional[bool] = None,
 ):
     """
     Returns a Worker subclass
@@ -141,9 +146,13 @@ def build_worker(
                 "reasoning": {"summary": "concise"},
                 "truncation": "auto",
             },
+            log_requests=log_llm_requests,
         )
     else:
-        llm_adapter: LLMAdapter = OpenAIResponsesAdapter(model=model)
+        llm_adapter: LLMAdapter = OpenAIResponsesAdapter(
+            model=model,
+            log_requests=log_llm_requests,
+        )
 
     class CustomWorker(WorkerBase):
         def __init__(self):
@@ -169,7 +178,7 @@ def build_worker(
             await super().start(room=room)
             if room_rules_paths is not None:
                 for p in room_rules_paths:
-                    await self._load_room_rules(room=room, path=p)
+                    await self._load_room_rules(path=p)
 
         async def get_rules(self):
             rules = [*await super().get_rules()]
@@ -227,7 +236,7 @@ def build_worker(
                 providers.append(
                     ShellToolkitBuilder(
                         working_directory=working_directory,
-                        shell_image=shell_image,
+                        image=shell_image,
                     )
                 )
 
@@ -247,7 +256,8 @@ def build_worker(
             Optional hook if your WorkerBase supports thread contexts.
             If not, you can remove this; I left it to mirror mailbot's pattern.
             """
-            toolkits_out = []
+            toolkits_out = await super().get_message_toolkits(message=message)
+
             thread_toolkit = Toolkit(name="thread_toolkit", tools=[])
 
             if require_local_shell:
@@ -258,7 +268,7 @@ def build_worker(
                     ShellTool(
                         working_directory=working_directory,
                         config=ShellConfig(name="shell"),
-                        shell_image=shell_image,
+                        image=shell_image or "python:3.13",
                     )
                 )
 
@@ -316,6 +326,12 @@ def build_worker(
                     ).tools
                 )
 
+            if require_time:
+                thread_toolkit.tools.extend(DatetimeToolkit().tools)
+
+            if require_uuid:
+                thread_toolkit.tools.extend(UUIDToolkit().tools)
+
             if require_computer_use:
                 from meshagent.computers.agent import ComputerToolkit
 
@@ -332,7 +348,7 @@ def build_worker(
 @app.async_command("join")
 async def join(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     role: str = "agent",
     agent_name: Annotated[str, typer.Option(..., help="Name of the worker agent")],
@@ -372,7 +388,9 @@ async def join(
     require_local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
-    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Require web search tool")
+    ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable apply patch tool calling"),
@@ -420,6 +438,20 @@ async def join(
     require_read_only_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable read only storage toolkit")
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     database_namespace: Annotated[
         Optional[str],
         typer.Option(
@@ -460,6 +492,10 @@ async def join(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -513,6 +549,8 @@ async def join(
                 toolkit_name=toolkit_name,
                 require_storage=require_storage,
                 require_read_only_storage=require_read_only_storage,
+                require_time=require_time,
+                require_uuid=require_uuid,
                 require_table_read=require_table_read,
                 require_table_write=require_table_write,
                 require_computer_use=require_computer_use,
@@ -522,6 +560,7 @@ async def join(
                 working_directory=working_directory,
                 skill_dirs=skill_dir,
                 shell_image=shell_image,
+                log_llm_requests=log_llm_requests,
             )
 
             worker = CustomWorker()
@@ -565,7 +604,10 @@ async def service(
             "--schema", "-s", help="the name or url of a required schema", hidden=True
         ),
     ] = [],
-    model: Annotated[str, typer.Option(...)] = "gpt-5.2",
+    model: Annotated[
+        str,
+        typer.Option(..., help="Name of the LLM model to use"),
+    ] = "gpt-5.2",
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -591,23 +633,69 @@ async def service(
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
-    require_local_shell: Annotated[Optional[bool], typer.Option(...)] = False,
-    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_local_shell: Annotated[
+        Optional[bool], typer.Option(..., help="Require local shell tool")
+    ] = False,
+    require_web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Require web search tool")
+    ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable apply patch tool calling"),
     ] = False,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     queue: Annotated[str, typer.Option(..., help="the queue to consume")],
-    toolkit_name: Annotated[Optional[str], typer.Option(...)] = None,
-    room_rules: Annotated[List[str], typer.Option("--room-rules", "-rr")] = [],
-    require_storage: Annotated[Optional[bool], typer.Option(...)] = False,
-    require_read_only_storage: Annotated[Optional[bool], typer.Option(...)] = False,
-    database_namespace: Annotated[Optional[str], typer.Option(...)] = None,
-    require_table_read: Annotated[list[str], typer.Option(...)] = [],
-    require_table_write: Annotated[list[str], typer.Option(...)] = [],
+    toolkit_name: Annotated[
+        Optional[str], typer.Option(..., help="Toolkit name to expose (optional)")
+    ] = None,
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="Path(s) to rules files inside the room",
+        ),
+    ] = [],
+    require_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Require storage toolkit")
+    ] = False,
+    require_read_only_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Require read-only storage toolkit")
+    ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
+    database_namespace: Annotated[
+        Optional[str],
+        typer.Option(..., help="Database namespace (e.g. foo::bar)"),
+    ] = None,
+    require_table_read: Annotated[
+        list[str],
+        typer.Option(..., help="Require table read tool for table (repeatable)"),
+    ] = [],
+    require_table_write: Annotated[
+        list[str],
+        typer.Option(..., help="Require table write tool for table (repeatable)"),
+    ] = [],
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
@@ -636,6 +724,10 @@ async def service(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     service = get_service(host=host, port=port)
 
@@ -682,6 +774,8 @@ async def service(
             toolkit_name=toolkit_name,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
@@ -691,6 +785,7 @@ async def service(
             working_directory=working_directory,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            log_llm_requests=log_llm_requests,
         ),
     )
 
@@ -736,7 +831,10 @@ async def spec(
             "--schema", "-s", help="the name or url of a required schema", hidden=True
         ),
     ] = [],
-    model: Annotated[str, typer.Option(...)] = "gpt-5.2",
+    model: Annotated[
+        str,
+        typer.Option(..., help="Name of the LLM model to use"),
+    ] = "gpt-5.2",
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -762,23 +860,69 @@ async def spec(
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
-    require_local_shell: Annotated[Optional[bool], typer.Option(...)] = False,
-    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_local_shell: Annotated[
+        Optional[bool], typer.Option(..., help="Require local shell tool")
+    ] = False,
+    require_web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Require web search tool")
+    ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable apply patch tool calling"),
     ] = False,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     queue: Annotated[str, typer.Option(..., help="the queue to consume")],
-    toolkit_name: Annotated[Optional[str], typer.Option(...)] = None,
-    room_rules: Annotated[List[str], typer.Option("--room-rules", "-rr")] = [],
-    require_storage: Annotated[Optional[bool], typer.Option(...)] = False,
-    require_read_only_storage: Annotated[Optional[bool], typer.Option(...)] = False,
-    database_namespace: Annotated[Optional[str], typer.Option(...)] = None,
-    require_table_read: Annotated[list[str], typer.Option(...)] = [],
-    require_table_write: Annotated[list[str], typer.Option(...)] = [],
+    toolkit_name: Annotated[
+        Optional[str], typer.Option(..., help="Toolkit name to expose (optional)")
+    ] = None,
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="Path(s) to rules files inside the room",
+        ),
+    ] = [],
+    require_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Require storage toolkit")
+    ] = False,
+    require_read_only_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Require read-only storage toolkit")
+    ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
+    database_namespace: Annotated[
+        Optional[str],
+        typer.Option(..., help="Database namespace (e.g. foo::bar)"),
+    ] = None,
+    require_table_read: Annotated[
+        list[str],
+        typer.Option(..., help="Require table read tool for table (repeatable)"),
+    ] = [],
+    require_table_write: Annotated[
+        list[str],
+        typer.Option(..., help="Require table write tool for table (repeatable)"),
+    ] = [],
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
@@ -807,6 +951,10 @@ async def spec(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     service = get_service(host=host, port=port)
 
@@ -853,6 +1001,8 @@ async def spec(
             toolkit_name=toolkit_name,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
@@ -862,6 +1012,7 @@ async def spec(
             working_directory=working_directory,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            log_llm_requests=log_llm_requests,
         ),
     )
 
@@ -920,7 +1071,10 @@ async def deploy(
             "--schema", "-s", help="the name or url of a required schema", hidden=True
         ),
     ] = [],
-    model: Annotated[str, typer.Option(...)] = "gpt-5.2",
+    model: Annotated[
+        str,
+        typer.Option(..., help="Name of the LLM model to use"),
+    ] = "gpt-5.2",
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -946,23 +1100,69 @@ async def deploy(
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
-    require_local_shell: Annotated[Optional[bool], typer.Option(...)] = False,
-    require_web_search: Annotated[Optional[bool], typer.Option(...)] = False,
+    require_local_shell: Annotated[
+        Optional[bool], typer.Option(..., help="Require local shell tool")
+    ] = False,
+    require_web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Require web search tool")
+    ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable apply patch tool calling"),
     ] = False,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     queue: Annotated[str, typer.Option(..., help="the queue to consume")],
-    toolkit_name: Annotated[Optional[str], typer.Option(...)] = None,
-    room_rules: Annotated[List[str], typer.Option("--room-rules", "-rr")] = [],
-    require_storage: Annotated[Optional[bool], typer.Option(...)] = False,
-    require_read_only_storage: Annotated[Optional[bool], typer.Option(...)] = False,
-    database_namespace: Annotated[Optional[str], typer.Option(...)] = None,
-    require_table_read: Annotated[list[str], typer.Option(...)] = [],
-    require_table_write: Annotated[list[str], typer.Option(...)] = [],
+    toolkit_name: Annotated[
+        Optional[str], typer.Option(..., help="Toolkit name to expose (optional)")
+    ] = None,
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="Path(s) to rules files inside the room",
+        ),
+    ] = [],
+    require_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Require storage toolkit")
+    ] = False,
+    require_read_only_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Require read-only storage toolkit")
+    ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
+    database_namespace: Annotated[
+        Optional[str],
+        typer.Option(..., help="Database namespace (e.g. foo::bar)"),
+    ] = None,
+    require_table_read: Annotated[
+        list[str],
+        typer.Option(..., help="Require table read tool for table (repeatable)"),
+    ] = [],
+    require_table_write: Annotated[
+        list[str],
+        typer.Option(..., help="Require table write tool for table (repeatable)"),
+    ] = [],
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
@@ -991,7 +1191,11 @@ async def deploy(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
-    project_id: ProjectIdOption = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
+    project_id: ProjectIdOption,
     room: Annotated[
         Optional[str],
         typer.Option("--room", help="The name of a room to create the service for"),
@@ -1044,6 +1248,8 @@ async def deploy(
             toolkit_name=toolkit_name,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
@@ -1053,6 +1259,7 @@ async def deploy(
             working_directory=working_directory,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            log_llm_requests=log_llm_requests,
         ),
     )
 
@@ -1114,7 +1321,7 @@ async def deploy(
             print(f"[red]Service name already in use: {spec.metadata.name}[/red]")
             raise typer.Exit(code=1)
         else:
-            print(f"[green]Updated service:[/] {id}")
+            print(f"[green]Deployed service:[/] {id}")
 
     finally:
         await client.close()

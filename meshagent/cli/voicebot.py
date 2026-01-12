@@ -85,12 +85,11 @@ def build_voicebot(
 
             if room_rules_paths is not None:
                 for p in room_rules_paths:
-                    await self._load_room_rules(room=room, path=p)
+                    await self._load_room_rules(path=p)
 
         async def _load_room_rules(
             self,
             *,
-            room: RoomClient,
             path: str,
             participant: Optional[RemoteParticipant] = None,
         ):
@@ -137,9 +136,7 @@ def build_voicebot(
             if room_rules_paths is not None:
                 for p in room_rules_paths:
                     rules.extend(
-                        await self._load_room_rules(
-                            room=self.room, participant=participant, path=p
-                        )
+                        await self._load_room_rules(participant=participant, path=p)
                     )
 
             logger.info(f"voicebot using rules {rules}")
@@ -152,7 +149,7 @@ def build_voicebot(
 @app.async_command("join")
 async def make_call(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
@@ -181,8 +178,14 @@ async def make_call(
             "--schema", "-s", help="the name or url of a required schema", hidden=True
         ),
     ] = [],
-    auto_greet_message: Annotated[Optional[str], typer.Option()] = None,
-    auto_greet_prompt: Annotated[Optional[str], typer.Option()] = None,
+    auto_greet_message: Annotated[
+        Optional[str],
+        typer.Option(help="Message to send automatically when the bot joins"),
+    ] = None,
+    auto_greet_prompt: Annotated[
+        Optional[str],
+        typer.Option(help="Prompt to generate an auto-greet message"),
+    ] = None,
     key: Annotated[
         str,
         typer.Option("--key", help="an api key to sign the token with"),
@@ -279,11 +282,23 @@ async def service(
             "--schema", "-s", help="the name or url of a required schema", hidden=True
         ),
     ] = [],
-    auto_greet_message: Annotated[Optional[str], typer.Option()] = None,
-    auto_greet_prompt: Annotated[Optional[str], typer.Option()] = None,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    auto_greet_message: Annotated[
+        Optional[str],
+        typer.Option(help="Message to send automatically when the bot joins"),
+    ] = None,
+    auto_greet_prompt: Annotated[
+        Optional[str],
+        typer.Option(help="Prompt to generate an auto-greet message"),
+    ] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     room_rules: Annotated[
         List[str],
         typer.Option(
@@ -361,11 +376,23 @@ async def spec(
             "--schema", "-s", help="the name or url of a required schema", hidden=True
         ),
     ] = [],
-    auto_greet_message: Annotated[Optional[str], typer.Option()] = None,
-    auto_greet_prompt: Annotated[Optional[str], typer.Option()] = None,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    auto_greet_message: Annotated[
+        Optional[str],
+        typer.Option(help="Message to send automatically when the bot joins"),
+    ] = None,
+    auto_greet_prompt: Annotated[
+        Optional[str],
+        typer.Option(help="Prompt to generate an auto-greet message"),
+    ] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     room_rules: Annotated[
         List[str],
         typer.Option(
@@ -455,11 +482,23 @@ async def deploy(
             "--schema", "-s", help="the name or url of a required schema", hidden=True
         ),
     ] = [],
-    auto_greet_message: Annotated[Optional[str], typer.Option()] = None,
-    auto_greet_prompt: Annotated[Optional[str], typer.Option()] = None,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    auto_greet_message: Annotated[
+        Optional[str],
+        typer.Option(help="Message to send automatically when the bot joins"),
+    ] = None,
+    auto_greet_prompt: Annotated[
+        Optional[str],
+        typer.Option(help="Prompt to generate an auto-greet message"),
+    ] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     room_rules: Annotated[
         List[str],
         typer.Option(
@@ -468,7 +507,7 @@ async def deploy(
             help="a path to a rules file within the room that can be used to customize the agent's behavior",
         ),
     ] = [],
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: Annotated[
         Optional[str],
         typer.Option("--room", help="The name of a room to create the service for"),
@@ -559,7 +598,7 @@ async def deploy(
             print(f"[red]Service name already in use: {spec.metadata.name}[/red]")
             raise typer.Exit(code=1)
         else:
-            print(f"[green]Updated service:[/] {id}")
+            print(f"[green]Deployed service:[/] {id}")
 
     finally:
         await client.close()

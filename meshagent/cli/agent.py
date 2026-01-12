@@ -15,16 +15,16 @@ from meshagent.cli.helper import resolve_project_id
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client, resolve_room
 
-app = async_typer.AsyncTyper()
+app = async_typer.AsyncTyper(help="Interact with agents and toolkits in a room")
 
 
-@app.async_command("ask")
+@app.async_command("ask", help="Send a request to an agent")
 async def ask(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
-    agent: Annotated[str, typer.Option()],
-    input: Annotated[str, typer.Option()],
+    agent: Annotated[str, typer.Option(..., help="Agent name to ask")],
+    input: Annotated[str, typer.Option(..., help="JSON string with tool arguments")],
     timeout: Annotated[
         Optional[int],
         typer.Option(
@@ -32,6 +32,8 @@ async def ask(
         ),
     ] = 30,
 ):
+    """Wait for an agent to join, then send it an ask request."""
+
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
@@ -76,10 +78,10 @@ async def ask(
         await account_client.close()
 
 
-@app.async_command("invoke-tool")
+@app.async_command("invoke-tool", help="Invoke a specific tool from a toolkit")
 async def invoke_tool(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     toolkit: Annotated[str, typer.Option(..., help="Toolkit name")],
     tool: Annotated[str, typer.Option(..., help="Tool name")],
@@ -161,10 +163,10 @@ async def invoke_tool(
         await account_client.close()
 
 
-@app.async_command("list-agents")
+@app.async_command("list-agents", help="List agents currently in the room")
 async def list_agents_command(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
 ):
     """
@@ -205,10 +207,12 @@ async def list_agents_command(
         await account_client.close()
 
 
-@app.async_command("list-toolkits")
+@app.async_command(
+    "list-toolkits", help="List toolkits (and tools) available in the room"
+)
 async def list_toolkits_command(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     role: str = "user",
     participant_id: Annotated[

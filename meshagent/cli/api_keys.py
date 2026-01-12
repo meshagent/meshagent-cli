@@ -19,7 +19,7 @@ app = async_typer.AsyncTyper(help="Manage or activate api-keys for your project"
 @app.async_command("list")
 async def list(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     o: OutputFormatOption = "table",
 ):
     project_id = await resolve_project_id(project_id=project_id)
@@ -42,7 +42,7 @@ async def list(
 @app.async_command("create")
 async def create(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     name: str,
     description: Annotated[
         str, typer.Option(..., help="a description for the api key")
@@ -85,7 +85,7 @@ async def create(
 @app.async_command("activate")
 async def activate(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     key: str,
 ):
     project_id = await resolve_project_id(project_id=project_id)
@@ -94,7 +94,7 @@ async def activate(
 
 
 @app.async_command("delete")
-async def delete(*, project_id: ProjectIdOption = None, id: str):
+async def delete(*, project_id: ProjectIdOption, id: str):
     project_id = await resolve_project_id(project_id=project_id)
 
     client = await get_client()

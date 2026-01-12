@@ -375,7 +375,7 @@ async def _with_client(
 @app.async_command("ps")
 async def list_containers(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     output: Annotated[Optional[str], typer.Option(help="json | table")] = "json",
 ):
@@ -408,7 +408,7 @@ async def list_containers(
 @app.async_command("stop")
 async def stop_container(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     id: Annotated[str, typer.Option(..., help="Container ID")],
 ):
@@ -427,10 +427,12 @@ async def stop_container(
 @app.async_command("logs")
 async def container_logs(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     id: Annotated[str, typer.Option(..., help="Container ID")],
-    follow: Annotated[bool, typer.Option("--follow/--no-follow")] = False,
+    follow: Annotated[
+        bool, typer.Option("--follow/--no-follow", help="Stream logs")
+    ] = False,
 ):
     account_client, client = await _with_client(
         project_id=project_id,
@@ -447,11 +449,14 @@ async def container_logs(
 @app.async_command("exec")
 async def exec_container(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     container_id: Annotated[str, typer.Option(..., help="container id")],
-    command: Annotated[Optional[str], typer.Option(...)] = None,
-    tty: Annotated[bool, typer.Option(...)] = False,
+    command: Annotated[
+        Optional[str],
+        typer.Option(..., help="Command to execute in the container (quoted string)"),
+    ] = None,
+    tty: Annotated[bool, typer.Option(..., help="Allocate a TTY")] = False,
 ):
     account_client, client = await _with_client(
         project_id=project_id,
@@ -579,10 +584,13 @@ async def exec_container(
 @app.async_command("run")
 async def run_container(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     image: Annotated[str, typer.Option(..., help="Image to run")],
-    command: Annotated[Optional[str], typer.Option(...)] = None,
+    command: Annotated[
+        Optional[str],
+        typer.Option(..., help="Command to execute in the container (quoted string)"),
+    ] = None,
     env: Annotated[List[str], typer.Option("--env", "-e", help="KEY=VALUE")] = [],
     port: Annotated[
         List[str], typer.Option("--port", "-p", help="CONTAINER:HOST")
@@ -598,11 +606,23 @@ async def run_container(
             help="Docker creds (username,password) or (registry,username,password)",
         ),
     ] = [],
-    mount_path: Annotated[Optional[str], typer.Option()] = None,
-    mount_subpath: Annotated[Optional[str], typer.Option()] = None,
-    participant_name: Annotated[Optional[str], typer.Option()] = None,
-    role: Annotated[str, typer.Option(...)] = "user",
-    container_name: Annotated[str, typer.Option(...)] = None,
+    mount_path: Annotated[
+        Optional[str],
+        typer.Option(help="Room storage path to mount into the container"),
+    ] = None,
+    mount_subpath: Annotated[
+        Optional[str],
+        typer.Option(help="Subpath within `--mount-path` to mount"),
+    ] = None,
+    participant_name: Annotated[
+        Optional[str], typer.Option(help="Participant name to associate with the run")
+    ] = None,
+    role: Annotated[
+        str, typer.Option(..., help="Role to run the container as")
+    ] = "user",
+    container_name: Annotated[
+        str, typer.Option(..., help="Optional container name")
+    ] = None,
 ):
     account_client, client = await _with_client(
         project_id=project_id,
@@ -645,7 +665,7 @@ app.add_typer(images_app, name="images")
 @images_app.async_command("list")
 async def images_list(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
 ):
     account_client, client = await _with_client(
@@ -663,7 +683,7 @@ async def images_list(
 @images_app.async_command("delete")
 async def images_delete(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     image: Annotated[str, typer.Option(..., help="Image ref/tag to delete")],
 ):
@@ -682,7 +702,7 @@ async def images_delete(
 @images_app.async_command("pull")
 async def images_pull(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     tag: Annotated[str, typer.Option(..., help="Image tag/ref to pull")],
     cred: Annotated[

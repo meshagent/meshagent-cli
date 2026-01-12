@@ -18,16 +18,27 @@ app = async_typer.AsyncTyper(help="OAuth2 test commands")
 @app.async_command("request")
 async def oauth2(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
-    from_participant_id: Annotated[str, typer.Option()],
-    client_id: Annotated[str, typer.Option()],
-    authorization_endpoint: Annotated[str, typer.Option()],
-    token_endpoint: Annotated[str, typer.Option()],
-    scopes: Annotated[Optional[str], typer.Option()] = None,
-    client_secret: Annotated[Optional[str], typer.Option()],
-    redirect_uri: Annotated[Optional[str], typer.Option()],
-    pkce: Annotated[bool, typer.Option()] = True,
+    from_participant_id: Annotated[
+        str,
+        typer.Option(..., help="Participant ID to request the token from"),
+    ],
+    client_id: Annotated[str, typer.Option(..., help="OAuth client ID")],
+    authorization_endpoint: Annotated[
+        str, typer.Option(..., help="OAuth authorization endpoint URL")
+    ],
+    token_endpoint: Annotated[str, typer.Option(..., help="OAuth token endpoint URL")],
+    scopes: Annotated[
+        Optional[str], typer.Option(help="Comma-separated OAuth scopes")
+    ] = None,
+    client_secret: Annotated[
+        Optional[str], typer.Option(help="OAuth client secret (if required)")
+    ],
+    redirect_uri: Annotated[
+        Optional[str], typer.Option(help="Redirect URI for the OAuth flow")
+    ],
+    pkce: Annotated[bool, typer.Option(help="Use PKCE (recommended)")] = True,
 ):
     """
     Run an OAuth2 request test between two participants in the same room.
@@ -72,16 +83,26 @@ async def oauth2(
 @app.async_command("get")
 async def get(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
-    delegated_to: Annotated[str, typer.Option()],
-    client_id: Annotated[str, typer.Option()],
-    authorization_endpoint: Annotated[str, typer.Option()],
-    token_endpoint: Annotated[str, typer.Option()],
-    scopes: Annotated[Optional[str], typer.Option()] = None,
-    client_secret: Annotated[Optional[str], typer.Option()],
-    redirect_uri: Annotated[Optional[str], typer.Option()],
-    pkce: Annotated[bool, typer.Option()] = True,
+    delegated_to: Annotated[
+        str, typer.Option(..., help="Participant ID to delegate the token to")
+    ],
+    client_id: Annotated[str, typer.Option(..., help="OAuth client ID")],
+    authorization_endpoint: Annotated[
+        str, typer.Option(..., help="OAuth authorization endpoint URL")
+    ],
+    token_endpoint: Annotated[str, typer.Option(..., help="OAuth token endpoint URL")],
+    scopes: Annotated[
+        Optional[str], typer.Option(help="Comma-separated OAuth scopes")
+    ] = None,
+    client_secret: Annotated[
+        Optional[str], typer.Option(help="OAuth client secret (if required)")
+    ],
+    redirect_uri: Annotated[
+        Optional[str], typer.Option(help="Redirect URI for the OAuth flow")
+    ],
+    pkce: Annotated[bool, typer.Option(help="Use PKCE (recommended)")] = True,
 ):
     """
     Run an OAuth2 request test between two participants in the same room.
@@ -124,7 +145,7 @@ async def get(
 @app.async_command("list")
 async def list(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
 ):
     """
@@ -159,7 +180,7 @@ async def list(
 @app.async_command("delete")
 async def delete(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     id: str,
     delegated_to: Annotated[

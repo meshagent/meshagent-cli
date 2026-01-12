@@ -24,7 +24,7 @@ import pathlib
 from pydantic_yaml import parse_yaml_raw_as
 from meshagent.api.participant_token import ParticipantTokenSpec
 
-app = async_typer.AsyncTyper()
+app = async_typer.AsyncTyper(help="Trigger agent/tool calls via URL")
 
 PRIVATE_NETS = (
     ipaddress.ip_network("10.0.0.0/8"),
@@ -68,13 +68,13 @@ def is_local_url(url: str) -> bool:
             return True
 
 
-@app.async_command("schema")
-@app.async_command("toolkit")
-@app.async_command("agent")
-@app.async_command("tool")
+@app.async_command("schema", help="Send a call request to a schema webhook URL")
+@app.async_command("toolkit", help="Send a call request to a toolkit webhook URL")
+@app.async_command("agent", help="Send a call request to an agent webhook URL")
+@app.async_command("tool", help="Send a call request to a tool webhook URL")
 async def make_call(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     role: str = "agent",
     local: Optional[bool] = None,
@@ -103,6 +103,8 @@ async def make_call(
         typer.Option("--key", help="an api key to sign the token with"),
     ] = None,
 ):
+    """Send a `room.call` request to a URL or in-room agent."""
+
     key = await resolve_key(project_id=project_id, key=key)
 
     if permissions is not None:
@@ -136,7 +138,7 @@ async def make_call(
 
 async def _make_call(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     role: str = "agent",
     local: Optional[bool] = None,

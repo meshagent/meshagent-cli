@@ -106,6 +106,7 @@ def build_task_runner(
     annotations: list[dict[str, str]],
     title: Optional[str] = None,
     description: Optional[str] = None,
+    shell_image: Optional[str] = None,
 ):
     output_schema = None
     if output_schema_str is not None:
@@ -176,12 +177,11 @@ def build_task_runner(
 
             if room_rules_path is not None:
                 for p in room_rules_path:
-                    await self._load_room_rules(room=room, path=p)
+                    await self._load_room_rules(path=p)
 
         async def _load_room_rules(
             self,
             *,
-            room: RoomClient,
             path: str,
             context: AgentCallContext,
         ):
@@ -229,11 +229,7 @@ def build_task_runner(
 
             if room_rules_path is not None:
                 for p in room_rules_path:
-                    rules.extend(
-                        await self._load_room_rules(
-                            room=self.room, path=p, context=context
-                        )
-                    )
+                    rules.extend(await self._load_room_rules(path=p, context=context))
 
             logging.info(f"using rules {rules}")
 
@@ -265,6 +261,7 @@ def build_task_runner(
                     ShellTool(
                         working_directory=working_directory,
                         config=ShellConfig(name="shell"),
+                        image=shell_image or "python:3.13",
                     )
                 )
 
@@ -380,7 +377,7 @@ def build_task_runner(
 @app.async_command("join")
 async def make_call(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     role: str = "agent",
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
@@ -698,9 +695,15 @@ async def service(
             ..., help="Delegate LLM interactions to a remote participant", hidden=True
         ),
     ] = None,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[str, typer.Option()] = "/agent",
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        str, typer.Option(help="HTTP path to mount the service at")
+    ] = "/agent",
     output_schema: Annotated[
         Optional[str],
         typer.Option(..., help="an output schema to use", hidden=True),

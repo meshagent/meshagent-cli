@@ -20,7 +20,7 @@ app = async_typer.AsyncTyper(help="Use queues in a room")
 @app.async_command("send")
 async def send(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     queue: Annotated[str, typer.Option(..., help="Queue name")],
     json: Optional[str] = typer.Option(..., help="a JSON message to send to the queue"),
@@ -60,7 +60,7 @@ async def send(
 @app.async_command("receive")
 async def receive(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     queue: Annotated[str, typer.Option(..., help="Queue name")],
 ):

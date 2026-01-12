@@ -55,7 +55,7 @@ def split_glob_subpath(subpath: str):
 @app.async_command("exists")
 async def storage_exists_command(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     path: str,
 ):
@@ -89,7 +89,7 @@ async def storage_exists_command(
 @app.async_command("cp")
 async def storage_cp_command(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     source_path: str,
     dest_path: str,
@@ -322,7 +322,7 @@ async def storage_cp_command(
 @app.async_command("show")
 async def storage_show_command(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     path: str,
     encoding: Annotated[
@@ -395,7 +395,7 @@ async def storage_show_command(
 @app.async_command("rm")
 async def storage_rm_command(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     path: str,
     recursive: Annotated[
@@ -599,7 +599,7 @@ async def storage_rm_command(
 @app.async_command("ls")
 async def storage_ls_command(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     path: Annotated[
         str, typer.Argument(..., help="Path to list (local or room://...)")

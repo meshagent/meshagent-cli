@@ -3,6 +3,8 @@ from rich import print
 from typing import Annotated, Optional
 from meshagent.tools import Toolkit
 from meshagent.tools.storage import StorageToolkitBuilder
+from meshagent.tools.datetime import DatetimeToolkit
+from meshagent.tools.uuid import UUIDToolkit
 from meshagent.tools.document_tools import (
     DocumentAuthoringToolkit,
     DocumentTypeAuthoringToolkit,
@@ -105,6 +107,8 @@ def build_chatbot(
     require_table_read: list[str] = None,
     require_table_write: list[str] = None,
     require_read_only_storage: Optional[str] = None,
+    require_time: bool = True,
+    require_uuid: bool = False,
     rules_file: Optional[str] = None,
     room_rules_path: Optional[list[str]] = None,
     require_discovery: Optional[str] = None,
@@ -115,6 +119,7 @@ def build_chatbot(
     always_reply: Optional[bool] = None,
     skill_dirs: Optional[list[str]] = None,
     shell_image: Optional[str] = None,
+    log_llm_requests: Optional[bool] = None,
 ):
     from meshagent.agents.chat import ChatBot
 
@@ -155,10 +160,12 @@ def build_chatbot(
                     "reasoning": {"summary": "concise"},
                     "truncation": "auto",
                 },
+                log_requests=log_llm_requests,
             )
         else:
             llm_adapter = OpenAIResponsesAdapter(
                 model=model,
+                log_requests=log_llm_requests,
             )
 
     class CustomChatbot(BaseClass):
@@ -179,12 +186,11 @@ def build_chatbot(
 
             if room_rules_path is not None:
                 for p in room_rules_path:
-                    await self._load_room_rules(room=room, path=p)
+                    await self._load_room_rules(path=p)
 
         async def _load_room_rules(
             self,
             *,
-            room: RoomClient,
             path: str,
             participant: Optional[RemoteParticipant] = None,
         ):
@@ -234,9 +240,7 @@ def build_chatbot(
             if room_rules_path is not None:
                 for p in room_rules_path:
                     rules.extend(
-                        await self._load_room_rules(
-                            room=self.room, path=p, participant=participant
-                        )
+                        await self._load_room_rules(path=p, participant=participant)
                     )
 
             logging.info(f"using rules {rules}")
@@ -269,7 +273,7 @@ def build_chatbot(
                     ShellTool(
                         working_directory=working_directory,
                         config=ShellConfig(name="shell"),
-                        image=shell_image or "ubuntu:latest",
+                        image=shell_image or "python:3.13",
                     )
                 )
 
@@ -307,6 +311,12 @@ def build_chatbot(
                         )
                     ).tools
                 )
+
+            if require_time:
+                providers.extend((DatetimeToolkit()).tools)
+
+            if require_uuid:
+                providers.extend((UUIDToolkit()).tools)
 
             if len(require_table_write) > 0:
                 providers.extend(
@@ -390,7 +400,7 @@ def build_chatbot(
                 providers.append(
                     ShellToolkitBuilder(
                         working_directory=working_directory,
-                        shell_image=shell_image,
+                        image=shell_image,
                     )
                 )
 
@@ -411,7 +421,7 @@ def build_chatbot(
 @app.async_command("join")
 async def make_call(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     room: RoomOption,
     role: str = "agent",
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
@@ -528,6 +538,20 @@ async def make_call(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     require_document_authoring: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable MeshDocument authoring"),
@@ -560,6 +584,10 @@ async def make_call(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     if database_namespace is not None:
         database_namespace = database_namespace.split("::")
@@ -614,6 +642,8 @@ async def make_call(
                 require_table_read=require_table_read,
                 require_table_write=require_table_write,
                 require_read_only_storage=require_read_only_storage,
+                require_time=require_time,
+                require_uuid=require_uuid,
                 room_rules_path=room_rules,
                 require_document_authoring=require_document_authoring,
                 require_discovery=require_discovery,
@@ -623,6 +653,7 @@ async def make_call(
                 database_namespace=database_namespace,
                 skill_dirs=skill_dir,
                 shell_image=shell_image,
+                log_llm_requests=log_llm_requests,
             )
 
             bot = CustomChatbot()
@@ -757,6 +788,20 @@ async def service(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     working_directory: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
@@ -773,9 +818,15 @@ async def service(
         Optional[str],
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     always_reply: Annotated[
         Optional[bool],
         typer.Option(..., help="Always reply"),
@@ -788,6 +839,10 @@ async def service(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     if database_namespace is not None:
         database_namespace = database_namespace.split("::")
@@ -835,6 +890,8 @@ async def service(
             require_table_write=require_table_write,
             require_table_read=require_table_read,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
             room_rules_path=room_rules,
             working_directory=working_directory,
             require_document_authoring=require_document_authoring,
@@ -843,6 +900,7 @@ async def service(
             always_reply=always_reply,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            log_llm_requests=log_llm_requests,
         ),
     )
 
@@ -974,6 +1032,20 @@ async def spec(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     working_directory: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
@@ -990,9 +1062,15 @@ async def spec(
         Optional[str],
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     always_reply: Annotated[
         Optional[bool],
         typer.Option(..., help="Always reply"),
@@ -1005,6 +1083,10 @@ async def spec(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     if database_namespace is not None:
         database_namespace = database_namespace.split("::")
@@ -1052,6 +1134,8 @@ async def spec(
             require_table_write=require_table_write,
             require_table_read=require_table_read,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
             room_rules_path=room_rules,
             working_directory=working_directory,
             require_document_authoring=require_document_authoring,
@@ -1060,6 +1144,7 @@ async def spec(
             always_reply=always_reply,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            log_llm_requests=log_llm_requests,
         ),
     )
 
@@ -1204,6 +1289,20 @@ async def deploy(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
     working_directory: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
@@ -1220,9 +1319,15 @@ async def deploy(
         Optional[str],
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
-    path: Annotated[Optional[str], typer.Option()] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     always_reply: Annotated[
         Optional[bool],
         typer.Option(..., help="Always reply"),
@@ -1235,7 +1340,11 @@ async def deploy(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
-    project_id: ProjectIdOption = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
+    project_id: ProjectIdOption,
     room: Annotated[
         Optional[str],
         typer.Option("--room", help="The name of a room to create the service for"),
@@ -1289,6 +1398,8 @@ async def deploy(
             require_table_write=require_table_write,
             require_table_read=require_table_read,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
             room_rules_path=room_rules,
             working_directory=working_directory,
             require_document_authoring=require_document_authoring,
@@ -1297,6 +1408,7 @@ async def deploy(
             always_reply=always_reply,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            log_llm_requests=log_llm_requests,
         ),
     )
 
@@ -1361,7 +1473,7 @@ async def deploy(
             print(f"[red]Service name already in use: {spec.metadata.name}[/red]")
             raise typer.Exit(code=1)
         else:
-            print(f"[green]Updated service:[/] {id}")
+            print(f"[green]Deployed service:[/] {id}")
 
     finally:
         await client.close()

@@ -38,9 +38,7 @@ from meshagent.cli.voicebot import service as voicebot_service
 import yaml
 
 
-app = async_typer.AsyncTyper(
-    help="connect agents and tools to a room for testing or host them as a mesh service"
-)
+app = async_typer.AsyncTyper(help="Connect agents and tools to a room")
 
 cli = async_typer.AsyncTyper(help="Add agents to a team")
 
@@ -54,8 +52,12 @@ cli.command("voicebot")(voicebot_service)
 async def python(
     *,
     module: str,
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
     path: Annotated[
         Optional[str],
         typer.Option(help="A path to add the service at"),
@@ -64,7 +66,9 @@ async def python(
         Optional[str],
         typer.Option(help="The desired identity for the service"),
     ] = None,
-    name: Annotated[str, typer.Option()] = "main",
+    name: Annotated[
+        str, typer.Option(help="Entry-point name in the Python module")
+    ] = "main",
 ):
     service = get_service(host=host, port=port)
 
@@ -174,6 +178,7 @@ async def spec(
 
 @app.async_command("deploy")
 async def deploy(
+    project_id: ProjectIdOption,
     command: Annotated[str, typer.Option("-c", help=subcommand_help)],
     service_name: Annotated[str, typer.Option("--service-name", help="service name")],
     service_description: Annotated[
@@ -183,7 +188,6 @@ async def deploy(
         Optional[str],
         typer.Option("--service-title", help="a display name for the service"),
     ] = None,
-    project_id: ProjectIdOption = None,
     room: Annotated[
         Optional[str],
         typer.Option("--room", help="The name of a room to create the service for"),
@@ -248,7 +252,7 @@ async def deploy(
                 raise typer.Exit(code=1)
             raise
         else:
-            print(f"[green]Updated service:[/] {id}")
+            print(f"[green]Deployed service:[/] {id}")
 
     finally:
         await client.close()
@@ -256,8 +260,12 @@ async def deploy(
 
 @app.async_command("service")
 async def host(
-    host: Annotated[Optional[str], typer.Option()] = None,
-    port: Annotated[Optional[int], typer.Option()] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
     command: Annotated[str, typer.Option("-c", help=subcommand_help)] = [],
 ):
     set_deferred(True)
@@ -286,7 +294,7 @@ def import_from_path(path: str, module_name: str | None = None):
 @app.async_command("join")
 async def join(
     *,
-    project_id: ProjectIdOption = None,
+    project_id: ProjectIdOption,
     command: Annotated[str, typer.Option("-c", help=subcommand_help)] = [],
     port: Annotated[
         int,
