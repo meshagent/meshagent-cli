@@ -3,6 +3,8 @@ from rich import print
 from typing import Annotated, Optional
 from meshagent.tools import Toolkit
 from meshagent.tools.storage import StorageToolkitBuilder
+from meshagent.tools.datetime import DatetimeToolkit
+from meshagent.tools.uuid import UUIDToolkit
 from meshagent.tools.document_tools import (
     DocumentAuthoringToolkit,
     DocumentTypeAuthoringToolkit,
@@ -105,6 +107,8 @@ def build_chatbot(
     require_table_read: list[str] = None,
     require_table_write: list[str] = None,
     require_read_only_storage: Optional[str] = None,
+    require_time: bool = True,
+    require_uuid: bool = False,
     rules_file: Optional[str] = None,
     room_rules_path: Optional[list[str]] = None,
     require_discovery: Optional[str] = None,
@@ -307,6 +311,12 @@ def build_chatbot(
                         )
                     ).tools
                 )
+
+            if require_time:
+                providers.extend((DatetimeToolkit()).tools)
+
+            if require_uuid:
+                providers.extend((UUIDToolkit()).tools)
 
             if len(require_table_write) > 0:
                 providers.extend(
