@@ -196,7 +196,6 @@ async def list_agents_command(
                         "name": agent.name,
                         "title": agent.title,
                         "description": agent.description,
-                        "requires": [r.to_json() for r in agent.requires],
                         "supports_tools": agent.supports_tools,
                         "labels": agent.labels,
                     }
