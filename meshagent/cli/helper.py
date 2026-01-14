@@ -192,6 +192,10 @@ def cleanup_args(args: list[str]):
             pass
         elif args[i].startswith("--room="):
             pass
+        elif args[i] == "deploy":
+            pass
+        elif args[i] == "spec":
+            pass
         else:
             out.append(args[i])
         i += 1
