@@ -398,21 +398,12 @@ async def service_delete(
     *,
     project_id: ProjectIdOption,
     service_id: Annotated[str, typer.Argument(help="ID of the service to delete")],
-    room: Annotated[
-        Optional[str],
-        typer.Option("--room", help="The name of a room to delete the service for"),
-    ] = None,
 ):
     """Delete a service."""
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
-        if room is None:
-            await client.delete_service(project_id=project_id, service_id=service_id)
-        else:
-            await client.delete_service(
-                project_id=project_id, service_id=service_id, room_name=room
-            )
+        await client.delete_service(project_id=project_id, service_id=service_id)
         print(f"[green]Service {service_id} deleted.[/]")
     finally:
         await client.close()
