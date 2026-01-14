@@ -5,13 +5,13 @@ from meshagent.cli import agent
 from meshagent.cli import messaging
 from meshagent.cli import storage
 from meshagent.cli import developer
-from meshagent.cli import cli_secrets
+from meshagent.cli import oauth2
 from meshagent.cli import containers
 
 app = async_typer.AsyncTyper(help="Operate within a room")
 
 app.add_typer(agent.app, name="agents", help="Interact with agents and toolkits")
-app.add_typer(cli_secrets.app, name="secret", help="Manage secrets for your project")
+app.add_typer(oauth2.app, name="secrets", help="Manage secrets for your project")
 app.add_typer(queue.app, name="queue", help="Use queues in a room")
 app.add_typer(messaging.app, name="messaging", help="Send and receive messages")
 app.add_typer(storage.app, name="storage", help="Manage storage for a room")

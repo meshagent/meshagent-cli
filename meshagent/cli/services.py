@@ -370,9 +370,7 @@ async def service_list(
         )
 
         if o == "json":
-            print(
-                {"services": [svc.model_dump(mode="json") for svc in services]}
-            ).model_dump_json(indent=2)
+            print({"services": [svc.model_dump(mode="json") for svc in services]})
         else:
             print_json_table(
                 [

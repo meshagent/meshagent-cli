@@ -322,7 +322,7 @@ async def service(
     service = get_service(host=host, port=port)
 
     service.agents.append(
-        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "VoiceBot"})
     )
 
     if path is None:
@@ -416,7 +416,7 @@ async def spec(
     service = get_service(host=host, port=port)
 
     service.agents.append(
-        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "VoiceBot"})
     )
 
     if path is None:
@@ -529,7 +529,7 @@ async def deploy(
     service = get_service(host=host, port=port)
 
     service.agents.append(
-        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "VoiceBot"})
     )
 
     if path is None:
