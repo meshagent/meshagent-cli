@@ -21,6 +21,7 @@ from meshagent.api import (
     ParticipantToken,
     ApiScope,
     RoomException,
+    RemoteParticipant,
 )
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.cli import async_typer
@@ -183,9 +184,8 @@ def build_task_runner(
             self,
             *,
             path: str,
-            context: AgentCallContext,
+            participant: Optional[RemoteParticipant] = None,
         ):
-            participant = context.caller
             rules = []
             try:
                 room_rules = await self.room.storage.download(path=path)
@@ -229,7 +229,9 @@ def build_task_runner(
 
             if room_rules_path is not None:
                 for p in room_rules_path:
-                    rules.extend(await self._load_room_rules(path=p, context=context))
+                    rules.extend(
+                        await self._load_room_rules(path=p, participant=context.caller)
+                    )
 
             logging.info(f"using rules {rules}")
 

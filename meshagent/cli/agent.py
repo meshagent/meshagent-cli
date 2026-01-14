@@ -10,6 +10,8 @@ from meshagent.api import (
     RoomClient,
     WebSocketClientProtocol,
     RoomException,
+    TextResponse,
+    JsonResponse,
 )
 from meshagent.cli.helper import resolve_project_id
 from meshagent.cli import async_typer
@@ -71,7 +73,12 @@ async def ask(
             print("[magenta]Asking agent...[/magenta]")
 
             response = await client.agents.ask(agent=agent, arguments=json.loads(input))
-            print(json.dumps(response.json))
+            if isinstance(response, TextResponse):
+                print(response.text)
+            elif isinstance(response, JsonResponse):
+                print(json.dumps(response.json))
+            else:
+                print(response)
     except RoomException as e:
         print(f"[red]{e}[/red]")
     finally:
