@@ -19,7 +19,7 @@ from meshagent.cli.helper import (
 app = async_typer.AsyncTyper(help="Send and receive messages in a room")
 
 
-@app.async_command("list-participants", help="List messaging-enabled participants")
+@app.async_command("list", help="List messaging-enabled participants")
 async def messaging_list_participants_command(
     *,
     project_id: ProjectIdOption,

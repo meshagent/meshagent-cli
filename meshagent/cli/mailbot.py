@@ -688,7 +688,7 @@ async def service(
             path = f"/agent{i}"
 
     service.agents.append(
-        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "MailBot"})
     )
 
     service.add_path(
@@ -898,7 +898,7 @@ async def spec(
             path = f"/agent{i}"
 
     service.agents.append(
-        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "MailBot"})
     )
 
     service.add_path(
@@ -1128,7 +1128,7 @@ async def deploy(
             path = f"/agent{i}"
 
     service.agents.append(
-        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "MailBot"})
     )
 
     service.add_path(

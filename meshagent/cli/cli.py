@@ -21,7 +21,7 @@ from meshagent.cli import voicebot
 from meshagent.cli import mailbot
 from meshagent.cli import worker
 from meshagent.cli import task_runner
-from meshagent.cli import oauth2
+from meshagent.cli import cli_secrets
 from meshagent.cli import helpers
 from meshagent.cli import meeting_transcriber
 from meshagent.cli import rooms
@@ -57,7 +57,7 @@ app.add_typer(participant_token.app, name="participant-token")
 app.add_typer(webhook.app, name="webhook")
 app.add_typer(services.app, name="service")
 app.add_typer(cli_mcp.app, name="mcp")
-app.add_typer(oauth2.app, name="oauth2")
+app.add_typer(cli_secrets.app, name="secrets")
 app.add_typer(helpers.app, name="helpers")
 app.add_typer(rooms.app, name="rooms")
 app.add_typer(mailboxes.app, name="mailbox")
