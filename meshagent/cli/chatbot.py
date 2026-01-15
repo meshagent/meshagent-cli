@@ -1414,6 +1414,9 @@ async def deploy(
 
     spec = service_specs()[0]
 
+    for port in spec.ports:
+        port
+
     spec.metadata.annotations = {
         "meshagent.service.id": service_name,
     }

@@ -744,7 +744,7 @@ async def service(
     )  # replace with your concrete worker class
 
     service.agents.append(
-        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "Worker"})
     )
 
     service.add_path(
@@ -971,7 +971,7 @@ async def spec(
     )  # replace with your concrete worker class
 
     service.agents.append(
-        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "Worker"})
     )
 
     service.add_path(
@@ -1218,7 +1218,7 @@ async def deploy(
     )  # replace with your concrete worker class
 
     service.agents.append(
-        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "Worker"})
     )
 
     service.add_path(
