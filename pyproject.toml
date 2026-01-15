@@ -27,6 +27,7 @@ all = [
   "meshagent-api[all]~=0.21.0",
   "meshagent-computers~=0.21.0",
   "meshagent-openai~=0.21.0",
+  "meshagent-anthropic~=0.21.0",
   "meshagent-mcp~=0.21.0",
   "meshagent-tools~=0.21.0",
   "supabase-auth~=2.22.3"
