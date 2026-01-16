@@ -149,6 +149,7 @@ def build_chatbot(
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
 
     BaseClass = ChatBot
+    decision_model = None
     if llm_participant:
         llm_adapter = MessageStreamLLMAdapter(
             participant_name=llm_participant,
@@ -169,6 +170,7 @@ def build_chatbot(
                     model=model,
                     log_requests=log_llm_requests,
                 )
+                decision_model = model
             else:
                 llm_adapter = OpenAIResponsesAdapter(
                     model=model,
@@ -186,6 +188,7 @@ def build_chatbot(
                 client_rules=client_rules,
                 always_reply=always_reply,
                 skill_dirs=skill_dirs,
+                decision_model=decision_model,
             )
 
         async def start(self, *, room: RoomClient):
