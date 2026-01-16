@@ -33,6 +33,7 @@ from meshagent.cli.helper import (
 )
 
 from meshagent.openai import OpenAIResponsesAdapter
+from meshagent.anthropic import AnthropicOpenAIResponsesStreamAdapter
 
 from typing import List
 from pathlib import Path
@@ -154,9 +155,10 @@ def build_task_runner(
             participant_name=llm_participant,
         )
     else:
-        llm_adapter = OpenAIResponsesAdapter(
-            model=model,
-        )
+        if model.startswith("claude-"):
+            llm_adapter = AnthropicOpenAIResponsesStreamAdapter(model=model)
+        else:
+            llm_adapter = OpenAIResponsesAdapter(model=model)
 
     class CustomTaskRunner(BaseClass):
         def __init__(self):

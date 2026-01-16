@@ -19,6 +19,7 @@ from meshagent.cli.helper import (
     cleanup_args,
 )
 from meshagent.openai import OpenAIResponsesAdapter
+from meshagent.anthropic import AnthropicOpenAIResponsesStreamAdapter
 
 from meshagent.agents.config import RulesConfig
 
@@ -139,10 +140,16 @@ def build_mailbot(
             )
 
         else:
-            llm_adapter = OpenAIResponsesAdapter(
-                model=model,
-                log_requests=log_llm_requests,
-            )
+            if model.startswith("claude-"):
+                llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
+                    model=model,
+                    log_requests=log_llm_requests,
+                )
+            else:
+                llm_adapter = OpenAIResponsesAdapter(
+                    model=model,
+                    log_requests=log_llm_requests,
+                )
 
     parsed_whitelist = []
     if len(whitelist) > 0:

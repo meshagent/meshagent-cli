@@ -35,6 +35,7 @@ from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConf
 from meshagent.tools.datetime import DatetimeToolkit
 from meshagent.tools.uuid import UUIDToolkit
 from meshagent.openai import OpenAIResponsesAdapter
+from meshagent.anthropic import AnthropicOpenAIResponsesStreamAdapter
 
 
 # Your Worker base (the one you pasted) + adapters
@@ -149,10 +150,16 @@ def build_worker(
             log_requests=log_llm_requests,
         )
     else:
-        llm_adapter: LLMAdapter = OpenAIResponsesAdapter(
-            model=model,
-            log_requests=log_llm_requests,
-        )
+        if model.startswith("claude-"):
+            llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
+                model=model,
+                log_requests=log_llm_requests,
+            )
+        else:
+            llm_adapter = OpenAIResponsesAdapter(
+                model=model,
+                log_requests=log_llm_requests,
+            )
 
     class CustomWorker(WorkerBase):
         def __init__(self):
