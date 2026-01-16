@@ -161,7 +161,7 @@ async def resolve_key(project_id: str | None, key: str | None):
     if key is None:
         key = os.getenv("MESHAGENT_API_KEY")
 
-    if key is None and os.getenv("MESHAGENT_TOKEN") is not None:
+    if key is None and os.getenv("MESHAGENT_TOKEN") is None:
         print(
             "[red]--key is required if MESHAGENT_API_KEY is not set. You can use meshagent api-key create to create a new api key."
         )
