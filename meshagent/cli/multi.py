@@ -21,14 +21,9 @@ from meshagent.cli.helper import (
     resolve_room,
     resolve_key,
 )
-from meshagent.api import (
-    ParticipantToken,
-    ApiScope,
-)
 from aiohttp import ClientResponseError
 import asyncio
 
-from meshagent.api.keys import parse_api_key
 
 from meshagent.cli.chatbot import service as chatbot_service
 from meshagent.cli.worker import service as worker_service
