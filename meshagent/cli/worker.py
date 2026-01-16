@@ -3,6 +3,7 @@ from rich import print
 from typing import Annotated, Optional, List, Type
 from pathlib import Path
 import logging
+import os
 
 from meshagent.tools.storage import StorageToolkitBuilder
 
@@ -77,7 +78,6 @@ def build_worker(
     *,
     WorkerBase: Type[Worker],
     model: str,
-    agent_name: str,
     rule: List[str],
     toolkit: List[str],
     schema: List[str],
@@ -166,11 +166,10 @@ def build_worker(
             super().__init__(
                 llm_adapter=llm_adapter,
                 tool_adapter=tool_adapter,
-                name=agent_name,
                 requires=requirements,
                 toolkits=toolkits,
                 queue=queue,
-                title=title or agent_name,
+                title=title,
                 description=description,
                 rules=rule if len(rule) > 0 else None,
                 toolkit_name=toolkit_name,
@@ -358,7 +357,9 @@ async def join(
     project_id: ProjectIdOption,
     room: RoomOption,
     role: str = "agent",
-    agent_name: Annotated[str, typer.Option(..., help="Name of the worker agent")],
+    agent_name: Annotated[
+        Optional[str], typer.Option(..., help="Name of the worker agent")
+    ] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[str] = None,
     require_toolkit: Annotated[
@@ -511,12 +512,19 @@ async def join(
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
 
-        token = ParticipantToken(name=agent_name)
-        token.add_api_grant(ApiScope.agent_default(tunnels=require_computer_use))
-        token.add_role_grant(role=role)
-        token.add_room_grant(room_name)
+        jwt = os.getenv("MESHAGENT_TOKEN")
+        if jwt is None:
+            if agent_name is None:
+                print(
+                    "[bold red]--agent-name must be specified when the MESHAGENT_TOKEN environment variable is not set[/bold red]"
+                )
 
-        jwt = token.to_jwt(api_key=key)
+            token = ParticipantToken(name=agent_name)
+            token.add_api_grant(ApiScope.agent_default(tunnels=require_computer_use))
+            token.add_role_grant(role=role)
+            token.add_room_grant(room_name)
+
+            jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
         async with RoomClient(
@@ -535,7 +543,6 @@ async def join(
             CustomWorker = build_worker(
                 WorkerBase=WorkerBase,
                 model=model,
-                agent_name=agent_name,
                 rule=rule,
                 toolkit=require_toolkit + toolkit,
                 schema=require_schema + schema,
@@ -760,7 +767,6 @@ async def service(
         cls=build_worker(
             WorkerBase=WorkerBase,
             model=model,
-            agent_name=agent_name,
             rule=rule,
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
@@ -987,7 +993,6 @@ async def spec(
         cls=build_worker(
             WorkerBase=WorkerBase,
             model=model,
-            agent_name=agent_name,
             rule=rule,
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
@@ -1234,7 +1239,6 @@ async def deploy(
         cls=build_worker(
             WorkerBase=WorkerBase,
             model=model,
-            agent_name=agent_name,
             rule=rule,
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,

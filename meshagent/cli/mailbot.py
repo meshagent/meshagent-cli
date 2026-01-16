@@ -66,7 +66,6 @@ app = async_typer.AsyncTyper(help="Join a mailbot to a room")
 def build_mailbot(
     *,
     model: str,
-    agent_name: str,
     rule: List[str],
     toolkit: List[str],
     schema: List[str],
@@ -164,7 +163,6 @@ def build_mailbot(
         def __init__(self):
             super().__init__(
                 llm_adapter=llm_adapter,
-                name=agent_name,
                 requires=requirements,
                 toolkits=toolkits,
                 queue=queue,
@@ -324,12 +322,14 @@ def build_mailbot(
 
 
 @app.async_command("join")
-async def make_call(
+async def join(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
     role: str = "agent",
-    agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
+    agent_name: Annotated[
+        Optional[str], typer.Option(..., help="Name of the agent to call")
+    ] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[str] = None,
     require_toolkit: Annotated[
@@ -474,6 +474,11 @@ async def make_call(
 
         jwt = os.getenv("MESHAGENT_TOKEN")
         if jwt is None:
+            if agent_name is None:
+                print(
+                    "[bold red]--agent-name must be specified when the MESHAGENT_TOKEN environment variable is not set[/bold red]"
+                )
+
             token = ParticipantToken(
                 name=agent_name,
             )
@@ -496,7 +501,6 @@ async def make_call(
                 computer_use=None,
                 model=model,
                 local_shell=require_local_shell,
-                agent_name=agent_name,
                 rule=rule,
                 schema=require_schema + schema,
                 toolkit=require_toolkit + toolkit,
@@ -710,7 +714,6 @@ async def service(
             model=model,
             local_shell=require_local_shell,
             web_search=require_web_search,
-            agent_name=agent_name,
             rule=rule,
             schema=require_schema + schema,
             toolkit=require_toolkit + toolkit,
@@ -920,7 +923,6 @@ async def spec(
             model=model,
             local_shell=require_local_shell,
             web_search=require_web_search,
-            agent_name=agent_name,
             rule=rule,
             schema=require_schema + schema,
             toolkit=require_toolkit + toolkit,
@@ -1150,7 +1152,6 @@ async def deploy(
             model=model,
             local_shell=require_local_shell,
             web_search=require_web_search,
-            agent_name=agent_name,
             rule=rule,
             schema=require_schema + schema,
             toolkit=require_toolkit + toolkit,

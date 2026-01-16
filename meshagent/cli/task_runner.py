@@ -77,7 +77,6 @@ app = async_typer.AsyncTyper(help="Join a taskrunner to a room")
 def build_task_runner(
     *,
     model: str,
-    agent_name: str,
     rule: List[str],
     toolkit: List[str],
     schema: List[str],
@@ -165,7 +164,6 @@ def build_task_runner(
         def __init__(self):
             super().__init__(
                 llm_adapter=llm_adapter,
-                name=agent_name,
                 requires=requirements,
                 toolkits=toolkits,
                 rules=rule if len(rule) > 0 else None,
@@ -380,12 +378,14 @@ def build_task_runner(
 
 
 @app.async_command("join")
-async def make_call(
+async def join(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
     role: str = "agent",
-    agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
+    agent_name: Annotated[
+        Optional[str], typer.Option(..., help="Name of the agent to call")
+    ] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     room_rules: Annotated[
         List[str],
@@ -520,6 +520,11 @@ async def make_call(
 
         jwt = os.getenv("MESHAGENT_TOKEN")
         if jwt is None:
+            if agent_name is None:
+                print(
+                    "[bold red]--agent-name must be specified when the MESHAGENT_TOKEN environment variable is not set[/bold red]"
+                )
+
             token = ParticipantToken(
                 name=agent_name,
             )
@@ -553,7 +558,6 @@ async def make_call(
                 local_shell=local_shell,
                 shell=shell,
                 apply_patch=apply_patch,
-                agent_name=agent_name,
                 rule=rule,
                 toolkit=toolkit,
                 schema=schema,
@@ -742,7 +746,6 @@ async def service(
             local_shell=local_shell,
             shell=shell,
             apply_patch=apply_patch,
-            agent_name=agent_name,
             title=title,
             description=description,
             rule=rule,

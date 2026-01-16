@@ -37,7 +37,6 @@ logger = logging.getLogger("voicebot")
 
 def build_voicebot(
     *,
-    agent_name: str,
     rules: list[str],
     rules_file: Optional[str] = None,
     toolkits: list[str],
@@ -76,7 +75,6 @@ def build_voicebot(
             super().__init__(
                 auto_greet_message=auto_greet_message,
                 auto_greet_prompt=auto_greet_prompt,
-                name=agent_name,
                 requires=requirements,
                 rules=rules if len(rules) > 0 else None,
             )
@@ -148,11 +146,13 @@ def build_voicebot(
 
 
 @app.async_command("join")
-async def make_call(
+async def join(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
-    agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
+    agent_name: Annotated[
+        Optional[str], typer.Option(..., help="Name of the agent to call")
+    ] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[str] = None,
     require_toolkit: Annotated[
@@ -209,6 +209,11 @@ async def make_call(
 
         jwt = os.getenv("MESHAGENT_TOKEN")
         if jwt is None:
+            if agent_name is None:
+                print(
+                    "[bold red]--agent-name must be specified when the MESHAGENT_TOKEN environment variable is not set[/bold red]"
+                )
+
             token = ParticipantToken(
                 name=agent_name,
             )
@@ -218,18 +223,17 @@ async def make_call(
             token.add_role_grant(role="agent")
             token.add_room_grant(room)
 
-            CustomVoiceBot = build_voicebot(
-                agent_name=agent_name,
-                rules=rule,
-                rules_file=rules_file,
-                toolkits=require_toolkit + toolkit,
-                schemas=require_schema + schema,
-                auto_greet_message=auto_greet_message,
-                auto_greet_prompt=auto_greet_prompt,
-                room_rules_paths=room_rules,
-            )
-
             jwt = token.to_jwt(api_key=key)
+
+        CustomVoiceBot = build_voicebot(
+            rules=rule,
+            rules_file=rules_file,
+            toolkits=require_toolkit + toolkit,
+            schemas=require_schema + schema,
+            auto_greet_message=auto_greet_message,
+            auto_greet_prompt=auto_greet_prompt,
+            room_rules_paths=room_rules,
+        )
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
         async with RoomClient(
@@ -312,7 +316,6 @@ async def service(
     ] = [],
 ):
     CustomVoiceBot = build_voicebot(
-        agent_name=agent_name,
         rules=rule,
         rules_file=rules_file,
         toolkits=require_toolkit + toolkit,
@@ -406,7 +409,6 @@ async def spec(
     ] = [],
 ):
     CustomVoiceBot = build_voicebot(
-        agent_name=agent_name,
         rules=rule,
         rules_file=rules_file,
         toolkits=require_toolkit + toolkit,
@@ -519,7 +521,6 @@ async def deploy(
     project_id = await resolve_project_id(project_id=project_id)
 
     CustomVoiceBot = build_voicebot(
-        agent_name=agent_name,
         rules=rule,
         rules_file=rules_file,
         toolkits=require_toolkit + toolkit,

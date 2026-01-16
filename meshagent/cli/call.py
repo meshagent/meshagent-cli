@@ -79,10 +79,6 @@ async def make_call(
     room: RoomOption,
     role: str = "agent",
     local: Optional[bool] = None,
-    agent_name: Annotated[
-        Optional[str], typer.Option(..., help="deprecated and unused", hidden=True)
-    ] = None,
-    name: Annotated[str, typer.Option(..., help="deprecated", hidden=True)] = None,
     participant_name: Annotated[
         Optional[str],
         typer.Option(..., help="the participant name to be used by the callee"),
@@ -127,8 +123,6 @@ async def make_call(
         room=room,
         role=role,
         local=local,
-        agent_name=agent_name,
-        name=name,
         participant_name=participant_name,
         url=url,
         arguments=arguments,
@@ -143,10 +137,6 @@ async def _make_call(
     room: RoomOption,
     role: str = "agent",
     local: Optional[bool] = None,
-    agent_name: Annotated[
-        Optional[str], typer.Option(..., help="deprecated and unused", hidden=True)
-    ] = None,
-    name: Annotated[str, typer.Option(..., help="deprecated", hidden=True)] = None,
     participant_name: Annotated[
         Optional[str],
         typer.Option(..., help="the participant name to be used by the callee"),
@@ -163,15 +153,6 @@ async def _make_call(
     Instruct an agent to 'call' a given URL with specific arguments.
 
     """
-    if name is not None:
-        print("[yellow]name is deprecated and should no longer be passed[/yellow]")
-
-    if agent_name is not None:
-        print(
-            "[yellow]agent-name is deprecated and should no longer be passed, use participant-name instead[/yellow]"
-        )
-        participant_name = agent_name
-
     if participant_name is None:
         print("[red]--participant-name is required[/red]")
         raise typer.Exit(1)
