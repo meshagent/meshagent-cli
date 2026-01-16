@@ -76,7 +76,7 @@ class CustomMeshagentClient(Meshagent):
     async def connect_room(self, *, project_id: str, room: str) -> RoomConnectionInfo:
         from urllib.parse import quote
 
-        jwt = os.getenv("MESHAGENT_SESSION_TOKEN")
+        jwt = os.getenv("MESHAGENT_TOKEN")
 
         if jwt is not None and room == os.getenv("MESHAGENT_ROOM"):
             return RoomConnectionInfo(

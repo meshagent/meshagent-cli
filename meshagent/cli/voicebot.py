@@ -1,4 +1,5 @@
 import typer
+import os
 from rich import print
 from typing import Annotated, Optional
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
@@ -206,27 +207,29 @@ async def make_call(
         project_id = await resolve_project_id(project_id=project_id)
         room = resolve_room(room)
 
-        token = ParticipantToken(
-            name=agent_name,
-        )
+        jwt = os.getenv("MESHAGENT_TOKEN")
+        if jwt is None:
+            token = ParticipantToken(
+                name=agent_name,
+            )
 
-        token.add_api_grant(ApiScope.agent_default())
+            token.add_api_grant(ApiScope.agent_default())
 
-        token.add_role_grant(role="agent")
-        token.add_room_grant(room)
+            token.add_role_grant(role="agent")
+            token.add_room_grant(room)
 
-        CustomVoiceBot = build_voicebot(
-            agent_name=agent_name,
-            rules=rule,
-            rules_file=rules_file,
-            toolkits=require_toolkit + toolkit,
-            schemas=require_schema + schema,
-            auto_greet_message=auto_greet_message,
-            auto_greet_prompt=auto_greet_prompt,
-            room_rules_paths=room_rules,
-        )
+            CustomVoiceBot = build_voicebot(
+                agent_name=agent_name,
+                rules=rule,
+                rules_file=rules_file,
+                toolkits=require_toolkit + toolkit,
+                schemas=require_schema + schema,
+                auto_greet_message=auto_greet_message,
+                auto_greet_prompt=auto_greet_prompt,
+                room_rules_paths=room_rules,
+            )
 
-        jwt = token.to_jwt(api_key=key)
+            jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
         async with RoomClient(

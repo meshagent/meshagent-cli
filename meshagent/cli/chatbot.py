@@ -608,16 +608,18 @@ async def make_call(
         project_id = await resolve_project_id(project_id=project_id)
         room = resolve_room(room)
 
-        token = ParticipantToken(
-            name=agent_name,
-        )
+        jwt = os.getenv("MESHAGENT_TOKEN")
+        if jwt is None:
+            token = ParticipantToken(
+                name=agent_name,
+            )
 
-        token.add_api_grant(ApiScope.agent_default(tunnels=require_computer_use))
+            token.add_api_grant(ApiScope.agent_default(tunnels=require_computer_use))
 
-        token.add_role_grant(role=role)
-        token.add_room_grant(room)
+            token.add_role_grant(role=role)
+            token.add_room_grant(room)
 
-        jwt = token.to_jwt(api_key=key)
+            jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
         async with RoomClient(
