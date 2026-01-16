@@ -35,6 +35,7 @@ from meshagent.cli.helper import (
 )
 
 from meshagent.openai import OpenAIResponsesAdapter
+from meshagent.anthropic import AnthropicOpenAIResponsesStreamAdapter
 
 from typing import List
 from pathlib import Path
@@ -148,6 +149,7 @@ def build_chatbot(
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
 
     BaseClass = ChatBot
+    decision_model = None
     if llm_participant:
         llm_adapter = MessageStreamLLMAdapter(
             participant_name=llm_participant,
@@ -163,10 +165,17 @@ def build_chatbot(
                 log_requests=log_llm_requests,
             )
         else:
-            llm_adapter = OpenAIResponsesAdapter(
-                model=model,
-                log_requests=log_llm_requests,
-            )
+            if model.startswith("claude-"):
+                llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
+                    model=model,
+                    log_requests=log_llm_requests,
+                )
+                decision_model = model
+            else:
+                llm_adapter = OpenAIResponsesAdapter(
+                    model=model,
+                    log_requests=log_llm_requests,
+                )
 
     class CustomChatbot(BaseClass):
         def __init__(self):
@@ -179,6 +188,7 @@ def build_chatbot(
                 client_rules=client_rules,
                 always_reply=always_reply,
                 skill_dirs=skill_dirs,
+                decision_model=decision_model,
             )
 
         async def start(self, *, room: RoomClient):
