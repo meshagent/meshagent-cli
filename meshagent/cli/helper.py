@@ -61,6 +61,8 @@ async def set_active_api_key(project_id: str, key: str):
 
 async def get_active_api_key(project_id: str):
     settings = _load_settings()
+    if settings is None:
+        return None
     key: str = settings.active_api_keys.get(project_id)
     # Ignore old keys, API key format changed
     if key is not None and key.startswith("ma-"):
