@@ -349,14 +349,6 @@ async def join(
             raise typer.Exit(1)
 
         try:
-            parsed_key = parse_api_key(key)
-            token = ParticipantToken(
-                name="cli", project_id=project_id, api_key_id=parsed_key.id
-            )
-            token.add_api_grant(ApiScope.agent_default())
-            token.add_role_grant("user")
-            token.add_room_grant(room)
-
             print("[bold green]Connecting to room...[/bold green]")
 
             run_tasks = []
