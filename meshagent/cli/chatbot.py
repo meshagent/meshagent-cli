@@ -1528,6 +1528,9 @@ async def chat_with(
         ) as user_client:
             await user_client.messaging.enable()
 
+            if thread_path is None:
+                thread_path = f".threads/{participant_name}/{user_client.local_participant.get_attribute('name')}.thread"
+
             async with ChatBotClient(
                 room=user_client,
                 participant_name=participant_name,
@@ -1846,11 +1849,6 @@ async def run(
 
             await bot.start(room=client)
 
-            if thread_path is None:
-                thread_path = (
-                    f".threads/{client.local_participant.get_attribute('name')}.thread"
-                )
-
             _, pending = await asyncio.wait(
                 [
                     asyncio.create_task(client.protocol.wait_for_close()),
@@ -1918,9 +1916,6 @@ async def use(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         room = resolve_room(room)
-
-        if thread_path is None:
-            thread_path = f".threads/{agent_name}.thread"
 
         await chat_with(
             participant_name=agent_name,

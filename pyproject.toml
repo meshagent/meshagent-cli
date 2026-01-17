@@ -16,6 +16,7 @@ dependencies = [
   "art~=6.5",
   "pydantic-yaml~=1.5",
   "pathspec~=0.12.1",
+  
 ]
 
 dynamic = ["version", "readme"]
