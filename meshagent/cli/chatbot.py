@@ -2,7 +2,7 @@ import typer
 from rich import print
 from typing import Annotated, Optional
 from meshagent.tools import Toolkit
-from meshagent.tools.storage import StorageToolkitBuilder
+from meshagent.tools.storage import StorageToolkitBuilder, StorageToolkitConfig
 from meshagent.tools.datetime import DatetimeToolkit
 from meshagent.tools.uuid import UUIDToolkit
 from meshagent.tools.document_tools import (
@@ -1507,6 +1507,10 @@ async def chat_with(
     project_id: str,
     room: str,
     thread_path: str,
+    message: Optional[str] = None,
+    use_web_search: bool = False,
+    use_image_gen: bool = False,
+    use_storage: bool = False,
 ):
     from prompt_toolkit.shortcuts import PromptSession
     from prompt_toolkit.key_binding import KeyBindings
@@ -1560,15 +1564,21 @@ async def chat_with(
                     )
                 )
 
-            while participant is None:
-                for p in user_client.messaging.get_participants():
-                    if p.get_attribute("name") == participant_name:
-                        participant = p
-                        break
+            try:
+                async with asyncio.timeout(30):
+                    while participant is None:
+                        for p in user_client.messaging.get_participants():
+                            if p.get_attribute("name") == participant_name:
+                                participant = p
+                                break
 
-                if participant is None:
-                    print("[bold red]participant not found[/bold red]")
-                    await asyncio.sleep(1)
+                        await asyncio.sleep(1)
+
+            except asyncio.TimeoutError:
+                raise RoomException(f"timed out waiting for {participant_name}")
+
+            if participant is None:
+                pass
             else:
                 # Send the message
                 await user_client.messaging.send_message(
@@ -1579,35 +1589,63 @@ async def chat_with(
                 )
 
                 while True:
-                    user_input = await session.prompt_async()
+                    user_input = message or await session.prompt_async()
 
-                    messages = doc.root.get_elements_by_tag_name("messages")[0]
+                    if user_input == "/clear":
+                        await user_client.messaging.send_message(
+                            to=participant,
+                            type="clear",
+                            message={"path": thread_path},
+                            attachment=None,
+                        )
 
-                    messages.append_child(
-                        tag_name="message",
-                        attributes={
-                            "id": str(uuid.uuid4()),
-                            "text": user_input,
-                            "created_at": datetime.now(timezone.utc)
-                            .isoformat()
-                            .replace("+00:00", "Z"),
-                            "author_name": user_client.local_participant.get_attribute(
-                                "name"
-                            ),
-                        },
-                    )
+                    else:
+                        messages = doc.root.get_elements_by_tag_name("messages")[0]
+                        messages.append_child(
+                            tag_name="message",
+                            attributes={
+                                "id": str(uuid.uuid4()),
+                                "text": user_input,
+                                "created_at": datetime.now(timezone.utc)
+                                .isoformat()
+                                .replace("+00:00", "Z"),
+                                "author_name": user_client.local_participant.get_attribute(
+                                    "name"
+                                ),
+                            },
+                        )
 
-                    # Send the message
-                    await user_client.messaging.send_message(
-                        to=participant,
-                        type="chat",
-                        message={"text": user_input, "path": thread_path},
-                        attachment=None,
-                    )
+                        tools = []
 
-                    response = await channel.get()
+                        if use_web_search:
+                            tools.append(WebSearchConfig().model_dump(mode="json"))
 
-                    print(response)
+                        elif use_image_gen:
+                            tools.append(
+                                ImageGenerationConfig().model_dump(mode="json")
+                            )
+
+                        elif use_storage:
+                            tools.append(StorageToolkitConfig().model_dump(mode="json"))
+
+                        # Send the message
+                        await user_client.messaging.send_message(
+                            to=participant,
+                            type="chat",
+                            message={
+                                "text": user_input,
+                                "path": thread_path,
+                                "tools": tools,
+                            },
+                            attachment=None,
+                        )
+
+                        response = await channel.get()
+
+                        print(response)
+
+                    if message:
+                        break
 
     except asyncio.CancelledError:
         pass
@@ -1792,6 +1830,22 @@ async def run(
         Optional[str],
         typer.Option(..., help="log all requests to the llm"),
     ] = None,
+    message: Annotated[
+        Optional[str],
+        typer.Option(..., help="the input message to use"),
+    ] = None,
+    use_web_search: Annotated[
+        Optional[bool],
+        typer.Option(..., help="request the web search tool"),
+    ] = None,
+    use_image_gen: Annotated[
+        Optional[bool],
+        typer.Option(..., help="request the image gen tool"),
+    ] = None,
+    use_storage: Annotated[
+        Optional[bool],
+        typer.Option(..., help="request the storage tool"),
+    ] = None,
 ):
     root = logging.getLogger()
     root.setLevel(logging.ERROR)
@@ -1889,6 +1943,10 @@ async def run(
                             room=room,
                             project_id=project_id,
                             thread_path=thread_path,
+                            message=message,
+                            use_web_search=use_web_search,
+                            use_image_gen=use_image_gen,
+                            use_storage=use_storage,
                         )
                     ),
                 ],
@@ -1917,6 +1975,22 @@ async def use(
         Optional[str],
         typer.Option(..., help="log all requests to the llm"),
     ] = None,
+    message: Annotated[
+        Optional[str],
+        typer.Option(..., help="the input message to use"),
+    ] = None,
+    use_web_search: Annotated[
+        Optional[bool],
+        typer.Option(..., help="request the web search tool"),
+    ] = None,
+    use_image_gen: Annotated[
+        Optional[bool],
+        typer.Option(..., help="request the image gen tool"),
+    ] = None,
+    use_storage: Annotated[
+        Optional[bool],
+        typer.Option(..., help="request the storage tool"),
+    ] = None,
 ):
     root = logging.getLogger()
     root.setLevel(logging.ERROR)
@@ -1934,6 +2008,10 @@ async def use(
             room=room,
             project_id=project_id,
             thread_path=thread_path,
+            message=message,
+            use_web_search=use_web_search,
+            use_image_gen=use_image_gen,
+            use_storage=use_storage,
         )
 
     except asyncio.CancelledError:
