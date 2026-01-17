@@ -77,7 +77,7 @@ def build_mailbot(
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
     toolkit_name: Optional[str] = None,
-    queue: str,
+    queue: Optional[str] = None,
     email_address: str,
     room_rules_paths: list[str],
     whitelist=list[str],
@@ -373,7 +373,9 @@ async def join(
         str,
         typer.Option("--key", help="an api key to sign the token with"),
     ] = None,
-    queue: Annotated[str, typer.Option(..., help="the name of the mail queue")],
+    queue: Annotated[
+        Optional[str], typer.Option(..., help="the name of the mail queue")
+    ] = None,
     email_address: Annotated[
         str, typer.Option(..., help="the email address of the agent")
     ],
@@ -478,6 +480,7 @@ async def join(
                 print(
                     "[bold red]--agent-name must be specified when the MESHAGENT_TOKEN environment variable is not set[/bold red]"
                 )
+                raise typer.Exit(1)
 
             token = ParticipantToken(
                 name=agent_name,
@@ -602,7 +605,9 @@ async def service(
     path: Annotated[
         Optional[str], typer.Option(help="HTTP path to mount the service at")
     ] = None,
-    queue: Annotated[str, typer.Option(..., help="the name of the mail queue")],
+    queue: Annotated[
+        Optional[str], typer.Option(..., help="the name of the mail queue")
+    ] = None,
     email_address: Annotated[
         str, typer.Option(..., help="the email address of the agent")
     ],
@@ -811,7 +816,9 @@ async def spec(
     path: Annotated[
         Optional[str], typer.Option(help="HTTP path to mount the service at")
     ] = None,
-    queue: Annotated[str, typer.Option(..., help="the name of the mail queue")],
+    queue: Annotated[
+        Optional[str], typer.Option(..., help="the name of the mail queue")
+    ] = None,
     email_address: Annotated[
         str, typer.Option(..., help="the email address of the agent")
     ],
@@ -1033,7 +1040,9 @@ async def deploy(
     path: Annotated[
         Optional[str], typer.Option(help="HTTP path to mount the service at")
     ] = None,
-    queue: Annotated[str, typer.Option(..., help="the name of the mail queue")],
+    queue: Annotated[
+        Optional[str], typer.Option(..., help="the name of the mail queue")
+    ] = None,
     email_address: Annotated[
         str, typer.Option(..., help="the email address of the agent")
     ],

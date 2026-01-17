@@ -213,6 +213,7 @@ async def join(
                 print(
                     "[bold red]--agent-name must be specified when the MESHAGENT_TOKEN environment variable is not set[/bold red]"
                 )
+                raise typer.Exit(1)
 
             token = ParticipantToken(
                 name=agent_name,
