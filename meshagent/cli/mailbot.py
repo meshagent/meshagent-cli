@@ -99,7 +99,7 @@ def build_mailbot(
     llm_participant: Optional[str] = None,
     log_llm_requests: Optional[bool] = None,
 ):
-    from meshagent.agents.mail import MailWorker
+    from meshagent.agents.mail import MailBot
 
     if (require_storage or require_read_only_storage) and len(whitelist) == 0:
         logger.warning(
@@ -123,7 +123,7 @@ def build_mailbot(
         except FileNotFoundError:
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
 
-    BaseClass = MailWorker
+    BaseClass = MailBot
     if llm_participant:
         llm_adapter = MessageStreamLLMAdapter(
             participant_name=llm_participant,
