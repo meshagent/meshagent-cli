@@ -1,7 +1,7 @@
 import typer
 from rich import print
-from typing import Annotated, Optional
-from meshagent.tools import Toolkit
+from typing import Annotated, Optional, List
+from meshagent.tools import Toolkit, ToolkitConfig
 from meshagent.tools.storage import StorageToolkitBuilder, StorageToolkitConfig
 from meshagent.tools.datetime import DatetimeToolkit
 from meshagent.tools.uuid import UUIDToolkit
@@ -37,7 +37,6 @@ from meshagent.cli.helper import (
 from meshagent.openai import OpenAIResponsesAdapter
 from meshagent.anthropic import AnthropicOpenAIResponsesStreamAdapter
 
-from typing import List
 from pathlib import Path
 
 from meshagent.openai.tools.responses_adapter import (
@@ -62,7 +61,7 @@ from meshagent.openai.tools.responses_adapter import (
 from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
 from meshagent.agents.adapter import MessageStreamLLMAdapter
 
-from meshagent.api import RequiredToolkit, RequiredSchema, RoomMessage
+from meshagent.api import RequiredToolkit, RequiredSchema
 import logging
 import os.path
 
@@ -77,8 +76,6 @@ import sys
 
 import asyncio
 
-import uuid
-from datetime import datetime, timezone
 
 from meshagent.api.client import ConflictError
 
@@ -1514,6 +1511,7 @@ async def chat_with(
 ):
     from prompt_toolkit.shortcuts import PromptSession
     from prompt_toolkit.key_binding import KeyBindings
+    from meshagent.agents.chat import ChatBotClient
 
     kb = KeyBindings()
 
@@ -1521,8 +1519,6 @@ async def chat_with(
 
     account_client = await get_client()
     try:
-        channel = asyncio.Queue[str]()
-
         connection = await account_client.connect_room(project_id=project_id, room=room)
         async with RoomClient(
             protocol=WebSocketClientProtocol(
@@ -1530,117 +1526,40 @@ async def chat_with(
                 token=connection.jwt,
             ),
         ) as user_client:
-            # Create and enable messaging
             await user_client.messaging.enable()
-            await user_client.messaging.start()
 
-            doc = await user_client.sync.open(path=thread_path)
+            async with ChatBotClient(
+                room=user_client,
+                participant_name=participant_name,
+                thread_path=thread_path,
+            ) as chat_client:
 
-            def on_message(message: RoomMessage):
-                received_type = message.type
-                received_message = message.message
-
-                if received_type == "chat" and received_message["path"] == thread_path:
-                    channel.put_nowait(received_message["text"])
-
-            user_client.messaging.on("message", on_message)
-            await asyncio.sleep(1)
-            # Find the participant we want to message
-
-            participant = None
-
-            @kb.add("c-l")
-            def _(event):
-                # Clear the screen
-                event.app.renderer.clear()
-
-                # Send the message
-                asyncio.ensure_future(
-                    user_client.messaging.send_message(
-                        to=participant,
-                        type="clear",
-                        message={"path": thread_path},
-                        attachment=None,
-                    )
-                )
-
-            try:
-                async with asyncio.timeout(30):
-                    while participant is None:
-                        for p in user_client.messaging.get_participants():
-                            if p.get_attribute("name") == participant_name:
-                                participant = p
-                                break
-
-                        await asyncio.sleep(1)
-
-            except asyncio.TimeoutError:
-                raise RoomException(f"timed out waiting for {participant_name}")
-
-            if participant is None:
-                pass
-            else:
-                # Send the message
-                await user_client.messaging.send_message(
-                    to=participant,
-                    type="opened",
-                    message={"path": thread_path},
-                    attachment=None,
-                )
+                @kb.add("c-l")
+                def _(event):
+                    event.app.renderer.clear()
+                    asyncio.ensure_future(chat_client.clear())
 
                 while True:
                     user_input = message or await session.prompt_async()
 
                     if user_input == "/clear":
-                        await user_client.messaging.send_message(
-                            to=participant,
-                            type="clear",
-                            message={"path": thread_path},
-                            attachment=None,
-                        )
+                        await chat_client.clear()
 
                     else:
-                        messages = doc.root.get_elements_by_tag_name("messages")[0]
-                        messages.append_child(
-                            tag_name="message",
-                            attributes={
-                                "id": str(uuid.uuid4()),
-                                "text": user_input,
-                                "created_at": datetime.now(timezone.utc)
-                                .isoformat()
-                                .replace("+00:00", "Z"),
-                                "author_name": user_client.local_participant.get_attribute(
-                                    "name"
-                                ),
-                            },
-                        )
-
-                        tools = []
+                        tools: list[ToolkitConfig] = []
 
                         if use_web_search:
-                            tools.append(WebSearchConfig().model_dump(mode="json"))
+                            tools.append(WebSearchConfig())
 
                         elif use_image_gen:
-                            tools.append(
-                                ImageGenerationConfig().model_dump(mode="json")
-                            )
+                            tools.append(ImageGenerationConfig())
 
                         elif use_storage:
-                            tools.append(StorageToolkitConfig().model_dump(mode="json"))
+                            tools.append(StorageToolkitConfig())
 
-                        # Send the message
-                        await user_client.messaging.send_message(
-                            to=participant,
-                            type="chat",
-                            message={
-                                "text": user_input,
-                                "path": thread_path,
-                                "tools": tools,
-                            },
-                            attachment=None,
-                        )
+                        await chat_client.send(text=user_input, tools=tools)
 
-                        response = await channel.get()
+                        response = await chat_client.receive()
 
                         print(response)
 
