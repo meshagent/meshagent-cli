@@ -62,7 +62,7 @@ from meshagent.openai.tools.responses_adapter import (
 from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
 from meshagent.agents.adapter import MessageStreamLLMAdapter
 
-from meshagent.api import RequiredToolkit, RequiredSchema
+from meshagent.api import RequiredToolkit, RequiredSchema, RoomMessage
 import logging
 import os.path
 
@@ -74,6 +74,11 @@ import yaml
 
 import shlex
 import sys
+
+import asyncio
+
+import uuid
+from datetime import datetime, timezone
 
 from meshagent.api.client import ConflictError
 
@@ -1494,3 +1499,445 @@ async def deploy(
 
     finally:
         await client.close()
+
+
+async def chat_with(
+    *,
+    participant_name: str,
+    project_id: str,
+    room: str,
+    thread_path: str,
+):
+    from prompt_toolkit.shortcuts import PromptSession
+    from prompt_toolkit.key_binding import KeyBindings
+
+    kb = KeyBindings()
+
+    session = PromptSession("> ", key_bindings=kb)
+
+    account_client = await get_client()
+    try:
+        channel = asyncio.Queue[str]()
+
+        connection = await account_client.connect_room(project_id=project_id, room=room)
+        async with RoomClient(
+            protocol=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                token=connection.jwt,
+            ),
+        ) as user_client:
+            # Create and enable messaging
+            await user_client.messaging.enable()
+            await user_client.messaging.start()
+
+            doc = await user_client.sync.open(path=thread_path)
+
+            def on_message(message: RoomMessage):
+                received_type = message.type
+                received_message = message.message
+
+                if received_type == "chat" and received_message["path"] == thread_path:
+                    channel.put_nowait(received_message["text"])
+
+            user_client.messaging.on("message", on_message)
+            await asyncio.sleep(1)
+            # Find the participant we want to message
+
+            participant = None
+
+            @kb.add("c-l")
+            def _(event):
+                # Clear the screen
+                event.app.renderer.clear()
+
+                # Send the message
+                asyncio.ensure_future(
+                    user_client.messaging.send_message(
+                        to=participant,
+                        type="clear",
+                        message={"path": thread_path},
+                        attachment=None,
+                    )
+                )
+
+            while participant is None:
+                for p in user_client.messaging.get_participants():
+                    if p.get_attribute("name") == participant_name:
+                        participant = p
+                        break
+
+                if participant is None:
+                    print("[bold red]participant not found[/bold red]")
+                    await asyncio.sleep(1)
+            else:
+                # Send the message
+                await user_client.messaging.send_message(
+                    to=participant,
+                    type="opened",
+                    message={"path": thread_path},
+                    attachment=None,
+                )
+
+                while True:
+                    user_input = await session.prompt_async()
+
+                    messages = doc.root.get_elements_by_tag_name("messages")[0]
+
+                    messages.append_child(
+                        tag_name="message",
+                        attributes={
+                            "id": str(uuid.uuid4()),
+                            "text": user_input,
+                            "created_at": datetime.now(timezone.utc)
+                            .isoformat()
+                            .replace("+00:00", "Z"),
+                            "author_name": user_client.local_participant.get_attribute(
+                                "name"
+                            ),
+                        },
+                    )
+
+                    # Send the message
+                    await user_client.messaging.send_message(
+                        to=participant,
+                        type="chat",
+                        message={"text": user_input, "path": thread_path},
+                        attachment=None,
+                    )
+
+                    response = await channel.get()
+
+                    print(response)
+
+    except asyncio.CancelledError:
+        pass
+
+    finally:
+        await account_client.close()
+
+
+@app.async_command("run")
+async def run(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    role: str = "agent",
+    agent_name: Annotated[
+        Optional[str], typer.Option(..., help="Name of the agent to call")
+    ] = None,
+    rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="a path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
+    rules_file: Optional[str] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="the name or url of a required schema"
+        ),
+    ] = [],
+    toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
+    ] = [],
+    schema: Annotated[
+        List[str],
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
+    ] = [],
+    model: Annotated[
+        str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
+    ] = "gpt-5.2",
+    image_generation: Annotated[
+        Optional[str], typer.Option(..., help="Name of an image gen model")
+    ] = None,
+    computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ..., help="Enable computer use (requires computer-use-preview model)"
+        ),
+    ] = False,
+    local_shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
+    ] = False,
+    shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable function shell tool calling")
+    ] = False,
+    apply_patch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable apply patch tool")
+    ] = False,
+    web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    mcp: Annotated[
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
+    ] = False,
+    storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
+    ] = False,
+    require_image_generation: Annotated[
+        Optional[str], typer.Option(..., help="Name of an image gen model")
+    ] = None,
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+            hidden=True,
+        ),
+    ] = False,
+    require_local_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable local shell tool calling"),
+    ] = False,
+    require_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable function shell tool calling"),
+    ] = False,
+    require_apply_patch: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable apply patch tool calling"),
+    ] = False,
+    require_web_search: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable web search tool calling"),
+    ] = False,
+    require_mcp: Annotated[
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
+    ] = False,
+    require_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
+    ] = False,
+    database_namespace: Annotated[
+        Optional[str],
+        typer.Option(..., help="Use a specific database namespace"),
+    ] = None,
+    require_table_read: Annotated[
+        list[str],
+        typer.Option(..., help="Enable table read tools for a specific table"),
+    ] = [],
+    require_table_write: Annotated[
+        list[str],
+        typer.Option(..., help="Enable table write tools for a specific table"),
+    ] = [],
+    require_read_only_storage: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable read only storage toolkit"),
+    ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable time/datetime tools",
+        ),
+    ] = True,
+    require_uuid: Annotated[
+        bool,
+        typer.Option(
+            ...,
+            help="Enable UUID generation tools",
+        ),
+    ] = False,
+    require_document_authoring: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable MeshDocument authoring"),
+    ] = False,
+    require_discovery: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable discovery of agents and tools"),
+    ] = False,
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="The default working directory for shell commands"),
+    ] = None,
+    key: Annotated[
+        str,
+        typer.Option("--key", help="an api key to sign the token with"),
+    ] = None,
+    llm_participant: Annotated[
+        Optional[str],
+        typer.Option(..., help="Delegate LLM interactions to a remote participant"),
+    ] = None,
+    always_reply: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Always reply"),
+    ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
+    thread_path: Annotated[
+        Optional[str],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = None,
+):
+    root = logging.getLogger()
+    root.setLevel(logging.ERROR)
+
+    if database_namespace is not None:
+        database_namespace = database_namespace.split("::")
+
+    key = await resolve_key(project_id=project_id, key=key)
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        room = resolve_room(room)
+
+        jwt = os.getenv("MESHAGENT_TOKEN")
+        if jwt is None:
+            if agent_name is None:
+                print(
+                    "[bold red]--agent-name must be specified when the MESHAGENT_TOKEN environment variable is not set[/bold red]"
+                )
+                raise typer.Exit(1)
+
+            token = ParticipantToken(
+                name=agent_name,
+            )
+
+            token.add_api_grant(ApiScope.agent_default(tunnels=require_computer_use))
+
+            token.add_role_grant(role=role)
+            token.add_room_grant(room)
+
+            jwt = token.to_jwt(api_key=key)
+
+        async with RoomClient(
+            protocol=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                token=jwt,
+            )
+        ) as client:
+            CustomChatbot = build_chatbot(
+                computer_use=computer_use,
+                require_computer_use=require_computer_use,
+                model=model,
+                rule=rule,
+                toolkit=require_toolkit + toolkit,
+                schema=require_schema + schema,
+                rules_file=rules_file,
+                local_shell=local_shell,
+                shell=shell,
+                apply_patch=apply_patch,
+                image_generation=image_generation,
+                web_search=web_search,
+                mcp=mcp,
+                storage=storage,
+                require_apply_patch=require_apply_patch,
+                require_web_search=require_web_search,
+                require_local_shell=require_local_shell,
+                require_shell=require_shell,
+                require_image_generation=require_image_generation,
+                require_mcp=require_mcp,
+                require_storage=require_storage,
+                require_table_read=require_table_read,
+                require_table_write=require_table_write,
+                require_read_only_storage=require_read_only_storage,
+                require_time=require_time,
+                require_uuid=require_uuid,
+                room_rules_path=room_rules,
+                require_document_authoring=require_document_authoring,
+                require_discovery=require_discovery,
+                working_directory=working_directory,
+                llm_participant=llm_participant,
+                always_reply=always_reply,
+                database_namespace=database_namespace,
+                skill_dirs=skill_dir,
+                shell_image=shell_image,
+                log_llm_requests=log_llm_requests,
+            )
+
+            bot = CustomChatbot()
+
+            await bot.start(room=client)
+
+            if thread_path is None:
+                thread_path = (
+                    f".threads/{client.local_participant.get_attribute('name')}.thread"
+                )
+
+            _, pending = await asyncio.wait(
+                [
+                    asyncio.create_task(client.protocol.wait_for_close()),
+                    asyncio.create_task(
+                        chat_with(
+                            participant_name=client.local_participant.get_attribute(
+                                "name"
+                            ),
+                            room=room,
+                            project_id=project_id,
+                            thread_path=thread_path,
+                        )
+                    ),
+                ],
+                return_when="FIRST_COMPLETED",
+            )
+
+            for t in pending:
+                t.cancel()
+
+    except asyncio.CancelledError:
+        return
+
+    finally:
+        await account_client.close()
+
+
+@app.async_command("use")
+async def use(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    agent_name: Annotated[
+        Optional[str], typer.Option(..., help="Name of the agent to call")
+    ] = None,
+    thread_path: Annotated[
+        Optional[str],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = None,
+):
+    root = logging.getLogger()
+    root.setLevel(logging.ERROR)
+
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        room = resolve_room(room)
+
+        if thread_path is None:
+            thread_path = f".threads/{agent_name}.thread"
+
+        await chat_with(
+            participant_name=agent_name,
+            room=room,
+            project_id=project_id,
+            thread_path=thread_path,
+        )
+
+    except asyncio.CancelledError:
+        return
+
+    finally:
+        await account_client.close()
