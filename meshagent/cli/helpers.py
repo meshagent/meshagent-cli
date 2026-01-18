@@ -36,7 +36,6 @@ async def helpers_service():
     class Runner(LLMTaskRunner):
         def __init__(self, **kwargs):
             super().__init__(
-                name="meshagent.runner",
                 title="Generic Task Runner",
                 description="an agent that will perform a task with the selected tools",
                 llm_adapter=OpenAIResponsesAdapter(model="gpt-5.2"),
@@ -68,7 +67,6 @@ async def helpers_service():
     class Planner(LLMTaskRunner):
         def __init__(self, **kwargs):
             super().__init__(
-                name="meshagent.planner",
                 title="Generic Task Runner (Legacy)",
                 description="an agent that will perform a task with the selected tools",
                 llm_adapter=OpenAIResponsesAdapter(model="gpt-5.2"),
@@ -86,7 +84,6 @@ async def helpers_service():
     class DynamicPlanner(DynamicLLMTaskRunner):
         def __init__(self, **kwargs):
             super().__init__(
-                name="meshagent.schema_planner",
                 title="Schema Task Runner",
                 description="an agent that can produces output that matches a schema",
                 llm_adapter=OpenAIResponsesAdapter(model="gpt-5.2"),
