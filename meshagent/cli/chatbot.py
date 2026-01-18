@@ -122,6 +122,7 @@ def build_chatbot(
     skill_dirs: Optional[list[str]] = None,
     shell_image: Optional[str] = None,
     log_llm_requests: Optional[bool] = None,
+    delegate_shell_token: Optional[bool] = None,
 ):
     from meshagent.agents.chat import ChatBot
 
@@ -278,12 +279,18 @@ def build_chatbot(
                     )
                 )
 
+            env = {}
+
+            if delegate_shell_token:
+                env["MESHAGENT_TOKEN"] = self.room.protocol.token
+
             if require_shell:
                 providers.append(
                     ShellTool(
                         working_directory=working_directory,
                         config=ShellConfig(name="shell"),
                         image=shell_image or "python:3.13",
+                        env=env,
                     )
                 )
 
@@ -596,6 +603,10 @@ async def join(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -672,6 +683,7 @@ async def join(
                 database_namespace=database_namespace,
                 skill_dirs=skill_dir,
                 shell_image=shell_image,
+                delegate_shell_token=delegate_shell_token,
                 log_llm_requests=log_llm_requests,
             )
 
@@ -858,6 +870,10 @@ async def service(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -918,6 +934,7 @@ async def service(
             always_reply=always_reply,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            delegate_shell_token=delegate_shell_token,
             log_llm_requests=log_llm_requests,
         ),
     )
@@ -1101,6 +1118,10 @@ async def spec(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -1161,6 +1182,7 @@ async def spec(
             always_reply=always_reply,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            delegate_shell_token=delegate_shell_token,
             log_llm_requests=log_llm_requests,
         ),
     )
@@ -1357,6 +1379,10 @@ async def deploy(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -1424,6 +1450,7 @@ async def deploy(
             always_reply=always_reply,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            delegate_shell_token=delegate_shell_token,
             log_llm_requests=log_llm_requests,
         ),
     )
@@ -1744,6 +1771,10 @@ async def run(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -1842,6 +1873,7 @@ async def run(
                 database_namespace=database_namespace,
                 skill_dirs=skill_dir,
                 shell_image=shell_image,
+                delegate_shell_token=delegate_shell_token,
                 log_llm_requests=log_llm_requests,
             )
 

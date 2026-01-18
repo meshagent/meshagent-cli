@@ -97,6 +97,7 @@ def build_mailbot(
     skill_dirs: Optional[list[str]] = None,
     shell_image: Optional[str] = None,
     llm_participant: Optional[str] = None,
+    delegate_shell_token: Optional[bool] = None,
     log_llm_requests: Optional[bool] = None,
 ):
     from meshagent.agents.mail import MailBot
@@ -237,12 +238,17 @@ def build_mailbot(
                     LocalShellTool(thread_context=thread_context)
                 )
 
+            env = {}
+            if delegate_shell_token:
+                env["MESHAGENT_TOKEN"] = self.room.protocol.token
+
             if require_shell:
                 thread_toolkit.tools.append(
                     ShellTool(
                         working_directory=working_directory,
                         config=ShellConfig(name="shell"),
                         image=shell_image or "python:3.13",
+                        env=env,
                     )
                 )
 
@@ -461,6 +467,10 @@ async def join(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Delegate the room token to shell tools"),
+    ] = False,
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -531,6 +541,7 @@ async def join(
                 skill_dirs=skill_dir,
                 shell_image=shell_image,
                 llm_participant=llm_participant,
+                delegate_shell_token=delegate_shell_token,
                 log_llm_requests=log_llm_requests,
             )
 
@@ -693,6 +704,10 @@ async def service(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Delegate the room token to shell tools"),
+    ] = False,
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -744,6 +759,7 @@ async def service(
             skill_dirs=skill_dir,
             shell_image=shell_image,
             llm_participant=llm_participant,
+            delegate_shell_token=delegate_shell_token,
             log_llm_requests=log_llm_requests,
         ),
     )
@@ -904,6 +920,10 @@ async def spec(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Delegate the room token to shell tools"),
+    ] = False,
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -955,6 +975,7 @@ async def spec(
             skill_dirs=skill_dir,
             shell_image=shell_image,
             llm_participant=llm_participant,
+            delegate_shell_token=delegate_shell_token,
             log_llm_requests=log_llm_requests,
         ),
     )
@@ -1128,6 +1149,10 @@ async def deploy(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Delegate the room token to shell tools"),
+    ] = False,
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -1186,6 +1211,7 @@ async def deploy(
             skill_dirs=skill_dir,
             shell_image=shell_image,
             llm_participant=llm_participant,
+            delegate_shell_token=delegate_shell_token,
             log_llm_requests=log_llm_requests,
         ),
     )

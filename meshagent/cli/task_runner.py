@@ -109,6 +109,7 @@ def build_task_runner(
     title: Optional[str] = None,
     description: Optional[str] = None,
     shell_image: Optional[str] = None,
+    delegate_shell_token: Optional[bool] = None,
 ):
     output_schema = None
     if output_schema_str is not None:
@@ -259,12 +260,17 @@ def build_task_runner(
                     )
                 )
 
+            env = {}
+            if delegate_shell_token:
+                env["MESHAGENT_TOKEN"] = self.room.protocol.token
+
             if require_shell:
                 providers.append(
                     ShellTool(
                         working_directory=working_directory,
                         config=ShellConfig(name="shell"),
                         image=shell_image or "python:3.13",
+                        env=env,
                     )
                 )
 
@@ -481,6 +487,10 @@ async def join(
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Delegate the room token to shell tools"),
+    ] = False,
     key: Annotated[
         str,
         typer.Option("--key", help="an api key to sign the token with"),
@@ -581,6 +591,7 @@ async def join(
                 require_document_authoring=require_document_authoring,
                 require_discovery=require_discovery,
                 working_directory=working_directory,
+                delegate_shell_token=delegate_shell_token,
                 llm_participant=llm_participant,
                 output_schema_str=output_schema,
                 output_schema_path=output_schema_path,
@@ -693,6 +704,10 @@ async def service(
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Delegate the room token to shell tools"),
+    ] = False,
     require_document_authoring: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable document authoring", hidden=True),
@@ -769,6 +784,7 @@ async def service(
             require_read_only_storage=require_read_only_storage,
             room_rules_path=room_rules,
             working_directory=working_directory,
+            delegate_shell_token=delegate_shell_token,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
             llm_participant=llm_participant,
