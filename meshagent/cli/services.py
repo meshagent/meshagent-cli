@@ -9,7 +9,7 @@ from aiohttp import ClientResponseError
 import pathlib
 from meshagent.cli import async_typer
 from meshagent.api.services import well_known_service_path
-from meshagent.api.specs.service import ServiceSpec
+from meshagent.api.specs.service import ServiceSpec, ServiceTemplateSpec
 from meshagent.api.keys import parse_api_key
 
 import asyncio
@@ -35,6 +35,7 @@ from meshagent.api import (
 )
 from meshagent.cli.common_options import OutputFormatOption
 
+from pydantic import RootModel
 from pydantic_yaml import parse_yaml_raw_as
 
 
@@ -42,6 +43,32 @@ from meshagent.cli.call import _make_call
 
 
 app = async_typer.AsyncTyper(help="Manage services for your project")
+
+
+class ServiceTemplateValues(RootModel[dict[str, str]]):
+    pass
+
+
+def _load_template_values(
+    values_file: Optional[str],
+    values: Optional[list[str]] = None,
+) -> dict[str, str]:
+    template_values: dict[str, str] = {}
+
+    if values_file is not None:
+        with open(str(pathlib.Path(values_file).expanduser().resolve()), "rb") as f:
+            template_values = parse_yaml_raw_as(ServiceTemplateValues, f.read()).root
+
+    if values:
+        for item in values:
+            if "=" not in item:
+                raise typer.BadParameter("Template values must be key=value")
+            key, value = item.split("=", 1)
+            if not key:
+                raise typer.BadParameter("Template values must include a key")
+            template_values[key] = value
+
+    return template_values
 
 
 @app.async_command("create")
@@ -171,6 +198,213 @@ async def service_update(
 
     finally:
         await client.close()
+
+
+@app.async_command("validate")
+async def service_validate(
+    *,
+    file: Annotated[
+        str,
+        typer.Option("--file", "-f", help="File path to a service definition"),
+    ],
+):
+    """Validate a service spec from a YAML file."""
+    try:
+        with open(str(pathlib.Path(file).expanduser().resolve()), "rb") as f:
+            spec = parse_yaml_raw_as(ServiceSpec, f.read())
+    except Exception as exc:
+        print(f"[red]Invalid service spec: {exc}[/red]")
+        raise typer.Exit(code=1)
+
+    print(f"[green]Service spec is valid:[/] {spec.metadata.name}")
+
+
+@app.async_command("create-template")
+async def service_create_template(
+    *,
+    project_id: ProjectIdOption,
+    file: Annotated[
+        str,
+        typer.Option("--file", "-f", help="File path to a service template"),
+    ],
+    values: Annotated[
+        Optional[str],
+        typer.Option("--values-file", help="File path to template values"),
+    ] = None,
+    value: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--value",
+            "-v",
+            help="Template value override (key=value)",
+        ),
+    ] = None,
+    room: Annotated[
+        Optional[str],
+        typer.Option("--room", help="The name of a room to create the service for"),
+    ] = None,
+):
+    """Create a service from a ServiceTemplate spec."""
+    client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id)
+
+        with open(str(pathlib.Path(file).expanduser().resolve()), "rb") as f:
+            template = parse_yaml_raw_as(ServiceTemplateSpec, f.read())
+
+        template_values = _load_template_values(values, value)
+
+        try:
+            if room is None:
+                service = await client.create_service_from_template(
+                    project_id=project_id, template=template, values=template_values
+                )
+            else:
+                service = await client.create_room_service_from_template(
+                    project_id=project_id,
+                    template=template,
+                    values=template_values,
+                    room_name=room,
+                )
+        except ClientResponseError as exc:
+            if exc.status == 409:
+                print(
+                    f"[red]Service name already in use: {template.metadata.name}[/red]"
+                )
+                raise typer.Exit(code=1)
+            raise
+        else:
+            service_id = service.id or ""
+            print(f"[green]Created service:[/] {service_id}")
+
+    finally:
+        await client.close()
+
+
+@app.async_command("update-template")
+async def service_update_template(
+    *,
+    project_id: ProjectIdOption,
+    id: Optional[str] = None,
+    file: Annotated[
+        str,
+        typer.Option("--file", "-f", help="File path to a service template"),
+    ],
+    values: Annotated[
+        Optional[str],
+        typer.Option("--values-file", help="File path to template values"),
+    ] = None,
+    value: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--value",
+            "-v",
+            help="Template value override (key=value)",
+        ),
+    ] = None,
+    create: Annotated[
+        Optional[bool],
+        typer.Option(
+            help="create the service if it does not exist",
+        ),
+    ] = False,
+    room: Annotated[
+        Optional[str],
+        typer.Option("--room", help="The name of a room to update the service for"),
+    ] = None,
+):
+    """Update a service using a ServiceTemplate spec."""
+    client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id)
+
+        with open(str(pathlib.Path(file).expanduser().resolve()), "rb") as f:
+            template = parse_yaml_raw_as(ServiceTemplateSpec, f.read())
+
+        template_values = _load_template_values(values, value)
+
+        try:
+            if id is None:
+                if room is None:
+                    services = await client.list_services(project_id=project_id)
+                else:
+                    services = await client.list_room_services(
+                        project_id=project_id, room_name=room
+                    )
+
+                for s in services:
+                    if s.metadata.name == template.metadata.name:
+                        id = s.id
+
+            if id is None and not create:
+                print("[red]pass a service id or specify --create[/red]")
+                raise typer.Exit(code=1)
+
+            if id is None:
+                if room is None:
+                    service = await client.create_service_from_template(
+                        project_id=project_id,
+                        template=template,
+                        values=template_values,
+                    )
+                else:
+                    service = await client.create_room_service_from_template(
+                        project_id=project_id,
+                        template=template,
+                        values=template_values,
+                        room_name=room,
+                    )
+                id = service.id
+            else:
+                if room is None:
+                    service = await client.update_service_from_template(
+                        project_id=project_id,
+                        service_id=id,
+                        template=template,
+                        values=template_values,
+                    )
+                else:
+                    service = await client.update_room_service_from_template(
+                        project_id=project_id,
+                        service_id=id,
+                        template=template,
+                        values=template_values,
+                        room_name=room,
+                    )
+                if service.id is not None:
+                    id = service.id
+
+        except ClientResponseError as exc:
+            if exc.status == 409:
+                print(
+                    f"[red]Service name already in use: {template.metadata.name}[/red]"
+                )
+                raise typer.Exit(code=1)
+            raise
+        else:
+            print(f"[green]Updated service:[/] {id}")
+
+    finally:
+        await client.close()
+
+
+@app.async_command("validate-template")
+async def service_validate_template(
+    *,
+    file: Annotated[
+        str,
+        typer.Option("--file", "-f", help="File path to a service template"),
+    ],
+):
+    """Validate a service template from a YAML file."""
+    try:
+        with open(str(pathlib.Path(file).expanduser().resolve()), "rb") as f:
+            template = parse_yaml_raw_as(ServiceTemplateSpec, f.read())
+    except Exception as exc:
+        print(f"[red]Invalid service template: {exc}[/red]")
+        raise typer.Exit(code=1)
+
+    print(f"[green]Service template is valid:[/] {template.metadata.name}")
 
 
 @app.async_command("run")
