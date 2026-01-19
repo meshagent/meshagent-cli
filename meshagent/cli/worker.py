@@ -115,6 +115,7 @@ def build_worker(
     shell_image: Optional[str] = None,
     delegate_shell_token: Optional[bool] = None,
     log_llm_requests: Optional[bool] = None,
+    prompt: Optional[str] = None,
 ):
     """
     Returns a Worker subclass
@@ -177,6 +178,9 @@ def build_worker(
                 skill_dirs=skill_dirs,
             )
             self._room_rules_paths = room_rules_paths or []
+
+        def get_prompt_for_message(self, *, message: dict) -> str:
+            return prompt or super().get_prompt_for_message(message=message)
 
         async def init_chat_context(self):
             from meshagent.cli.helper import init_context_from_spec
@@ -522,6 +526,10 @@ async def join(
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
+    prompt: Annotated[
+        Optional[str],
+        typer.Option(..., help="a prompt to use for the worker"),
+    ] = None,
 ):
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -595,6 +603,7 @@ async def join(
                 shell_image=shell_image,
                 delegate_shell_token=delegate_shell_token,
                 log_llm_requests=log_llm_requests,
+                prompt=prompt,
             )
 
             worker = CustomWorker()
@@ -766,6 +775,10 @@ async def service(
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
+    prompt: Annotated[
+        Optional[str],
+        typer.Option(..., help="a prompt to use for the worker"),
+    ] = None,
 ):
     service = get_service(host=host, port=port)
 
@@ -824,6 +837,7 @@ async def service(
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
             log_llm_requests=log_llm_requests,
+            prompt=prompt,
         ),
     )
 
@@ -997,6 +1011,10 @@ async def spec(
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
+    prompt: Annotated[
+        Optional[str],
+        typer.Option(..., help="a prompt to use for the worker"),
+    ] = None,
 ):
     service = get_service(host=host, port=port)
 
@@ -1055,6 +1073,7 @@ async def spec(
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
             log_llm_requests=log_llm_requests,
+            prompt=prompt,
         ),
     )
 
@@ -1241,6 +1260,10 @@ async def deploy(
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
+    prompt: Annotated[
+        Optional[str],
+        typer.Option(..., help="a prompt to use for the worker"),
+    ] = None,
     project_id: ProjectIdOption,
     room: Annotated[
         Optional[str],
@@ -1306,6 +1329,7 @@ async def deploy(
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
             log_llm_requests=log_llm_requests,
+            prompt=prompt,
         ),
     )
 
