@@ -8,6 +8,9 @@ from meshagent.cli import developer
 from meshagent.cli import oauth2
 from meshagent.cli import containers
 
+from meshagent.cli import sync
+
+
 app = async_typer.AsyncTyper(help="Operate within a room")
 
 app.add_typer(agent.app, name="agents", help="Interact with agents and toolkits")
@@ -20,3 +23,4 @@ app.add_typer(database.app, name="database", help="Manage database tables in a r
 app.add_typer(
     containers.app, name="container", help="Manage containers and images in a room"
 )
+app.add_typer(sync.app, name="sync")
