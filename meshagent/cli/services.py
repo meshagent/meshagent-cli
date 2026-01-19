@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------
 import typer
 from rich import print
-from typing import Annotated, Optional, Literal
+from typing import Annotated, Optional
 from meshagent.cli.common_options import ProjectIdOption
 from aiohttp import ClientResponseError
 import pathlib
