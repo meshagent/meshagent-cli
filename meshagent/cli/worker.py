@@ -178,6 +178,14 @@ def build_worker(
             )
             self._room_rules_paths = room_rules_paths or []
 
+        async def init_chat_context(self):
+            from meshagent.cli.helper import init_context_from_spec
+
+            context = await super().init_chat_context()
+            await init_context_from_spec(context)
+
+            return context
+
         async def start(self, *, room: RoomClient):
             print(
                 "[bold green]Worker connected. It will consume queue messages.[/bold green]"

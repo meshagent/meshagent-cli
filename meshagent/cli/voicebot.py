@@ -79,6 +79,14 @@ def build_voicebot(
                 rules=rules if len(rules) > 0 else None,
             )
 
+        async def init_chat_context(self):
+            from meshagent.cli.helper import init_context_from_spec
+
+            context = await super().init_chat_context()
+            await init_context_from_spec(context)
+
+            return context
+
         async def start(self, *, room: RoomClient):
             await super().start(room=room)
 

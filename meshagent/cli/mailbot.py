@@ -176,6 +176,14 @@ def build_mailbot(
                 skill_dirs=skill_dirs,
             )
 
+        async def init_chat_context(self):
+            from meshagent.cli.helper import init_context_from_spec
+
+            context = await super().init_chat_context()
+            await init_context_from_spec(context)
+
+            return context
+
         async def start(self, *, room: RoomClient):
             print(
                 "[bold green]Configure and send an email interact with your mailbot[/bold green]"

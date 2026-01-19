@@ -199,6 +199,14 @@ def build_chatbot(
                 for p in room_rules_path:
                     await self._load_room_rules(path=p)
 
+        async def init_chat_context(self):
+            from meshagent.cli.helper import init_context_from_spec
+
+            context = await super().init_chat_context()
+            await init_context_from_spec(context)
+
+            return context
+
         async def _load_room_rules(
             self,
             *,

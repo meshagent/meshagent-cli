@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------
 import typer
 from rich import print
-from typing import Annotated, Optional
+from typing import Annotated, Optional, Literal
 from meshagent.cli.common_options import ProjectIdOption
 from aiohttp import ClientResponseError
 import pathlib
@@ -217,6 +217,44 @@ async def service_validate(
         raise typer.Exit(code=1)
 
     print(f"[green]Service spec is valid:[/] {spec.metadata.name}")
+
+
+@app.async_command("template-to-spec")
+async def service_create_template(
+    *,
+    file: Annotated[
+        str,
+        typer.Option("--file", "-f", help="File path to a service template"),
+    ],
+    values: Annotated[
+        Optional[str],
+        typer.Option("--values-file", help="File path to template values"),
+    ] = None,
+    value: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--value",
+            "-v",
+            help="Template value override (key=value)",
+        ),
+    ] = None,
+    output: Annotated[
+        Optional[Literal["json", "yaml"]],
+        typer.Option("-o", help="what format to output in"),
+    ] = "json",
+):
+    with open(str(pathlib.Path(file).expanduser().resolve()), "rb") as f:
+        template = parse_yaml_raw_as(ServiceTemplateSpec, f.read())
+
+    template_values = _load_template_values(values, value)
+
+    spec = template.to_service_spec(values=template_values)
+    if output == "json":
+        print(spec.model_dump_json(indent=4))
+    else:
+        from pydantic_yaml import to_yaml_str
+
+        print(to_yaml_str(spec))
 
 
 @app.async_command("create-template")

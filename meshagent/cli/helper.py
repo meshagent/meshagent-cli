@@ -7,8 +7,14 @@ from typing import Optional
 from meshagent.cli import auth_async
 from meshagent.cli import async_typer
 from meshagent.api.helpers import meshagent_base_url
+from meshagent.api.specs.service import ServiceSpec
+from meshagent.agents.context import AgentChatContext
 from meshagent.api.client import Meshagent, RoomConnectionInfo
 import os
+import aiofiles
+from pydantic_yaml import parse_yaml_raw_as
+import json
+
 from rich import print
 
 SETTINGS_FILE = Path.home() / ".meshagent" / "project.json"
@@ -151,6 +157,32 @@ async def resolve_project_id(project_id: Optional[str] = None):
         raise typer.Exit(code=1)
 
     return project_id
+
+
+async def init_context_from_spec(context: AgentChatContext) -> None:
+    path = os.getenv("MESHAGENT_SPEC_PATH")
+
+    if path is None:
+        return None
+
+    async with aiofiles.open(path, "r") as file:
+        spec_str = await file.read()
+        try:
+            json.loads(spec_str)
+            spec = ServiceSpec.model_validate_json(spec_str)
+        except ValueError:
+            # fallback on yaml parser if spec can't
+            spec = parse_yaml_raw_as(ServiceSpec, spec_str)
+
+        readme = spec.metadata.annotations.get("meshagent.service.readme")
+
+        if spec.metadata.description:
+            context.append_assistant_message(
+                f"This agent's description:\n{spec.metadata.description}"
+            )
+
+        if readme is not None:
+            context.append_assistant_message(f"This agent's README:\n{readme}")
 
 
 async def resolve_key(project_id: str | None, key: str | None):
