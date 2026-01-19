@@ -46,7 +46,6 @@ async def messaging_list_participants_command(
         ) as client:
             # Must enable before we can see who else is enabled
             await client.messaging.enable()
-            await client.messaging.start()
 
             participants = client.messaging.get_participants()
             output = []
@@ -92,7 +91,6 @@ async def messaging_send_command(
         ) as client:
             # Create and enable messaging
             await client.messaging.enable()
-            await client.messaging.start()
 
             # Find the participant we want to message
             participant = None
@@ -147,7 +145,6 @@ async def messaging_broadcast_command(
         ) as client:
             # Create and enable messaging
             await client.messaging.enable()
-            await client.messaging.start()
 
             # Broadcast the message
             await client.messaging.broadcast_message(

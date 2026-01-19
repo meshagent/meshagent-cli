@@ -3,6 +3,7 @@ from rich import print
 from typing import Annotated, Optional, List, Type
 from pathlib import Path
 import logging
+import os
 
 from meshagent.tools.storage import StorageToolkitBuilder
 
@@ -77,7 +78,6 @@ def build_worker(
     *,
     WorkerBase: Type[Worker],
     model: str,
-    agent_name: str,
     rule: List[str],
     toolkit: List[str],
     schema: List[str],
@@ -113,6 +113,7 @@ def build_worker(
     toolkit_name: Optional[str] = None,
     skill_dirs: Optional[list[str]] = None,
     shell_image: Optional[str] = None,
+    delegate_shell_token: Optional[bool] = None,
     log_llm_requests: Optional[bool] = None,
 ):
     """
@@ -166,17 +167,24 @@ def build_worker(
             super().__init__(
                 llm_adapter=llm_adapter,
                 tool_adapter=tool_adapter,
-                name=agent_name,
                 requires=requirements,
                 toolkits=toolkits,
                 queue=queue,
-                title=title or agent_name,
+                title=title,
                 description=description,
                 rules=rule if len(rule) > 0 else None,
                 toolkit_name=toolkit_name,
                 skill_dirs=skill_dirs,
             )
             self._room_rules_paths = room_rules_paths or []
+
+        async def init_chat_context(self):
+            from meshagent.cli.helper import init_context_from_spec
+
+            context = await super().init_chat_context()
+            await init_context_from_spec(context)
+
+            return context
 
         async def start(self, *, room: RoomClient):
             print(
@@ -270,12 +278,17 @@ def build_worker(
             if require_local_shell:
                 thread_toolkit.tools.append(LocalShellTool())
 
+            env = {}
+            if delegate_shell_token:
+                env["MESHAGENT_TOKEN"] = self.room.protocol.token
+
             if require_shell:
                 thread_toolkit.tools.append(
                     ShellTool(
                         working_directory=working_directory,
                         config=ShellConfig(name="shell"),
                         image=shell_image or "python:3.13",
+                        env=env,
                     )
                 )
 
@@ -358,7 +371,9 @@ async def join(
     project_id: ProjectIdOption,
     room: RoomOption,
     role: str = "agent",
-    agent_name: Annotated[str, typer.Option(..., help="Name of the worker agent")],
+    agent_name: Annotated[
+        Optional[str], typer.Option(..., help="Name of the worker agent")
+    ] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[str] = None,
     require_toolkit: Annotated[
@@ -499,6 +514,10 @@ async def join(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Delegate the room token to shell tools"),
+    ] = False,
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -511,12 +530,20 @@ async def join(
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
 
-        token = ParticipantToken(name=agent_name)
-        token.add_api_grant(ApiScope.agent_default(tunnels=require_computer_use))
-        token.add_role_grant(role=role)
-        token.add_room_grant(room_name)
+        jwt = os.getenv("MESHAGENT_TOKEN")
+        if jwt is None:
+            if agent_name is None:
+                print(
+                    "[bold red]--agent-name must be specified when the MESHAGENT_TOKEN environment variable is not set[/bold red]"
+                )
+                raise typer.Exit(1)
 
-        jwt = token.to_jwt(api_key=key)
+            token = ParticipantToken(name=agent_name)
+            token.add_api_grant(ApiScope.agent_default(tunnels=require_computer_use))
+            token.add_role_grant(role=role)
+            token.add_room_grant(room_name)
+
+            jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
         async with RoomClient(
@@ -535,7 +562,6 @@ async def join(
             CustomWorker = build_worker(
                 WorkerBase=WorkerBase,
                 model=model,
-                agent_name=agent_name,
                 rule=rule,
                 toolkit=require_toolkit + toolkit,
                 schema=require_schema + schema,
@@ -567,6 +593,7 @@ async def join(
                 working_directory=working_directory,
                 skill_dirs=skill_dir,
                 shell_image=shell_image,
+                delegate_shell_token=delegate_shell_token,
                 log_llm_requests=log_llm_requests,
             )
 
@@ -731,6 +758,10 @@ async def service(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Delegate the room token to shell tools"),
+    ] = False,
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -760,7 +791,6 @@ async def service(
         cls=build_worker(
             WorkerBase=WorkerBase,
             model=model,
-            agent_name=agent_name,
             rule=rule,
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
@@ -792,6 +822,7 @@ async def service(
             working_directory=working_directory,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            delegate_shell_token=delegate_shell_token,
             log_llm_requests=log_llm_requests,
         ),
     )
@@ -958,6 +989,10 @@ async def spec(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Delegate the room token to shell tools"),
+    ] = False,
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -987,7 +1022,6 @@ async def spec(
         cls=build_worker(
             WorkerBase=WorkerBase,
             model=model,
-            agent_name=agent_name,
             rule=rule,
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
@@ -1019,6 +1053,7 @@ async def spec(
             working_directory=working_directory,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            delegate_shell_token=delegate_shell_token,
             log_llm_requests=log_llm_requests,
         ),
     )
@@ -1198,6 +1233,10 @@ async def deploy(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Delegate the room token to shell tools"),
+    ] = False,
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -1234,7 +1273,6 @@ async def deploy(
         cls=build_worker(
             WorkerBase=WorkerBase,
             model=model,
-            agent_name=agent_name,
             rule=rule,
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
@@ -1266,6 +1304,7 @@ async def deploy(
             working_directory=working_directory,
             skill_dirs=skill_dir,
             shell_image=shell_image,
+            delegate_shell_token=delegate_shell_token,
             log_llm_requests=log_llm_requests,
         ),
     )

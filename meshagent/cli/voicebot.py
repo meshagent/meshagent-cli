@@ -1,4 +1,5 @@
 import typer
+import os
 from rich import print
 from typing import Annotated, Optional
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
@@ -36,7 +37,6 @@ logger = logging.getLogger("voicebot")
 
 def build_voicebot(
     *,
-    agent_name: str,
     rules: list[str],
     rules_file: Optional[str] = None,
     toolkits: list[str],
@@ -75,10 +75,17 @@ def build_voicebot(
             super().__init__(
                 auto_greet_message=auto_greet_message,
                 auto_greet_prompt=auto_greet_prompt,
-                name=agent_name,
                 requires=requirements,
                 rules=rules if len(rules) > 0 else None,
             )
+
+        async def init_chat_context(self):
+            from meshagent.cli.helper import init_context_from_spec
+
+            context = await super().init_chat_context()
+            await init_context_from_spec(context)
+
+            return context
 
         async def start(self, *, room: RoomClient):
             await super().start(room=room)
@@ -147,11 +154,13 @@ def build_voicebot(
 
 
 @app.async_command("join")
-async def make_call(
+async def join(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
-    agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
+    agent_name: Annotated[
+        Optional[str], typer.Option(..., help="Name of the agent to call")
+    ] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[str] = None,
     require_toolkit: Annotated[
@@ -206,17 +215,26 @@ async def make_call(
         project_id = await resolve_project_id(project_id=project_id)
         room = resolve_room(room)
 
-        token = ParticipantToken(
-            name=agent_name,
-        )
+        jwt = os.getenv("MESHAGENT_TOKEN")
+        if jwt is None:
+            if agent_name is None:
+                print(
+                    "[bold red]--agent-name must be specified when the MESHAGENT_TOKEN environment variable is not set[/bold red]"
+                )
+                raise typer.Exit(1)
 
-        token.add_api_grant(ApiScope.agent_default())
+            token = ParticipantToken(
+                name=agent_name,
+            )
 
-        token.add_role_grant(role="agent")
-        token.add_room_grant(room)
+            token.add_api_grant(ApiScope.agent_default())
+
+            token.add_role_grant(role="agent")
+            token.add_room_grant(room)
+
+            jwt = token.to_jwt(api_key=key)
 
         CustomVoiceBot = build_voicebot(
-            agent_name=agent_name,
             rules=rule,
             rules_file=rules_file,
             toolkits=require_toolkit + toolkit,
@@ -225,8 +243,6 @@ async def make_call(
             auto_greet_prompt=auto_greet_prompt,
             room_rules_paths=room_rules,
         )
-
-        jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
         async with RoomClient(
@@ -309,7 +325,6 @@ async def service(
     ] = [],
 ):
     CustomVoiceBot = build_voicebot(
-        agent_name=agent_name,
         rules=rule,
         rules_file=rules_file,
         toolkits=require_toolkit + toolkit,
@@ -403,7 +418,6 @@ async def spec(
     ] = [],
 ):
     CustomVoiceBot = build_voicebot(
-        agent_name=agent_name,
         rules=rule,
         rules_file=rules_file,
         toolkits=require_toolkit + toolkit,
@@ -516,7 +530,6 @@ async def deploy(
     project_id = await resolve_project_id(project_id=project_id)
 
     CustomVoiceBot = build_voicebot(
-        agent_name=agent_name,
         rules=rule,
         rules_file=rules_file,
         toolkits=require_toolkit + toolkit,

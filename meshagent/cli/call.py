@@ -1,4 +1,5 @@
 import typer
+import os
 from rich import print
 from typing import Annotated, Optional
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
@@ -78,10 +79,6 @@ async def make_call(
     room: RoomOption,
     role: str = "agent",
     local: Optional[bool] = None,
-    agent_name: Annotated[
-        Optional[str], typer.Option(..., help="deprecated and unused", hidden=True)
-    ] = None,
-    name: Annotated[str, typer.Option(..., help="deprecated", hidden=True)] = None,
     participant_name: Annotated[
         Optional[str],
         typer.Option(..., help="the participant name to be used by the callee"),
@@ -126,8 +123,6 @@ async def make_call(
         room=room,
         role=role,
         local=local,
-        agent_name=agent_name,
-        name=name,
         participant_name=participant_name,
         url=url,
         arguments=arguments,
@@ -142,10 +137,6 @@ async def _make_call(
     room: RoomOption,
     role: str = "agent",
     local: Optional[bool] = None,
-    agent_name: Annotated[
-        Optional[str], typer.Option(..., help="deprecated and unused", hidden=True)
-    ] = None,
-    name: Annotated[str, typer.Option(..., help="deprecated", hidden=True)] = None,
     participant_name: Annotated[
         Optional[str],
         typer.Option(..., help="the participant name to be used by the callee"),
@@ -162,15 +153,6 @@ async def _make_call(
     Instruct an agent to 'call' a given URL with specific arguments.
 
     """
-    if name is not None:
-        print("[yellow]name is deprecated and should no longer be passed[/yellow]")
-
-    if agent_name is not None:
-        print(
-            "[yellow]agent-name is deprecated and should no longer be passed, use participant-name instead[/yellow]"
-        )
-        participant_name = agent_name
-
     if participant_name is None:
         print("[red]--participant-name is required[/red]")
         raise typer.Exit(1)
@@ -182,13 +164,18 @@ async def _make_call(
         room = resolve_room(room)
 
         if token is None:
-            token = ParticipantToken(
-                name=participant_name,
-            )
-            token.add_api_grant(permissions or ApiScope.agent_default())
-            token.add_role_grant(role=role)
-            token.add_room_grant(room)
-            token.grants.append(ParticipantGrant(name="tunnel_ports", scope="9000"))
+            jwt = os.getenv("MESHAGENT_TOKEN")
+            if jwt is None:
+                token = ParticipantToken(
+                    name=participant_name,
+                )
+                token.add_api_grant(permissions or ApiScope.agent_default())
+                token.add_role_grant(role=role)
+                token.add_room_grant(room)
+                token.grants.append(ParticipantGrant(name="tunnel_ports", scope="9000"))
+                jwt = token.to_jwt(api_key=key)
+        else:
+            jwt = token.to_jwt(api_key=key)
 
         if local is None:
             local = is_local_url(url)
@@ -199,7 +186,7 @@ async def _make_call(
                 data = {
                     "room_url": websocket_room_url(room_name=room),
                     "room_name": room,
-                    "token": token.to_jwt(api_key=key),
+                    "token": jwt,
                     "arguments": json.loads(arguments)
                     if isinstance(arguments, str)
                     else arguments,
@@ -215,7 +202,7 @@ async def _make_call(
                     url=websocket_room_url(
                         room_name=room, base_url=meshagent_base_url()
                     ),
-                    token=token.to_jwt(api_key=key),
+                    token=jwt,
                 )
             ) as client:
                 print("[bold green]Making agent call...[/bold green]")

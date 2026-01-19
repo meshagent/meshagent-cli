@@ -1,5 +1,6 @@
 import typer
 import json
+import os
 from rich import print
 from typing import Annotated, Optional
 from meshagent.tools import Toolkit
@@ -76,7 +77,6 @@ app = async_typer.AsyncTyper(help="Join a taskrunner to a room")
 def build_task_runner(
     *,
     model: str,
-    agent_name: str,
     rule: List[str],
     toolkit: List[str],
     schema: List[str],
@@ -109,6 +109,7 @@ def build_task_runner(
     title: Optional[str] = None,
     description: Optional[str] = None,
     shell_image: Optional[str] = None,
+    delegate_shell_token: Optional[bool] = None,
 ):
     output_schema = None
     if output_schema_str is not None:
@@ -164,7 +165,6 @@ def build_task_runner(
         def __init__(self):
             super().__init__(
                 llm_adapter=llm_adapter,
-                name=agent_name,
                 requires=requirements,
                 toolkits=toolkits,
                 rules=rule if len(rule) > 0 else None,
@@ -181,6 +181,14 @@ def build_task_runner(
             if room_rules_path is not None:
                 for p in room_rules_path:
                     await self._load_room_rules(path=p)
+
+        async def init_chat_context(self):
+            from meshagent.cli.helper import init_context_from_spec
+
+            context = await super().init_chat_context()
+            await init_context_from_spec(context)
+
+            return context
 
         async def _load_room_rules(
             self,
@@ -260,12 +268,17 @@ def build_task_runner(
                     )
                 )
 
+            env = {}
+            if delegate_shell_token:
+                env["MESHAGENT_TOKEN"] = self.room.protocol.token
+
             if require_shell:
                 providers.append(
                     ShellTool(
                         working_directory=working_directory,
                         config=ShellConfig(name="shell"),
                         image=shell_image or "python:3.13",
+                        env=env,
                     )
                 )
 
@@ -379,12 +392,14 @@ def build_task_runner(
 
 
 @app.async_command("join")
-async def make_call(
+async def join(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
     role: str = "agent",
-    agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
+    agent_name: Annotated[
+        Optional[str], typer.Option(..., help="Name of the agent to call")
+    ] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     room_rules: Annotated[
         List[str],
@@ -480,6 +495,10 @@ async def make_call(
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Delegate the room token to shell tools"),
+    ] = False,
     key: Annotated[
         str,
         typer.Option("--key", help="an api key to sign the token with"),
@@ -517,16 +536,24 @@ async def make_call(
         project_id = await resolve_project_id(project_id=project_id)
         room = resolve_room(room)
 
-        token = ParticipantToken(
-            name=agent_name,
-        )
+        jwt = os.getenv("MESHAGENT_TOKEN")
+        if jwt is None:
+            if agent_name is None:
+                print(
+                    "[bold red]--agent-name must be specified when the MESHAGENT_TOKEN environment variable is not set[/bold red]"
+                )
+                raise typer.Exit(1)
 
-        token.add_api_grant(ApiScope.agent_default())
+            token = ParticipantToken(
+                name=agent_name,
+            )
 
-        token.add_role_grant(role=role)
-        token.add_room_grant(room)
+            token.add_api_grant(ApiScope.agent_default())
 
-        jwt = token.to_jwt(api_key=key)
+            token.add_role_grant(role=role)
+            token.add_room_grant(room)
+
+            jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
         async with RoomClient(
@@ -550,7 +577,6 @@ async def make_call(
                 local_shell=local_shell,
                 shell=shell,
                 apply_patch=apply_patch,
-                agent_name=agent_name,
                 rule=rule,
                 toolkit=toolkit,
                 schema=schema,
@@ -573,6 +599,7 @@ async def make_call(
                 require_document_authoring=require_document_authoring,
                 require_discovery=require_discovery,
                 working_directory=working_directory,
+                delegate_shell_token=delegate_shell_token,
                 llm_participant=llm_participant,
                 output_schema_str=output_schema,
                 output_schema_path=output_schema_path,
@@ -685,6 +712,10 @@ async def service(
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Delegate the room token to shell tools"),
+    ] = False,
     require_document_authoring: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable document authoring", hidden=True),
@@ -739,7 +770,6 @@ async def service(
             local_shell=local_shell,
             shell=shell,
             apply_patch=apply_patch,
-            agent_name=agent_name,
             title=title,
             description=description,
             rule=rule,
@@ -762,6 +792,7 @@ async def service(
             require_read_only_storage=require_read_only_storage,
             room_rules_path=room_rules,
             working_directory=working_directory,
+            delegate_shell_token=delegate_shell_token,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
             llm_participant=llm_participant,

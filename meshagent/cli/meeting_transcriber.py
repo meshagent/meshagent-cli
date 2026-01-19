@@ -12,7 +12,7 @@ from meshagent.cli.helper import (
     resolve_room,
     resolve_key,
 )
-
+import os
 from meshagent.api import RequiredSchema
 from meshagent.api.services import ServiceHost
 
@@ -24,7 +24,9 @@ async def join(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
-    agent_name: Annotated[str, typer.Option(..., help="Name of the agent")],
+    agent_name: Annotated[
+        Optional[str], typer.Option(..., help="Name of the agent")
+    ] = None,
     key: Annotated[
         str,
         typer.Option("--key", help="an api key to sign the token with"),
@@ -47,16 +49,24 @@ async def join(
         project_id = await resolve_project_id(project_id=project_id)
         room = resolve_room(room)
 
-        token = ParticipantToken(
-            name=agent_name,
-        )
+        jwt = os.getenv("MESHAGENT_TOKEN")
+        if jwt is None:
+            if agent_name is None:
+                print(
+                    "[bold red]--agent-name must be specified when the MESHAGENT_TOKEN environment variable is not set[/bold red]"
+                )
+                raise typer.Exit(1)
 
-        token.add_api_grant(ApiScope.agent_default())
+            token = ParticipantToken(
+                name=agent_name,
+            )
 
-        token.add_role_grant(role="agent")
-        token.add_room_grant(room)
+            token.add_api_grant(ApiScope.agent_default())
 
-        jwt = token.to_jwt(api_key=key)
+            token.add_role_grant(role="agent")
+            token.add_room_grant(room)
+
+            jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
         async with RoomClient(
@@ -70,7 +80,6 @@ async def join(
             requirements.append(RequiredSchema(name="transcript"))
 
             bot = MeetingTranscriber(
-                name=agent_name,
                 requires=requirements,
             )
 
@@ -123,7 +132,6 @@ async def service(
     class CustomMeetingTranscriber(MeetingTranscriber):
         def __init__(self):
             super().__init__(
-                name=agent_name,
                 requires=requirements,
             )
 

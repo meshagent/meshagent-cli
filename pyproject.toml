@@ -16,6 +16,7 @@ dependencies = [
   "art~=6.5",
   "pydantic-yaml~=1.5",
   "pathspec~=0.12.1",
+  
 ]
 
 dynamic = ["version", "readme"]
@@ -30,7 +31,8 @@ all = [
   "meshagent-anthropic~=0.21.0",
   "meshagent-mcp~=0.21.0",
   "meshagent-tools~=0.21.0",
-  "supabase-auth~=2.22.3"
+  "supabase-auth~=2.22.3",
+  "prompt-toolkit~=3.0.52"
 ]
 
 mcp-service = [

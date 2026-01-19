@@ -7,8 +7,14 @@ from typing import Optional
 from meshagent.cli import auth_async
 from meshagent.cli import async_typer
 from meshagent.api.helpers import meshagent_base_url
+from meshagent.api.specs.service import ServiceSpec
+from meshagent.agents.context import AgentChatContext
 from meshagent.api.client import Meshagent, RoomConnectionInfo
 import os
+import aiofiles
+from pydantic_yaml import parse_yaml_raw_as
+import json
+
 from rich import print
 
 SETTINGS_FILE = Path.home() / ".meshagent" / "project.json"
@@ -61,6 +67,8 @@ async def set_active_api_key(project_id: str, key: str):
 
 async def get_active_api_key(project_id: str):
     settings = _load_settings()
+    if settings is None:
+        return None
     key: str = settings.active_api_keys.get(project_id)
     # Ignore old keys, API key format changed
     if key is not None and key.startswith("ma-"):
@@ -76,7 +84,7 @@ class CustomMeshagentClient(Meshagent):
     async def connect_room(self, *, project_id: str, room: str) -> RoomConnectionInfo:
         from urllib.parse import quote
 
-        jwt = os.getenv("MESHAGENT_SESSION_TOKEN")
+        jwt = os.getenv("MESHAGENT_TOKEN")
 
         if jwt is not None and room == os.getenv("MESHAGENT_ROOM"):
             return RoomConnectionInfo(
@@ -151,6 +159,32 @@ async def resolve_project_id(project_id: Optional[str] = None):
     return project_id
 
 
+async def init_context_from_spec(context: AgentChatContext) -> None:
+    path = os.getenv("MESHAGENT_SPEC_PATH")
+
+    if path is None:
+        return None
+
+    async with aiofiles.open(path, "r") as file:
+        spec_str = await file.read()
+        try:
+            json.loads(spec_str)
+            spec = ServiceSpec.model_validate_json(spec_str)
+        except ValueError:
+            # fallback on yaml parser if spec can't
+            spec = parse_yaml_raw_as(ServiceSpec, spec_str)
+
+        readme = spec.metadata.annotations.get("meshagent.service.readme")
+
+        if spec.metadata.description:
+            context.append_assistant_message(
+                f"This agent's description:\n{spec.metadata.description}"
+            )
+
+        if readme is not None:
+            context.append_assistant_message(f"This agent's README:\n{readme}")
+
+
 async def resolve_key(project_id: str | None, key: str | None):
     project_id = await resolve_project_id(project_id=project_id)
     if key is None:
@@ -159,7 +193,7 @@ async def resolve_key(project_id: str | None, key: str | None):
     if key is None:
         key = os.getenv("MESHAGENT_API_KEY")
 
-    if key is None:
+    if key is None and os.getenv("MESHAGENT_TOKEN") is None:
         print(
             "[red]--key is required if MESHAGENT_API_KEY is not set. You can use meshagent api-key create to create a new api key."
         )

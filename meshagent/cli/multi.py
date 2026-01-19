@@ -21,34 +21,40 @@ from meshagent.cli.helper import (
     resolve_room,
     resolve_key,
 )
-from meshagent.api import (
-    ParticipantToken,
-    ApiScope,
-)
 from aiohttp import ClientResponseError
 import asyncio
 
-from meshagent.api.keys import parse_api_key
 
 from meshagent.cli.chatbot import service as chatbot_service
 from meshagent.cli.worker import service as worker_service
 from meshagent.cli.mailbot import service as mailbot_service
 from meshagent.cli.voicebot import service as voicebot_service
 
+from meshagent.cli.chatbot import join as chatbot_join
+from meshagent.cli.worker import join as worker_join
+from meshagent.cli.mailbot import join as mailbot_join
+from meshagent.cli.voicebot import join as voicebot_join
+
 import yaml
 
 
 app = async_typer.AsyncTyper(help="Connect agents and tools to a room")
 
-cli = async_typer.AsyncTyper(help="Add agents to a team")
+cli_service = async_typer.AsyncTyper(help="Add agents to a team")
 
-cli.command("chatbot")(chatbot_service)
-cli.command("worker")(worker_service)
-cli.command("mailbot")(mailbot_service)
-cli.command("voicebot")(voicebot_service)
+cli_service.command("chatbot")(chatbot_service)
+cli_service.command("worker")(worker_service)
+cli_service.command("mailbot")(mailbot_service)
+cli_service.command("voicebot")(voicebot_service)
+
+cli_join = async_typer.AsyncTyper(help="Add agents to a team")
+cli_join.command("chatbot")(chatbot_join)
+cli_join.command("worker")(worker_join)
+cli_join.command("mailbot")(mailbot_join)
+cli_join.command("voicebot")(voicebot_join)
 
 
-@cli.async_command("python")
+@cli_service.async_command("python")
 async def python(
     *,
     module: str,
@@ -120,7 +126,7 @@ def build_spec(
     ] = None,
 ):
     for c in command.split(";"):
-        if execute_via_root(cli, c, prog_name="meshagent") != 0:
+        if execute_via_root(cli_service, c, prog_name="meshagent") != 0:
             print(f"[red]{c} failed[/red]")
             raise typer.Exit(1)
 
@@ -271,7 +277,7 @@ async def host(
     set_deferred(True)
 
     for c in command.split(";"):
-        if execute_via_root(cli, c, prog_name="meshagent") != 0:
+        if execute_via_root(cli_service, c, prog_name="meshagent") != 0:
             print(f"[red]{c} failed[/red]")
             raise typer.Exit(1)
 
@@ -320,7 +326,7 @@ async def join(
     set_deferred(True)
 
     for c in command.split(";"):
-        if execute_via_root(cli, c, prog_name="meshagent") != 0:
+        if execute_via_root(cli_join, c, prog_name="meshagent") != 0:
             print(f"[red]{c} failed[/red]")
             raise typer.Exit(1)
 
@@ -349,14 +355,6 @@ async def join(
             raise typer.Exit(1)
 
         try:
-            parsed_key = parse_api_key(key)
-            token = ParticipantToken(
-                name="cli", project_id=project_id, api_key_id=parsed_key.id
-            )
-            token.add_api_grant(ApiScope.agent_default())
-            token.add_role_grant("user")
-            token.add_room_grant(room)
-
             print("[bold green]Connecting to room...[/bold green]")
 
             run_tasks = []

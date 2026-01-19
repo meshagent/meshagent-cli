@@ -1,6 +1,7 @@
 import typer
 from meshagent.cli import async_typer
 from rich import print
+import os
 
 from meshagent.api import ParticipantToken
 from typing import Annotated, Optional
@@ -65,7 +66,6 @@ app = async_typer.AsyncTyper(help="Join a mailbot to a room")
 def build_mailbot(
     *,
     model: str,
-    agent_name: str,
     rule: List[str],
     toolkit: List[str],
     schema: List[str],
@@ -77,7 +77,7 @@ def build_mailbot(
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
     toolkit_name: Optional[str] = None,
-    queue: str,
+    queue: Optional[str] = None,
     email_address: str,
     room_rules_paths: list[str],
     whitelist=list[str],
@@ -97,9 +97,10 @@ def build_mailbot(
     skill_dirs: Optional[list[str]] = None,
     shell_image: Optional[str] = None,
     llm_participant: Optional[str] = None,
+    delegate_shell_token: Optional[bool] = None,
     log_llm_requests: Optional[bool] = None,
 ):
-    from meshagent.agents.mail import MailWorker
+    from meshagent.agents.mail import MailBot
 
     if (require_storage or require_read_only_storage) and len(whitelist) == 0:
         logger.warning(
@@ -123,7 +124,7 @@ def build_mailbot(
         except FileNotFoundError:
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
 
-    BaseClass = MailWorker
+    BaseClass = MailBot
     if llm_participant:
         llm_adapter = MessageStreamLLMAdapter(
             participant_name=llm_participant,
@@ -163,7 +164,6 @@ def build_mailbot(
         def __init__(self):
             super().__init__(
                 llm_adapter=llm_adapter,
-                name=agent_name,
                 requires=requirements,
                 toolkits=toolkits,
                 queue=queue,
@@ -175,6 +175,14 @@ def build_mailbot(
                 enable_attachments=enable_attachments,
                 skill_dirs=skill_dirs,
             )
+
+        async def init_chat_context(self):
+            from meshagent.cli.helper import init_context_from_spec
+
+            context = await super().init_chat_context()
+            await init_context_from_spec(context)
+
+            return context
 
         async def start(self, *, room: RoomClient):
             print(
@@ -238,12 +246,17 @@ def build_mailbot(
                     LocalShellTool(thread_context=thread_context)
                 )
 
+            env = {}
+            if delegate_shell_token:
+                env["MESHAGENT_TOKEN"] = self.room.protocol.token
+
             if require_shell:
                 thread_toolkit.tools.append(
                     ShellTool(
                         working_directory=working_directory,
                         config=ShellConfig(name="shell"),
                         image=shell_image or "python:3.13",
+                        env=env,
                     )
                 )
 
@@ -323,12 +336,14 @@ def build_mailbot(
 
 
 @app.async_command("join")
-async def make_call(
+async def join(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
     role: str = "agent",
-    agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
+    agent_name: Annotated[
+        Optional[str], typer.Option(..., help="Name of the agent to call")
+    ] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[str] = None,
     require_toolkit: Annotated[
@@ -372,7 +387,9 @@ async def make_call(
         str,
         typer.Option("--key", help="an api key to sign the token with"),
     ] = None,
-    queue: Annotated[str, typer.Option(..., help="the name of the mail queue")],
+    queue: Annotated[
+        Optional[str], typer.Option(..., help="the name of the mail queue")
+    ] = None,
     email_address: Annotated[
         str, typer.Option(..., help="the email address of the agent")
     ],
@@ -458,6 +475,10 @@ async def make_call(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Delegate the room token to shell tools"),
+    ] = False,
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -471,16 +492,24 @@ async def make_call(
 
         room = resolve_room(room)
 
-        token = ParticipantToken(
-            name=agent_name,
-        )
+        jwt = os.getenv("MESHAGENT_TOKEN")
+        if jwt is None:
+            if agent_name is None:
+                print(
+                    "[bold red]--agent-name must be specified when the MESHAGENT_TOKEN environment variable is not set[/bold red]"
+                )
+                raise typer.Exit(1)
 
-        token.add_api_grant(ApiScope.agent_default(tunnels=require_computer_use))
+            token = ParticipantToken(
+                name=agent_name,
+            )
 
-        token.add_role_grant(role=role)
-        token.add_room_grant(room)
+            token.add_api_grant(ApiScope.agent_default(tunnels=require_computer_use))
 
-        jwt = token.to_jwt(api_key=key)
+            token.add_role_grant(role=role)
+            token.add_room_grant(room)
+
+            jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
         async with RoomClient(
@@ -493,7 +522,6 @@ async def make_call(
                 computer_use=None,
                 model=model,
                 local_shell=require_local_shell,
-                agent_name=agent_name,
                 rule=rule,
                 schema=require_schema + schema,
                 toolkit=require_toolkit + toolkit,
@@ -521,6 +549,7 @@ async def make_call(
                 skill_dirs=skill_dir,
                 shell_image=shell_image,
                 llm_participant=llm_participant,
+                delegate_shell_token=delegate_shell_token,
                 log_llm_requests=log_llm_requests,
             )
 
@@ -595,7 +624,9 @@ async def service(
     path: Annotated[
         Optional[str], typer.Option(help="HTTP path to mount the service at")
     ] = None,
-    queue: Annotated[str, typer.Option(..., help="the name of the mail queue")],
+    queue: Annotated[
+        Optional[str], typer.Option(..., help="the name of the mail queue")
+    ] = None,
     email_address: Annotated[
         str, typer.Option(..., help="the email address of the agent")
     ],
@@ -681,6 +712,10 @@ async def service(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Delegate the room token to shell tools"),
+    ] = False,
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -707,7 +742,6 @@ async def service(
             model=model,
             local_shell=require_local_shell,
             web_search=require_web_search,
-            agent_name=agent_name,
             rule=rule,
             schema=require_schema + schema,
             toolkit=require_toolkit + toolkit,
@@ -733,6 +767,7 @@ async def service(
             skill_dirs=skill_dir,
             shell_image=shell_image,
             llm_participant=llm_participant,
+            delegate_shell_token=delegate_shell_token,
             log_llm_requests=log_llm_requests,
         ),
     )
@@ -805,7 +840,9 @@ async def spec(
     path: Annotated[
         Optional[str], typer.Option(help="HTTP path to mount the service at")
     ] = None,
-    queue: Annotated[str, typer.Option(..., help="the name of the mail queue")],
+    queue: Annotated[
+        Optional[str], typer.Option(..., help="the name of the mail queue")
+    ] = None,
     email_address: Annotated[
         str, typer.Option(..., help="the email address of the agent")
     ],
@@ -891,6 +928,10 @@ async def spec(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Delegate the room token to shell tools"),
+    ] = False,
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -917,7 +958,6 @@ async def spec(
             model=model,
             local_shell=require_local_shell,
             web_search=require_web_search,
-            agent_name=agent_name,
             rule=rule,
             schema=require_schema + schema,
             toolkit=require_toolkit + toolkit,
@@ -943,6 +983,7 @@ async def spec(
             skill_dirs=skill_dir,
             shell_image=shell_image,
             llm_participant=llm_participant,
+            delegate_shell_token=delegate_shell_token,
             log_llm_requests=log_llm_requests,
         ),
     )
@@ -1028,7 +1069,9 @@ async def deploy(
     path: Annotated[
         Optional[str], typer.Option(help="HTTP path to mount the service at")
     ] = None,
-    queue: Annotated[str, typer.Option(..., help="the name of the mail queue")],
+    queue: Annotated[
+        Optional[str], typer.Option(..., help="the name of the mail queue")
+    ] = None,
     email_address: Annotated[
         str, typer.Option(..., help="the email address of the agent")
     ],
@@ -1114,6 +1157,10 @@ async def deploy(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Delegate the room token to shell tools"),
+    ] = False,
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -1147,7 +1194,6 @@ async def deploy(
             model=model,
             local_shell=require_local_shell,
             web_search=require_web_search,
-            agent_name=agent_name,
             rule=rule,
             schema=require_schema + schema,
             toolkit=require_toolkit + toolkit,
@@ -1173,6 +1219,7 @@ async def deploy(
             skill_dirs=skill_dir,
             shell_image=shell_image,
             llm_participant=llm_participant,
+            delegate_shell_token=delegate_shell_token,
             log_llm_requests=log_llm_requests,
         ),
     )
