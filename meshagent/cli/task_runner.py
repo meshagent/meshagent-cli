@@ -31,6 +31,7 @@ from meshagent.cli.helper import (
     resolve_project_id,
     resolve_room,
     resolve_key,
+    cleanup_args,
 )
 
 from meshagent.openai import OpenAIResponsesAdapter
@@ -58,16 +59,23 @@ from meshagent.openai.tools.responses_adapter import (
     ImageGenerationTool,
 )
 
+from meshagent.cli.host import get_service, run_services, get_deferred, service_specs
 from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
 from meshagent.agents.adapter import MessageStreamLLMAdapter
 from meshagent.agents.context import AgentCallContext
 
 from meshagent.api import RequiredToolkit, RequiredSchema
-from meshagent.api.services import ServiceHost
+from meshagent.api.specs.service import AgentSpec, ANNOTATION_AGENT_TYPE
 import logging
 import os.path
 
 from urllib.request import urlopen
+
+import yaml
+import shlex
+import sys
+
+from meshagent.api.client import ConflictError
 
 logger = logging.getLogger("taskrunner")
 
@@ -744,8 +752,8 @@ async def service(
         Optional[int], typer.Option(help="Port to bind the service on")
     ] = None,
     path: Annotated[
-        str, typer.Option(help="HTTP path to mount the service at")
-    ] = "/agent",
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
     output_schema: Annotated[
         Optional[str],
         typer.Option(..., help="an output schema to use", hidden=True),
@@ -769,8 +777,20 @@ async def service(
 ):
     print("[bold green]Connecting to room...[/bold green]", flush=True)
 
-    service = ServiceHost(host=host, port=port)
+    service = get_service(host=host, port=port)
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "TaskRunner"})
+    )
+
     service.add_path(
+        identity=agent_name,
         path=path,
         cls=build_task_runner(
             model=model,
@@ -809,4 +829,489 @@ async def service(
         ),
     )
 
-    await service.run()
+    if not get_deferred():
+        await run_services()
+
+
+@app.async_command("spec")
+async def spec(
+    *,
+    service_name: Annotated[str, typer.Option("--service-name", help="service name")],
+    service_description: Annotated[
+        Optional[str], typer.Option("--service-description", help="service description")
+    ] = None,
+    service_title: Annotated[
+        Optional[str],
+        typer.Option("--service-title", help="a display name for the service"),
+    ] = None,
+    agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
+    rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
+    rules_file: Optional[str] = None,
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="a path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
+    toolkit: Annotated[
+        List[str],
+        typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
+    ] = [],
+    schema: Annotated[
+        List[str],
+        typer.Option("--schema", "-s", help="the name or url of a required schema"),
+    ] = [],
+    model: Annotated[
+        str, typer.Option(..., help="Name of the LLM model to use for the task runner")
+    ] = "gpt-5.2",
+    image_generation: Annotated[
+        Optional[str], typer.Option(..., help="Name of an image gen model")
+    ] = None,
+    local_shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
+    ] = False,
+    shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable function shell tool calling")
+    ] = False,
+    apply_patch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable apply patch tool")
+    ] = False,
+    web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    mcp: Annotated[
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
+    ] = False,
+    storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
+    ] = False,
+    require_image_generation: Annotated[
+        Optional[str], typer.Option(..., help="Name of an image gen model", hidden=True)
+    ] = None,
+    require_local_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable local shell tool calling", hidden=True),
+    ] = False,
+    require_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable function shell tool calling", hidden=True),
+    ] = False,
+    require_apply_patch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable apply patch tool", hidden=True)
+    ] = False,
+    require_web_search: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable web search tool calling", hidden=True),
+    ] = False,
+    require_mcp: Annotated[
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling", hidden=True)
+    ] = False,
+    require_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
+    ] = False,
+    require_table_read: Annotated[
+        list[str],
+        typer.Option(
+            ..., help="Enable table read tools for a specific table", hidden=True
+        ),
+    ] = [],
+    require_table_write: Annotated[
+        list[str],
+        typer.Option(
+            ..., help="Enable table write tools for a specific table", hidden=True
+        ),
+    ] = [],
+    require_read_only_storage: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable read only storage toolkit", hidden=True),
+    ] = False,
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="The default working directory for shell commands"),
+    ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Delegate the room token to shell tools"),
+    ] = False,
+    require_document_authoring: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable document authoring", hidden=True),
+    ] = False,
+    require_discovery: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable discovery of agents and tools", hidden=True),
+    ] = False,
+    llm_participant: Annotated[
+        Optional[str],
+        typer.Option(
+            ..., help="Delegate LLM interactions to a remote participant", hidden=True
+        ),
+    ] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
+    output_schema: Annotated[
+        Optional[str],
+        typer.Option(..., help="an output schema to use", hidden=True),
+    ] = None,
+    output_schema_path: Annotated[
+        Optional[str],
+        typer.Option(..., help="the path or url to output schema to use", hidden=True),
+    ] = None,
+    annotations: Annotated[
+        str,
+        typer.Option(
+            "--annotations", "-a", help='annotations in json format {"name":"value"}'
+        ),
+    ] = '{"meshagent.task-runner.attachment-format":"tar"}',
+    title: Annotated[
+        Optional[str], typer.Option(..., help="a friendly name for the task runner")
+    ] = None,
+    description: Annotated[
+        Optional[str], typer.Option(..., help="a description for the task runner")
+    ] = None,
+):
+    service = get_service(host=host, port=port)
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "TaskRunner"})
+    )
+
+    service.add_path(
+        identity=agent_name,
+        path=path,
+        cls=build_task_runner(
+            model=model,
+            local_shell=local_shell,
+            shell=shell,
+            apply_patch=apply_patch,
+            title=title,
+            description=description,
+            rule=rule,
+            toolkit=toolkit,
+            schema=schema,
+            rules_file=rules_file,
+            web_search=web_search,
+            image_generation=image_generation,
+            mcp=mcp,
+            storage=storage,
+            require_web_search=require_web_search,
+            require_shell=require_shell,
+            require_apply_patch=require_apply_patch,
+            require_local_shell=require_local_shell,
+            require_image_generation=require_image_generation,
+            require_mcp=require_mcp,
+            require_storage=require_storage,
+            require_table_write=require_table_write,
+            require_table_read=require_table_read,
+            require_read_only_storage=require_read_only_storage,
+            room_rules_path=room_rules,
+            working_directory=working_directory,
+            delegate_shell_token=delegate_shell_token,
+            require_document_authoring=require_document_authoring,
+            require_discovery=require_discovery,
+            llm_participant=llm_participant,
+            output_schema_str=output_schema,
+            output_schema_path=output_schema_path,
+            annotations=json.loads(annotations) if annotations != "" else {},
+        ),
+    )
+
+    spec = service_specs()[0]
+    spec.metadata.annotations = {
+        "meshagent.service.id": service_name,
+    }
+
+    spec.metadata.name = service_name
+    spec.metadata.description = service_description
+    spec.container.image = (
+        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
+    )
+    spec.container.command = shlex.join(
+        ["meshagent", "task-runner", "service", *cleanup_args(sys.argv[2:])]
+    )
+
+    print(yaml.dump(spec.model_dump(mode="json", exclude_none=True), sort_keys=False))
+
+
+@app.async_command("deploy")
+async def deploy(
+    *,
+    service_name: Annotated[str, typer.Option("--service-name", help="service name")],
+    service_description: Annotated[
+        Optional[str], typer.Option("--service-description", help="service description")
+    ] = None,
+    service_title: Annotated[
+        Optional[str],
+        typer.Option("--service-title", help="a display name for the service"),
+    ] = None,
+    agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
+    rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
+    rules_file: Optional[str] = None,
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="a path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
+    toolkit: Annotated[
+        List[str],
+        typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
+    ] = [],
+    schema: Annotated[
+        List[str],
+        typer.Option("--schema", "-s", help="the name or url of a required schema"),
+    ] = [],
+    model: Annotated[
+        str, typer.Option(..., help="Name of the LLM model to use for the task runner")
+    ] = "gpt-5.2",
+    image_generation: Annotated[
+        Optional[str], typer.Option(..., help="Name of an image gen model")
+    ] = None,
+    local_shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
+    ] = False,
+    shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable function shell tool calling")
+    ] = False,
+    apply_patch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable apply patch tool")
+    ] = False,
+    web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    mcp: Annotated[
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
+    ] = False,
+    storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
+    ] = False,
+    require_image_generation: Annotated[
+        Optional[str], typer.Option(..., help="Name of an image gen model", hidden=True)
+    ] = None,
+    require_local_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable local shell tool calling", hidden=True),
+    ] = False,
+    require_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable function shell tool calling", hidden=True),
+    ] = False,
+    require_apply_patch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable apply patch tool", hidden=True)
+    ] = False,
+    require_web_search: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable web search tool calling", hidden=True),
+    ] = False,
+    require_mcp: Annotated[
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling", hidden=True)
+    ] = False,
+    require_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
+    ] = False,
+    require_table_read: Annotated[
+        list[str],
+        typer.Option(
+            ..., help="Enable table read tools for a specific table", hidden=True
+        ),
+    ] = [],
+    require_table_write: Annotated[
+        list[str],
+        typer.Option(
+            ..., help="Enable table write tools for a specific table", hidden=True
+        ),
+    ] = [],
+    require_read_only_storage: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable read only storage toolkit", hidden=True),
+    ] = False,
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="The default working directory for shell commands"),
+    ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Delegate the room token to shell tools"),
+    ] = False,
+    require_document_authoring: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable document authoring", hidden=True),
+    ] = False,
+    require_discovery: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable discovery of agents and tools", hidden=True),
+    ] = False,
+    llm_participant: Annotated[
+        Optional[str],
+        typer.Option(
+            ..., help="Delegate LLM interactions to a remote participant", hidden=True
+        ),
+    ] = None,
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
+    output_schema: Annotated[
+        Optional[str],
+        typer.Option(..., help="an output schema to use", hidden=True),
+    ] = None,
+    output_schema_path: Annotated[
+        Optional[str],
+        typer.Option(..., help="the path or url to output schema to use", hidden=True),
+    ] = None,
+    annotations: Annotated[
+        str,
+        typer.Option(
+            "--annotations", "-a", help='annotations in json format {"name":"value"}'
+        ),
+    ] = '{"meshagent.task-runner.attachment-format":"tar"}',
+    title: Annotated[
+        Optional[str], typer.Option(..., help="a friendly name for the task runner")
+    ] = None,
+    description: Annotated[
+        Optional[str], typer.Option(..., help="a description for the task runner")
+    ] = None,
+    project_id: ProjectIdOption,
+    room: Annotated[
+        Optional[str],
+        typer.Option("--room", help="The name of a room to create the service for"),
+    ] = None,
+):
+    project_id = await resolve_project_id(project_id=project_id)
+
+    service = get_service(host=host, port=port)
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "TaskRunner"})
+    )
+
+    service.add_path(
+        identity=agent_name,
+        path=path,
+        cls=build_task_runner(
+            model=model,
+            local_shell=local_shell,
+            shell=shell,
+            apply_patch=apply_patch,
+            title=title,
+            description=description,
+            rule=rule,
+            toolkit=toolkit,
+            schema=schema,
+            rules_file=rules_file,
+            web_search=web_search,
+            image_generation=image_generation,
+            mcp=mcp,
+            storage=storage,
+            require_web_search=require_web_search,
+            require_shell=require_shell,
+            require_apply_patch=require_apply_patch,
+            require_local_shell=require_local_shell,
+            require_image_generation=require_image_generation,
+            require_mcp=require_mcp,
+            require_storage=require_storage,
+            require_table_write=require_table_write,
+            require_table_read=require_table_read,
+            require_read_only_storage=require_read_only_storage,
+            room_rules_path=room_rules,
+            working_directory=working_directory,
+            delegate_shell_token=delegate_shell_token,
+            require_document_authoring=require_document_authoring,
+            require_discovery=require_discovery,
+            llm_participant=llm_participant,
+            output_schema_str=output_schema,
+            output_schema_path=output_schema_path,
+            annotations=json.loads(annotations) if annotations != "" else {},
+        ),
+    )
+
+    spec = service_specs()[0]
+    spec.metadata.annotations = {
+        "meshagent.service.id": service_name,
+    }
+
+    spec.metadata.name = service_name
+    spec.metadata.description = service_description
+    spec.container.image = (
+        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
+    )
+    spec.container.command = shlex.join(
+        ["meshagent", "task-runner", "service", *cleanup_args(sys.argv[2:])]
+    )
+
+    client = await get_client()
+    try:
+        id = None
+        try:
+            if id is None:
+                if room is None:
+                    services = await client.list_services(project_id=project_id)
+                else:
+                    services = await client.list_room_services(
+                        project_id=project_id, room_name=room
+                    )
+
+                for s in services:
+                    if s.metadata.name == spec.metadata.name:
+                        id = s.id
+
+            if id is None:
+                if room is None:
+                    id = await client.create_service(
+                        project_id=project_id, service=spec
+                    )
+                else:
+                    id = await client.create_room_service(
+                        project_id=project_id, service=spec, room_name=room
+                    )
+
+            else:
+                spec.id = id
+                if room is None:
+                    await client.update_service(
+                        project_id=project_id, service_id=id, service=spec
+                    )
+                else:
+                    await client.update_room_service(
+                        project_id=project_id,
+                        service_id=id,
+                        service=spec,
+                        room_name=room,
+                    )
+
+        except ConflictError:
+            print(f"[red]Service name already in use: {spec.metadata.name}[/red]")
+            raise typer.Exit(code=1)
+        else:
+            print(f"[green]Deployed service:[/] {id}")
+
+    finally:
+        await client.close()
