@@ -10,20 +10,23 @@ import click
 import shlex
 
 from rich import print
-from meshagent.cli.call import _make_call
-import sys
+
+from meshagent.agents import Agent
 
 from typer.main import get_command
 
+from meshagent.cli.common_options import RoomOption
 from meshagent.cli.helper import (
     get_client,
     resolve_project_id,
-    resolve_room,
-    resolve_key,
 )
 from aiohttp import ClientResponseError
 import asyncio
 
+from meshagent.api import RoomClient
+
+from meshagent.api.helpers import meshagent_base_url, websocket_room_url
+from meshagent.api.websocket_protocol import WebSocketClientProtocol
 
 from meshagent.cli.chatbot import service as chatbot_service
 from meshagent.cli.worker import service as worker_service
@@ -312,12 +315,7 @@ async def join(
             ),
         ),
     ] = None,
-    room: Annotated[
-        Optional[str],
-        typer.Option(
-            help="A room name to test the service in (must not be currently running)"
-        ),
-    ] = None,
+    room: RoomOption,
     key: Annotated[
         str,
         typer.Option("--key", help="an api key to sign the token with"),
@@ -325,76 +323,35 @@ async def join(
 ):
     set_deferred(True)
 
+    if room is None:
+        print("[bold red]--room is required[/bold red]")
+        raise typer.Exit(-1)
+
     for c in command.split(";"):
-        if execute_via_root(cli_join, c, prog_name="meshagent") != 0:
-            print(f"[red]{c} failed[/red]")
-            raise typer.Exit(1)
+        execute_via_root(cli_join, c + f" --room={room}", prog_name="meshagent")
 
-    services_task = asyncio.create_task(run_services())
+    from meshagent.cli.host import agents
 
-    key = await resolve_key(project_id=project_id, key=key)
-
-    if port is None:
-        import socket
-
-        def find_free_port():
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(("", 0))  # Bind to a free port provided by the host.
-                s.listen(1)
-                return s.getsockname()[1]
-
-        port = find_free_port()
-
-    my_client = await get_client()
     try:
-        project_id = await resolve_project_id(project_id)
-        room = resolve_room(room)
 
-        if room is None:
-            print("[bold red]Room was not set[/bold red]")
-            raise typer.Exit(1)
+        async def run_agent(agent: Agent, jwt: str):
+            nonlocal room
 
-        try:
-            print("[bold green]Connecting to room...[/bold green]")
+            async with RoomClient(
+                protocol=WebSocketClientProtocol(
+                    url=websocket_room_url(
+                        room_name=room, base_url=meshagent_base_url()
+                    ),
+                    token=jwt,
+                )
+            ) as room:
+                await agent.start(room=room)
+                await room.protocol.wait_for_close()
+                await agent.stop()
 
-            run_tasks = []
+        await asyncio.gather(
+            *([asyncio.create_task(run_agent(agent, jwt)) for agent, jwt in agents])
+        )
 
-            for spec in service_specs():
-                sys.stdout.write("\n")
-
-                for p in spec.ports:
-                    print(f"[bold green]Connecting port {p.num}...[/bold green]")
-
-                    for endpoint in p.endpoints:
-                        print(
-                            f"[bold green]Connecting endpoint {endpoint.path}...[/bold green]"
-                        )
-
-                        run_tasks.append(
-                            asyncio.create_task(
-                                _make_call(
-                                    room=room,
-                                    project_id=project_id,
-                                    participant_name=endpoint.meshagent.identity,
-                                    url=f"http://localhost:{p.num}{endpoint.path}",
-                                    arguments={},
-                                    key=key,
-                                    permissions=endpoint.meshagent.api,
-                                )
-                            )
-                        )
-
-                await asyncio.gather(*run_tasks, services_task)
-
-        except ClientResponseError as exc:
-            if exc.status == 409:
-                print(f"[red]Room already in use: {room}[/red]")
-                raise typer.Exit(code=1)
-            raise
-
-        except Exception as e:
-            print(f"[red]{e}[/red]")
-            raise typer.Exit(code=1)
-
-    finally:
-        await my_client.close()
+    except KeyboardInterrupt:
+        pass
