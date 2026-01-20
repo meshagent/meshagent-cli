@@ -554,64 +554,70 @@ async def join(
             jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
-        async with RoomClient(
-            protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
-                token=jwt,
-            )
-        ) as client:
-            # Plug in your specific worker implementation here:
-            # from meshagent.agents.some_worker import SomeWorker
-            # WorkerBase = SomeWorker
-            from meshagent.agents.worker import Worker as WorkerBase  # default; replace
+        # Plug in your specific worker implementation here:
+        # from meshagent.agents.some_worker import SomeWorker
+        # WorkerBase = SomeWorker
+        from meshagent.agents.worker import Worker as WorkerBase  # default; replace
 
-            CustomWorker = build_worker(
-                WorkerBase=WorkerBase,
-                model=model,
-                rule=rule,
-                toolkit=require_toolkit + toolkit,
-                schema=require_schema + schema,
-                rules_file=rules_file,
-                room_rules_paths=room_rules,
-                queue=queue,
-                local_shell=local_shell,
-                shell=shell,
-                apply_patch=apply_patch,
-                image_generation=image_generation,
-                web_search=web_search,
-                mcp=mcp,
-                storage=storage,
-                require_local_shell=require_local_shell,
-                require_web_search=require_web_search,
-                require_shell=require_shell,
-                require_apply_patch=require_apply_patch,
-                toolkit_name=toolkit_name,
-                require_storage=require_storage,
-                require_read_only_storage=require_read_only_storage,
-                require_time=require_time,
-                require_uuid=require_uuid,
-                require_table_read=require_table_read,
-                require_table_write=require_table_write,
-                require_computer_use=require_computer_use,
-                database_namespace=[database_namespace] if database_namespace else None,
-                title=title,
-                description=description,
-                working_directory=working_directory,
-                skill_dirs=skill_dir,
-                shell_image=shell_image,
-                delegate_shell_token=delegate_shell_token,
-                log_llm_requests=log_llm_requests,
-                prompt=prompt,
-            )
+        CustomWorker = build_worker(
+            WorkerBase=WorkerBase,
+            model=model,
+            rule=rule,
+            toolkit=require_toolkit + toolkit,
+            schema=require_schema + schema,
+            rules_file=rules_file,
+            room_rules_paths=room_rules,
+            queue=queue,
+            local_shell=local_shell,
+            shell=shell,
+            apply_patch=apply_patch,
+            image_generation=image_generation,
+            web_search=web_search,
+            mcp=mcp,
+            storage=storage,
+            require_local_shell=require_local_shell,
+            require_web_search=require_web_search,
+            require_shell=require_shell,
+            require_apply_patch=require_apply_patch,
+            toolkit_name=toolkit_name,
+            require_storage=require_storage,
+            require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
+            require_table_read=require_table_read,
+            require_table_write=require_table_write,
+            require_computer_use=require_computer_use,
+            database_namespace=[database_namespace] if database_namespace else None,
+            title=title,
+            description=description,
+            working_directory=working_directory,
+            skill_dirs=skill_dir,
+            shell_image=shell_image,
+            delegate_shell_token=delegate_shell_token,
+            log_llm_requests=log_llm_requests,
+            prompt=prompt,
+        )
 
-            worker = CustomWorker()
-            await worker.start(room=client)
-            try:
-                await client.protocol.wait_for_close()
-            except KeyboardInterrupt:
-                await worker.stop()
+        worker = CustomWorker()
+
+        if get_deferred():
+            from meshagent.cli.host import agents
+
+            agents.append((worker, jwt))
+        else:
+            async with RoomClient(
+                protocol=WebSocketClientProtocol(
+                    url=websocket_room_url(
+                        room_name=room_name, base_url=meshagent_base_url()
+                    ),
+                    token=jwt,
+                )
+            ) as client:
+                await worker.start(room=client)
+                try:
+                    await client.protocol.wait_for_close()
+                except KeyboardInterrupt:
+                    await worker.stop()
 
     finally:
         await account_client.close()

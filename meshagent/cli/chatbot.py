@@ -649,64 +649,72 @@ async def join(
             jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
-        async with RoomClient(
-            protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-                token=jwt,
-            )
-        ) as client:
-            CustomChatbot = build_chatbot(
-                computer_use=computer_use,
-                require_computer_use=require_computer_use,
-                model=model,
-                rule=rule,
-                toolkit=require_toolkit + toolkit,
-                schema=require_schema + schema,
-                rules_file=rules_file,
-                local_shell=local_shell,
-                shell=shell,
-                apply_patch=apply_patch,
-                image_generation=image_generation,
-                web_search=web_search,
-                mcp=mcp,
-                storage=storage,
-                require_apply_patch=require_apply_patch,
-                require_web_search=require_web_search,
-                require_local_shell=require_local_shell,
-                require_shell=require_shell,
-                require_image_generation=require_image_generation,
-                require_mcp=require_mcp,
-                require_storage=require_storage,
-                require_table_read=require_table_read,
-                require_table_write=require_table_write,
-                require_read_only_storage=require_read_only_storage,
-                require_time=require_time,
-                require_uuid=require_uuid,
-                room_rules_path=room_rules,
-                require_document_authoring=require_document_authoring,
-                require_discovery=require_discovery,
-                working_directory=working_directory,
-                llm_participant=llm_participant,
-                always_reply=always_reply,
-                database_namespace=database_namespace,
-                skill_dirs=skill_dir,
-                shell_image=shell_image,
-                delegate_shell_token=delegate_shell_token,
-                log_llm_requests=log_llm_requests,
-            )
 
-            bot = CustomChatbot()
+        CustomChatbot = build_chatbot(
+            computer_use=computer_use,
+            require_computer_use=require_computer_use,
+            model=model,
+            rule=rule,
+            toolkit=require_toolkit + toolkit,
+            schema=require_schema + schema,
+            rules_file=rules_file,
+            local_shell=local_shell,
+            shell=shell,
+            apply_patch=apply_patch,
+            image_generation=image_generation,
+            web_search=web_search,
+            mcp=mcp,
+            storage=storage,
+            require_apply_patch=require_apply_patch,
+            require_web_search=require_web_search,
+            require_local_shell=require_local_shell,
+            require_shell=require_shell,
+            require_image_generation=require_image_generation,
+            require_mcp=require_mcp,
+            require_storage=require_storage,
+            require_table_read=require_table_read,
+            require_table_write=require_table_write,
+            require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
+            room_rules_path=room_rules,
+            require_document_authoring=require_document_authoring,
+            require_discovery=require_discovery,
+            working_directory=working_directory,
+            llm_participant=llm_participant,
+            always_reply=always_reply,
+            database_namespace=database_namespace,
+            skill_dirs=skill_dir,
+            shell_image=shell_image,
+            delegate_shell_token=delegate_shell_token,
+            log_llm_requests=log_llm_requests,
+        )
 
-            await bot.start(room=client)
-            try:
-                print(
-                    f"[bold green]Open the studio to interact with your agent: {meshagent_base_url().replace('api.', 'studio.')}/projects/{project_id}/rooms/{client.room_name}[/bold green]",
-                    flush=True,
+        bot = CustomChatbot()
+
+        if get_deferred():
+            from meshagent.cli.host import agents
+
+            agents.append((bot, jwt))
+        else:
+            async with RoomClient(
+                protocol=WebSocketClientProtocol(
+                    url=websocket_room_url(
+                        room_name=room, base_url=meshagent_base_url()
+                    ),
+                    token=jwt,
                 )
-                await client.protocol.wait_for_close()
-            except KeyboardInterrupt:
-                await bot.stop()
+            ) as client:
+                await bot.start(room=client)
+                try:
+                    print(
+                        f"[bold green]Open the studio to interact with your agent: {meshagent_base_url().replace('api.', 'studio.')}/projects/{project_id}/rooms/{client.room_name}[/bold green]",
+                        flush=True,
+                    )
+                    await client.protocol.wait_for_close()
 
+                except KeyboardInterrupt:
+                    await bot.stop()
     finally:
         await account_client.close()
 

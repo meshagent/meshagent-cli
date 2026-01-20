@@ -512,57 +512,64 @@ async def join(
             jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
-        async with RoomClient(
-            protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-                token=jwt,
-            )
-        ) as client:
-            CustomMailbot = build_mailbot(
-                computer_use=None,
-                model=model,
-                local_shell=require_local_shell,
-                rule=rule,
-                schema=require_schema + schema,
-                toolkit=require_toolkit + toolkit,
-                image_generation=None,
-                web_search=require_web_search,
-                rules_file=rules_file,
-                queue=queue,
-                email_address=email_address,
-                toolkit_name=toolkit_name,
-                room_rules_paths=room_rules,
-                whitelist=whitelist,
-                require_shell=require_shell,
-                require_apply_patch=require_apply_patch,
-                require_storage=require_storage,
-                require_read_only_storage=require_read_only_storage,
-                require_time=require_time,
-                require_uuid=require_uuid,
-                require_table_read=require_table_read,
-                require_table_write=require_table_write,
-                require_computer_use=require_computer_use,
-                reply_all=reply_all,
-                database_namespace=database_namespace,
-                enable_attachments=enable_attachments,
-                working_directory=working_directory,
-                skill_dirs=skill_dir,
-                shell_image=shell_image,
-                llm_participant=llm_participant,
-                delegate_shell_token=delegate_shell_token,
-                log_llm_requests=log_llm_requests,
-            )
+        CustomMailbot = build_mailbot(
+            computer_use=None,
+            model=model,
+            local_shell=require_local_shell,
+            rule=rule,
+            schema=require_schema + schema,
+            toolkit=require_toolkit + toolkit,
+            image_generation=None,
+            web_search=require_web_search,
+            rules_file=rules_file,
+            queue=queue,
+            email_address=email_address,
+            toolkit_name=toolkit_name,
+            room_rules_paths=room_rules,
+            whitelist=whitelist,
+            require_shell=require_shell,
+            require_apply_patch=require_apply_patch,
+            require_storage=require_storage,
+            require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
+            require_table_read=require_table_read,
+            require_table_write=require_table_write,
+            require_computer_use=require_computer_use,
+            reply_all=reply_all,
+            database_namespace=database_namespace,
+            enable_attachments=enable_attachments,
+            working_directory=working_directory,
+            skill_dirs=skill_dir,
+            shell_image=shell_image,
+            llm_participant=llm_participant,
+            delegate_shell_token=delegate_shell_token,
+            log_llm_requests=log_llm_requests,
+        )
 
-            bot = CustomMailbot()
+        bot = CustomMailbot()
 
-            await bot.start(room=client)
-            try:
-                print(
-                    flush=True,
+        if get_deferred():
+            from meshagent.cli.host import agents
+
+            agents.append((bot, jwt))
+        else:
+            async with RoomClient(
+                protocol=WebSocketClientProtocol(
+                    url=websocket_room_url(
+                        room_name=room, base_url=meshagent_base_url()
+                    ),
+                    token=jwt,
                 )
-                await client.protocol.wait_for_close()
-            except KeyboardInterrupt:
-                await bot.stop()
+            ) as client:
+                await bot.start(room=client)
+                try:
+                    print(
+                        flush=True,
+                    )
+                    await client.protocol.wait_for_close()
+                except KeyboardInterrupt:
+                    await bot.stop()
 
     finally:
         await account_client.close()

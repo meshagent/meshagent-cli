@@ -244,25 +244,32 @@ async def join(
             room_rules_paths=room_rules,
         )
 
+        bot = CustomVoiceBot()
+
         print("[bold green]Connecting to room...[/bold green]", flush=True)
-        async with RoomClient(
-            protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-                token=jwt,
-            )
-        ) as client:
-            bot = CustomVoiceBot()
+        if get_deferred():
+            from meshagent.cli.host import agents
 
-            await bot.start(room=client)
-
-            try:
-                print(
-                    f"[bold green]Open the studio to interact with your agent: {meshagent_base_url().replace('api.', 'studio.')}/projects/{project_id}/rooms/{client.room_name}[/bold green]",
-                    flush=True,
+            agents.append((bot, jwt))
+        else:
+            async with RoomClient(
+                protocol=WebSocketClientProtocol(
+                    url=websocket_room_url(
+                        room_name=room, base_url=meshagent_base_url()
+                    ),
+                    token=jwt,
                 )
-                await client.protocol.wait_for_close()
-            except KeyboardInterrupt:
-                await bot.stop()
+            ) as client:
+                await bot.start(room=client)
+
+                try:
+                    print(
+                        f"[bold green]Open the studio to interact with your agent: {meshagent_base_url().replace('api.', 'studio.')}/projects/{project_id}/rooms/{client.room_name}[/bold green]",
+                        flush=True,
+                    )
+                    await client.protocol.wait_for_close()
+                except KeyboardInterrupt:
+                    await bot.stop()
 
     finally:
         await account_client.close()

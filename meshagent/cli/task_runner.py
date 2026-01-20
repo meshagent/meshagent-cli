@@ -556,67 +556,74 @@ async def join(
             jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
-        async with RoomClient(
-            protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-                token=jwt,
-            )
-        ) as client:
-            requirements = []
+        requirements = []
 
-            for t in toolkit:
-                requirements.append(RequiredToolkit(name=t))
+        for t in toolkit:
+            requirements.append(RequiredToolkit(name=t))
 
-            for t in schema:
-                requirements.append(RequiredSchema(name=t))
+        for t in schema:
+            requirements.append(RequiredSchema(name=t))
 
-            CustomTaskRunner = build_task_runner(
-                title=title,
-                description=description,
-                model=model,
-                local_shell=local_shell,
-                shell=shell,
-                apply_patch=apply_patch,
-                rule=rule,
-                toolkit=toolkit,
-                schema=schema,
-                rules_file=rules_file,
-                image_generation=image_generation,
-                web_search=web_search,
-                mcp=mcp,
-                storage=storage,
-                require_apply_patch=require_apply_patch,
-                require_web_search=require_web_search,
-                require_local_shell=require_local_shell,
-                require_shell=require_shell,
-                require_image_generation=require_image_generation,
-                require_mcp=require_mcp,
-                require_storage=require_storage,
-                require_table_read=require_table_read,
-                require_table_write=require_table_write,
-                require_read_only_storage=require_read_only_storage,
-                room_rules_path=room_rules,
-                require_document_authoring=require_document_authoring,
-                require_discovery=require_discovery,
-                working_directory=working_directory,
-                delegate_shell_token=delegate_shell_token,
-                llm_participant=llm_participant,
-                output_schema_str=output_schema,
-                output_schema_path=output_schema_path,
-                annotations=json.loads(annotations) if annotations != "" else {},
-            )
+        CustomTaskRunner = build_task_runner(
+            title=title,
+            description=description,
+            model=model,
+            local_shell=local_shell,
+            shell=shell,
+            apply_patch=apply_patch,
+            rule=rule,
+            toolkit=toolkit,
+            schema=schema,
+            rules_file=rules_file,
+            image_generation=image_generation,
+            web_search=web_search,
+            mcp=mcp,
+            storage=storage,
+            require_apply_patch=require_apply_patch,
+            require_web_search=require_web_search,
+            require_local_shell=require_local_shell,
+            require_shell=require_shell,
+            require_image_generation=require_image_generation,
+            require_mcp=require_mcp,
+            require_storage=require_storage,
+            require_table_read=require_table_read,
+            require_table_write=require_table_write,
+            require_read_only_storage=require_read_only_storage,
+            room_rules_path=room_rules,
+            require_document_authoring=require_document_authoring,
+            require_discovery=require_discovery,
+            working_directory=working_directory,
+            delegate_shell_token=delegate_shell_token,
+            llm_participant=llm_participant,
+            output_schema_str=output_schema,
+            output_schema_path=output_schema_path,
+            annotations=json.loads(annotations) if annotations != "" else {},
+        )
 
-            bot = CustomTaskRunner()
+        bot = CustomTaskRunner()
 
-            await bot.start(room=client)
-            try:
-                print(
-                    f"[bold green]Open the studio to interact with your agent: {meshagent_base_url().replace('api.', 'studio.')}/projects/{project_id}/rooms/{client.room_name}[/bold green]",
-                    flush=True,
+        if get_deferred():
+            from meshagent.cli.host import agents
+
+            agents.append((bot, jwt))
+        else:
+            async with RoomClient(
+                protocol=WebSocketClientProtocol(
+                    url=websocket_room_url(
+                        room_name=room, base_url=meshagent_base_url()
+                    ),
+                    token=jwt,
                 )
-                await client.protocol.wait_for_close()
-            except KeyboardInterrupt:
-                await bot.stop()
+            ) as client:
+                await bot.start(room=client)
+                try:
+                    print(
+                        f"[bold green]Open the studio to interact with your agent: {meshagent_base_url().replace('api.', 'studio.')}/projects/{project_id}/rooms/{client.room_name}[/bold green]",
+                        flush=True,
+                    )
+                    await client.protocol.wait_for_close()
+                except KeyboardInterrupt:
+                    await bot.stop()
 
     finally:
         await account_client.close()

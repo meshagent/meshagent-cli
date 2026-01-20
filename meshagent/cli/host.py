@@ -1,10 +1,14 @@
 from meshagent.api.services import ServiceHost
 from meshagent.api.specs.service import ServiceSpec
 import asyncio
+from meshagent.agents import Agent
 
 
 options = {"deferred": False}
 services = {}
+
+
+agents: list[tuple[Agent, str]] = []
 
 
 def set_deferred(deferred: bool):
