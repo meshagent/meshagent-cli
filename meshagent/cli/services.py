@@ -525,7 +525,7 @@ async def service_run(
 
             sys.stdout.write("\n")
 
-            for p in spec.ports:
+            for p in spec.ports or []:
                 print(f"[bold green]Connecting port {p.num}...[/bold green]")
 
                 for endpoint in p.endpoints:
