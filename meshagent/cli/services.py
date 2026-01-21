@@ -250,7 +250,7 @@ async def service_create_template(
         project_id = await resolve_project_id(project_id)
 
         with open(str(pathlib.Path(file).expanduser().resolve()), "rb") as f:
-            template = parse_yaml_raw_as(ServiceTemplateSpec, f.read())
+            template = f.read()
 
         template_values = _load_template_values(values, value)
 
@@ -319,7 +319,7 @@ async def service_update_template(
         project_id = await resolve_project_id(project_id)
 
         with open(str(pathlib.Path(file).expanduser().resolve()), "rb") as f:
-            template = parse_yaml_raw_as(ServiceTemplateSpec, f.read())
+            template = f.read()
 
         template_values = _load_template_values(values, value)
 
