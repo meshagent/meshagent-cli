@@ -63,44 +63,6 @@ async def helpers_service():
 
             return providers
 
-    @service.path("/planner")
-    class Planner(LLMTaskRunner):
-        def __init__(self, **kwargs):
-            super().__init__(
-                title="Generic Task Runner (Legacy)",
-                description="an agent that will perform a task with the selected tools",
-                llm_adapter=OpenAIResponsesAdapter(model="gpt-5.2"),
-                supports_tools=True,
-                input_prompt=True,
-                output_schema={
-                    "type": "object",
-                    "required": ["result"],
-                    "additionalProperties": False,
-                    "properties": {"result": {"type": "string"}},
-                },
-            )
-
-    @service.path("/schema_planner")
-    class DynamicPlanner(DynamicLLMTaskRunner):
-        def __init__(self, **kwargs):
-            super().__init__(
-                title="Schema Task Runner",
-                description="an agent that can produces output that matches a schema",
-                llm_adapter=OpenAIResponsesAdapter(model="gpt-5.2"),
-            )
-
-        def get_toolkit_builders(self):
-            from meshagent.tools.storage import StorageToolkitBuilder
-            from meshagent.openai.tools.responses_adapter import WebSearchToolkitBuilder
-
-            providers = [
-                WebSearchToolkitBuilder(),
-                StorageToolkitBuilder(),
-                *super().get_toolkit_builders(),
-            ]
-
-            return providers
-
     @service.path("/schemas/document")
     class DocumentSchemaRegistry(SchemaRegistry):
         def __init__(self):

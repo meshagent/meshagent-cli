@@ -95,6 +95,7 @@ def build_task_runner(
     web_search: Optional[str] = None,
     mcp: Optional[str] = None,
     storage: Optional[str] = None,
+    allow_model_selection: bool = True,
     require_image_generation: Optional[str] = None,
     require_local_shell: Optional[str] = None,
     require_shell: Optional[bool] = None,
@@ -181,6 +182,7 @@ def build_task_runner(
                 annotations=annotations,
                 title=title,
                 description=description,
+                allow_model_selection=allow_model_selection,
             )
 
         async def start(self, *, room: RoomClient):
@@ -537,6 +539,9 @@ async def join(
     description: Annotated[
         Optional[str], typer.Option(..., help="a description for the task runner")
     ] = None,
+    allow_model_selection: Annotated[
+        Optional[bool], typer.Option(..., help="a description for the task runner")
+    ] = True,
 ):
     key = await resolve_key(project_id=project_id, key=key)
     account_client = await get_client()
@@ -575,6 +580,7 @@ async def join(
         CustomTaskRunner = build_task_runner(
             title=title,
             description=description,
+            allow_model_selection=allow_model_selection,
             model=model,
             local_shell=local_shell,
             shell=shell,
@@ -774,6 +780,9 @@ async def service(
     description: Annotated[
         Optional[str], typer.Option(..., help="a description for the task runner")
     ] = None,
+    allow_model_selection: Annotated[
+        Optional[bool], typer.Option(..., help="a description for the task runner")
+    ] = True,
 ):
     print("[bold green]Connecting to room...[/bold green]", flush=True)
 
@@ -799,6 +808,7 @@ async def service(
             apply_patch=apply_patch,
             title=title,
             description=description,
+            allow_model_selection=allow_model_selection,
             rule=rule,
             toolkit=toolkit,
             schema=schema,
@@ -978,6 +988,9 @@ async def spec(
     description: Annotated[
         Optional[str], typer.Option(..., help="a description for the task runner")
     ] = None,
+    allow_model_selection: Annotated[
+        Optional[bool], typer.Option(..., help="a description for the task runner")
+    ] = True,
 ):
     service = get_service(host=host, port=port)
     if path is None:
@@ -1001,6 +1014,7 @@ async def spec(
             apply_patch=apply_patch,
             title=title,
             description=description,
+            allow_model_selection=allow_model_selection,
             rule=rule,
             toolkit=toolkit,
             schema=schema,
@@ -1193,6 +1207,9 @@ async def deploy(
     description: Annotated[
         Optional[str], typer.Option(..., help="a description for the task runner")
     ] = None,
+    allow_model_selection: Annotated[
+        Optional[bool], typer.Option(..., help="a description for the task runner")
+    ] = True,
     project_id: ProjectIdOption,
     room: Annotated[
         Optional[str],
@@ -1223,6 +1240,7 @@ async def deploy(
             apply_patch=apply_patch,
             title=title,
             description=description,
+            allow_model_selection=allow_model_selection,
             rule=rule,
             toolkit=toolkit,
             schema=schema,
