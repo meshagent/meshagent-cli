@@ -11,10 +11,7 @@ app = async_typer.AsyncTyper(help="Developer helper services")
 @app.async_command("service", help="Run local helper HTTP services")
 async def helpers_service():
     """Run local helper services (agents, schemas, toolkits)."""
-    from meshagent.agents.llmrunner import LLMTaskRunner
-    from meshagent.openai.tools import OpenAIResponsesAdapter
     from meshagent.tools.storage import StorageToolkit
-    from meshagent.tools.database import DatabaseToolkitBuilder
     from meshagent.api.services import ServiceHost
 
     from meshagent.agents.schemas.gallery import gallery_schema
@@ -31,37 +28,6 @@ async def helpers_service():
     logging.getLogger("httpx").setLevel(logging.ERROR)
 
     service = ServiceHost(port=9000)
-
-    @service.path("/runner")
-    class Runner(LLMTaskRunner):
-        def __init__(self, **kwargs):
-            super().__init__(
-                title="Generic Task Runner",
-                description="an agent that will perform a task with the selected tools",
-                llm_adapter=OpenAIResponsesAdapter(model="gpt-5.2"),
-                supports_tools=True,
-                input_prompt=True,
-                output_schema={
-                    "type": "object",
-                    "required": ["result"],
-                    "additionalProperties": False,
-                    "properties": {"result": {"type": "string"}},
-                },
-                annotations={"meshagent.task-runner.attachment-format": "tar"},
-            )
-
-        def get_toolkit_builders(self):
-            from meshagent.tools.storage import StorageToolkitBuilder
-            from meshagent.openai.tools.responses_adapter import WebSearchToolkitBuilder
-
-            providers = [
-                WebSearchToolkitBuilder(),
-                StorageToolkitBuilder(),
-                DatabaseToolkitBuilder(),
-                *super().get_toolkit_builders(),
-            ]
-
-            return providers
 
     @service.path("/schemas/document")
     class DocumentSchemaRegistry(SchemaRegistry):
