@@ -20,71 +20,6 @@ from meshagent.cli.helper import get_client, resolve_room
 app = async_typer.AsyncTyper(help="Interact with agents and toolkits in a room")
 
 
-@app.async_command("ask", help="Send a request to an agent")
-async def ask(
-    *,
-    project_id: ProjectIdOption,
-    room: RoomOption,
-    agent: Annotated[str, typer.Option(..., help="Agent name to ask")],
-    input: Annotated[str, typer.Option(..., help="JSON string with tool arguments")],
-    timeout: Annotated[
-        Optional[int],
-        typer.Option(
-            ..., help="How long to wait for the agent if the agent is not in the room"
-        ),
-    ] = 30,
-):
-    """Wait for an agent to join, then send it an ask request."""
-
-    account_client = await get_client()
-    try:
-        project_id = await resolve_project_id(project_id=project_id)
-        room = resolve_room(room)
-
-        connection = await account_client.connect_room(project_id=project_id, room=room)
-
-        print("[bold green]Connecting to room...[/bold green]")
-        async with RoomClient(
-            protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-                token=connection.jwt,
-            )
-        ) as client:
-            found = timeout == 0
-            for i in range(30):
-                if found:
-                    break
-
-                if i == 1:
-                    print("[magenta]Waiting for agent...[/magenta]")
-
-                agents = await client.agents.list_agents()
-                await asyncio.sleep(1)
-
-                for a in agents:
-                    if a.name == agent:
-                        found = True
-                        break
-
-            if not found:
-                print("[red]Timed out waiting for agent to join the room[/red]")
-                raise typer.Exit(1)
-
-            print("[magenta]Asking agent...[/magenta]")
-
-            response = await client.agents.ask(agent=agent, arguments=json.loads(input))
-            if isinstance(response, TextResponse):
-                print(response.text)
-            elif isinstance(response, JsonResponse):
-                print(json.dumps(response.json))
-            else:
-                print(response)
-    except RoomException as e:
-        print(f"[red]{e}[/red]")
-    finally:
-        await account_client.close()
-
-
 @app.async_command("invoke-tool", help="Invoke a specific tool from a toolkit")
 async def invoke_tool(
     *,
@@ -166,49 +101,6 @@ async def invoke_tool(
             print(response.to_json())
     except RoomException as e:
         print(f"[red]{e}[/red]")
-    finally:
-        await account_client.close()
-
-
-@app.async_command("list-agents", help="List agents currently in the room")
-async def list_agents_command(
-    *,
-    project_id: ProjectIdOption,
-    room: RoomOption,
-):
-    """
-    List all agents available in the room.
-    """
-    account_client = await get_client()
-    try:
-        project_id = await resolve_project_id(project_id=project_id)
-        room = resolve_room(room)
-
-        connection = await account_client.connect_room(project_id=project_id, room=room)
-
-        print("[bold green]Connecting to room...[/bold green]")
-        async with RoomClient(
-            protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
-                token=connection.jwt,
-            )
-        ) as client:
-            print("[bold green]Fetching list of agents...[/bold green]")
-            agents = await client.agents.list_agents()
-            # Format the output as JSON
-            output = []
-            for agent in agents:
-                output.append(
-                    {
-                        "name": agent.name,
-                        "title": agent.title,
-                        "description": agent.description,
-                        "supports_tools": agent.supports_tools,
-                        "labels": agent.labels,
-                    }
-                )
-            print(json.dumps(output, indent=2))
-
     finally:
         await account_client.close()
 

@@ -62,7 +62,7 @@ from meshagent.openai.tools.responses_adapter import (
 from meshagent.cli.host import get_service, run_services, get_deferred, service_specs
 from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
 from meshagent.agents.adapter import MessageStreamLLMAdapter
-from meshagent.agents.context import AgentCallContext
+from meshagent.agents.context import TaskContext
 
 from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.api.specs.service import AgentSpec, ANNOTATION_AGENT_TYPE
@@ -242,7 +242,7 @@ def build_task_runner(
 
             return rules
 
-        async def get_rules(self, *, context: AgentCallContext):
+        async def get_rules(self, *, context: TaskContext):
             rules = await super().get_rules(context=context)
 
             if room_rules_path is not None:
@@ -255,7 +255,7 @@ def build_task_runner(
 
             return rules
 
-        async def get_context_toolkits(self, *, context: AgentCallContext):
+        async def get_context_toolkits(self, *, context: TaskContext):
             providers = []
 
             if require_image_generation:
