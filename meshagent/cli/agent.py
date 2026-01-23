@@ -10,8 +10,6 @@ from meshagent.api import (
     RoomClient,
     WebSocketClientProtocol,
     RoomException,
-    TextResponse,
-    JsonResponse,
 )
 from meshagent.cli.helper import resolve_project_id
 from meshagent.cli import async_typer
