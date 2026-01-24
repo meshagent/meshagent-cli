@@ -790,7 +790,12 @@ async def run(
     input: Annotated[
         str, typer.Option(..., help="json to use as input for the task runner")
     ],
+    quiet: Annotated[bool, typer.Option(..., help="only display output")] = True,
 ):
+    if quiet:
+        root = logging.getLogger()
+        root.setLevel(logging.ERROR)
+
     key = await resolve_key(project_id=project_id, key=key)
     account_client = await get_client()
     try:
@@ -816,7 +821,8 @@ async def run(
 
             jwt = token.to_jwt(api_key=key)
 
-        print("[bold green]Connecting to room...[/bold green]", flush=True)
+        if not quiet:
+            print("[bold green]Connecting to room...[/bold green]", flush=True)
         requirements = []
 
         for t in toolkit:
