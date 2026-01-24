@@ -89,6 +89,22 @@ logger = logging.getLogger("taskrunner")
 app = async_typer.AsyncTyper(help="Join a taskrunner to a room")
 
 
+def read_task_runner_input(input_value: Optional[str]) -> str:
+    if input_value is None:
+        if sys.stdin.isatty():
+            print("[bold red]--input is required unless stdin is provided[/bold red]")
+            raise typer.Exit(1)
+        input_value = sys.stdin.read()
+    elif input_value == "-":
+        input_value = sys.stdin.read()
+
+    if not input_value:
+        print("[bold red]input payload is empty[/bold red]")
+        raise typer.Exit(1)
+
+    return input_value
+
+
 def build_task_runner(
     *,
     model: str,
@@ -840,8 +856,9 @@ async def run(
         Optional[bool], typer.Option(..., help="a description for the task runner")
     ] = True,
     input: Annotated[
-        str, typer.Option(..., help="json to use as input for the task runner")
-    ],
+        Optional[str],
+        typer.Option(..., help="json input for the task runner, or '-' for stdin"),
+    ] = None,
     quiet: Annotated[bool, typer.Option(..., help="only display output")] = True,
     log_llm_requests: Annotated[
         Optional[bool],
@@ -947,8 +964,11 @@ async def run(
                 )
             ) as client:
                 try:
+                    input_payload = read_task_runner_input(input)
                     result = await bot.run(
-                        room=client, arguments=json.loads(input), attachment=None
+                        room=client,
+                        arguments=json.loads(input_payload),
+                        attachment=None,
                     )
                     if isinstance(result, JsonResponse):
                         print(result.json)
