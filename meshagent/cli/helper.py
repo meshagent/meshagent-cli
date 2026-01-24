@@ -10,6 +10,11 @@ from meshagent.api.helpers import meshagent_base_url
 from meshagent.api.specs.service import ServiceSpec
 from meshagent.agents.context import AgentChatContext
 from meshagent.api.client import Meshagent, RoomConnectionInfo
+from meshagent.tools.storage import (
+    StorageToolLocalMount,
+    StorageToolMount,
+    StorageToolRoomMount,
+)
 import os
 import aiofiles
 from pydantic_yaml import parse_yaml_raw_as
@@ -200,6 +205,59 @@ async def resolve_key(project_id: str | None, key: str | None):
         raise typer.Exit(1)
 
     return key
+
+
+def split_storage_mount(value: str, option_name: str) -> tuple[str, str, bool]:
+    cleaned = value.strip()
+    if cleaned == "":
+        raise typer.BadParameter(f"{option_name} cannot be empty")
+
+    read_only = False
+    lowered = cleaned.lower()
+    if lowered.endswith(":ro") or lowered.endswith(":rw"):
+        cleaned, suffix = cleaned.rsplit(":", 1)
+        read_only = suffix.lower() == "ro"
+
+    parts = cleaned.rsplit(":", 1)
+    if len(parts) != 2:
+        raise typer.BadParameter(
+            f"{option_name} must be in the form '<source>:<mount>[:ro|rw]'"
+        )
+
+    source, mount = (part.strip() for part in parts)
+    if source == "" or mount == "":
+        raise typer.BadParameter(
+            f"{option_name} must include both source and mount paths"
+        )
+
+    return source, mount, read_only
+
+
+def parse_storage_tool_mounts(
+    *,
+    local_paths: list[str],
+    room_paths: list[str],
+) -> Optional[list[StorageToolMount]]:
+    mounts: list[StorageToolMount] = []
+
+    for value in local_paths:
+        source, mount, read_only = split_storage_mount(
+            value, "--storage-tool-local-path"
+        )
+        mounts.append(
+            StorageToolLocalMount(path=mount, local_path=source, read_only=read_only)
+        )
+
+    for value in room_paths:
+        source, mount, read_only = split_storage_mount(
+            value, "--storage-tool-room-path"
+        )
+        subpath = source if source not in {"", ".", "/"} else None
+        mounts.append(
+            StorageToolRoomMount(path=mount, subpath=subpath, read_only=read_only)
+        )
+
+    return mounts or None
 
 
 def cleanup_args(args: list[str]):

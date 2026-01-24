@@ -4,7 +4,10 @@ import os
 from rich import print
 from typing import Annotated, Optional
 from meshagent.tools import Toolkit
-from meshagent.tools.storage import StorageToolkitBuilder
+from meshagent.tools.storage import (
+    StorageToolMount,
+    StorageToolkitBuilder,
+)
 from meshagent.tools.document_tools import (
     DocumentAuthoringToolkit,
     DocumentTypeAuthoringToolkit,
@@ -27,11 +30,12 @@ from meshagent.api import (
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.cli import async_typer
 from meshagent.cli.helper import (
+    cleanup_args,
     get_client,
+    parse_storage_tool_mounts,
+    resolve_key,
     resolve_project_id,
     resolve_room,
-    resolve_key,
-    cleanup_args,
 )
 
 from meshagent.openai import OpenAIResponsesAdapter
@@ -98,6 +102,7 @@ def build_task_runner(
     web_search: Optional[str] = None,
     mcp: Optional[str] = None,
     storage: Optional[str] = None,
+    storage_tool_mounts: Optional[list[StorageToolMount]] = None,
     allow_model_selection: bool = True,
     require_image_generation: Optional[str] = None,
     require_local_shell: Optional[str] = None,
@@ -144,6 +149,7 @@ def build_task_runner(
     requirements = []
 
     toolkits = []
+    storage_enabled = bool(storage) or storage_tool_mounts is not None
 
     for t in toolkit:
         requirements.append(RequiredToolkit(name=t))
@@ -318,7 +324,7 @@ def build_task_runner(
                 )
 
             if require_storage:
-                providers.extend(StorageToolkit().tools)
+                providers.extend(StorageToolkit(mounts=storage_tool_mounts).tools)
 
             if len(require_table_read) > 0:
                 providers.extend(
@@ -347,7 +353,9 @@ def build_task_runner(
                 )
 
             if require_read_only_storage:
-                providers.extend(StorageToolkit(read_only=True).tools)
+                providers.extend(
+                    StorageToolkit(read_only=True, mounts=storage_tool_mounts).tools
+                )
 
             if require_document_authoring:
                 providers.extend(DocumentAuthoringToolkit().tools)
@@ -401,8 +409,8 @@ def build_task_runner(
             if web_search:
                 providers.append(WebSearchToolkitBuilder())
 
-            if storage:
-                providers.append(StorageToolkitBuilder())
+            if storage_enabled:
+                providers.append(StorageToolkitBuilder(mounts=storage_tool_mounts))
 
             return providers
 
@@ -460,6 +468,20 @@ async def join(
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
+    storage_tool_local_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-local-path",
+            help="Mount local path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    storage_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-room-path",
+            help="Mount room path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model", hidden=True)
     ] = None,
@@ -589,6 +611,11 @@ async def join(
         for t in schema:
             requirements.append(RequiredSchema(name=t))
 
+        storage_tool_mounts = parse_storage_tool_mounts(
+            local_paths=storage_tool_local_path,
+            room_paths=storage_tool_room_path,
+        )
+
         CustomTaskRunner = build_task_runner(
             title=title,
             description=description,
@@ -606,6 +633,7 @@ async def join(
             web_search=web_search,
             mcp=mcp,
             storage=storage,
+            storage_tool_mounts=storage_tool_mounts,
             require_apply_patch=require_apply_patch,
             require_web_search=require_web_search,
             require_local_shell=require_local_shell,
@@ -707,6 +735,20 @@ async def run(
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
+    storage_tool_local_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-local-path",
+            help="Mount local path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    storage_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-room-path",
+            help="Mount room path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model", hidden=True)
     ] = None,
@@ -845,6 +887,11 @@ async def run(
         for t in schema:
             requirements.append(RequiredSchema(name=t))
 
+        storage_tool_mounts = parse_storage_tool_mounts(
+            local_paths=storage_tool_local_path,
+            room_paths=storage_tool_room_path,
+        )
+
         CustomTaskRunner = build_task_runner(
             title=title,
             description=description,
@@ -862,6 +909,7 @@ async def run(
             web_search=web_search,
             mcp=mcp,
             storage=storage,
+            storage_tool_mounts=storage_tool_mounts,
             require_apply_patch=require_apply_patch,
             require_web_search=require_web_search,
             require_local_shell=require_local_shell,
@@ -962,6 +1010,20 @@ async def service(
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
+    storage_tool_local_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-local-path",
+            help="Mount local path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    storage_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-room-path",
+            help="Mount room path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model", hidden=True)
     ] = None,
@@ -1063,6 +1125,11 @@ async def service(
 ):
     print("[bold green]Connecting to room...[/bold green]", flush=True)
 
+    storage_tool_mounts = parse_storage_tool_mounts(
+        local_paths=storage_tool_local_path,
+        room_paths=storage_tool_room_path,
+    )
+
     service = get_service(host=host, port=port)
     if path is None:
         path = "/agent"
@@ -1095,6 +1162,7 @@ async def service(
             image_generation=image_generation,
             mcp=mcp,
             storage=storage,
+            storage_tool_mounts=storage_tool_mounts,
             require_web_search=require_web_search,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
@@ -1175,6 +1243,20 @@ async def spec(
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
+    storage_tool_local_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-local-path",
+            help="Mount local path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    storage_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-room-path",
+            help="Mount room path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model", hidden=True)
     ] = None,
@@ -1274,6 +1356,11 @@ async def spec(
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
 ):
+    storage_tool_mounts = parse_storage_tool_mounts(
+        local_paths=storage_tool_local_path,
+        room_paths=storage_tool_room_path,
+    )
+
     service = get_service(host=host, port=port)
     if path is None:
         path = "/agent"
@@ -1306,6 +1393,7 @@ async def spec(
             image_generation=image_generation,
             mcp=mcp,
             storage=storage,
+            storage_tool_mounts=storage_tool_mounts,
             require_web_search=require_web_search,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
@@ -1399,6 +1487,20 @@ async def deploy(
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
+    storage_tool_local_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-local-path",
+            help="Mount local path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    storage_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-room-path",
+            help="Mount room path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model", hidden=True)
     ] = None,
@@ -1505,6 +1607,11 @@ async def deploy(
 ):
     project_id = await resolve_project_id(project_id=project_id)
 
+    storage_tool_mounts = parse_storage_tool_mounts(
+        local_paths=storage_tool_local_path,
+        room_paths=storage_tool_room_path,
+    )
+
     service = get_service(host=host, port=port)
     if path is None:
         path = "/agent"
@@ -1537,6 +1644,7 @@ async def deploy(
             image_generation=image_generation,
             mcp=mcp,
             storage=storage,
+            storage_tool_mounts=storage_tool_mounts,
             require_web_search=require_web_search,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,

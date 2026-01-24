@@ -5,16 +5,20 @@ from pathlib import Path
 import logging
 import os
 
-from meshagent.tools.storage import StorageToolkitBuilder
+from meshagent.tools.storage import (
+    StorageToolMount,
+    StorageToolkitBuilder,
+)
 
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.cli.helper import (
+    cleanup_args,
     get_client,
+    parse_storage_tool_mounts,
+    resolve_key,
     resolve_project_id,
     resolve_room,
-    resolve_key,
-    cleanup_args,
 )
 
 from meshagent.api import (
@@ -96,6 +100,7 @@ def build_worker(
     web_search: Optional[str] = None,
     mcp: Optional[str] = None,
     storage: Optional[str] = None,
+    storage_tool_mounts: Optional[list[StorageToolMount]] = None,
     working_directory: Optional[str] = None,
     require_image_generation: Optional[str] = None,
     require_local_shell: bool = False,
@@ -266,7 +271,7 @@ def build_worker(
                 providers.append(WebSearchToolkitBuilder())
 
             if storage:
-                providers.append(StorageToolkitBuilder())
+                providers.append(StorageToolkitBuilder(mounts=storage_tool_mounts))
 
             return providers
 
@@ -315,10 +320,14 @@ def build_worker(
                 thread_toolkit.tools.append(WebSearchTool())
 
             if require_storage:
-                thread_toolkit.tools.extend(StorageToolkit().tools)
+                thread_toolkit.tools.extend(
+                    StorageToolkit(mounts=storage_tool_mounts).tools
+                )
 
             if require_read_only_storage:
-                thread_toolkit.tools.extend(StorageToolkit(read_only=True).tools)
+                thread_toolkit.tools.extend(
+                    StorageToolkit(read_only=True, mounts=storage_tool_mounts).tools
+                )
 
             if len(require_table_read) > 0:
                 thread_toolkit.tools.extend(
@@ -458,6 +467,20 @@ async def join(
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
+    storage_tool_local_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-local-path",
+            help="Mount local path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    storage_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-room-path",
+            help="Mount room path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
@@ -559,6 +582,11 @@ async def join(
         # WorkerBase = SomeWorker
         from meshagent.agents.worker import Worker as WorkerBase  # default; replace
 
+        storage_tool_mounts = parse_storage_tool_mounts(
+            local_paths=storage_tool_local_path,
+            room_paths=storage_tool_room_path,
+        )
+
         CustomWorker = build_worker(
             WorkerBase=WorkerBase,
             model=model,
@@ -575,6 +603,7 @@ async def join(
             web_search=web_search,
             mcp=mcp,
             storage=storage,
+            storage_tool_mounts=storage_tool_mounts,
             require_local_shell=require_local_shell,
             require_web_search=require_web_search,
             require_shell=require_shell,
@@ -682,6 +711,20 @@ async def service(
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
+    storage_tool_local_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-local-path",
+            help="Mount local path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    storage_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-room-path",
+            help="Mount room path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Require local shell tool")
     ] = False,
@@ -787,6 +830,10 @@ async def service(
     ] = None,
 ):
     service = get_service(host=host, port=port)
+    storage_tool_mounts = parse_storage_tool_mounts(
+        local_paths=storage_tool_local_path,
+        room_paths=storage_tool_room_path,
+    )
 
     if path is None:
         path = "/agent"
@@ -823,6 +870,7 @@ async def service(
             web_search=web_search,
             mcp=mcp,
             storage=storage,
+            storage_tool_mounts=storage_tool_mounts,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
             require_local_shell=require_local_shell,
@@ -918,6 +966,20 @@ async def spec(
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
+    storage_tool_local_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-local-path",
+            help="Mount local path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    storage_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-room-path",
+            help="Mount room path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Require local shell tool")
     ] = False,
@@ -1023,6 +1085,10 @@ async def spec(
     ] = None,
 ):
     service = get_service(host=host, port=port)
+    storage_tool_mounts = parse_storage_tool_mounts(
+        local_paths=storage_tool_local_path,
+        room_paths=storage_tool_room_path,
+    )
 
     if path is None:
         path = "/agent"
@@ -1059,6 +1125,7 @@ async def spec(
             web_search=web_search,
             mcp=mcp,
             storage=storage,
+            storage_tool_mounts=storage_tool_mounts,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
             require_local_shell=require_local_shell,
@@ -1167,6 +1234,20 @@ async def deploy(
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
+    storage_tool_local_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-local-path",
+            help="Mount local path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    storage_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-room-path",
+            help="Mount room path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Require local shell tool")
     ] = False,
@@ -1279,6 +1360,10 @@ async def deploy(
     project_id = await resolve_project_id(project_id=project_id)
 
     service = get_service(host=host, port=port)
+    storage_tool_mounts = parse_storage_tool_mounts(
+        local_paths=storage_tool_local_path,
+        room_paths=storage_tool_room_path,
+    )
 
     if path is None:
         path = "/agent"
@@ -1315,6 +1400,7 @@ async def deploy(
             web_search=web_search,
             mcp=mcp,
             storage=storage,
+            storage_tool_mounts=storage_tool_mounts,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
             require_local_shell=require_local_shell,

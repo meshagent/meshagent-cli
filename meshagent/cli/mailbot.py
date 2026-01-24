@@ -13,11 +13,12 @@ from meshagent.tools import Toolkit
 from meshagent.api import RoomClient, WebSocketClientProtocol, ApiScope
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.cli.helper import (
+    cleanup_args,
     get_client,
+    parse_storage_tool_mounts,
+    resolve_key,
     resolve_project_id,
     resolve_room,
-    resolve_key,
-    cleanup_args,
 )
 from meshagent.openai import OpenAIResponsesAdapter
 from meshagent.anthropic import AnthropicOpenAIResponsesStreamAdapter
@@ -33,7 +34,7 @@ import logging
 
 from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
 
-from meshagent.tools.storage import StorageToolkit
+from meshagent.tools.storage import StorageToolMount, StorageToolkit
 from meshagent.tools.datetime import DatetimeToolkit
 from meshagent.tools.uuid import UUIDToolkit
 
@@ -85,6 +86,7 @@ def build_mailbot(
     require_apply_patch: Optional[bool] = None,
     require_storage: Optional[str] = None,
     require_read_only_storage: Optional[str] = None,
+    storage_tool_mounts: Optional[list[StorageToolMount]] = None,
     require_time: bool = True,
     require_uuid: bool = False,
     require_table_read: bool,
@@ -281,10 +283,14 @@ def build_mailbot(
                 thread_toolkit.tools.append(WebSearchTool())
 
             if require_storage:
-                thread_toolkit.tools.extend(StorageToolkit().tools)
+                thread_toolkit.tools.extend(
+                    StorageToolkit(mounts=storage_tool_mounts).tools
+                )
 
             if require_read_only_storage:
-                thread_toolkit.tools.extend(StorageToolkit(read_only=True).tools)
+                thread_toolkit.tools.extend(
+                    StorageToolkit(read_only=True, mounts=storage_tool_mounts).tools
+                )
 
             if len(require_table_read) > 0:
                 thread_toolkit.tools.extend(
@@ -419,6 +425,20 @@ async def join(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    storage_tool_local_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-local-path",
+            help="Mount local path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    storage_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-room-path",
+            help="Mount room path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_time: Annotated[
         bool,
         typer.Option(
@@ -512,6 +532,11 @@ async def join(
             jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
+        storage_tool_mounts = parse_storage_tool_mounts(
+            local_paths=storage_tool_local_path,
+            room_paths=storage_tool_room_path,
+        )
+
         CustomMailbot = build_mailbot(
             computer_use=None,
             model=model,
@@ -531,6 +556,7 @@ async def join(
             require_apply_patch=require_apply_patch,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
+            storage_tool_mounts=storage_tool_mounts,
             require_time=require_time,
             require_uuid=require_uuid,
             require_table_read=require_table_read,
@@ -663,6 +689,20 @@ async def service(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    storage_tool_local_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-local-path",
+            help="Mount local path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    storage_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-room-path",
+            help="Mount room path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_time: Annotated[
         bool,
         typer.Option(
@@ -729,6 +769,10 @@ async def service(
     ] = False,
 ):
     service = get_service(host=host, port=port)
+    storage_tool_mounts = parse_storage_tool_mounts(
+        local_paths=storage_tool_local_path,
+        room_paths=storage_tool_room_path,
+    )
     if path is None:
         path = "/agent"
         i = 0
@@ -762,6 +806,7 @@ async def service(
             require_apply_patch=require_apply_patch,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
+            storage_tool_mounts=storage_tool_mounts,
             require_time=require_time,
             require_uuid=require_uuid,
             require_table_read=require_table_read,
@@ -879,6 +924,20 @@ async def spec(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    storage_tool_local_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-local-path",
+            help="Mount local path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    storage_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-room-path",
+            help="Mount room path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_time: Annotated[
         bool,
         typer.Option(
@@ -945,6 +1004,10 @@ async def spec(
     ] = False,
 ):
     service = get_service(host=host, port=port)
+    storage_tool_mounts = parse_storage_tool_mounts(
+        local_paths=storage_tool_local_path,
+        room_paths=storage_tool_room_path,
+    )
     if path is None:
         path = "/agent"
         i = 0
@@ -978,6 +1041,7 @@ async def spec(
             require_apply_patch=require_apply_patch,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
+            storage_tool_mounts=storage_tool_mounts,
             require_time=require_time,
             require_uuid=require_uuid,
             require_table_read=require_table_read,
@@ -1108,6 +1172,20 @@ async def deploy(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    storage_tool_local_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-local-path",
+            help="Mount local path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    storage_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--storage-tool-room-path",
+            help="Mount room path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_time: Annotated[
         bool,
         typer.Option(
@@ -1181,6 +1259,10 @@ async def deploy(
     project_id = await resolve_project_id(project_id=project_id)
 
     service = get_service(host=host, port=port)
+    storage_tool_mounts = parse_storage_tool_mounts(
+        local_paths=storage_tool_local_path,
+        room_paths=storage_tool_room_path,
+    )
     if path is None:
         path = "/agent"
         i = 0
@@ -1214,6 +1296,7 @@ async def deploy(
             require_apply_patch=require_apply_patch,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
+            storage_tool_mounts=storage_tool_mounts,
             require_time=require_time,
             require_uuid=require_uuid,
             require_table_read=require_table_read,
