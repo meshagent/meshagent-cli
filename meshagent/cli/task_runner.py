@@ -59,6 +59,9 @@ from meshagent.openai.tools.responses_adapter import (
     ImageGenerationTool,
 )
 
+from meshagent.api.messaging import JsonResponse, TextResponse
+
+
 from meshagent.cli.host import get_service, run_services, get_deferred, service_specs
 from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
 from meshagent.agents.adapter import MessageStreamLLMAdapter
@@ -636,6 +639,255 @@ async def join(
                         flush=True,
                     )
                     await client.protocol.wait_for_close()
+                except KeyboardInterrupt:
+                    await bot.stop()
+
+    finally:
+        await account_client.close()
+
+
+@app.async_command("run")
+async def run(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    role: str = "agent",
+    agent_name: Annotated[
+        Optional[str], typer.Option(..., help="Name of the agent to call")
+    ] = None,
+    rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="a path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
+    rules_file: Optional[str] = None,
+    toolkit: Annotated[
+        List[str],
+        typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
+    ] = [],
+    schema: Annotated[
+        List[str],
+        typer.Option("--schema", "-s", help="the name or url of a required schema"),
+    ] = [],
+    model: Annotated[
+        str, typer.Option(..., help="Name of the LLM model to use for the task runner")
+    ] = "gpt-5.2",
+    image_generation: Annotated[
+        Optional[str], typer.Option(..., help="Name of an image gen model")
+    ] = None,
+    local_shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
+    ] = False,
+    shell: Annotated[
+        Optional[bool], typer.Option(..., help="Enable function shell tool calling")
+    ] = False,
+    apply_patch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable apply patch tool")
+    ] = False,
+    web_search: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    mcp: Annotated[
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
+    ] = False,
+    storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
+    ] = False,
+    require_image_generation: Annotated[
+        Optional[str], typer.Option(..., help="Name of an image gen model", hidden=True)
+    ] = None,
+    require_local_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable local shell tool calling", hidden=True),
+    ] = False,
+    require_shell: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable function shell tool calling", hidden=True),
+    ] = False,
+    require_apply_patch: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable apply patch tool calling", hidden=True),
+    ] = False,
+    require_web_search: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable web search tool calling", hidden=True),
+    ] = False,
+    require_mcp: Annotated[
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling", hidden=True)
+    ] = False,
+    require_storage: Annotated[
+        Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
+    ] = False,
+    require_table_read: Annotated[
+        list[str],
+        typer.Option(
+            ..., help="Enable table read tools for a specific table", hidden=True
+        ),
+    ] = [],
+    require_table_write: Annotated[
+        list[str],
+        typer.Option(
+            ..., help="Enable table write tools for a specific table", hidden=True
+        ),
+    ] = [],
+    require_read_only_storage: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable read only storage toolkit", hidden=True),
+    ] = False,
+    require_document_authoring: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable MeshDocument authoring", hidden=True),
+    ] = False,
+    require_discovery: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable discovery of agents and tools", hidden=True),
+    ] = False,
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="The default working directory for shell commands"),
+    ] = None,
+    delegate_shell_token: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Delegate the room token to shell tools"),
+    ] = False,
+    key: Annotated[
+        str,
+        typer.Option("--key", help="an api key to sign the token with"),
+    ] = None,
+    llm_participant: Annotated[
+        Optional[str],
+        typer.Option(
+            ..., help="Delegate LLM interactions to a remote participant", hidden=True
+        ),
+    ] = None,
+    output_schema: Annotated[
+        Optional[str],
+        typer.Option(..., help="an output schema to use", hidden=True),
+    ] = None,
+    output_schema_path: Annotated[
+        Optional[str],
+        typer.Option(..., help="the path or url to output schema to use", hidden=True),
+    ] = None,
+    annotations: Annotated[
+        str,
+        typer.Option(
+            "--annotations", "-a", help='annotations in json format {"name":"value"}'
+        ),
+    ] = '{"meshagent.task-runner.attachment-format":"tar"}',
+    title: Annotated[
+        Optional[str], typer.Option(..., help="a friendly name for the task runner")
+    ] = None,
+    description: Annotated[
+        Optional[str], typer.Option(..., help="a description for the task runner")
+    ] = None,
+    allow_model_selection: Annotated[
+        Optional[bool], typer.Option(..., help="a description for the task runner")
+    ] = True,
+    input: Annotated[
+        str, typer.Option(..., help="json to use as input for the task runner")
+    ],
+):
+    key = await resolve_key(project_id=project_id, key=key)
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        room = resolve_room(room)
+
+        jwt = os.getenv("MESHAGENT_TOKEN")
+        if jwt is None:
+            if agent_name is None:
+                print(
+                    "[bold red]--agent-name must be specified when the MESHAGENT_TOKEN environment variable is not set[/bold red]"
+                )
+                raise typer.Exit(1)
+
+            token = ParticipantToken(
+                name=agent_name,
+            )
+
+            token.add_api_grant(ApiScope.agent_default())
+
+            token.add_role_grant(role=role)
+            token.add_room_grant(room)
+
+            jwt = token.to_jwt(api_key=key)
+
+        print("[bold green]Connecting to room...[/bold green]", flush=True)
+        requirements = []
+
+        for t in toolkit:
+            requirements.append(RequiredToolkit(name=t))
+
+        for t in schema:
+            requirements.append(RequiredSchema(name=t))
+
+        CustomTaskRunner = build_task_runner(
+            title=title,
+            description=description,
+            allow_model_selection=allow_model_selection,
+            model=model,
+            local_shell=local_shell,
+            shell=shell,
+            apply_patch=apply_patch,
+            rule=rule,
+            toolkit=toolkit,
+            schema=schema,
+            rules_file=rules_file,
+            image_generation=image_generation,
+            web_search=web_search,
+            mcp=mcp,
+            storage=storage,
+            require_apply_patch=require_apply_patch,
+            require_web_search=require_web_search,
+            require_local_shell=require_local_shell,
+            require_shell=require_shell,
+            require_image_generation=require_image_generation,
+            require_mcp=require_mcp,
+            require_storage=require_storage,
+            require_table_read=require_table_read,
+            require_table_write=require_table_write,
+            require_read_only_storage=require_read_only_storage,
+            room_rules_path=room_rules,
+            require_document_authoring=require_document_authoring,
+            require_discovery=require_discovery,
+            working_directory=working_directory,
+            delegate_shell_token=delegate_shell_token,
+            llm_participant=llm_participant,
+            output_schema_str=output_schema,
+            output_schema_path=output_schema_path,
+            annotations=json.loads(annotations) if annotations != "" else {},
+        )
+
+        bot = CustomTaskRunner()
+
+        if get_deferred():
+            from meshagent.cli.host import agents
+
+            agents.append((bot, jwt))
+        else:
+            async with RoomClient(
+                protocol=WebSocketClientProtocol(
+                    url=websocket_room_url(
+                        room_name=room, base_url=meshagent_base_url()
+                    ),
+                    token=jwt,
+                )
+            ) as client:
+                try:
+                    result = await bot.run(
+                        room=client, arguments=json.loads(input), attachment=None
+                    )
+                    if isinstance(result, JsonResponse):
+                        print(result.json)
+                    elif isinstance(result, TextResponse):
+                        print(result.text)
+                    else:
+                        print(result)
+
                 except KeyboardInterrupt:
                     await bot.stop()
 
