@@ -122,6 +122,7 @@ def build_task_runner(
     description: Optional[str] = None,
     shell_image: Optional[str] = None,
     delegate_shell_token: Optional[bool] = None,
+    log_llm_requests: Optional[bool] = False,
 ):
     output_schema = None
     if output_schema_str is not None:
@@ -169,9 +170,13 @@ def build_task_runner(
         )
     else:
         if model.startswith("claude-"):
-            llm_adapter = AnthropicOpenAIResponsesStreamAdapter(model=model)
+            llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
+                model=model, log_requests=log_llm_requests
+            )
         else:
-            llm_adapter = OpenAIResponsesAdapter(model=model)
+            llm_adapter = OpenAIResponsesAdapter(
+                model=model, log_requests=log_llm_requests
+            )
 
     class CustomTaskRunner(BaseClass):
         def __init__(self):
@@ -545,6 +550,10 @@ async def join(
     allow_model_selection: Annotated[
         Optional[bool], typer.Option(..., help="a description for the task runner")
     ] = True,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     key = await resolve_key(project_id=project_id, key=key)
     account_client = await get_client()
@@ -584,6 +593,7 @@ async def join(
             title=title,
             description=description,
             allow_model_selection=allow_model_selection,
+            log_llm_requests=log_llm_requests,
             model=model,
             local_shell=local_shell,
             shell=shell,
@@ -791,6 +801,10 @@ async def run(
         str, typer.Option(..., help="json to use as input for the task runner")
     ],
     quiet: Annotated[bool, typer.Option(..., help="only display output")] = True,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     if quiet:
         root = logging.getLogger()
@@ -835,6 +849,7 @@ async def run(
             title=title,
             description=description,
             allow_model_selection=allow_model_selection,
+            log_llm_requests=log_llm_requests,
             model=model,
             local_shell=local_shell,
             shell=shell,
@@ -1041,6 +1056,10 @@ async def service(
     allow_model_selection: Annotated[
         Optional[bool], typer.Option(..., help="a description for the task runner")
     ] = True,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     print("[bold green]Connecting to room...[/bold green]", flush=True)
 
@@ -1067,6 +1086,7 @@ async def service(
             title=title,
             description=description,
             allow_model_selection=allow_model_selection,
+            log_llm_requests=log_llm_requests,
             rule=rule,
             toolkit=toolkit,
             schema=schema,
@@ -1249,6 +1269,10 @@ async def spec(
     allow_model_selection: Annotated[
         Optional[bool], typer.Option(..., help="a description for the task runner")
     ] = True,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     service = get_service(host=host, port=port)
     if path is None:
@@ -1273,6 +1297,7 @@ async def spec(
             title=title,
             description=description,
             allow_model_selection=allow_model_selection,
+            log_llm_requests=log_llm_requests,
             rule=rule,
             toolkit=toolkit,
             schema=schema,
@@ -1473,6 +1498,10 @@ async def deploy(
         Optional[str],
         typer.Option("--room", help="The name of a room to create the service for"),
     ] = None,
+    log_llm_requests: Annotated[
+        Optional[bool],
+        typer.Option(..., help="log all requests to the llm"),
+    ] = False,
 ):
     project_id = await resolve_project_id(project_id=project_id)
 
@@ -1499,6 +1528,7 @@ async def deploy(
             title=title,
             description=description,
             allow_model_selection=allow_model_selection,
+            log_llm_requests=log_llm_requests,
             rule=rule,
             toolkit=toolkit,
             schema=schema,
