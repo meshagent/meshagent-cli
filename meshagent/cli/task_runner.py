@@ -1666,6 +1666,12 @@ async def deploy(
     allow_model_selection: Annotated[
         Optional[bool], typer.Option(..., help="a description for the task runner")
     ] = True,
+    allow_thread_selection: Annotated[
+        Optional[bool],
+        typer.Option(
+            ..., help="allow selecting a thread via input path for task context"
+        ),
+    ] = False,
     project_id: ProjectIdOption,
     room: Annotated[
         Optional[str],
