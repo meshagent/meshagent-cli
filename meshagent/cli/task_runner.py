@@ -120,6 +120,7 @@ def build_task_runner(
     storage: Optional[str] = None,
     storage_tool_mounts: Optional[list[StorageToolMount]] = None,
     allow_model_selection: bool = True,
+    allow_thread_selection: bool = False,
     require_image_generation: Optional[str] = None,
     require_local_shell: Optional[str] = None,
     require_shell: Optional[bool] = None,
@@ -213,6 +214,7 @@ def build_task_runner(
                 title=title,
                 description=description,
                 allow_model_selection=allow_model_selection,
+                input_path=allow_thread_selection,
             )
 
         async def start(self, *, room: RoomClient):
@@ -588,6 +590,12 @@ async def join(
     allow_model_selection: Annotated[
         Optional[bool], typer.Option(..., help="a description for the task runner")
     ] = True,
+    allow_thread_selection: Annotated[
+        Optional[bool],
+        typer.Option(
+            ..., help="allow selecting a thread via input path for task context"
+        ),
+    ] = False,
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -636,6 +644,7 @@ async def join(
             title=title,
             description=description,
             allow_model_selection=allow_model_selection,
+            allow_thread_selection=allow_thread_selection,
             log_llm_requests=log_llm_requests,
             model=model,
             local_shell=local_shell,
@@ -855,6 +864,12 @@ async def run(
     allow_model_selection: Annotated[
         Optional[bool], typer.Option(..., help="a description for the task runner")
     ] = True,
+    allow_thread_selection: Annotated[
+        Optional[bool],
+        typer.Option(
+            ..., help="allow selecting a thread via input path for task context"
+        ),
+    ] = False,
     input: Annotated[
         Optional[str],
         typer.Option(..., help="json input for the task runner, or '-' for stdin"),
@@ -912,6 +927,7 @@ async def run(
             title=title,
             description=description,
             allow_model_selection=allow_model_selection,
+            allow_thread_selection=allow_thread_selection,
             log_llm_requests=log_llm_requests,
             model=model,
             local_shell=local_shell,
@@ -1159,6 +1175,12 @@ async def service(
     allow_model_selection: Annotated[
         Optional[bool], typer.Option(..., help="a description for the task runner")
     ] = True,
+    allow_thread_selection: Annotated[
+        Optional[bool],
+        typer.Option(
+            ..., help="allow selecting a thread via input path for task context"
+        ),
+    ] = False,
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -1194,6 +1216,7 @@ async def service(
             title=title,
             description=description,
             allow_model_selection=allow_model_selection,
+            allow_thread_selection=allow_thread_selection,
             log_llm_requests=log_llm_requests,
             rule=rule,
             toolkit=toolkit,
@@ -1392,6 +1415,12 @@ async def spec(
     allow_model_selection: Annotated[
         Optional[bool], typer.Option(..., help="a description for the task runner")
     ] = True,
+    allow_thread_selection: Annotated[
+        Optional[bool],
+        typer.Option(
+            ..., help="allow selecting a thread via input path for task context"
+        ),
+    ] = False,
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -1425,6 +1454,7 @@ async def spec(
             title=title,
             description=description,
             allow_model_selection=allow_model_selection,
+            allow_thread_selection=allow_thread_selection,
             log_llm_requests=log_llm_requests,
             rule=rule,
             toolkit=toolkit,
@@ -1676,6 +1706,7 @@ async def deploy(
             title=title,
             description=description,
             allow_model_selection=allow_model_selection,
+            allow_thread_selection=allow_thread_selection,
             log_llm_requests=log_llm_requests,
             rule=rule,
             toolkit=toolkit,
