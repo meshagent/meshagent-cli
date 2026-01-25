@@ -859,16 +859,17 @@ async def run(
         Optional[str],
         typer.Option(..., help="json input for the task runner, or '-' for stdin"),
     ] = None,
-    quiet: Annotated[bool, typer.Option(..., help="only display output")] = True,
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
+    with_caller: Annotated[
+        bool,
+        typer.Option(
+            help="whether to invoke the tool with the currently logged in user as the caller"
+        ),
+    ] = os.getenv("MESHAGENT_TOKEN") is None,
 ):
-    if quiet:
-        root = logging.getLogger()
-        root.setLevel(logging.ERROR)
-
     key = await resolve_key(project_id=project_id, key=key)
     account_client = await get_client()
     try:
@@ -894,8 +895,6 @@ async def run(
 
             jwt = token.to_jwt(api_key=key)
 
-        if not quiet:
-            print("[bold green]Connecting to room...[/bold green]", flush=True)
         requirements = []
 
         for t in toolkit:
@@ -965,11 +964,33 @@ async def run(
             ) as client:
                 try:
                     input_payload = read_task_runner_input(input)
-                    result = await bot.run(
-                        room=client,
-                        arguments=json.loads(input_payload),
-                        attachment=None,
-                    )
+
+                    if with_caller:
+                        connection = await account_client.connect_room(
+                            project_id=project_id, room=room
+                        )
+                        async with RoomClient(
+                            protocol=WebSocketClientProtocol(
+                                url=websocket_room_url(
+                                    room_name=room, base_url=meshagent_base_url()
+                                ),
+                                token=connection.jwt,
+                            ),
+                        ) as user_client:
+                            result = await bot.run(
+                                room=client,
+                                arguments=json.loads(input_payload),
+                                attachment=None,
+                                caller=user_client.local_participant,
+                            )
+
+                    else:
+                        result = await bot.run(
+                            room=client,
+                            arguments=json.loads(input_payload),
+                            attachment=None,
+                        )
+
                     if isinstance(result, JsonResponse):
                         print(result.json)
                     elif isinstance(result, TextResponse):

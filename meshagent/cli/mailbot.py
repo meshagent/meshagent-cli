@@ -188,7 +188,7 @@ def build_mailbot(
 
         async def start(self, *, room: RoomClient):
             print(
-                "[bold green]Configure and send an email interact with your mailbot[/bold green]"
+                "[bold green]Mailbot started. Send it an email to interact with it.[/bold green]"
             )
             await super().start(room=room)
             if room_rules_paths is not None:
