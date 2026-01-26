@@ -44,6 +44,8 @@ from meshagent.anthropic import AnthropicOpenAIResponsesStreamAdapter
 
 from pathlib import Path
 
+from meshagent.tools.script import ScriptToolkitBuilder
+
 from meshagent.openai.tools.responses_adapter import (
     WebSearchToolkitBuilder,
     MCPToolkitBuilder,
@@ -101,6 +103,7 @@ def build_chatbot(
     apply_patch: Optional[str] = None,
     computer_use: Optional[str] = None,
     web_search: Optional[str] = None,
+    script_tool: Optional[bool] = None,
     mcp: Optional[str] = None,
     storage: Optional[str] = None,
     storage_tool_mounts: Optional[list[StorageToolMount]] = None,
@@ -443,6 +446,9 @@ def build_chatbot(
             if web_search:
                 providers.append(WebSearchToolkitBuilder())
 
+            if script_tool:
+                providers.append(ScriptToolkitBuilder())
+
             if storage:
                 providers.append(StorageToolkitBuilder(mounts=storage_tool_mounts))
 
@@ -517,6 +523,9 @@ async def join(
     ] = False,
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    script_tool: Annotated[
+        Optional[bool], typer.Option(..., help="Enable script tool calling")
     ] = False,
     mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
@@ -690,6 +699,7 @@ async def join(
             apply_patch=apply_patch,
             image_generation=image_generation,
             web_search=web_search,
+            script_tool=script_tool,
             mcp=mcp,
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
@@ -809,6 +819,9 @@ async def service(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    script_tool: Annotated[
+        Optional[bool], typer.Option(..., help="Enable script tool calling")
+    ] = False,
     mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
@@ -972,6 +985,7 @@ async def service(
             schema=require_schema + schema,
             rules_file=rules_file,
             web_search=web_search,
+            script_tool=script_tool,
             image_generation=image_generation,
             mcp=mcp,
             storage=storage,
@@ -1076,6 +1090,9 @@ async def spec(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    script_tool: Annotated[
+        Optional[bool], typer.Option(..., help="Enable script tool calling")
+    ] = False,
     mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
@@ -1239,6 +1256,7 @@ async def spec(
             schema=require_schema + schema,
             rules_file=rules_file,
             web_search=web_search,
+            script_tool=script_tool,
             image_generation=image_generation,
             mcp=mcp,
             storage=storage,
@@ -1355,6 +1373,9 @@ async def deploy(
     ] = False,
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    script_tool: Annotated[
+        Optional[bool], typer.Option(..., help="Enable script tool calling")
     ] = False,
     mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
@@ -1526,6 +1547,7 @@ async def deploy(
             schema=require_schema + schema,
             rules_file=rules_file,
             web_search=web_search,
+            script_tool=script_tool,
             image_generation=image_generation,
             mcp=mcp,
             storage=storage,
@@ -1771,6 +1793,9 @@ async def run(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    script_tool: Annotated[
+        Optional[bool], typer.Option(..., help="Enable script tool calling")
+    ] = False,
     mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
@@ -1970,6 +1995,7 @@ async def run(
                 apply_patch=apply_patch,
                 image_generation=image_generation,
                 web_search=web_search,
+                script_tool=script_tool,
                 mcp=mcp,
                 storage=storage,
                 storage_tool_mounts=storage_tool_mounts,
