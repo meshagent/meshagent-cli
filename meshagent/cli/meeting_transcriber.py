@@ -77,8 +77,6 @@ async def join(
         ) as client:
             requirements = []
 
-            requirements.append(RequiredSchema(name="transcript"))
-
             bot = MeetingTranscriber(
                 requires=requirements,
             )
