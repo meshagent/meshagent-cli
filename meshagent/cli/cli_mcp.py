@@ -3,7 +3,7 @@ from rich import print
 from typing import Annotated, Optional, List
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
 
-from meshagent.api.helpers import meshagent_base_url, websocket_room_url
+from meshagent.api.helpers import websocket_room_url
 from meshagent.api import RoomClient, WebSocketClientProtocol, RoomException
 from meshagent.cli import async_typer
 from meshagent.cli.helper import (
@@ -88,7 +88,7 @@ async def sse(
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                url=websocket_room_url(room_name=room),
                 token=jwt,
             )
         ) as client:
@@ -179,7 +179,7 @@ async def stdio(
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                url=websocket_room_url(room_name=room),
                 token=jwt,
             )
         ) as client:

@@ -71,7 +71,7 @@ async def storage_exists_command(
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                url=websocket_room_url(room_name=room),
                 token=connection.jwt,
             )
         ) as client:
@@ -358,7 +358,7 @@ async def storage_show_command(
         print("[bold green]Connecting to room...[/bold green]")
         client = RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                url=websocket_room_url(room_name=room),
                 token=connection.jwt,
             )
         )
@@ -637,7 +637,7 @@ async def storage_ls_command(
 
         client = RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                url=websocket_room_url(room_name=room),
                 token=connection.jwt,
             )
         )
