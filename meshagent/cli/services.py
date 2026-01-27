@@ -80,9 +80,8 @@ async def service_create(
         typer.Option("--file", "-f", help="File path to a service definition"),
     ],
     room: Annotated[
-        Optional[str],
-        typer.Option("--room", help="The name of a room to create the service for"),
-    ] = None,
+        Optional[str], typer.Option("--room", help="Room name")
+    ] = os.getenv("MESHAGENT_ROOM"),
 ):
     """Create a service attached to the project."""
     client = await get_client()
@@ -133,9 +132,8 @@ async def service_update(
         ),
     ] = False,
     room: Annotated[
-        Optional[str],
-        typer.Option("--room", help="The name of a room to update the service for"),
-    ] = None,
+        Optional[str], typer.Option("--room", help="Room name")
+    ] = os.getenv("MESHAGENT_ROOM"),
 ):
     """Create a service attached to the project."""
     client = await get_client()
@@ -240,9 +238,8 @@ async def service_create_template(
         ),
     ] = None,
     room: Annotated[
-        Optional[str],
-        typer.Option("--room", help="The name of a room to create the service for"),
-    ] = None,
+        Optional[str], typer.Option("--room", help="Room name")
+    ] = os.getenv("MESHAGENT_ROOM"),
 ):
     """Create a service from a ServiceTemplate spec."""
     client = await get_client()
@@ -309,9 +306,8 @@ async def service_update_template(
         ),
     ] = False,
     room: Annotated[
-        Optional[str],
-        typer.Option("--room", help="The name of a room to update the service for"),
-    ] = None,
+        Optional[str], typer.Option("--room", help="Room name")
+    ] = os.getenv("MESHAGENT_ROOM"),
 ):
     """Update a service using a ServiceTemplate spec."""
     client = await get_client()
@@ -423,11 +419,8 @@ async def service_run(
         ),
     ] = None,
     room: Annotated[
-        Optional[str],
-        typer.Option(
-            help="A room name to test the service in (must not be currently running)"
-        ),
-    ] = None,
+        Optional[str], typer.Option("--room", help="Room name")
+    ] = os.getenv("MESHAGENT_ROOM"),
     key: Annotated[
         str,
         typer.Option("--key", help="an api key to sign the token with"),
@@ -587,9 +580,8 @@ async def service_list(
     project_id: ProjectIdOption,
     o: OutputFormatOption = "table",
     room: Annotated[
-        Optional[str],
-        typer.Option("--room", help="The name of a room to list the services for"),
-    ] = None,
+        Optional[str], typer.Option("--room", help="Room name")
+    ] = os.getenv("MESHAGENT_ROOM"),
 ):
     """List all services for the project."""
     client = await get_client()
