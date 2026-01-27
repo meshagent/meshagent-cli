@@ -7,6 +7,8 @@ from typing import Annotated, Optional
 from meshagent.cli.common_options import ProjectIdOption
 from aiohttp import ClientResponseError
 import pathlib
+from urllib.parse import urlparse
+from urllib.request import urlopen
 from meshagent.cli import async_typer
 from meshagent.api.services import well_known_service_path
 from meshagent.api.specs.service import ServiceSpec, ServiceTemplateSpec
@@ -71,14 +73,67 @@ def _load_template_values(
     return template_values
 
 
+def _load_yaml_bytes(*, file: Optional[str], url: Optional[str], name: str) -> bytes:
+    if file and url:
+        raise typer.BadParameter("Provide only one of --file or --url")
+    if not file and not url:
+        raise typer.BadParameter("Provide --file or --url")
+
+    if url:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            raise typer.BadParameter("URL must start with http:// or https://")
+        try:
+            with urlopen(url) as resp:
+                return resp.read()
+        except Exception as exc:
+            raise typer.BadParameter(f"Unable to read {name} from {url}: {exc}")
+
+    try:
+        with open(str(pathlib.Path(file).expanduser().resolve()), "rb") as f:
+            return f.read()
+    except Exception as exc:
+        raise typer.BadParameter(f"Unable to read {name} from {file}: {exc}")
+
+
+def _load_yaml_text(*, file: Optional[str], url: Optional[str], name: str) -> str:
+    if file and url:
+        raise typer.BadParameter("Provide only one of --file or --url")
+    if not file and not url:
+        raise typer.BadParameter("Provide --file or --url")
+
+    if url:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            raise typer.BadParameter("URL must start with http:// or https://")
+        try:
+            with urlopen(url) as resp:
+                charset = resp.headers.get_content_charset() or "utf-8"
+                return resp.read().decode(charset)
+        except Exception as exc:
+            raise typer.BadParameter(f"Unable to read {name} from {url}: {exc}")
+
+    try:
+        with open(
+            str(pathlib.Path(file).expanduser().resolve()), "r", encoding="utf-8"
+        ) as f:
+            return f.read()
+    except Exception as exc:
+        raise typer.BadParameter(f"Unable to read {name} from {file}: {exc}")
+
+
 @app.async_command("create")
 async def service_create(
     *,
     project_id: ProjectIdOption,
     file: Annotated[
-        str,
+        Optional[str],
         typer.Option("--file", "-f", help="File path to a service definition"),
-    ],
+    ] = None,
+    url: Annotated[
+        Optional[str],
+        typer.Option("--url", help="URL to a service definition"),
+    ] = None,
     room: Annotated[
         Optional[str], typer.Option("--room", help="Room name")
     ] = os.getenv("MESHAGENT_ROOM"),
@@ -88,12 +143,12 @@ async def service_create(
     try:
         project_id = await resolve_project_id(project_id)
 
-        with open(str(pathlib.Path(file).expanduser().resolve()), "rb") as f:
-            spec = parse_yaml_raw_as(ServiceSpec, f.read())
+        spec_bytes = _load_yaml_bytes(file=file, url=url, name="service definition")
+        spec = parse_yaml_raw_as(ServiceSpec, spec_bytes)
 
-            if spec.id is not None:
-                print("[red]id cannot be set when creating a service[/red]")
-                raise typer.Exit(code=1)
+        if spec.id is not None:
+            print("[red]id cannot be set when creating a service[/red]")
+            raise typer.Exit(code=1)
 
         try:
             if room is None:
@@ -122,9 +177,13 @@ async def service_update(
     project_id: ProjectIdOption,
     id: Optional[str] = None,
     file: Annotated[
-        str,
+        Optional[str],
         typer.Option("--file", "-f", help="File path to a service definition"),
-    ],
+    ] = None,
+    url: Annotated[
+        Optional[str],
+        typer.Option("--url", help="URL to a service definition"),
+    ] = None,
     create: Annotated[
         Optional[bool],
         typer.Option(
@@ -140,10 +199,10 @@ async def service_update(
     try:
         project_id = await resolve_project_id(project_id)
 
-        with open(str(pathlib.Path(file).expanduser().resolve()), "rb") as f:
-            spec = parse_yaml_raw_as(ServiceSpec, f.read())
-            if spec.id is not None:
-                id = spec.id
+        spec_bytes = _load_yaml_bytes(file=file, url=url, name="service definition")
+        spec = parse_yaml_raw_as(ServiceSpec, spec_bytes)
+        if spec.id is not None:
+            id = spec.id
 
         try:
             if id is None:
@@ -222,9 +281,13 @@ async def service_create_template(
     *,
     project_id: ProjectIdOption,
     file: Annotated[
-        str,
+        Optional[str],
         typer.Option("--file", "-f", help="File path to a service template"),
-    ],
+    ] = None,
+    url: Annotated[
+        Optional[str],
+        typer.Option("--url", help="URL to a service template"),
+    ] = None,
     values: Annotated[
         Optional[str],
         typer.Option("--values-file", help="File path to template values"),
@@ -246,27 +309,29 @@ async def service_create_template(
     try:
         project_id = await resolve_project_id(project_id)
 
-        with open(str(pathlib.Path(file).expanduser().resolve()), "rb") as f:
-            template = f.read()
+        template_text = _load_yaml_text(file=file, url=url, name="service template")
+        template_spec = parse_yaml_raw_as(ServiceTemplateSpec, template_text)
 
         template_values = _load_template_values(values, value)
 
         try:
             if room is None:
                 service = await client.create_service_from_template(
-                    project_id=project_id, template=template, values=template_values
+                    project_id=project_id,
+                    template=template_text,
+                    values=template_values,
                 )
             else:
                 service = await client.create_room_service_from_template(
                     project_id=project_id,
-                    template=template,
+                    template=template_text,
                     values=template_values,
                     room_name=room,
                 )
         except ClientResponseError as exc:
             if exc.status == 409:
                 print(
-                    f"[red]Service name already in use: {template.metadata.name}[/red]"
+                    f"[red]Service name already in use: {template_spec.metadata.name}[/red]"
                 )
                 raise typer.Exit(code=1)
             raise
@@ -284,9 +349,13 @@ async def service_update_template(
     project_id: ProjectIdOption,
     id: Optional[str] = None,
     file: Annotated[
-        str,
+        Optional[str],
         typer.Option("--file", "-f", help="File path to a service template"),
-    ],
+    ] = None,
+    url: Annotated[
+        Optional[str],
+        typer.Option("--url", help="URL to a service template"),
+    ] = None,
     values: Annotated[
         Optional[str],
         typer.Option("--values-file", help="File path to template values"),
@@ -314,8 +383,8 @@ async def service_update_template(
     try:
         project_id = await resolve_project_id(project_id)
 
-        with open(str(pathlib.Path(file).expanduser().resolve()), "rb") as f:
-            template = f.read()
+        template_text = _load_yaml_text(file=file, url=url, name="service template")
+        template_spec = parse_yaml_raw_as(ServiceTemplateSpec, template_text)
 
         template_values = _load_template_values(values, value)
 
@@ -329,7 +398,7 @@ async def service_update_template(
                     )
 
                 for s in services:
-                    if s.metadata.name == template.metadata.name:
+                    if s.metadata.name == template_spec.metadata.name:
                         id = s.id
 
             if id is None and not create:
@@ -340,13 +409,13 @@ async def service_update_template(
                 if room is None:
                     service = await client.create_service_from_template(
                         project_id=project_id,
-                        template=template,
+                        template=template_text,
                         values=template_values,
                     )
                 else:
                     service = await client.create_room_service_from_template(
                         project_id=project_id,
-                        template=template,
+                        template=template_text,
                         values=template_values,
                         room_name=room,
                     )
@@ -356,14 +425,14 @@ async def service_update_template(
                     service = await client.update_service_from_template(
                         project_id=project_id,
                         service_id=id,
-                        template=template,
+                        template=template_text,
                         values=template_values,
                     )
                 else:
                     service = await client.update_room_service_from_template(
                         project_id=project_id,
                         service_id=id,
-                        template=template,
+                        template=template_text,
                         values=template_values,
                         room_name=room,
                     )
@@ -373,7 +442,7 @@ async def service_update_template(
         except ClientResponseError as exc:
             if exc.status == 409:
                 print(
-                    f"[red]Service name already in use: {template.metadata.name}[/red]"
+                    f"[red]Service name already in use: {template_spec.metadata.name}[/red]"
                 )
                 raise typer.Exit(code=1)
             raise
