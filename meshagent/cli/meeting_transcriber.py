@@ -13,7 +13,6 @@ from meshagent.cli.helper import (
     resolve_key,
 )
 import os
-from meshagent.api import RequiredSchema
 from meshagent.api.services import ServiceHost
 
 app = async_typer.AsyncTyper(help="Join a meeting transcriber to a room")
@@ -121,8 +120,6 @@ async def service(
                 )
 
     requirements = []
-
-    requirements.append(RequiredSchema(name="transcript"))
 
     service = ServiceHost(host=host, port=port)
 
