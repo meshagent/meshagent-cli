@@ -39,6 +39,7 @@ from meshagent.tools.storage import StorageToolkit
 from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
 from meshagent.tools.datetime import DatetimeToolkit
 from meshagent.tools.uuid import UUIDToolkit
+from meshagent.tools.script import get_script_tools
 from meshagent.openai import OpenAIResponsesAdapter
 from meshagent.anthropic import AnthropicOpenAIResponsesStreamAdapter
 
@@ -98,6 +99,7 @@ def build_worker(
     shell: Optional[str] = None,
     apply_patch: Optional[str] = None,
     web_search: Optional[str] = None,
+    discover_script_tools: Optional[bool] = None,
     mcp: Optional[str] = None,
     storage: Optional[str] = None,
     storage_tool_mounts: Optional[list[StorageToolMount]] = None,
@@ -284,6 +286,9 @@ def build_worker(
 
             thread_toolkit = Toolkit(name="thread_toolkit", tools=[])
 
+            if discover_script_tools:
+                thread_toolkit.tools.extend(await get_script_tools(self.room))
+
             if require_local_shell:
                 thread_toolkit.tools.append(LocalShellTool())
 
@@ -461,6 +466,10 @@ async def join(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    discover_script_tools: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Automatically add script tools from the room"),
+    ] = False,
     mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
@@ -601,6 +610,7 @@ async def join(
             apply_patch=apply_patch,
             image_generation=image_generation,
             web_search=web_search,
+            discover_script_tools=discover_script_tools,
             mcp=mcp,
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
@@ -705,6 +715,10 @@ async def service(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    discover_script_tools: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Automatically add script tools from the room"),
+    ] = False,
     mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
@@ -868,6 +882,7 @@ async def service(
             apply_patch=apply_patch,
             image_generation=image_generation,
             web_search=web_search,
+            discover_script_tools=discover_script_tools,
             mcp=mcp,
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
@@ -960,6 +975,10 @@ async def spec(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    discover_script_tools: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Automatically add script tools from the room"),
+    ] = False,
     mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
@@ -1123,6 +1142,7 @@ async def spec(
             apply_patch=apply_patch,
             image_generation=image_generation,
             web_search=web_search,
+            discover_script_tools=discover_script_tools,
             mcp=mcp,
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
@@ -1227,6 +1247,10 @@ async def deploy(
     ] = False,
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    discover_script_tools: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Automatically add script tools from the room"),
     ] = False,
     mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
@@ -1398,6 +1422,7 @@ async def deploy(
             apply_patch=apply_patch,
             image_generation=image_generation,
             web_search=web_search,
+            discover_script_tools=discover_script_tools,
             mcp=mcp,
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,

@@ -328,6 +328,8 @@ async def join(
         raise typer.Exit(-1)
 
     for c in command.split(";"):
+        print(c, flush=True)
+
         execute_via_root(cli_join, c + f" --room={room}", prog_name="meshagent")
 
     from meshagent.cli.host import agents

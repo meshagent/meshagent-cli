@@ -68,6 +68,7 @@ from meshagent.api.messaging import JsonResponse, TextResponse
 
 from meshagent.cli.host import get_service, run_services, get_deferred, service_specs
 from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
+from meshagent.tools.script import get_script_tools
 from meshagent.agents.adapter import MessageStreamLLMAdapter
 from meshagent.agents.context import TaskContext
 
@@ -116,6 +117,7 @@ def build_task_runner(
     shell: Optional[str] = None,
     apply_patch: Optional[str] = None,
     web_search: Optional[str] = None,
+    discover_script_tools: Optional[bool] = None,
     mcp: Optional[str] = None,
     storage: Optional[str] = None,
     storage_tool_mounts: Optional[list[StorageToolMount]] = None,
@@ -341,6 +343,9 @@ def build_task_runner(
                     WebSearchTool(config=WebSearchConfig(name="web_search"))
                 )
 
+            if discover_script_tools:
+                providers.extend(await get_script_tools(self.room))
+
             if require_storage:
                 providers.extend(StorageToolkit(mounts=storage_tool_mounts).tools)
 
@@ -479,6 +484,10 @@ async def join(
     ] = False,
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    discover_script_tools: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Automatically add script tools from the room"),
     ] = False,
     mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
@@ -656,6 +665,7 @@ async def join(
             rules_file=rules_file,
             image_generation=image_generation,
             web_search=web_search,
+            discover_script_tools=discover_script_tools,
             mcp=mcp,
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
@@ -753,6 +763,10 @@ async def run(
     ] = False,
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    discover_script_tools: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Automatically add script tools from the room"),
     ] = False,
     mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
@@ -939,6 +953,7 @@ async def run(
             rules_file=rules_file,
             image_generation=image_generation,
             web_search=web_search,
+            discover_script_tools=discover_script_tools,
             mcp=mcp,
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
@@ -1060,6 +1075,10 @@ async def service(
     ] = False,
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    discover_script_tools: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Automatically add script tools from the room"),
     ] = False,
     mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
@@ -1300,6 +1319,10 @@ async def spec(
     ] = False,
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    discover_script_tools: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Automatically add script tools from the room"),
     ] = False,
     mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
@@ -1551,6 +1574,10 @@ async def deploy(
     ] = False,
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    discover_script_tools: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Automatically add script tools from the room"),
     ] = False,
     mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
