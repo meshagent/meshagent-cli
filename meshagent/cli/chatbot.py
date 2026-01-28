@@ -1531,7 +1531,7 @@ async def deploy(
     room: Annotated[
         Optional[str],
         typer.Option("--room", help="The name of a room to create the service for"),
-    ] = None,
+    ] = os.getenv("MESHAGENT_ROOM"),
 ):
     project_id = await resolve_project_id(project_id=project_id)
 

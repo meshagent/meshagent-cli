@@ -93,7 +93,7 @@ async def mailbox_update(
             "-r",
             help="Room name to route inbound mail into",
         ),
-    ] = None,
+    ] = os.getenv("MESHAGENT_ROOM"),
     queue: Annotated[
         Optional[str],
         typer.Option(
