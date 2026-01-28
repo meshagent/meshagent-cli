@@ -98,7 +98,7 @@ async def invoke_tool(
             # The response is presumably a dictionary or similar
             print(response.to_json())
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)
     finally:
         await account_client.close()
 

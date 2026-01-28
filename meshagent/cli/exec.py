@@ -391,7 +391,7 @@ def register(app: typer.Typer):
                         restore(sys.stdin, old_tty_settings)
 
         except Exception as e:
-            print(f"[red]{e}[/red]")
+            print(e)
             logging.error("failed", exc_info=e)
             raise typer.Exit(1)
         finally:

@@ -1,3 +1,4 @@
+from pydantic import ValidationError
 import json as _json
 from typing import Annotated, Optional, List, Any
 from urllib.parse import urlparse
@@ -14,7 +15,7 @@ from meshagent.cli import async_typer
 from meshagent.cli.helper import resolve_project_id, resolve_room, get_client
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.api import RoomClient, WebSocketClientProtocol
-from meshagent.api.room_server_client import DataType
+from meshagent.api.room_server_client import _data_type_adapter
 from meshagent.api import RoomException  # or wherever you defined it
 
 app = async_typer.AsyncTyper(help="Manage database tables in a room")
@@ -109,7 +110,7 @@ async def list_tables(
                     print(t)
 
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)
         raise typer.Exit(1)
     finally:
         await account_client.close()
@@ -156,7 +157,7 @@ async def inspect(
                     print(f"  [cyan]{k}[/cyan]: {v.to_json()}")
 
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)
         raise typer.Exit(1)
     finally:
         await account_client.close()
@@ -198,7 +199,7 @@ async def install_requirements(
                 await install_required_table(room=client, table=rt)
 
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)
         raise typer.Exit(1)
     finally:
         await account_client.close()
@@ -268,7 +269,8 @@ async def create_table(
             schema = None
             if schema_obj is not None:
                 schema = {
-                    k: DataType.from_json(v) for k, v in schema_obj.items()
+                    k: _data_type_adapter.validate_python(v)
+                    for k, v in schema_obj.items()
                 }  # hacky but local import-safe
 
             if schema is not None:
@@ -289,8 +291,8 @@ async def create_table(
 
             print(f"[bold green]Created table:[/bold green] {table}")
 
-    except RoomException as e:
-        print(f"[red]{e}[/red]")
+    except (RoomException, ValidationError) as e:
+        print(e)
         raise typer.Exit(1)
     finally:
         await account_client.close()
@@ -329,7 +331,7 @@ async def drop_table(
             print(f"[bold green]Dropped table:[/bold green] {table}")
 
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)
         raise typer.Exit(1)
     finally:
         await account_client.close()
@@ -375,7 +377,7 @@ async def add_columns(
             new_cols = {}
             for k, v in cols_obj.items():
                 if isinstance(v, dict) and "type" in v:
-                    new_cols[k] = DataType.from_json(v)
+                    new_cols[k] = _data_type_adapter.validate_python(v)
                 else:
                     new_cols[k] = v
 
@@ -384,8 +386,8 @@ async def add_columns(
             )
             print(f"[bold green]Added columns to[/bold green] {table}")
 
-    except (RoomException, typer.BadParameter) as e:
-        print(f"[red]{e}[/red]")
+    except (RoomException, typer.BadParameter, ValidationError) as e:
+        print(e)
         raise typer.Exit(1)
     finally:
         await account_client.close()
@@ -425,7 +427,7 @@ async def drop_columns(
             print(f"[bold green]Dropped columns from[/bold green] {table}")
 
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)
         raise typer.Exit(1)
     finally:
         await account_client.close()
@@ -477,7 +479,7 @@ async def insert(
             )
 
     except (RoomException, typer.BadParameter) as e:
-        print(f"[red]{e}[/red]")
+        print(e)
         raise typer.Exit(1)
     finally:
         await account_client.close()
@@ -529,7 +531,7 @@ async def merge(
             )
 
     except (RoomException, typer.BadParameter) as e:
-        print(f"[red]{e}[/red]")
+        print(e)
         raise typer.Exit(1)
     finally:
         await account_client.close()
@@ -585,7 +587,7 @@ async def update(
             print(f"[bold green]Updated[/bold green] {table} where {where}")
 
     except (RoomException, typer.BadParameter) as e:
-        print(f"[red]{e}[/red]")
+        print(e)
         raise typer.Exit(1)
     finally:
         await account_client.close()
@@ -622,7 +624,7 @@ async def delete(
             print(f"[bold green]Deleted[/bold green] from {table} where {where}")
 
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)
         raise typer.Exit(1)
     finally:
         await account_client.close()
@@ -698,7 +700,7 @@ async def search(
             print(_json.dumps(results, indent=2 if pretty else None))
 
     except (RoomException, typer.BadParameter) as e:
-        print(f"[red]{e}[/red]")
+        print(e)
         raise typer.Exit(1)
     finally:
         await account_client.close()
@@ -732,7 +734,7 @@ async def optimize(
             print(f"[bold green]Optimized[/bold green] {table}")
 
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)
         raise typer.Exit(1)
     finally:
         await account_client.close()
@@ -772,7 +774,7 @@ async def list_versions(
             print(_json.dumps(out, indent=2 if pretty else None))
 
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)
         raise typer.Exit(1)
     finally:
         await account_client.close()
@@ -809,7 +811,7 @@ async def checkout(
             print(f"[bold green]Checked out[/bold green] {table} @ version {version}")
 
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)
         raise typer.Exit(1)
     finally:
         await account_client.close()
@@ -846,7 +848,7 @@ async def restore(
             print(f"[bold green]Restored[/bold green] {table} to version {version}")
 
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)
         raise typer.Exit(1)
     finally:
         await account_client.close()
@@ -886,7 +888,7 @@ async def list_indexes(
             print(_json.dumps(out, indent=2 if pretty else None))
 
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)
         raise typer.Exit(1)
     finally:
         await account_client.close()
@@ -954,7 +956,7 @@ async def create_index(
             print(f"[bold green]Created[/bold green] {kind} index on {table}.{column}")
 
     except (RoomException, typer.BadParameter) as e:
-        print(f"[red]{e}[/red]")
+        print(e)
         raise typer.Exit(1)
     finally:
         await account_client.close()
@@ -991,7 +993,7 @@ async def drop_index(
             print(f"[bold green]Dropped index[/bold green] {name} on {table}")
 
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)
         raise typer.Exit(1)
     finally:
         await account_client.close()

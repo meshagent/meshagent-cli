@@ -118,7 +118,7 @@ async def sse(
                         await remote_toolkit.stop()
 
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)
     finally:
         await account_client.close()
 
@@ -219,7 +219,7 @@ async def stdio(
                         await remote_toolkit.stop()
 
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)
     finally:
         await account_client.close()
 
@@ -405,4 +405,4 @@ async def stdio_service(
                 await service_host.run()
 
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)

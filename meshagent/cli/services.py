@@ -618,7 +618,7 @@ async def service_run(
             raise
 
         except Exception as e:
-            print(f"[red]{e}[/red]")
+            print(e)
             raise typer.Exit(code=1)
 
     finally:

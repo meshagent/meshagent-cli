@@ -52,7 +52,7 @@ async def send(
             await client.queues.send(name=queue, message=message)
 
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)
     finally:
         await account_client.close()
 
@@ -85,7 +85,7 @@ async def receive(
                 print(response)
 
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)
         raise typer.Exit(1)
     finally:
         await account_client.close()
