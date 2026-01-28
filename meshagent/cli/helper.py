@@ -59,13 +59,13 @@ async def get_active_project():
 
 
 async def set_active_project(project_id: str | None):
-    settings = _load_settings() or {}
+    settings = _load_settings() or Settings()
     settings.active_project = project_id
     _save_settings(settings)
 
 
 async def set_active_api_key(project_id: str, key: str):
-    settings = _load_settings() or {}
+    settings = _load_settings() or Settings()
     settings.active_api_keys[project_id] = key
     _save_settings(settings)
 
