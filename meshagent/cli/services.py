@@ -630,14 +630,22 @@ async def service_show(
     *,
     project_id: ProjectIdOption,
     service_id: Annotated[str, typer.Argument(help="ID of the service to show")],
+    room: Annotated[
+        Optional[str], typer.Option("--room", help="Room name")
+    ] = os.getenv("MESHAGENT_ROOM"),
 ):
     """Show a services for the project."""
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
-        service = await client.get_service(
-            project_id=project_id, service_id=service_id
-        )  # → List[Service]
+        if room is not None:
+            service = await client.get_room_service(
+                project_id=project_id, service_id=service_id, room_name=room
+            )  # → List[Service]
+        else:
+            service = await client.get_service(
+                project_id=project_id, service_id=service_id
+            )  # → List[Service]
         print(service.model_dump(mode="json"))
     finally:
         await client.close()
@@ -691,12 +699,20 @@ async def service_delete(
     *,
     project_id: ProjectIdOption,
     service_id: Annotated[str, typer.Argument(help="ID of the service to delete")],
+    room: Annotated[
+        Optional[str], typer.Option("--room", help="Room name")
+    ] = os.getenv("MESHAGENT_ROOM"),
 ):
     """Delete a service."""
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
-        await client.delete_service(project_id=project_id, service_id=service_id)
+        if room is not None:
+            await client.delete_room_service(
+                project_id=project_id, service_id=service_id, room_name=room
+            )
+        else:
+            await client.delete_service(project_id=project_id, service_id=service_id)
         print(f"[green]Service {service_id} deleted.[/]")
     finally:
         await client.close()
