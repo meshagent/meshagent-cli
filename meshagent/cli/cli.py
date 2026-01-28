@@ -40,12 +40,7 @@ import os
 import sys
 from pathlib import Path
 
-import certifi
-
-certifi.where()
-
 otel_config(service_name="meshagent-cli")
-
 
 # Turn down OpenAI logs, they are a bit noisy
 logging.getLogger("openai").setLevel(logging.ERROR)

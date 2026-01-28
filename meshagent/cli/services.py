@@ -558,13 +558,13 @@ async def service_run(
             run_tasks.append(asyncio.create_task(run_service(port)))
 
             async def get_spec(port: int, attempt=0) -> ServiceSpec:
-                import aiohttp
+                from meshagent.api.http import new_client_session
 
                 max_attempts = 10
 
                 url = f"http://localhost:{port}{well_known_service_path}"
 
-                async with aiohttp.ClientSession() as session:
+                async with new_client_session() as session:
                     try:
                         res = await session.get(url=url)
                         res.raise_for_status()

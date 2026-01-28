@@ -4,7 +4,6 @@ from rich import print
 from typing import Annotated, Optional
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
 import json
-import aiohttp
 from meshagent.api import (
     RoomClient,
     ParticipantToken,
@@ -12,6 +11,7 @@ from meshagent.api import (
     ParticipantGrant,
     ApiScope,
 )
+from meshagent.api.http import new_client_session
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.api.services import send_webhook
 from meshagent.cli import async_typer
@@ -181,7 +181,7 @@ async def _make_call(
             local = is_local_url(url)
 
         if local:
-            async with aiohttp.ClientSession() as session:
+            async with new_client_session() as session:
                 event = "room.call"
                 data = {
                     "room_url": websocket_room_url(room_name=room),
