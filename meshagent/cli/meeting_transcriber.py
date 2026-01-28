@@ -13,7 +13,6 @@ from meshagent.cli.helper import (
     resolve_key,
 )
 import os
-from meshagent.api import RequiredSchema
 from meshagent.api.services import ServiceHost
 
 app = async_typer.AsyncTyper(help="Join a meeting transcriber to a room")
@@ -75,13 +74,8 @@ async def join(
                 token=jwt,
             )
         ) as client:
-            requirements = []
-
-            requirements.append(RequiredSchema(name="transcript"))
-
-            bot = MeetingTranscriber(
-                requires=requirements,
-            )
+            # Transcript schema is provided directly on the sync open call.
+            bot = MeetingTranscriber()
 
             await bot.start(room=client)
 
@@ -122,17 +116,11 @@ async def service(
                     "meshagent.livekit module not found, voicebots are not available"
                 )
 
-    requirements = []
-
-    requirements.append(RequiredSchema(name="transcript"))
-
     service = ServiceHost(host=host, port=port)
 
     @service.path(path=path)
     class CustomMeetingTranscriber(MeetingTranscriber):
         def __init__(self):
-            super().__init__(
-                requires=requirements,
-            )
+            super().__init__()
 
     await service.run()
