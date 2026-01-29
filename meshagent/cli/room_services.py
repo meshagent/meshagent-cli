@@ -39,7 +39,7 @@ async def room_services_list_command(
         ) as client:
             print("[bold green]Fetching services...[/bold green]")
             services_client = ServicesClient(room=client)
-            services: list[ServiceSpec] = await services_client.list_services()
+            services: list[ServiceSpec] = await services_client.list()
 
             if output == "json":
                 print({"services": [svc.model_dump(mode="json") for svc in services]})
