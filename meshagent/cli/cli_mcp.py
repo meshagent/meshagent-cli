@@ -21,7 +21,7 @@ import os
 
 import shlex
 
-from meshagent.api import ParticipantToken, ApiScope
+from meshagent.api import ParticipantToken
 
 
 def _kv_to_dict(pairs: List[str]) -> dict[str, str]:
@@ -74,16 +74,16 @@ async def sse(
         project_id = await resolve_project_id(project_id=project_id)
         room = resolve_room(room)
 
-        token = ParticipantToken(
-            name=name,
-        )
+        jwt = os.getenv("MESHAGENT_TOKEN")
+        if jwt is None:
+            token = ParticipantToken(
+                name=toolkit_name or "mcp",
+            )
 
-        token.add_api_grant(ApiScope.agent_default())
+            token.add_role_grant(role=role)
+            token.add_room_grant(room)
 
-        token.add_role_grant(role=role)
-        token.add_room_grant(room)
-
-        jwt = token.to_jwt(api_key=key)
+            jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
@@ -165,16 +165,16 @@ async def stdio(
         project_id = await resolve_project_id(project_id=project_id)
         room = resolve_room(room)
 
-        token = ParticipantToken(
-            name=name,
-        )
+        jwt = os.getenv("MESHAGENT_TOKEN")
+        if jwt is None:
+            token = ParticipantToken(
+                name=toolkit_name or "mcp",
+            )
 
-        token.add_api_grant(ApiScope.agent_default())
+            token.add_role_grant(role=role)
+            token.add_room_grant(room)
 
-        token.add_role_grant(role=role)
-        token.add_room_grant(room)
-
-        jwt = token.to_jwt(api_key=key)
+            jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
