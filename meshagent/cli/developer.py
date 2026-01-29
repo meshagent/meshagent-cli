@@ -12,7 +12,7 @@ from meshagent.api import (
     RoomClient,
     WebSocketClientProtocol,
 )
-from meshagent.api.helpers import meshagent_base_url, websocket_room_url
+from meshagent.api.helpers import websocket_room_url
 
 app = async_typer.AsyncTyper(help="Developer utilities for a room")
 
@@ -38,7 +38,7 @@ async def watch_logs(
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                url=websocket_room_url(room_name=room),
                 token=connection.jwt,
             )
         ) as client:

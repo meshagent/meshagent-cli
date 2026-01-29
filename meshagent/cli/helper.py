@@ -59,13 +59,13 @@ async def get_active_project():
 
 
 async def set_active_project(project_id: str | None):
-    settings = _load_settings()
+    settings = _load_settings() or Settings()
     settings.active_project = project_id
     _save_settings(settings)
 
 
 async def set_active_api_key(project_id: str, key: str):
-    settings = _load_settings()
+    settings = _load_settings() or Settings()
     settings.active_api_keys[project_id] = key
     _save_settings(settings)
 
@@ -103,7 +103,7 @@ class CustomMeshagentClient(Meshagent):
 
 
 async def get_client():
-    key = os.getenv("MESHAGENT_API_KEY")
+    key = os.getenv("MESHAGENT_API_KEY") or os.getenv("MESHAGENT_TOKEN")
     if key is not None or os.getenv("MESHAGENT_SESSION_ID") is not None:
         return CustomMeshagentClient(
             base_url=meshagent_base_url(),

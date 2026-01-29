@@ -10,6 +10,7 @@ import typer
 from rich import print
 import aiohttp
 import struct
+from meshagent.api.http import new_client_session
 import signal
 import shutil
 import json
@@ -157,7 +158,7 @@ def register(app: typer.Typer):
                 )
             ):
                 try:
-                    async with aiohttp.ClientSession() as session:
+                    async with new_client_session() as session:
                         async with session.ws_connect(ws_url) as websocket:
                             send_queue = asyncio.Queue[bytes]()
 
@@ -390,7 +391,7 @@ def register(app: typer.Typer):
                         restore(sys.stdin, old_tty_settings)
 
         except Exception as e:
-            print(f"[red]{e}[/red]")
+            print(e)
             logging.error("failed", exc_info=e)
             raise typer.Exit(1)
         finally:

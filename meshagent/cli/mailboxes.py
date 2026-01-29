@@ -10,7 +10,14 @@ from rich import print
 
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import ProjectIdOption, OutputFormatOption
-from meshagent.cli.helper import get_client, print_json_table, resolve_project_id
+from meshagent.cli.helper import (
+    get_client,
+    print_json_table,
+    resolve_project_id,
+    resolve_room,
+)
+
+import os
 
 app = async_typer.AsyncTyper(help="Manage mailboxes for your project")
 
@@ -28,13 +35,8 @@ async def mailbox_create(
         ),
     ],
     room: Annotated[
-        str,
-        typer.Option(
-            "--room",
-            "-r",
-            help="Room name to route inbound mail into",
-        ),
-    ],
+        Optional[str], typer.Option("--room", help="Room name")
+    ] = os.getenv("MESHAGENT_ROOM"),
     queue: Annotated[
         str,
         typer.Option(
@@ -55,7 +57,7 @@ async def mailbox_create(
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
-
+        room = resolve_room(room)
         try:
             await client.create_mailbox(
                 project_id=project_id,
@@ -91,7 +93,7 @@ async def mailbox_update(
             "-r",
             help="Room name to route inbound mail into",
         ),
-    ] = None,
+    ] = os.getenv("MESHAGENT_ROOM"),
     queue: Annotated[
         Optional[str],
         typer.Option(
@@ -112,7 +114,7 @@ async def mailbox_update(
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
-
+        room = resolve_room(room)
         # Keep parity with other CLIs: allow partial update by reading existing first
         if room is None or queue is None:
             try:
@@ -170,13 +172,23 @@ async def mailbox_show(
 async def mailbox_list(
     *,
     project_id: ProjectIdOption,
+    room: Annotated[
+        Optional[str], typer.Option("--room", help="Room name")
+    ] = os.getenv("MESHAGENT_ROOM"),
     o: OutputFormatOption = "table",
 ):
     """List mailboxes for the project."""
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
-        mailboxes = await client.list_mailboxes(project_id=project_id)
+        room = resolve_room(room)
+
+        if room is not None:
+            mailboxes = await client.list_room_mailboxes(
+                project_id=project_id, room_name=room
+            )
+        else:
+            mailboxes = await client.list_mailboxes(project_id=project_id)
 
         if o == "json":
             # Keep your existing conventions: wrap in an object.

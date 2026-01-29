@@ -3,7 +3,7 @@ from rich import print
 from typing import Annotated, Optional, List
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
 
-from meshagent.api.helpers import meshagent_base_url, websocket_room_url
+from meshagent.api.helpers import websocket_room_url
 from meshagent.api import RoomClient, WebSocketClientProtocol, RoomException
 from meshagent.cli import async_typer
 from meshagent.cli.helper import (
@@ -21,7 +21,7 @@ import os
 
 import shlex
 
-from meshagent.api import ParticipantToken, ApiScope
+from meshagent.api import ParticipantToken
 
 
 def _kv_to_dict(pairs: List[str]) -> dict[str, str]:
@@ -74,21 +74,21 @@ async def sse(
         project_id = await resolve_project_id(project_id=project_id)
         room = resolve_room(room)
 
-        token = ParticipantToken(
-            name=name,
-        )
+        jwt = os.getenv("MESHAGENT_TOKEN")
+        if jwt is None:
+            token = ParticipantToken(
+                name=toolkit_name or "mcp",
+            )
 
-        token.add_api_grant(ApiScope.agent_default())
+            token.add_role_grant(role=role)
+            token.add_room_grant(room)
 
-        token.add_role_grant(role=role)
-        token.add_room_grant(room)
-
-        jwt = token.to_jwt(api_key=key)
+            jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                url=websocket_room_url(room_name=room),
                 token=jwt,
             )
         ) as client:
@@ -118,7 +118,7 @@ async def sse(
                         await remote_toolkit.stop()
 
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)
     finally:
         await account_client.close()
 
@@ -165,21 +165,21 @@ async def stdio(
         project_id = await resolve_project_id(project_id=project_id)
         room = resolve_room(room)
 
-        token = ParticipantToken(
-            name=name,
-        )
+        jwt = os.getenv("MESHAGENT_TOKEN")
+        if jwt is None:
+            token = ParticipantToken(
+                name=toolkit_name or "mcp",
+            )
 
-        token.add_api_grant(ApiScope.agent_default())
+            token.add_role_grant(role=role)
+            token.add_room_grant(room)
 
-        token.add_role_grant(role=role)
-        token.add_room_grant(room)
-
-        jwt = token.to_jwt(api_key=key)
+            jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                url=websocket_room_url(room_name=room),
                 token=jwt,
             )
         ) as client:
@@ -219,7 +219,7 @@ async def stdio(
                         await remote_toolkit.stop()
 
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)
     finally:
         await account_client.close()
 
@@ -405,4 +405,4 @@ async def stdio_service(
                 await service_host.run()
 
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)

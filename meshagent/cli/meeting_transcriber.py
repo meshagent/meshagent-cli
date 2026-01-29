@@ -70,12 +70,15 @@ async def join(
         print("[bold green]Connecting to room...[/bold green]", flush=True)
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                url=websocket_room_url(room_name=room),
                 token=jwt,
             )
         ) as client:
-            # Transcript schema is provided directly on the sync open call.
-            bot = MeetingTranscriber()
+            requirements = []
+
+            bot = MeetingTranscriber(
+                requires=requirements,
+            )
 
             await bot.start(room=client)
 
@@ -115,6 +118,8 @@ async def service(
                 raise RoomException(
                     "meshagent.livekit module not found, voicebots are not available"
                 )
+
+    requirements = []
 
     service = ServiceHost(host=host, port=port)
 

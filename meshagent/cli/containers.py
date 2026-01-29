@@ -28,7 +28,7 @@ from meshagent.api import (
     RoomClient,
     WebSocketClientProtocol,
 )
-from meshagent.api.helpers import meshagent_base_url, websocket_room_url
+from meshagent.api.helpers import websocket_room_url
 from meshagent.api.room_server_client import (
     DockerSecret,
 )
@@ -356,7 +356,7 @@ async def _with_client(
         connection = await account_client.connect_room(project_id=project_id, room=room)
 
         proto = WebSocketClientProtocol(
-            url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+            url=websocket_room_url(room_name=room),
             token=connection.jwt,
         )
         client_cm = RoomClient(protocol=proto)

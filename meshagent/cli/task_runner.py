@@ -1703,7 +1703,7 @@ async def deploy(
     room: Annotated[
         Optional[str],
         typer.Option("--room", help="The name of a room to create the service for"),
-    ] = None,
+    ] = os.getenv("MESHAGENT_ROOM"),
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),

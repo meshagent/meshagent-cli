@@ -42,7 +42,6 @@ from pathlib import Path
 
 otel_config(service_name="meshagent-cli")
 
-
 # Turn down OpenAI logs, they are a bit noisy
 logging.getLogger("openai").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.ERROR)

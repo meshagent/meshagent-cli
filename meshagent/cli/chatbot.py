@@ -1531,7 +1531,7 @@ async def deploy(
     room: Annotated[
         Optional[str],
         typer.Option("--room", help="The name of a room to create the service for"),
-    ] = None,
+    ] = os.getenv("MESHAGENT_ROOM"),
 ):
     project_id = await resolve_project_id(project_id=project_id)
 
@@ -1696,7 +1696,7 @@ async def chat_with(
         connection = await account_client.connect_room(project_id=project_id, room=room)
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                url=websocket_room_url(room_name=room),
                 token=connection.jwt,
             ),
         ) as user_client:
@@ -2006,7 +2006,7 @@ async def run(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                url=websocket_room_url(room_name=room),
                 token=jwt,
             )
         ) as client:

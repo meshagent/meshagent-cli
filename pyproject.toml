@@ -17,6 +17,7 @@ dependencies = [
   "pydantic-yaml~=1.5",
   "pathspec~=0.12.1",
   "rich~=14.3.0",
+  "prompt-toolkit~=3.0.52",
 ]
 
 dynamic = ["version", "readme"]
@@ -24,22 +25,22 @@ dynamic = ["version", "readme"]
 [project.optional-dependencies]
 
 all = [
-  "meshagent-agents[all]~=0.24.4",
-  "meshagent-api[all]~=0.24.4",
-  "meshagent-computers~=0.24.4",
-  "meshagent-openai~=0.24.4",
-  "meshagent-anthropic~=0.24.4",
-  "meshagent-mcp~=0.24.4",
-  "meshagent-tools~=0.24.4",
+  "meshagent-agents[all]~=0.24.5",
+  "meshagent-api[all]~=0.24.5",
+  "meshagent-computers~=0.24.5",
+  "meshagent-openai~=0.24.5",
+  "meshagent-anthropic~=0.24.5",
+  "meshagent-mcp~=0.24.5",
+  "meshagent-tools~=0.24.5",
   "supabase-auth~=2.22.3",
   "prompt-toolkit~=3.0.52"
 ]
 
 mcp-service = [
-    "meshagent-agents[all]~=0.24.4",
-    "meshagent-api~=0.24.4",
-    "meshagent-mcp~=0.24.4",
-    "meshagent-tools~=0.24.4",
+    "meshagent-agents[all]~=0.24.5",
+    "meshagent-api~=0.24.5",
+    "meshagent-mcp~=0.24.5",
+    "meshagent-tools~=0.24.5",
     "supabase-auth~=2.22.3"
 ]
 
