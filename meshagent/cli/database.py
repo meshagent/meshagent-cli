@@ -96,9 +96,7 @@ async def list_tables(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -137,9 +135,7 @@ async def inspect(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -187,9 +183,7 @@ async def install_requirements(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -259,9 +253,7 @@ async def create_table(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -319,9 +311,7 @@ async def drop_table(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -367,9 +357,7 @@ async def add_columns(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -415,9 +403,7 @@ async def drop_columns(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -465,9 +451,7 @@ async def insert(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -517,9 +501,7 @@ async def merge(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -571,9 +553,7 @@ async def update(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -612,9 +592,7 @@ async def delete(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -681,9 +659,7 @@ async def search(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -724,9 +700,7 @@ async def optimize(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -761,9 +735,7 @@ async def list_versions(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -799,9 +771,7 @@ async def checkout(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -836,9 +806,7 @@ async def restore(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -875,9 +843,7 @@ async def list_indexes(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -923,9 +889,7 @@ async def create_index(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -981,9 +945,7 @@ async def drop_index(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
