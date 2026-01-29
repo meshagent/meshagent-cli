@@ -53,6 +53,11 @@ def _run_coroutine_sync(
 
 
 class AsyncTyper(Typer):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        if "no_args_is_help" not in kwargs:
+            kwargs["no_args_is_help"] = True
+        super().__init__(*args, **kwargs)
+
     @staticmethod
     def maybe_run_async(decorator: Callable[..., Any], func: Callable[..., Any]) -> Any:
         if inspect.iscoroutinefunction(func):
