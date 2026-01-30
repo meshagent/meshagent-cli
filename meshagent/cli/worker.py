@@ -31,7 +31,7 @@ from meshagent.api import (
     RoomException,
 )
 
-from meshagent.api.helpers import meshagent_base_url, websocket_room_url
+from meshagent.api.helpers import websocket_room_url
 
 from meshagent.agents.config import RulesConfig
 from meshagent.tools import Toolkit
@@ -646,9 +646,7 @@ async def join(
         else:
             async with RoomClient(
                 protocol=WebSocketClientProtocol(
-                    url=websocket_room_url(
-                        room_name=room_name, base_url=meshagent_base_url()
-                    ),
+                    url=websocket_room_url(room_name=room_name),
                     token=jwt,
                 )
             ) as client:
