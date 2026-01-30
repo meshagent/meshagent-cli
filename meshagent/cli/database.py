@@ -13,7 +13,7 @@ from meshagent.agents.agent import install_required_table
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.cli import async_typer
 from meshagent.cli.helper import resolve_project_id, resolve_room, get_client
-from meshagent.api.helpers import meshagent_base_url, websocket_room_url
+from meshagent.api.helpers import websocket_room_url
 from meshagent.api import RoomClient, WebSocketClientProtocol
 from meshagent.api.room_server_client import _data_type_adapter
 from meshagent.api import RoomException  # or wherever you defined it

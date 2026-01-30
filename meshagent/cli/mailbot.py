@@ -11,7 +11,7 @@ from meshagent.cli.common_options import (
 )
 from meshagent.tools import Toolkit
 from meshagent.api import RoomClient, WebSocketClientProtocol, ApiScope
-from meshagent.api.helpers import meshagent_base_url, websocket_room_url
+from meshagent.api.helpers import websocket_room_url
 from meshagent.cli.helper import (
     cleanup_args,
     get_client,
