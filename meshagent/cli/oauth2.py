@@ -106,8 +106,8 @@ async def secret_request(
         typer.Option(..., help="Participant ID to request the secret from"),
     ],
     url: Annotated[str, typer.Option(..., help="Secret URL identifier")],
-    mime_type: Annotated[
-        str, typer.Option("--type", help="Secret MIME type")
+    type: Annotated[
+        str, typer.Option("--type", help="Secret type")
     ] = "application/octet-stream",
     delegate_to: Annotated[
         Optional[str],
@@ -144,7 +144,7 @@ async def secret_request(
             )
             secret = await consumer.secrets.request_secret(
                 url=url,
-                type=mime_type,
+                type=type,
                 timeout=timeout,
                 from_participant_id=from_participant_id,
                 delegate_to=delegate_to,
@@ -219,9 +219,9 @@ async def secret_set(
     project_id: ProjectIdOption,
     room: RoomOption,
     secret_id: Annotated[str, typer.Option(..., help="Secret ID")],
-    mime_type: Annotated[
+    type: Annotated[
         Optional[str],
-        typer.Option("--type", help="Secret MIME type"),
+        typer.Option("--type", help="Secret type"),
     ] = None,
     name: Annotated[
         Optional[str],
@@ -259,7 +259,7 @@ async def secret_set(
         ) as consumer:
             await consumer.secrets.set_secret(
                 secret_id=secret_id,
-                type=mime_type,
+                type=type,
                 name=name,
                 delegated_to=delegated_to,
                 data=secret_bytes,
