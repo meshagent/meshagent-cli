@@ -13,6 +13,8 @@ from pathlib import Path
 import typer
 import json
 import sys
+import base64
+import binascii
 
 app = async_typer.AsyncTyper(help="OAuth2 test commands")
 
@@ -21,6 +23,29 @@ def _read_bytes(*, input_path: str) -> bytes:
     if input_path == "-":
         return sys.stdin.buffer.read()
     return Path(input_path).expanduser().resolve().read_bytes()
+
+
+def _read_secret_bytes(
+    *,
+    input_path: Optional[str],
+    text: Optional[str],
+    base64_text: Optional[str],
+) -> bytes:
+    sources = [input_path is not None, text is not None, base64_text is not None]
+    if sum(sources) == 0:
+        raise typer.BadParameter("Provide one of --in, --text, or --base64.")
+    if sum(sources) > 1:
+        raise typer.BadParameter("Only one of --in, --text, or --base64 can be used.")
+    if input_path is not None:
+        return _read_bytes(input_path=input_path)
+    if text is not None:
+        return text.encode("utf-8")
+    if base64_text is None:
+        raise typer.BadParameter("Provide one of --in, --text, or --base64.")
+    try:
+        return base64.b64decode(base64_text, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise typer.BadParameter("Invalid base64 data for --base64.") from exc
 
 
 def _write_bytes(*, output_path: str, data: bytes) -> None:
@@ -231,18 +256,40 @@ async def secret_set(
         Optional[str],
         typer.Option(help="Store a secret delegated to this participant name"),
     ] = None,
+    for_identity: Annotated[
+        Optional[str],
+        typer.Option(help="Store a secret for a specific identity"),
+    ] = None,
     input_path: Annotated[
-        str,
+        Optional[str],
         typer.Option(
             "--in",
             "-i",
             help="Input file path, or '-' for stdin",
         ),
-    ] = "-",
+    ] = None,
+    text: Annotated[
+        Optional[str],
+        typer.Option(
+            "--text",
+            help="Provide secret as UTF-8 text",
+        ),
+    ] = None,
+    base64_text: Annotated[
+        Optional[str],
+        typer.Option(
+            "--base64",
+            help="Provide secret as base64-encoded data",
+        ),
+    ] = None,
 ):
-    """Set/store a secret (bytes from stdin or file)."""
+    """Set/store a secret (bytes from stdin, file, text, or base64)."""
 
-    secret_bytes = _read_bytes(input_path=input_path)
+    secret_bytes = _read_secret_bytes(
+        input_path=input_path,
+        text=text,
+        base64_text=base64_text,
+    )
 
     account_client = await get_client()
     try:
@@ -262,6 +309,7 @@ async def secret_set(
                 type=type,
                 name=name,
                 delegated_to=delegated_to,
+                for_identity=for_identity,
                 data=secret_bytes,
             )
 
