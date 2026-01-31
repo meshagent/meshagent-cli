@@ -4,7 +4,7 @@ from typing import Annotated, Optional
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
 import json as _json
 
-from meshagent.api.helpers import meshagent_base_url, websocket_room_url
+from meshagent.api.helpers import websocket_room_url
 from meshagent.api import (
     RoomClient,
     WebSocketClientProtocol,
@@ -39,7 +39,7 @@ async def send(
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                url=websocket_room_url(room_name=room),
                 token=connection.jwt,
             )
         ) as client:
@@ -52,7 +52,7 @@ async def send(
             await client.queues.send(name=queue, message=message)
 
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)
     finally:
         await account_client.close()
 
@@ -73,7 +73,7 @@ async def receive(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                url=websocket_room_url(room_name=room),
                 token=connection.jwt,
             )
         ) as client:
@@ -85,7 +85,7 @@ async def receive(
                 print(response)
 
     except RoomException as e:
-        print(f"[red]{e}[/red]")
+        print(e)
         raise typer.Exit(1)
     finally:
         await account_client.close()

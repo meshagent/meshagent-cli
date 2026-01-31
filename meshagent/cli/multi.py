@@ -3,7 +3,7 @@ from meshagent.cli import async_typer
 from meshagent.cli.host import run_services, set_deferred, service_specs, get_service
 from meshagent.cli.common_options import ProjectIdOption
 from typing import Annotated, Optional
-
+import os
 import importlib.util
 from pathlib import Path
 import click
@@ -25,7 +25,7 @@ import asyncio
 
 from meshagent.api import RoomClient
 
-from meshagent.api.helpers import meshagent_base_url, websocket_room_url
+from meshagent.api.helpers import websocket_room_url
 from meshagent.api.websocket_protocol import WebSocketClientProtocol
 
 from meshagent.cli.chatbot import service as chatbot_service
@@ -200,7 +200,7 @@ async def deploy(
     room: Annotated[
         Optional[str],
         typer.Option("--room", help="The name of a room to create the service for"),
-    ] = None,
+    ] = os.getenv("MESHAGENT_ROOM"),
 ):
     project_id = await resolve_project_id(project_id)
 
@@ -328,6 +328,8 @@ async def join(
         raise typer.Exit(-1)
 
     for c in command.split(";"):
+        print(c, flush=True)
+
         execute_via_root(cli_join, c + f" --room={room}", prog_name="meshagent")
 
     from meshagent.cli.host import agents
@@ -339,9 +341,7 @@ async def join(
 
             async with RoomClient(
                 protocol=WebSocketClientProtocol(
-                    url=websocket_room_url(
-                        room_name=room, base_url=meshagent_base_url()
-                    ),
+                    url=websocket_room_url(room_name=room),
                     token=jwt,
                 )
             ) as room:

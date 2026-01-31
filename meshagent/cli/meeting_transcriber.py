@@ -13,7 +13,6 @@ from meshagent.cli.helper import (
     resolve_key,
 )
 import os
-from meshagent.api import RequiredSchema
 from meshagent.api.services import ServiceHost
 
 app = async_typer.AsyncTyper(help="Join a meeting transcriber to a room")
@@ -71,13 +70,11 @@ async def join(
         print("[bold green]Connecting to room...[/bold green]", flush=True)
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                url=websocket_room_url(room_name=room),
                 token=jwt,
             )
         ) as client:
             requirements = []
-
-            requirements.append(RequiredSchema(name="transcript"))
 
             bot = MeetingTranscriber(
                 requires=requirements,
@@ -123,8 +120,6 @@ async def service(
                 )
 
     requirements = []
-
-    requirements.append(RequiredSchema(name="transcript"))
 
     service = ServiceHost(host=host, port=port)
 

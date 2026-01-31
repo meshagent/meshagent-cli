@@ -103,7 +103,7 @@ class CustomMeshagentClient(Meshagent):
 
 
 async def get_client():
-    key = os.getenv("MESHAGENT_API_KEY")
+    key = os.getenv("MESHAGENT_API_KEY") or os.getenv("MESHAGENT_TOKEN")
     if key is not None or os.getenv("MESHAGENT_SESSION_ID") is not None:
         return CustomMeshagentClient(
             base_url=meshagent_base_url(),

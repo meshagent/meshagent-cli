@@ -44,7 +44,7 @@ from meshagent.anthropic import AnthropicOpenAIResponsesStreamAdapter
 
 from pathlib import Path
 
-from meshagent.tools.script import ScriptToolkitBuilder
+from meshagent.tools.script import ScriptToolkitBuilder, get_script_tools
 
 from meshagent.openai.tools.responses_adapter import (
     WebSearchToolkitBuilder,
@@ -104,6 +104,7 @@ def build_chatbot(
     computer_use: Optional[str] = None,
     web_search: Optional[str] = None,
     script_tool: Optional[bool] = None,
+    discover_script_tools: Optional[bool] = None,
     mcp: Optional[str] = None,
     storage: Optional[str] = None,
     storage_tool_mounts: Optional[list[StorageToolMount]] = None,
@@ -277,6 +278,9 @@ def build_chatbot(
 
         async def get_thread_toolkits(self, *, thread_context, participant):
             providers = []
+
+            if discover_script_tools:
+                providers.extend(await get_script_tools(self.room))
 
             if require_image_generation:
                 providers.append(
@@ -527,6 +531,10 @@ async def join(
     script_tool: Annotated[
         Optional[bool], typer.Option(..., help="Enable script tool calling")
     ] = False,
+    discover_script_tools: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Automatically add script tools from the room"),
+    ] = False,
     mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
@@ -700,6 +708,7 @@ async def join(
             image_generation=image_generation,
             web_search=web_search,
             script_tool=script_tool,
+            discover_script_tools=discover_script_tools,
             mcp=mcp,
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
@@ -737,9 +746,7 @@ async def join(
         else:
             async with RoomClient(
                 protocol=WebSocketClientProtocol(
-                    url=websocket_room_url(
-                        room_name=room, base_url=meshagent_base_url()
-                    ),
+                    url=websocket_room_url(room_name=room),
                     token=jwt,
                 )
             ) as client:
@@ -821,6 +828,10 @@ async def service(
     ] = False,
     script_tool: Annotated[
         Optional[bool], typer.Option(..., help="Enable script tool calling")
+    ] = False,
+    discover_script_tools: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Automatically add script tools from the room"),
     ] = False,
     mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
@@ -986,6 +997,7 @@ async def service(
             rules_file=rules_file,
             web_search=web_search,
             script_tool=script_tool,
+            discover_script_tools=discover_script_tools,
             image_generation=image_generation,
             mcp=mcp,
             storage=storage,
@@ -1093,6 +1105,10 @@ async def spec(
     script_tool: Annotated[
         Optional[bool], typer.Option(..., help="Enable script tool calling")
     ] = False,
+    discover_script_tools: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Automatically add script tools from the room"),
+    ] = False,
     mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
@@ -1257,6 +1273,7 @@ async def spec(
             rules_file=rules_file,
             web_search=web_search,
             script_tool=script_tool,
+            discover_script_tools=discover_script_tools,
             image_generation=image_generation,
             mcp=mcp,
             storage=storage,
@@ -1376,6 +1393,10 @@ async def deploy(
     ] = False,
     script_tool: Annotated[
         Optional[bool], typer.Option(..., help="Enable script tool calling")
+    ] = False,
+    discover_script_tools: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Automatically add script tools from the room"),
     ] = False,
     mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
@@ -1508,7 +1529,7 @@ async def deploy(
     room: Annotated[
         Optional[str],
         typer.Option("--room", help="The name of a room to create the service for"),
-    ] = None,
+    ] = os.getenv("MESHAGENT_ROOM"),
 ):
     project_id = await resolve_project_id(project_id=project_id)
 
@@ -1548,6 +1569,7 @@ async def deploy(
             rules_file=rules_file,
             web_search=web_search,
             script_tool=script_tool,
+            discover_script_tools=discover_script_tools,
             image_generation=image_generation,
             mcp=mcp,
             storage=storage,
@@ -1672,7 +1694,7 @@ async def chat_with(
         connection = await account_client.connect_room(project_id=project_id, room=room)
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                url=websocket_room_url(room_name=room),
                 token=connection.jwt,
             ),
         ) as user_client:
@@ -1795,6 +1817,10 @@ async def run(
     ] = False,
     script_tool: Annotated[
         Optional[bool], typer.Option(..., help="Enable script tool calling")
+    ] = False,
+    discover_script_tools: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Automatically add script tools from the room"),
     ] = False,
     mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
@@ -1978,7 +2004,7 @@ async def run(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                url=websocket_room_url(room_name=room),
                 token=jwt,
             )
         ) as client:
@@ -1996,6 +2022,7 @@ async def run(
                 image_generation=image_generation,
                 web_search=web_search,
                 script_tool=script_tool,
+                discover_script_tools=discover_script_tools,
                 mcp=mcp,
                 storage=storage,
                 storage_tool_mounts=storage_tool_mounts,

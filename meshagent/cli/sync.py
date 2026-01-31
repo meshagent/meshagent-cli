@@ -9,7 +9,7 @@ import typer
 from rich import print
 
 from meshagent.api import RoomClient, RoomException, WebSocketClientProtocol
-from meshagent.api.helpers import meshagent_base_url, websocket_room_url
+from meshagent.api.helpers import websocket_room_url
 from meshagent.api.runtime import RuntimeDocument
 from meshagent.api.schema import MeshSchema
 from meshagent.api.schema_document import Element
@@ -254,9 +254,7 @@ async def _connect_room(project_id: ProjectIdOption, room: RoomOption):
         )
         client = RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         )

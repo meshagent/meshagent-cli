@@ -6,7 +6,7 @@ from meshagent.cli.helper import (
 )
 from meshagent.api.oauth import OAuthClientConfig
 from meshagent.api import RoomClient, WebSocketClientProtocol
-from meshagent.api.helpers import meshagent_base_url, websocket_room_url
+from meshagent.api.helpers import websocket_room_url
 from rich import print
 from typing import Annotated, Optional
 from pathlib import Path
@@ -71,7 +71,7 @@ async def oauth2(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                url=websocket_room_url(room_name=room),
                 token=jwt_consumer.jwt,
             )
         ) as consumer:
@@ -106,8 +106,8 @@ async def secret_request(
         typer.Option(..., help="Participant ID to request the secret from"),
     ],
     url: Annotated[str, typer.Option(..., help="Secret URL identifier")],
-    mime_type: Annotated[
-        str, typer.Option("--type", help="Secret MIME type")
+    type: Annotated[
+        str, typer.Option("--type", help="Secret type")
     ] = "application/octet-stream",
     delegate_to: Annotated[
         Optional[str],
@@ -134,7 +134,7 @@ async def secret_request(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                url=websocket_room_url(room_name=room),
                 token=jwt_consumer.jwt,
             )
         ) as consumer:
@@ -144,7 +144,7 @@ async def secret_request(
             )
             secret = await consumer.secrets.request_secret(
                 url=url,
-                type=mime_type,
+                type=type,
                 timeout=timeout,
                 from_participant_id=from_participant_id,
                 delegate_to=delegate_to,
@@ -188,7 +188,7 @@ async def secret_get(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                url=websocket_room_url(room_name=room),
                 token=jwt_consumer.jwt,
             )
         ) as consumer:
@@ -219,9 +219,9 @@ async def secret_set(
     project_id: ProjectIdOption,
     room: RoomOption,
     secret_id: Annotated[str, typer.Option(..., help="Secret ID")],
-    mime_type: Annotated[
+    type: Annotated[
         Optional[str],
-        typer.Option("--type", help="Secret MIME type"),
+        typer.Option("--type", help="Secret type"),
     ] = None,
     name: Annotated[
         Optional[str],
@@ -253,13 +253,13 @@ async def secret_set(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                url=websocket_room_url(room_name=room),
                 token=jwt_consumer.jwt,
             )
         ) as consumer:
             await consumer.secrets.set_secret(
                 secret_id=secret_id,
-                type=mime_type,
+                type=type,
                 name=name,
                 delegated_to=delegated_to,
                 data=secret_bytes,
@@ -291,7 +291,7 @@ async def list(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                url=websocket_room_url(room_name=room),
                 token=jwt_consumer.jwt,
             )
         ) as consumer:
@@ -313,8 +313,11 @@ async def delete(
     room: RoomOption,
     id: str,
     delegated_to: Annotated[
-        str, typer.Option(help="The value of the delegated_to field of the secret")
-    ],
+        Optional[str],
+        typer.Option(
+            help="The value of the delegated_to field of the secret, must be specified if secret was delegated"
+        ),
+    ] = None,
 ):
     """
     delete a secret
@@ -330,7 +333,7 @@ async def delete(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room, base_url=meshagent_base_url()),
+                url=websocket_room_url(room_name=room),
                 token=jwt_consumer.jwt,
             )
         ) as consumer:

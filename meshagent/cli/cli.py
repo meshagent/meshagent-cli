@@ -27,7 +27,6 @@ from meshagent.cli import meeting_transcriber
 from meshagent.cli import rooms
 from meshagent.cli import room
 from meshagent.cli import port
-from meshagent.cli.exec import register as register_exec
 from meshagent.cli.version import __version__
 from meshagent.cli.helper import get_active_api_key
 from meshagent.otel import otel_config
@@ -41,7 +40,6 @@ import sys
 from pathlib import Path
 
 otel_config(service_name="meshagent-cli")
-
 
 # Turn down OpenAI logs, they are a bit noisy
 logging.getLogger("openai").setLevel(logging.ERROR)
@@ -72,8 +70,6 @@ app.add_typer(task_runner.app, name="task-runner")
 app.add_typer(worker.app, name="worker")
 
 app.add_typer(room.app, name="room")
-
-register_exec(app)
 
 
 def _run_async(coro):

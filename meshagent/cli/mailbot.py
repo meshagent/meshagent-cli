@@ -11,7 +11,7 @@ from meshagent.cli.common_options import (
 )
 from meshagent.tools import Toolkit
 from meshagent.api import RoomClient, WebSocketClientProtocol, ApiScope
-from meshagent.api.helpers import meshagent_base_url, websocket_room_url
+from meshagent.api.helpers import websocket_room_url
 from meshagent.cli.helper import (
     cleanup_args,
     get_client,
@@ -37,6 +37,7 @@ from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConf
 from meshagent.tools.storage import StorageToolMount, StorageToolkit
 from meshagent.tools.datetime import DatetimeToolkit
 from meshagent.tools.uuid import UUIDToolkit
+from meshagent.tools.script import get_script_tools
 
 from meshagent.openai.tools.responses_adapter import (
     WebSearchTool,
@@ -77,6 +78,7 @@ def build_mailbot(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    discover_script_tools: Optional[bool] = None,
     toolkit_name: Optional[str] = None,
     queue: Optional[str] = None,
     email_address: str,
@@ -243,6 +245,9 @@ def build_mailbot(
 
             thread_toolkit = Toolkit(name="thread_toolkit", tools=[])
 
+            if discover_script_tools:
+                thread_toolkit.tools.extend(await get_script_tools(self.room))
+
             if local_shell:
                 thread_toolkit.tools.append(
                     LocalShellTool(thread_context=thread_context)
@@ -384,6 +389,10 @@ async def join(
     ] = False,
     require_web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    discover_script_tools: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Automatically add script tools from the room"),
     ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
@@ -582,9 +591,7 @@ async def join(
         else:
             async with RoomClient(
                 protocol=WebSocketClientProtocol(
-                    url=websocket_room_url(
-                        room_name=room, base_url=meshagent_base_url()
-                    ),
+                    url=websocket_room_url(room_name=room),
                     token=jwt,
                 )
             ) as client:
@@ -643,6 +650,10 @@ async def service(
     ] = False,
     require_web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    discover_script_tools: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Automatically add script tools from the room"),
     ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
@@ -793,6 +804,7 @@ async def service(
             model=model,
             local_shell=require_local_shell,
             web_search=require_web_search,
+            discover_script_tools=discover_script_tools,
             rule=rule,
             schema=require_schema + schema,
             toolkit=require_toolkit + toolkit,
@@ -879,6 +891,10 @@ async def spec(
     require_web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    discover_script_tools: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Automatically add script tools from the room"),
+    ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable apply patch tool calling"),
@@ -1028,6 +1044,7 @@ async def spec(
             model=model,
             local_shell=require_local_shell,
             web_search=require_web_search,
+            discover_script_tools=discover_script_tools,
             rule=rule,
             schema=require_schema + schema,
             toolkit=require_toolkit + toolkit,
@@ -1126,6 +1143,10 @@ async def deploy(
     ] = False,
     require_web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    discover_script_tools: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Automatically add script tools from the room"),
     ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
@@ -1254,7 +1275,7 @@ async def deploy(
     room: Annotated[
         Optional[str],
         typer.Option("--room", help="The name of a room to create the service for"),
-    ] = None,
+    ] = os.getenv("MESHAGENT_ROOM"),
 ):
     project_id = await resolve_project_id(project_id=project_id)
 
@@ -1283,6 +1304,7 @@ async def deploy(
             model=model,
             local_shell=require_local_shell,
             web_search=require_web_search,
+            discover_script_tools=discover_script_tools,
             rule=rule,
             schema=require_schema + schema,
             toolkit=require_toolkit + toolkit,
