@@ -313,8 +313,11 @@ async def delete(
     room: RoomOption,
     id: str,
     delegated_to: Annotated[
-        str, typer.Option(help="The value of the delegated_to field of the secret")
-    ],
+        Optional[str],
+        typer.Option(
+            help="The value of the delegated_to field of the secret, must be specified if secret was delegated"
+        ),
+    ] = None,
 ):
     """
     delete a secret
