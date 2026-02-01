@@ -6,6 +6,7 @@ from meshagent.tools import (
     ToolkitConfig,
     WebFetchTool,
     WebFetchToolkitBuilder,
+    ContainerShellTool,
 )
 from meshagent.tools.storage import (
     StorageToolMount,
@@ -174,6 +175,7 @@ def build_chatbot(
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
 
     is_claude_model = model.startswith("claude-")
+    is_openai = not is_claude_model
     supports_openai_tools = llm_participant is None and not is_claude_model
     if not supports_openai_tools:
         if image_generation or require_image_generation:
@@ -208,7 +210,7 @@ def build_chatbot(
                 log_requests=log_llm_requests,
             )
         else:
-            if model.startswith("claude-"):
+            if is_claude_model:
                 llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
                     model=model,
                     log_requests=log_llm_requests,
@@ -337,14 +339,23 @@ def build_chatbot(
                 env["MESHAGENT_TOKEN"] = self.room.protocol.token
 
             if require_shell:
-                providers.append(
-                    ShellTool(
-                        working_directory=working_directory,
-                        config=ShellConfig(name="shell"),
-                        image=shell_image or "python:3.13",
-                        env=env,
+                if is_openai:
+                    providers.append(
+                        ShellTool(
+                            working_directory=working_directory,
+                            config=ShellConfig(name="shell"),
+                            image=shell_image or "python:3.13",
+                            env=env,
+                        )
                     )
-                )
+                else:
+                    providers.append(
+                        ContainerShellTool(
+                            image=shell_image or "python:3.13",
+                            name="shell",
+                            env=env,
+                        )
+                    )
 
             if require_apply_patch:
                 providers.append(

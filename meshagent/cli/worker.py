@@ -34,7 +34,12 @@ from meshagent.api import (
 from meshagent.api.helpers import websocket_room_url
 
 from meshagent.agents.config import RulesConfig
-from meshagent.tools import Toolkit, WebFetchTool, WebFetchToolkitBuilder
+from meshagent.tools import (
+    Toolkit,
+    WebFetchTool,
+    WebFetchToolkitBuilder,
+    ContainerShellTool,
+)
 from meshagent.tools.storage import StorageToolkit
 from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
 from meshagent.tools.datetime import DatetimeToolkit
@@ -158,6 +163,7 @@ def build_worker(
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
 
     is_claude_model = model.startswith("claude-")
+    is_openai = not is_claude_model
     supports_openai_tools = not is_claude_model
     if not supports_openai_tools:
         if image_generation or require_image_generation:
@@ -330,14 +336,23 @@ def build_worker(
                 env["MESHAGENT_TOKEN"] = self.room.protocol.token
 
             if require_shell:
-                thread_toolkit.tools.append(
-                    ShellTool(
-                        working_directory=working_directory,
-                        config=ShellConfig(name="shell"),
-                        image=shell_image or "python:3.13",
-                        env=env,
+                if is_openai:
+                    thread_toolkit.tools.append(
+                        ShellTool(
+                            working_directory=working_directory,
+                            config=ShellConfig(name="shell"),
+                            image=shell_image or "python:3.13",
+                            env=env,
+                        )
                     )
-                )
+                else:
+                    thread_toolkit.tools.append(
+                        ContainerShellTool(
+                            image=shell_image or "python:3.13",
+                            name="shell",
+                            env=env,
+                        )
+                    )
 
             if require_apply_patch:
                 thread_toolkit.tools.append(

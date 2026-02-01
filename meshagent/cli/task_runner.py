@@ -3,7 +3,12 @@ import json
 import os
 from rich import print
 from typing import Annotated, Optional
-from meshagent.tools import Toolkit, WebFetchTool, WebFetchToolkitBuilder
+from meshagent.tools import (
+    Toolkit,
+    WebFetchTool,
+    WebFetchToolkitBuilder,
+    ContainerShellTool,
+)
 from meshagent.tools.storage import (
     StorageToolMount,
     StorageToolkitBuilder,
@@ -197,6 +202,7 @@ def build_task_runner(
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
 
     is_claude_model = model.startswith("claude-")
+    is_openai = not is_claude_model
     supports_openai_tools = llm_participant is None and not is_claude_model
     if not supports_openai_tools:
         if image_generation or require_image_generation:
@@ -338,14 +344,23 @@ def build_task_runner(
                 env["MESHAGENT_TOKEN"] = self.room.protocol.token
 
             if require_shell:
-                providers.append(
-                    ShellTool(
-                        working_directory=working_directory,
-                        config=ShellConfig(name="shell"),
-                        image=shell_image or "python:3.13",
-                        env=env,
+                if is_openai:
+                    providers.append(
+                        ShellTool(
+                            working_directory=working_directory,
+                            config=ShellConfig(name="shell"),
+                            image=shell_image or "python:3.13",
+                            env=env,
+                        )
                     )
-                )
+                else:
+                    providers.append(
+                        ContainerShellTool(
+                            image=shell_image or "python:3.13",
+                            name="shell",
+                            env=env,
+                        )
+                    )
 
             if require_apply_patch:
                 providers.append(
