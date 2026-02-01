@@ -40,7 +40,11 @@ from meshagent.cli.helper import (
 )
 
 from meshagent.openai import OpenAIResponsesAdapter
-from meshagent.anthropic import AnthropicOpenAIResponsesStreamAdapter
+from meshagent.anthropic import (
+    AnthropicOpenAIResponsesStreamAdapter,
+    WebSearchTool as AnthropicWebSearchTool,
+    WebSearchToolkitBuilder as AnthropicWebSearchToolkitBuilder,
+)
 
 from pathlib import Path
 
@@ -159,6 +163,24 @@ def build_chatbot(
 
         except FileNotFoundError:
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
+
+    is_claude_model = model.startswith("claude-")
+    supports_openai_tools = llm_participant is None and not is_claude_model
+    if not supports_openai_tools:
+        if image_generation or require_image_generation:
+            print("[red]image generation tool is only supported by openai models[/red]")
+            raise typer.Exit(1)
+        if local_shell or require_local_shell:
+            print("[red]local shell tool is only supported by openai models[/red]")
+            raise typer.Exit(1)
+        if apply_patch or require_apply_patch:
+            print("[red]apply patch tool is only supported by openai models[/red]")
+            raise typer.Exit(1)
+        if computer_use or require_computer_use:
+            print(
+                "[red]computer use tool is currently only supported by openai models[/red]"
+            )
+            raise typer.Exit(1)
 
     BaseClass = ChatBot
     decision_model = None
@@ -328,9 +350,12 @@ def build_chatbot(
                 )
 
             if require_web_search:
-                providers.append(
-                    WebSearchTool(config=WebSearchConfig(name="web_search"))
-                )
+                if is_claude_model:
+                    providers.append(AnthropicWebSearchTool())
+                else:
+                    providers.append(
+                        WebSearchTool(config=WebSearchConfig(name="web_search"))
+                    )
 
             if require_storage:
                 providers.extend(StorageToolkit(mounts=storage_tool_mounts).tools)
@@ -448,7 +473,10 @@ def build_chatbot(
                 providers.append(MCPToolkitBuilder())
 
             if web_search:
-                providers.append(WebSearchToolkitBuilder())
+                if is_claude_model:
+                    providers.append(AnthropicWebSearchToolkitBuilder())
+                else:
+                    providers.append(WebSearchToolkitBuilder())
 
             if script_tool:
                 providers.append(ScriptToolkitBuilder())

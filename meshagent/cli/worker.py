@@ -41,7 +41,11 @@ from meshagent.tools.datetime import DatetimeToolkit
 from meshagent.tools.uuid import UUIDToolkit
 from meshagent.tools.script import get_script_tools
 from meshagent.openai import OpenAIResponsesAdapter
-from meshagent.anthropic import AnthropicOpenAIResponsesStreamAdapter
+from meshagent.anthropic import (
+    AnthropicOpenAIResponsesStreamAdapter,
+    WebSearchTool as AnthropicWebSearchTool,
+    WebSearchToolkitBuilder as AnthropicWebSearchToolkitBuilder,
+)
 
 
 # Your Worker base (the one you pasted) + adapters
@@ -148,6 +152,22 @@ def build_worker(
                 rule.extend(f.read().splitlines())
         except FileNotFoundError:
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
+
+    is_claude_model = model.startswith("claude-")
+    supports_openai_tools = not is_claude_model
+    if not supports_openai_tools:
+        if image_generation or require_image_generation:
+            print("image generation tool is only supported by openai models")
+            raise typer.Exit(1)
+        if local_shell or require_local_shell:
+            print("local shell tool is only supported by openai models")
+            raise typer.Exit(1)
+        if apply_patch or require_apply_patch:
+            print("apply patch tool is only supported by openai models")
+            raise typer.Exit(1)
+        if require_computer_use:
+            print("computer use tool is currently only supported by openai models")
+            raise typer.Exit(1)
 
     if require_computer_use:
         llm_adapter: LLMAdapter = OpenAIResponsesAdapter(
@@ -270,7 +290,10 @@ def build_worker(
                 providers.append(MCPToolkitBuilder())
 
             if web_search:
-                providers.append(WebSearchToolkitBuilder())
+                if is_claude_model:
+                    providers.append(AnthropicWebSearchToolkitBuilder())
+                else:
+                    providers.append(WebSearchToolkitBuilder())
 
             if storage:
                 providers.append(StorageToolkitBuilder(mounts=storage_tool_mounts))
@@ -322,7 +345,10 @@ def build_worker(
                 )
 
             if require_web_search:
-                thread_toolkit.tools.append(WebSearchTool())
+                if is_claude_model:
+                    thread_toolkit.tools.append(AnthropicWebSearchTool())
+                else:
+                    thread_toolkit.tools.append(WebSearchTool())
 
             if require_storage:
                 thread_toolkit.tools.extend(

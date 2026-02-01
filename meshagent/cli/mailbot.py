@@ -21,7 +21,10 @@ from meshagent.cli.helper import (
     resolve_room,
 )
 from meshagent.openai import OpenAIResponsesAdapter
-from meshagent.anthropic import AnthropicOpenAIResponsesStreamAdapter
+from meshagent.anthropic import (
+    AnthropicOpenAIResponsesStreamAdapter,
+    WebSearchTool as AnthropicWebSearchTool,
+)
 
 from meshagent.agents.config import RulesConfig
 
@@ -127,6 +130,22 @@ def build_mailbot(
                 rule.extend(f.read().splitlines())
         except FileNotFoundError:
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
+
+    is_claude_model = model.startswith("claude-")
+    supports_openai_tools = llm_participant is None and not is_claude_model
+    if not supports_openai_tools:
+        if image_generation:
+            print("image generation tool is only supported by openai models")
+            raise typer.Exit(1)
+        if local_shell:
+            print("local shell tool is only supported by openai models")
+            raise typer.Exit(1)
+        if require_apply_patch:
+            print("apply patch tool is only supported by openai models")
+            raise typer.Exit(1)
+        if computer_use or require_computer_use:
+            print("computer use tool is currently only supported by openai models")
+            raise typer.Exit(1)
 
     BaseClass = MailBot
     if llm_participant:
@@ -285,7 +304,10 @@ def build_mailbot(
                 )
 
             if web_search:
-                thread_toolkit.tools.append(WebSearchTool())
+                if is_claude_model:
+                    thread_toolkit.tools.append(AnthropicWebSearchTool())
+                else:
+                    thread_toolkit.tools.append(WebSearchTool())
 
             if require_storage:
                 thread_toolkit.tools.extend(
