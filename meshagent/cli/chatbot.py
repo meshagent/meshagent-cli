@@ -1,7 +1,12 @@
 import typer
 from rich import print
 from typing import Annotated, Optional, List
-from meshagent.tools import Toolkit, ToolkitConfig
+from meshagent.tools import (
+    Toolkit,
+    ToolkitConfig,
+    WebFetchTool,
+    WebFetchToolkitBuilder,
+)
 from meshagent.tools.storage import (
     StorageToolMount,
     StorageToolkitConfig,
@@ -42,6 +47,8 @@ from meshagent.cli.helper import (
 from meshagent.openai import OpenAIResponsesAdapter
 from meshagent.anthropic import (
     AnthropicOpenAIResponsesStreamAdapter,
+    WebFetchTool as AnthropicWebFetchTool,
+    WebFetchToolkitBuilder as AnthropicWebFetchToolkitBuilder,
     WebSearchTool as AnthropicWebSearchTool,
     WebSearchToolkitBuilder as AnthropicWebSearchToolkitBuilder,
 )
@@ -107,6 +114,7 @@ def build_chatbot(
     apply_patch: Optional[str] = None,
     computer_use: Optional[str] = None,
     web_search: Optional[str] = None,
+    web_fetch: Optional[str] = None,
     script_tool: Optional[bool] = None,
     discover_script_tools: Optional[bool] = None,
     mcp: Optional[str] = None,
@@ -118,6 +126,7 @@ def build_chatbot(
     require_apply_patch: Optional[str] = None,
     require_computer_use: Optional[str] = None,
     require_web_search: Optional[str] = None,
+    require_web_fetch: Optional[str] = None,
     require_mcp: Optional[str] = None,
     require_storage: Optional[str] = None,
     require_table_read: list[str] = None,
@@ -357,6 +366,12 @@ def build_chatbot(
                         WebSearchTool(config=WebSearchConfig(name="web_search"))
                     )
 
+            if require_web_fetch:
+                if is_claude_model:
+                    providers.append(AnthropicWebFetchTool())
+                else:
+                    providers.append(WebFetchTool())
+
             if require_storage:
                 providers.extend(StorageToolkit(mounts=storage_tool_mounts).tools)
 
@@ -478,6 +493,12 @@ def build_chatbot(
                 else:
                     providers.append(WebSearchToolkitBuilder())
 
+            if web_fetch:
+                if is_claude_model:
+                    providers.append(AnthropicWebFetchToolkitBuilder())
+                else:
+                    providers.append(WebFetchToolkitBuilder())
+
             if script_tool:
                 providers.append(ScriptToolkitBuilder())
 
@@ -556,6 +577,9 @@ async def join(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
+    ] = False,
     script_tool: Annotated[
         Optional[bool], typer.Option(..., help="Enable script tool calling")
     ] = False,
@@ -609,6 +633,10 @@ async def join(
     require_web_search: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable web search tool calling"),
+    ] = False,
+    require_web_fetch: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable web fetch tool calling"),
     ] = False,
     require_mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
@@ -735,6 +763,7 @@ async def join(
             apply_patch=apply_patch,
             image_generation=image_generation,
             web_search=web_search,
+            web_fetch=web_fetch,
             script_tool=script_tool,
             discover_script_tools=discover_script_tools,
             mcp=mcp,
@@ -742,6 +771,7 @@ async def join(
             storage_tool_mounts=storage_tool_mounts,
             require_apply_patch=require_apply_patch,
             require_web_search=require_web_search,
+            require_web_fetch=require_web_fetch,
             require_local_shell=require_local_shell,
             require_shell=require_shell,
             require_image_generation=require_image_generation,
@@ -854,6 +884,9 @@ async def service(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
+    ] = False,
     script_tool: Annotated[
         Optional[bool], typer.Option(..., help="Enable script tool calling")
     ] = False,
@@ -906,6 +939,10 @@ async def service(
     require_web_search: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable web search tool calling"),
+    ] = False,
+    require_web_fetch: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable web fetch tool calling"),
     ] = False,
     require_mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
@@ -1024,6 +1061,7 @@ async def service(
             schema=require_schema + schema,
             rules_file=rules_file,
             web_search=web_search,
+            web_fetch=web_fetch,
             script_tool=script_tool,
             discover_script_tools=discover_script_tools,
             image_generation=image_generation,
@@ -1032,6 +1070,7 @@ async def service(
             storage_tool_mounts=storage_tool_mounts,
             database_namespace=database_namespace,
             require_web_search=require_web_search,
+            require_web_fetch=require_web_fetch,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
             require_local_shell=require_local_shell,
@@ -1130,6 +1169,9 @@ async def spec(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
+    ] = False,
     script_tool: Annotated[
         Optional[bool], typer.Option(..., help="Enable script tool calling")
     ] = False,
@@ -1182,6 +1224,10 @@ async def spec(
     require_web_search: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable web search tool calling"),
+    ] = False,
+    require_web_fetch: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable web fetch tool calling"),
     ] = False,
     require_mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
@@ -1300,6 +1346,7 @@ async def spec(
             schema=require_schema + schema,
             rules_file=rules_file,
             web_search=web_search,
+            web_fetch=web_fetch,
             script_tool=script_tool,
             discover_script_tools=discover_script_tools,
             image_generation=image_generation,
@@ -1308,6 +1355,7 @@ async def spec(
             storage_tool_mounts=storage_tool_mounts,
             database_namespace=database_namespace,
             require_web_search=require_web_search,
+            require_web_fetch=require_web_fetch,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
             require_local_shell=require_local_shell,
@@ -1419,6 +1467,9 @@ async def deploy(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
+    ] = False,
     script_tool: Annotated[
         Optional[bool], typer.Option(..., help="Enable script tool calling")
     ] = False,
@@ -1471,6 +1522,10 @@ async def deploy(
     require_web_search: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable web search tool calling"),
+    ] = False,
+    require_web_fetch: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable web fetch tool calling"),
     ] = False,
     require_mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
@@ -1596,6 +1651,7 @@ async def deploy(
             schema=require_schema + schema,
             rules_file=rules_file,
             web_search=web_search,
+            web_fetch=web_fetch,
             script_tool=script_tool,
             discover_script_tools=discover_script_tools,
             image_generation=image_generation,
@@ -1604,6 +1660,7 @@ async def deploy(
             storage_tool_mounts=storage_tool_mounts,
             database_namespace=database_namespace,
             require_web_search=require_web_search,
+            require_web_fetch=require_web_fetch,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
             require_local_shell=require_local_shell,
@@ -1843,6 +1900,9 @@ async def run(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
+    ] = False,
     script_tool: Annotated[
         Optional[bool], typer.Option(..., help="Enable script tool calling")
     ] = False,
@@ -1896,6 +1956,10 @@ async def run(
     require_web_search: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable web search tool calling"),
+    ] = False,
+    require_web_fetch: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable web fetch tool calling"),
     ] = False,
     require_mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling")
@@ -2049,6 +2113,7 @@ async def run(
                 apply_patch=apply_patch,
                 image_generation=image_generation,
                 web_search=web_search,
+                web_fetch=web_fetch,
                 script_tool=script_tool,
                 discover_script_tools=discover_script_tools,
                 mcp=mcp,
@@ -2056,6 +2121,7 @@ async def run(
                 storage_tool_mounts=storage_tool_mounts,
                 require_apply_patch=require_apply_patch,
                 require_web_search=require_web_search,
+                require_web_fetch=require_web_fetch,
                 require_local_shell=require_local_shell,
                 require_shell=require_shell,
                 require_image_generation=require_image_generation,

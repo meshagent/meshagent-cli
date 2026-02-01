@@ -34,7 +34,7 @@ from meshagent.api import (
 from meshagent.api.helpers import websocket_room_url
 
 from meshagent.agents.config import RulesConfig
-from meshagent.tools import Toolkit
+from meshagent.tools import Toolkit, WebFetchTool, WebFetchToolkitBuilder
 from meshagent.tools.storage import StorageToolkit
 from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
 from meshagent.tools.datetime import DatetimeToolkit
@@ -43,6 +43,8 @@ from meshagent.tools.script import get_script_tools
 from meshagent.openai import OpenAIResponsesAdapter
 from meshagent.anthropic import (
     AnthropicOpenAIResponsesStreamAdapter,
+    WebFetchTool as AnthropicWebFetchTool,
+    WebFetchToolkitBuilder as AnthropicWebFetchToolkitBuilder,
     WebSearchTool as AnthropicWebSearchTool,
     WebSearchToolkitBuilder as AnthropicWebSearchToolkitBuilder,
 )
@@ -103,6 +105,7 @@ def build_worker(
     shell: Optional[str] = None,
     apply_patch: Optional[str] = None,
     web_search: Optional[str] = None,
+    web_fetch: Optional[str] = None,
     discover_script_tools: Optional[bool] = None,
     mcp: Optional[str] = None,
     storage: Optional[str] = None,
@@ -111,6 +114,7 @@ def build_worker(
     require_image_generation: Optional[str] = None,
     require_local_shell: bool = False,
     require_web_search: bool = False,
+    require_web_fetch: bool = False,
     require_apply_patch: bool = False,
     require_shell: bool = False,
     require_storage: bool = False,
@@ -295,6 +299,12 @@ def build_worker(
                 else:
                     providers.append(WebSearchToolkitBuilder())
 
+            if web_fetch:
+                if is_claude_model:
+                    providers.append(AnthropicWebFetchToolkitBuilder())
+                else:
+                    providers.append(WebFetchToolkitBuilder())
+
             if storage:
                 providers.append(StorageToolkitBuilder(mounts=storage_tool_mounts))
 
@@ -349,6 +359,12 @@ def build_worker(
                     thread_toolkit.tools.append(AnthropicWebSearchTool())
                 else:
                     thread_toolkit.tools.append(WebSearchTool())
+
+            if require_web_fetch:
+                if is_claude_model:
+                    thread_toolkit.tools.append(AnthropicWebFetchTool())
+                else:
+                    thread_toolkit.tools.append(WebFetchTool())
 
             if require_storage:
                 thread_toolkit.tools.extend(
@@ -457,6 +473,9 @@ async def join(
     require_web_search: Annotated[
         Optional[bool], typer.Option(..., help="Require web search tool")
     ] = False,
+    require_web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Require web fetch tool")
+    ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable apply patch tool calling"),
@@ -491,6 +510,9 @@ async def join(
     ] = False,
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
     ] = False,
     discover_script_tools: Annotated[
         Optional[bool],
@@ -636,12 +658,14 @@ async def join(
             apply_patch=apply_patch,
             image_generation=image_generation,
             web_search=web_search,
+            web_fetch=web_fetch,
             discover_script_tools=discover_script_tools,
             mcp=mcp,
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
             require_local_shell=require_local_shell,
             require_web_search=require_web_search,
+            require_web_fetch=require_web_fetch,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
             toolkit_name=toolkit_name,
@@ -739,6 +763,9 @@ async def service(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
+    ] = False,
     discover_script_tools: Annotated[
         Optional[bool],
         typer.Option(..., help="Automatically add script tools from the room"),
@@ -768,6 +795,9 @@ async def service(
     ] = False,
     require_web_search: Annotated[
         Optional[bool], typer.Option(..., help="Require web search tool")
+    ] = False,
+    require_web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Require web fetch tool")
     ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
@@ -906,6 +936,7 @@ async def service(
             apply_patch=apply_patch,
             image_generation=image_generation,
             web_search=web_search,
+            web_fetch=web_fetch,
             discover_script_tools=discover_script_tools,
             mcp=mcp,
             storage=storage,
@@ -914,6 +945,7 @@ async def service(
             require_apply_patch=require_apply_patch,
             require_local_shell=require_local_shell,
             require_web_search=require_web_search,
+            require_web_fetch=require_web_fetch,
             toolkit_name=toolkit_name,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
@@ -999,6 +1031,9 @@ async def spec(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
+    ] = False,
     discover_script_tools: Annotated[
         Optional[bool],
         typer.Option(..., help="Automatically add script tools from the room"),
@@ -1028,6 +1063,9 @@ async def spec(
     ] = False,
     require_web_search: Annotated[
         Optional[bool], typer.Option(..., help="Require web search tool")
+    ] = False,
+    require_web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Require web fetch tool")
     ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
@@ -1166,6 +1204,7 @@ async def spec(
             apply_patch=apply_patch,
             image_generation=image_generation,
             web_search=web_search,
+            web_fetch=web_fetch,
             discover_script_tools=discover_script_tools,
             mcp=mcp,
             storage=storage,
@@ -1174,6 +1213,7 @@ async def spec(
             require_apply_patch=require_apply_patch,
             require_local_shell=require_local_shell,
             require_web_search=require_web_search,
+            require_web_fetch=require_web_fetch,
             toolkit_name=toolkit_name,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
@@ -1272,6 +1312,9 @@ async def deploy(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
+    ] = False,
     discover_script_tools: Annotated[
         Optional[bool],
         typer.Option(..., help="Automatically add script tools from the room"),
@@ -1301,6 +1344,9 @@ async def deploy(
     ] = False,
     require_web_search: Annotated[
         Optional[bool], typer.Option(..., help="Require web search tool")
+    ] = False,
+    require_web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Require web fetch tool")
     ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
@@ -1446,6 +1492,7 @@ async def deploy(
             apply_patch=apply_patch,
             image_generation=image_generation,
             web_search=web_search,
+            web_fetch=web_fetch,
             discover_script_tools=discover_script_tools,
             mcp=mcp,
             storage=storage,
@@ -1454,6 +1501,7 @@ async def deploy(
             require_apply_patch=require_apply_patch,
             require_local_shell=require_local_shell,
             require_web_search=require_web_search,
+            require_web_fetch=require_web_fetch,
             toolkit_name=toolkit_name,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
