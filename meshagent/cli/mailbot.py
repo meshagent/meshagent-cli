@@ -9,9 +9,9 @@ from meshagent.cli.common_options import (
     ProjectIdOption,
     RoomOption,
 )
-from meshagent.tools import Toolkit
+from meshagent.tools import Toolkit, WebFetchTool, ContainerShellTool
 from meshagent.api import RoomClient, WebSocketClientProtocol, ApiScope
-from meshagent.api.helpers import meshagent_base_url, websocket_room_url
+from meshagent.api.helpers import websocket_room_url
 from meshagent.cli.helper import (
     cleanup_args,
     get_client,
@@ -21,7 +21,11 @@ from meshagent.cli.helper import (
     resolve_room,
 )
 from meshagent.openai import OpenAIResponsesAdapter
-from meshagent.anthropic import AnthropicOpenAIResponsesStreamAdapter
+from meshagent.anthropic import (
+    AnthropicOpenAIResponsesStreamAdapter,
+    WebFetchTool as AnthropicWebFetchTool,
+    WebSearchTool as AnthropicWebSearchTool,
+)
 
 from meshagent.agents.config import RulesConfig
 
@@ -78,6 +82,9 @@ def build_mailbot(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
+    ] = False,
     discover_script_tools: Optional[bool] = None,
     toolkit_name: Optional[str] = None,
     queue: Optional[str] = None,
@@ -127,6 +134,23 @@ def build_mailbot(
                 rule.extend(f.read().splitlines())
         except FileNotFoundError:
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
+
+    is_claude_model = model.startswith("claude-")
+    is_openai = not is_claude_model
+    supports_openai_tools = llm_participant is None and not is_claude_model
+    if not supports_openai_tools:
+        if image_generation:
+            print("image generation tool is only supported by openai models")
+            raise typer.Exit(1)
+        if local_shell:
+            print("local shell tool is only supported by openai models")
+            raise typer.Exit(1)
+        if require_apply_patch:
+            print("apply patch tool is only supported by openai models")
+            raise typer.Exit(1)
+        if computer_use or require_computer_use:
+            print("computer use tool is currently only supported by openai models")
+            raise typer.Exit(1)
 
     BaseClass = MailBot
     if llm_participant:
@@ -258,14 +282,23 @@ def build_mailbot(
                 env["MESHAGENT_TOKEN"] = self.room.protocol.token
 
             if require_shell:
-                thread_toolkit.tools.append(
-                    ShellTool(
-                        working_directory=working_directory,
-                        config=ShellConfig(name="shell"),
-                        image=shell_image or "python:3.13",
-                        env=env,
+                if is_openai:
+                    thread_toolkit.tools.append(
+                        ShellTool(
+                            working_directory=working_directory,
+                            config=ShellConfig(name="shell"),
+                            image=shell_image or "python:3.13",
+                            env=env,
+                        )
                     )
-                )
+                else:
+                    thread_toolkit.tools.append(
+                        ContainerShellTool(
+                            image=shell_image or "python:3.13",
+                            name="shell",
+                            env=env,
+                        )
+                    )
 
             if require_apply_patch:
                 thread_toolkit.tools.append(
@@ -285,7 +318,16 @@ def build_mailbot(
                 )
 
             if web_search:
-                thread_toolkit.tools.append(WebSearchTool())
+                if is_claude_model:
+                    thread_toolkit.tools.append(AnthropicWebSearchTool())
+                else:
+                    thread_toolkit.tools.append(WebSearchTool())
+
+            if web_fetch:
+                if is_claude_model:
+                    thread_toolkit.tools.append(AnthropicWebFetchTool())
+                else:
+                    thread_toolkit.tools.append(WebFetchTool())
 
             if require_storage:
                 thread_toolkit.tools.extend(
@@ -389,6 +431,9 @@ async def join(
     ] = False,
     require_web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    require_web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
     ] = False,
     discover_script_tools: Annotated[
         Optional[bool],
@@ -555,6 +600,7 @@ async def join(
             toolkit=require_toolkit + toolkit,
             image_generation=None,
             web_search=require_web_search,
+            web_fetch=require_web_fetch,
             rules_file=rules_file,
             queue=queue,
             email_address=email_address,
@@ -591,9 +637,7 @@ async def join(
         else:
             async with RoomClient(
                 protocol=WebSocketClientProtocol(
-                    url=websocket_room_url(
-                        room_name=room, base_url=meshagent_base_url()
-                    ),
+                    url=websocket_room_url(room_name=room),
                     token=jwt,
                 )
             ) as client:
@@ -652,6 +696,9 @@ async def service(
     ] = False,
     require_web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    require_web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
     ] = False,
     discover_script_tools: Annotated[
         Optional[bool],
@@ -806,6 +853,7 @@ async def service(
             model=model,
             local_shell=require_local_shell,
             web_search=require_web_search,
+            web_fetch=require_web_fetch,
             discover_script_tools=discover_script_tools,
             rule=rule,
             schema=require_schema + schema,
@@ -893,6 +941,9 @@ async def spec(
     require_web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    require_web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
+    ] = False,
     discover_script_tools: Annotated[
         Optional[bool],
         typer.Option(..., help="Automatically add script tools from the room"),
@@ -1046,6 +1097,7 @@ async def spec(
             model=model,
             local_shell=require_local_shell,
             web_search=require_web_search,
+            web_fetch=require_web_fetch,
             discover_script_tools=discover_script_tools,
             rule=rule,
             schema=require_schema + schema,
@@ -1145,6 +1197,9 @@ async def deploy(
     ] = False,
     require_web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    require_web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
     ] = False,
     discover_script_tools: Annotated[
         Optional[bool],
@@ -1306,6 +1361,7 @@ async def deploy(
             model=model,
             local_shell=require_local_shell,
             web_search=require_web_search,
+            web_fetch=require_web_fetch,
             discover_script_tools=discover_script_tools,
             rule=rule,
             schema=require_schema + schema,

@@ -25,7 +25,7 @@ import asyncio
 
 from meshagent.api import RoomClient
 
-from meshagent.api.helpers import meshagent_base_url, websocket_room_url
+from meshagent.api.helpers import websocket_room_url
 from meshagent.api.websocket_protocol import WebSocketClientProtocol
 
 from meshagent.cli.chatbot import service as chatbot_service
@@ -341,9 +341,7 @@ async def join(
 
             async with RoomClient(
                 protocol=WebSocketClientProtocol(
-                    url=websocket_room_url(
-                        room_name=room, base_url=meshagent_base_url()
-                    ),
+                    url=websocket_room_url(room_name=room),
                     token=jwt,
                 )
             ) as room:

@@ -3,7 +3,12 @@ import json
 import os
 from rich import print
 from typing import Annotated, Optional
-from meshagent.tools import Toolkit
+from meshagent.tools import (
+    Toolkit,
+    WebFetchTool,
+    WebFetchToolkitBuilder,
+    ContainerShellTool,
+)
 from meshagent.tools.storage import (
     StorageToolMount,
     StorageToolkitBuilder,
@@ -39,7 +44,13 @@ from meshagent.cli.helper import (
 )
 
 from meshagent.openai import OpenAIResponsesAdapter
-from meshagent.anthropic import AnthropicOpenAIResponsesStreamAdapter
+from meshagent.anthropic import (
+    AnthropicOpenAIResponsesStreamAdapter,
+    WebFetchTool as AnthropicWebFetchTool,
+    WebFetchToolkitBuilder as AnthropicWebFetchToolkitBuilder,
+    WebSearchTool as AnthropicWebSearchTool,
+    WebSearchToolkitBuilder as AnthropicWebSearchToolkitBuilder,
+)
 
 from typing import List
 from pathlib import Path
@@ -117,6 +128,7 @@ def build_task_runner(
     shell: Optional[str] = None,
     apply_patch: Optional[str] = None,
     web_search: Optional[str] = None,
+    web_fetch: Optional[str] = None,
     discover_script_tools: Optional[bool] = None,
     mcp: Optional[str] = None,
     storage: Optional[str] = None,
@@ -128,6 +140,7 @@ def build_task_runner(
     require_shell: Optional[bool] = None,
     require_apply_patch: Optional[str] = None,
     require_web_search: Optional[str] = None,
+    require_web_fetch: Optional[str] = None,
     require_mcp: Optional[str] = None,
     require_storage: Optional[str] = None,
     require_table_read: list[str] = None,
@@ -187,6 +200,20 @@ def build_task_runner(
 
         except FileNotFoundError:
             print(f"[yellow]rules file not found at {rules_file}[/yellow]")
+
+    is_claude_model = model.startswith("claude-")
+    is_openai = not is_claude_model
+    supports_openai_tools = llm_participant is None and not is_claude_model
+    if not supports_openai_tools:
+        if image_generation or require_image_generation:
+            print("image generation tool is only supported by openai models")
+            raise typer.Exit(1)
+        if local_shell or require_local_shell:
+            print("local shell tool is only supported by openai models")
+            raise typer.Exit(1)
+        if apply_patch or require_apply_patch:
+            print("apply patch tool is only supported by openai models")
+            raise typer.Exit(1)
 
     BaseClass = LLMTaskRunner
     if llm_participant:
@@ -317,14 +344,23 @@ def build_task_runner(
                 env["MESHAGENT_TOKEN"] = self.room.protocol.token
 
             if require_shell:
-                providers.append(
-                    ShellTool(
-                        working_directory=working_directory,
-                        config=ShellConfig(name="shell"),
-                        image=shell_image or "python:3.13",
-                        env=env,
+                if is_openai:
+                    providers.append(
+                        ShellTool(
+                            working_directory=working_directory,
+                            config=ShellConfig(name="shell"),
+                            image=shell_image or "python:3.13",
+                            env=env,
+                        )
                     )
-                )
+                else:
+                    providers.append(
+                        ContainerShellTool(
+                            image=shell_image or "python:3.13",
+                            name="shell",
+                            env=env,
+                        )
+                    )
 
             if require_apply_patch:
                 providers.append(
@@ -339,9 +375,18 @@ def build_task_runner(
                 )
 
             if require_web_search:
-                providers.append(
-                    WebSearchTool(config=WebSearchConfig(name="web_search"))
-                )
+                if is_claude_model:
+                    providers.append(AnthropicWebSearchTool())
+                else:
+                    providers.append(
+                        WebSearchTool(config=WebSearchConfig(name="web_search"))
+                    )
+
+            if require_web_fetch:
+                if is_claude_model:
+                    providers.append(AnthropicWebFetchTool())
+                else:
+                    providers.append(WebFetchTool())
 
             if discover_script_tools:
                 providers.extend(await get_script_tools(self.room))
@@ -430,7 +475,16 @@ def build_task_runner(
                 providers.append(MCPToolkitBuilder())
 
             if web_search:
-                providers.append(WebSearchToolkitBuilder())
+                if is_claude_model:
+                    providers.append(AnthropicWebSearchToolkitBuilder())
+                else:
+                    providers.append(WebSearchToolkitBuilder())
+
+            if web_fetch:
+                if is_claude_model:
+                    providers.append(AnthropicWebFetchToolkitBuilder())
+                else:
+                    providers.append(WebFetchToolkitBuilder())
 
             if storage_enabled:
                 providers.append(StorageToolkitBuilder(mounts=storage_tool_mounts))
@@ -485,6 +539,9 @@ async def join(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
+    ] = False,
     discover_script_tools: Annotated[
         Optional[bool],
         typer.Option(..., help="Automatically add script tools from the room"),
@@ -527,6 +584,10 @@ async def join(
     require_web_search: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable web search tool calling", hidden=True),
+    ] = False,
+    require_web_fetch: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable web fetch tool calling", hidden=True),
     ] = False,
     require_mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling", hidden=True)
@@ -665,12 +726,14 @@ async def join(
             rules_file=rules_file,
             image_generation=image_generation,
             web_search=web_search,
+            web_fetch=web_fetch,
             discover_script_tools=discover_script_tools,
             mcp=mcp,
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
             require_apply_patch=require_apply_patch,
             require_web_search=require_web_search,
+            require_web_fetch=require_web_fetch,
             require_local_shell=require_local_shell,
             require_shell=require_shell,
             require_image_generation=require_image_generation,
@@ -699,9 +762,7 @@ async def join(
         else:
             async with RoomClient(
                 protocol=WebSocketClientProtocol(
-                    url=websocket_room_url(
-                        room_name=room, base_url=meshagent_base_url()
-                    ),
+                    url=websocket_room_url(room_name=room),
                     token=jwt,
                 )
             ) as client:
@@ -987,9 +1048,7 @@ async def run(
         else:
             async with RoomClient(
                 protocol=WebSocketClientProtocol(
-                    url=websocket_room_url(
-                        room_name=room, base_url=meshagent_base_url()
-                    ),
+                    url=websocket_room_url(room_name=room),
                     token=jwt,
                 )
             ) as client:
@@ -1002,9 +1061,7 @@ async def run(
                         )
                         async with RoomClient(
                             protocol=WebSocketClientProtocol(
-                                url=websocket_room_url(
-                                    room_name=room, base_url=meshagent_base_url()
-                                ),
+                                url=websocket_room_url(room_name=room),
                                 token=connection.jwt,
                             ),
                         ) as user_client:
@@ -1076,6 +1133,9 @@ async def service(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
+    ] = False,
     discover_script_tools: Annotated[
         Optional[bool],
         typer.Option(..., help="Automatically add script tools from the room"),
@@ -1117,6 +1177,10 @@ async def service(
     require_web_search: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable web search tool calling", hidden=True),
+    ] = False,
+    require_web_fetch: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable web fetch tool calling", hidden=True),
     ] = False,
     require_mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling", hidden=True)
@@ -1242,11 +1306,13 @@ async def service(
             schema=schema,
             rules_file=rules_file,
             web_search=web_search,
+            web_fetch=web_fetch,
             image_generation=image_generation,
             mcp=mcp,
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
             require_web_search=require_web_search,
+            require_web_fetch=require_web_fetch,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
             require_local_shell=require_local_shell,
@@ -1320,6 +1386,9 @@ async def spec(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
+    ] = False,
     discover_script_tools: Annotated[
         Optional[bool],
         typer.Option(..., help="Automatically add script tools from the room"),
@@ -1361,6 +1430,10 @@ async def spec(
     require_web_search: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable web search tool calling", hidden=True),
+    ] = False,
+    require_web_fetch: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable web fetch tool calling", hidden=True),
     ] = False,
     require_mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling", hidden=True)
@@ -1484,11 +1557,13 @@ async def spec(
             schema=schema,
             rules_file=rules_file,
             web_search=web_search,
+            web_fetch=web_fetch,
             image_generation=image_generation,
             mcp=mcp,
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
             require_web_search=require_web_search,
+            require_web_fetch=require_web_fetch,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
             require_local_shell=require_local_shell,
@@ -1575,6 +1650,9 @@ async def deploy(
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
     ] = False,
+    web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
+    ] = False,
     discover_script_tools: Annotated[
         Optional[bool],
         typer.Option(..., help="Automatically add script tools from the room"),
@@ -1616,6 +1694,10 @@ async def deploy(
     require_web_search: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable web search tool calling", hidden=True),
+    ] = False,
+    require_web_fetch: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable web fetch tool calling", hidden=True),
     ] = False,
     require_mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling", hidden=True)
@@ -1746,11 +1828,13 @@ async def deploy(
             schema=schema,
             rules_file=rules_file,
             web_search=web_search,
+            web_fetch=web_fetch,
             image_generation=image_generation,
             mcp=mcp,
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
             require_web_search=require_web_search,
+            require_web_fetch=require_web_fetch,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
             require_local_shell=require_local_shell,

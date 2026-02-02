@@ -12,7 +12,7 @@ from meshagent.api import (
     ApiScope,
 )
 from meshagent.api.http import new_client_session
-from meshagent.api.helpers import meshagent_base_url, websocket_room_url
+from meshagent.api.helpers import websocket_room_url
 from meshagent.api.services import send_webhook
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client, resolve_project_id, resolve_key
@@ -199,9 +199,7 @@ async def _make_call(
             print("[bold green]Connecting to room...[/bold green]")
             async with RoomClient(
                 protocol=WebSocketClientProtocol(
-                    url=websocket_room_url(
-                        room_name=room, base_url=meshagent_base_url()
-                    ),
+                    url=websocket_room_url(room_name=room),
                     token=jwt,
                 )
             ) as client:

@@ -35,6 +35,61 @@ def _kv_to_dict(pairs: List[str]) -> dict[str, str]:
     return out
 
 
+def _parse_header_secret(value: str) -> tuple[str, str, Optional[str]]:
+    if "=" not in value:
+        raise typer.BadParameter(f"'{value}' must be HEADER=SECRET_ID[:KEY]")
+    header_name, secret_spec = value.split("=", 1)
+    header_name = header_name.strip()
+    secret_spec = secret_spec.strip()
+    if header_name == "" or secret_spec == "":
+        raise typer.BadParameter(f"'{value}' must be HEADER=SECRET_ID[:KEY]")
+    if ":" in secret_spec:
+        secret_id, secret_key = secret_spec.split(":", 1)
+        return header_name, secret_id.strip(), secret_key.strip()
+    return header_name, secret_spec, None
+
+
+async def _resolve_header_secrets(
+    account_client, project_id: str, header_secret: List[str]
+) -> dict[str, str]:
+    if not header_secret:
+        return {}
+
+    from meshagent.api.client import KeysSecret
+
+    secrets = await account_client.list_secrets(project_id=project_id)
+    secrets_by_id = {secret.id: secret for secret in secrets}
+    secrets_by_name = {secret.name: secret for secret in secrets}
+
+    resolved: dict[str, str] = {}
+    for item in header_secret:
+        header_name, secret_id, secret_key = _parse_header_secret(item)
+        secret = secrets_by_id.get(secret_id) or secrets_by_name.get(secret_id)
+        if secret is None:
+            raise typer.BadParameter(
+                f"Secret '{secret_id}' not found (use secret id or name)"
+            )
+        if not isinstance(secret, KeysSecret):
+            raise typer.BadParameter(
+                f"Secret '{secret_id}' is not a keys secret (type={secret.type})"
+            )
+        if secret_key is None:
+            if len(secret.data) != 1:
+                raise typer.BadParameter(
+                    f"Secret '{secret_id}' contains multiple keys; use HEADER=SECRET_ID:KEY"
+                )
+            resolved_value = next(iter(secret.data.values()))
+        else:
+            if secret_key not in secret.data:
+                raise typer.BadParameter(
+                    f"Secret '{secret_id}' does not contain key '{secret_key}'"
+                )
+            resolved_value = secret.data[secret_key]
+        resolved[header_name] = resolved_value
+
+    return resolved
+
+
 app = async_typer.AsyncTyper(help="Bridge MCP servers into MeshAgent rooms")
 
 
@@ -48,6 +103,21 @@ async def sse(
     name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
     role: str = "tool",
     url: Annotated[str, typer.Option(..., help="SSE URL for the MCP server")],
+    header: Annotated[
+        List[str],
+        typer.Option(
+            "--header",
+            "-H",
+            help="Request header (KEY=VALUE). Repeat for multiple headers",
+        ),
+    ] = [],
+    header_secret: Annotated[
+        List[str],
+        typer.Option(
+            "--header-secret",
+            help="Header from secret (HEADER=SECRET_ID[:KEY])",
+        ),
+    ] = [],
     toolkit_name: Annotated[
         Optional[str],
         typer.Option(help="Toolkit name to register in the room (default: mcp)"),
@@ -92,7 +162,128 @@ async def sse(
                 token=jwt,
             )
         ) as client:
-            async with sse_client(url) as (read_stream, write_stream):
+            headers = _kv_to_dict(header) if header else {}
+            secret_headers = await _resolve_header_secrets(
+                account_client, project_id, header_secret
+            )
+            headers = {**headers, **secret_headers}
+            if not headers:
+                headers = None
+            async with sse_client(url, headers=headers) as (read_stream, write_stream):
+                async with ClientSession(
+                    read_stream=read_stream, write_stream=write_stream
+                ) as session:
+                    mcp_tools_response = await session.list_tools()
+
+                    toolkit = MCPToolkit(
+                        name=toolkit_name,
+                        session=session,
+                        tools=mcp_tools_response.tools,
+                    )
+
+                    remote_toolkit = RemoteToolkit(
+                        name=toolkit.name,
+                        tools=toolkit.tools,
+                        title=toolkit.title,
+                        description=toolkit.description,
+                    )
+
+                    await remote_toolkit.start(room=client)
+                    try:
+                        await client.protocol.wait_for_close()
+                    except KeyboardInterrupt:
+                        await remote_toolkit.stop()
+
+    except RoomException as e:
+        print(e)
+    finally:
+        await account_client.close()
+
+
+@app.async_command(
+    "http",
+    help="Connect an MCP server over streamable HTTP and register it as a toolkit",
+)
+async def streamable_http(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    name: Annotated[str, typer.Option(..., help="Participant name")] = "cli",
+    role: str = "tool",
+    url: Annotated[
+        str, typer.Option(..., help="Streamable HTTP URL for the MCP server")
+    ],
+    header: Annotated[
+        List[str],
+        typer.Option(
+            "--header",
+            "-H",
+            help="Request header (KEY=VALUE). Repeat for multiple headers",
+        ),
+    ] = [],
+    header_secret: Annotated[
+        List[str],
+        typer.Option(
+            "--header-secret",
+            help="Header from secret (HEADER=SECRET_ID[:KEY])",
+        ),
+    ] = [],
+    toolkit_name: Annotated[
+        Optional[str],
+        typer.Option(help="Toolkit name to register in the room (default: mcp)"),
+    ] = None,
+    key: Annotated[
+        str,
+        typer.Option("--key", help="an api key to sign the token with"),
+    ] = None,
+):
+    """Connect an MCP server over streamable HTTP and expose it as a room toolkit."""
+
+    from mcp.client.session import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
+
+    from meshagent.mcp import MCPToolkit
+
+    key = await resolve_key(project_id=project_id, key=key)
+
+    if toolkit_name is None:
+        toolkit_name = "mcp"
+
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        room = resolve_room(room)
+
+        jwt = os.getenv("MESHAGENT_TOKEN")
+        if jwt is None:
+            token = ParticipantToken(
+                name=toolkit_name or "mcp",
+            )
+
+            token.add_role_grant(role=role)
+            token.add_room_grant(room)
+
+            jwt = token.to_jwt(api_key=key)
+
+        print("[bold green]Connecting to room...[/bold green]")
+        async with RoomClient(
+            protocol=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room),
+                token=jwt,
+            )
+        ) as client:
+            headers = _kv_to_dict(header) if header else {}
+            secret_headers = await _resolve_header_secrets(
+                account_client, project_id, header_secret
+            )
+            headers = {**headers, **secret_headers}
+            if not headers:
+                headers = None
+            async with streamablehttp_client(url, headers=headers) as (
+                read_stream,
+                write_stream,
+                _get_session_id,
+            ):
                 async with ClientSession(
                     read_stream=read_stream, write_stream=write_stream
                 ) as session:

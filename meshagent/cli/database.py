@@ -13,9 +13,10 @@ from meshagent.agents.agent import install_required_table
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.cli import async_typer
 from meshagent.cli.helper import resolve_project_id, resolve_room, get_client
-from meshagent.api.helpers import meshagent_base_url, websocket_room_url
+from meshagent.api.helpers import websocket_room_url
 from meshagent.api import RoomClient, WebSocketClientProtocol
 from meshagent.api.room_server_client import _data_type_adapter
+from meshagent.api.sql import ALLOWED_DATA_TYPES, SchemaParseError, parse_table_schema
 from meshagent.api import RoomException  # or wherever you defined it
 
 app = async_typer.AsyncTyper(help="Manage database tables in a room")
@@ -96,9 +97,7 @@ async def list_tables(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -137,9 +136,7 @@ async def inspect(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -187,9 +184,7 @@ async def install_requirements(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -215,6 +210,19 @@ async def create_table(
         str, typer.Option("--mode", help="create | overwrite | create_if_not_exists")
     ] = "create",
     namespace: NamespaceOption = None,
+    columns: Annotated[
+        Optional[str],
+        typer.Option(
+            "--columns",
+            "-c",
+            help=(
+                "Comma-separated column definitions. Example: "
+                '"names vector(20) null, test text not null, age int". '
+                f"Allowed types: {', '.join(ALLOWED_DATA_TYPES)}. "
+                "Vector syntax: vector(size[, element_type])."
+            ),
+        ),
+    ] = None,
     schema_json: Annotated[
         Optional[str], typer.Option("--schema-json", help="Schema JSON as a string")
     ] = None,
@@ -234,6 +242,12 @@ async def create_table(
 
     Schema JSON format matches your DataType.to_json() structure, e.g.:
       {"id":{"type":"int"}, "body":{"type":"text"}, "embedding":{"type":"vector","size":1536,"element_type":{"type":"float"}}}
+
+    Column definitions via --columns/-c use SQL-like syntax:
+      names vector(20) null, test text not null, age int
+
+    Allowed types: int, bool, date, timestamp, float, text, binary, vector.
+    Vector syntax: vector(size[, element_type]).
     """
     account_client = await get_client()
     try:
@@ -243,12 +257,16 @@ async def create_table(
             project_id=project_id, room=room_name
         )
 
-        schema_obj = _parse_json_arg(schema_json, name="--schema-json")
-        schema_obj = (
-            schema_obj
-            if schema_obj is not None
-            else _load_json_file(schema_file, name="--schema-file")
-        )
+        if columns and (schema_json is not None or schema_file is not None):
+            raise typer.BadParameter(
+                "Use --columns or --schema-json/--schema-file, not both"
+            )
+
+        schema_obj = None
+        if schema_json is not None:
+            schema_obj = _parse_json_arg(schema_json, name="--schema-json")
+        elif schema_file is not None:
+            schema_obj = _load_json_file(schema_file, name="--schema-file")
 
         data_obj = _parse_json_arg(data_json, name="--data-json")
         data_obj = (
@@ -259,15 +277,18 @@ async def create_table(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
             # Build DataType objects from json if schema provided
             schema = None
-            if schema_obj is not None:
+            if columns is not None:
+                try:
+                    schema = parse_table_schema(columns)
+                except SchemaParseError as e:
+                    raise typer.BadParameter(str(e))
+            elif schema_obj is not None:
                 schema = {
                     k: _data_type_adapter.validate_python(v)
                     for k, v in schema_obj.items()
@@ -319,9 +340,7 @@ async def drop_table(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -344,19 +363,44 @@ async def add_columns(
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     namespace: NamespaceOption = None,
+    columns: Annotated[
+        Optional[str],
+        typer.Option(
+            "--columns",
+            "-c",
+            help=(
+                "Comma-separated column definitions. Example: "
+                '"names vector(20) null, test text not null, age int". '
+                f"Allowed types: {', '.join(ALLOWED_DATA_TYPES)}. "
+                "Vector syntax: vector(size[, element_type])."
+            ),
+        ),
+    ] = None,
     columns_json: Annotated[
-        str, typer.Option(..., "--columns-json", help="JSON object of new columns")
+        Optional[str],
+        typer.Option("--columns-json", help="JSON object of new columns"),
     ] = None,
 ):
     """
     Add columns. JSON supports either:
       - DataType JSON: {"col":{"type":"text"}}
       - or server default SQL expr strings: {"col":"'default'"}
+
+    Column definitions via --columns/-c use SQL-like syntax:
+      names vector(20) null, test text not null, age int
+
+    Allowed types: int, bool, date, timestamp, float, text, binary, vector.
+    Vector syntax: vector(size[, element_type]).
     """
     account_client = await get_client()
     try:
+        if columns and columns_json:
+            raise typer.BadParameter("Use --columns or --columns-json, not both")
+        if columns is None and columns_json is None:
+            raise typer.BadParameter("Provide --columns or --columns-json")
+
         cols_obj = _parse_json_arg(columns_json, name="--columns-json")
-        if not isinstance(cols_obj, dict):
+        if columns_json is not None and not isinstance(cols_obj, dict):
             raise typer.BadParameter("--columns-json must be a JSON object")
 
         project_id = await resolve_project_id(project_id=project_id)
@@ -367,19 +411,23 @@ async def add_columns(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
-            # Convert DataType json objects into DataType instances; pass strings through.
-            new_cols = {}
-            for k, v in cols_obj.items():
-                if isinstance(v, dict) and "type" in v:
-                    new_cols[k] = _data_type_adapter.validate_python(v)
-                else:
-                    new_cols[k] = v
+            if columns is not None:
+                try:
+                    new_cols = parse_table_schema(columns)
+                except SchemaParseError as e:
+                    raise typer.BadParameter(str(e))
+            else:
+                # Convert DataType json objects into DataType instances; pass strings through.
+                new_cols = {}
+                for k, v in cols_obj.items():
+                    if isinstance(v, dict) and "type" in v:
+                        new_cols[k] = _data_type_adapter.validate_python(v)
+                    else:
+                        new_cols[k] = v
 
             await client.database.add_columns(
                 table=table, new_columns=new_cols, namespace=_ns(namespace)
@@ -415,9 +463,7 @@ async def drop_columns(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -465,9 +511,7 @@ async def insert(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -517,9 +561,7 @@ async def merge(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -571,9 +613,7 @@ async def update(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -612,9 +652,7 @@ async def delete(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -681,9 +719,7 @@ async def search(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -724,9 +760,7 @@ async def optimize(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -761,9 +795,7 @@ async def list_versions(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -799,9 +831,7 @@ async def checkout(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -836,9 +866,7 @@ async def restore(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -875,9 +903,7 @@ async def list_indexes(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -923,9 +949,7 @@ async def create_index(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
@@ -981,9 +1005,7 @@ async def drop_index(
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
-                url=websocket_room_url(
-                    room_name=room_name, base_url=meshagent_base_url()
-                ),
+                url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
             )
         ) as client:
