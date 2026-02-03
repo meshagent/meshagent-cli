@@ -126,6 +126,8 @@ async def service(
     @service.path(path=path)
     class CustomMeetingTranscriber(MeetingTranscriber):
         def __init__(self):
-            super().__init__()
+            super().__init__(
+                requires=requirements,
+            )
 
     await service.run()
