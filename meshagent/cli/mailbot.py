@@ -15,6 +15,7 @@ from meshagent.api.helpers import websocket_room_url
 from meshagent.cli.helper import (
     cleanup_args,
     get_client,
+    parse_shell_tool_mounts,
     parse_storage_tool_mounts,
     resolve_key,
     resolve_project_id,
@@ -54,7 +55,11 @@ from meshagent.openai.tools.responses_adapter import (
 )
 
 from meshagent.cli.host import get_service, run_services, get_deferred, service_specs
-from meshagent.api.specs.service import AgentSpec, ANNOTATION_AGENT_TYPE
+from meshagent.api.specs.service import (
+    AgentSpec,
+    ANNOTATION_AGENT_TYPE,
+    ContainerMountSpec,
+)
 
 import yaml
 
@@ -96,6 +101,7 @@ def build_mailbot(
     require_storage: Optional[str] = None,
     require_read_only_storage: Optional[str] = None,
     storage_tool_mounts: Optional[list[StorageToolMount]] = None,
+    shell_tool_mounts: Optional[ContainerMountSpec] = None,
     require_time: bool = True,
     require_uuid: bool = False,
     require_table_read: bool,
@@ -283,22 +289,24 @@ def build_mailbot(
 
             if require_shell:
                 if is_openai:
-                    thread_toolkit.tools.append(
-                        ShellTool(
-                            working_directory=working_directory,
-                            config=ShellConfig(name="shell"),
-                            image=shell_image or "python:3.13",
-                            env=env,
-                        )
-                    )
+                    shell_kwargs = {
+                        "working_directory": working_directory,
+                        "config": ShellConfig(name="shell"),
+                        "image": shell_image or "python:3.13",
+                        "env": env,
+                    }
+                    if shell_tool_mounts is not None:
+                        shell_kwargs["mounts"] = shell_tool_mounts
+                    thread_toolkit.tools.append(ShellTool(**shell_kwargs))
                 else:
-                    thread_toolkit.tools.append(
-                        ContainerShellTool(
-                            image=shell_image or "python:3.13",
-                            name="shell",
-                            env=env,
-                        )
-                    )
+                    shell_kwargs = {
+                        "image": shell_image or "python:3.13",
+                        "name": "shell",
+                        "env": env,
+                    }
+                    if shell_tool_mounts is not None:
+                        shell_kwargs["mounts"] = shell_tool_mounts
+                    thread_toolkit.tools.append(ContainerShellTool(**shell_kwargs))
 
             if require_apply_patch:
                 thread_toolkit.tools.append(
@@ -493,6 +501,20 @@ async def join(
             help="Mount room path as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
+    shell_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    shell_tool_project_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_time: Annotated[
         bool,
         typer.Option(
@@ -590,6 +612,10 @@ async def join(
             local_paths=storage_tool_local_path,
             room_paths=storage_tool_room_path,
         )
+        shell_tool_mounts = parse_shell_tool_mounts(
+            room_paths=shell_tool_room_path,
+            project_paths=shell_tool_project_path,
+        )
 
         CustomMailbot = build_mailbot(
             computer_use=None,
@@ -612,6 +638,7 @@ async def join(
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
             storage_tool_mounts=storage_tool_mounts,
+            shell_tool_mounts=shell_tool_mounts,
             require_time=require_time,
             require_uuid=require_uuid,
             require_table_read=require_table_read,
@@ -763,6 +790,20 @@ async def service(
             help="Mount room path as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
+    shell_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    shell_tool_project_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_time: Annotated[
         bool,
         typer.Option(
@@ -833,6 +874,10 @@ async def service(
         local_paths=storage_tool_local_path,
         room_paths=storage_tool_room_path,
     )
+    shell_tool_mounts = parse_shell_tool_mounts(
+        room_paths=shell_tool_room_path,
+        project_paths=shell_tool_project_path,
+    )
     if path is None:
         path = "/agent"
         i = 0
@@ -869,6 +914,7 @@ async def service(
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
             storage_tool_mounts=storage_tool_mounts,
+            shell_tool_mounts=shell_tool_mounts,
             require_time=require_time,
             require_uuid=require_uuid,
             require_table_read=require_table_read,
@@ -1007,6 +1053,20 @@ async def spec(
             help="Mount room path as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
+    shell_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    shell_tool_project_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_time: Annotated[
         bool,
         typer.Option(
@@ -1077,6 +1137,10 @@ async def spec(
         local_paths=storage_tool_local_path,
         room_paths=storage_tool_room_path,
     )
+    shell_tool_mounts = parse_shell_tool_mounts(
+        room_paths=shell_tool_room_path,
+        project_paths=shell_tool_project_path,
+    )
     if path is None:
         path = "/agent"
         i = 0
@@ -1113,6 +1177,7 @@ async def spec(
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
             storage_tool_mounts=storage_tool_mounts,
+            shell_tool_mounts=shell_tool_mounts,
             require_time=require_time,
             require_uuid=require_uuid,
             require_table_read=require_table_read,
@@ -1264,6 +1329,20 @@ async def deploy(
             help="Mount room path as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
+    shell_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    shell_tool_project_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_time: Annotated[
         bool,
         typer.Option(
@@ -1341,6 +1420,10 @@ async def deploy(
         local_paths=storage_tool_local_path,
         room_paths=storage_tool_room_path,
     )
+    shell_tool_mounts = parse_shell_tool_mounts(
+        room_paths=shell_tool_room_path,
+        project_paths=shell_tool_project_path,
+    )
     if path is None:
         path = "/agent"
         i = 0
@@ -1377,6 +1460,7 @@ async def deploy(
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
             storage_tool_mounts=storage_tool_mounts,
+            shell_tool_mounts=shell_tool_mounts,
             require_time=require_time,
             require_uuid=require_uuid,
             require_table_read=require_table_read,

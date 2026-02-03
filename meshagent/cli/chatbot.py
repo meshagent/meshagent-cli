@@ -39,6 +39,7 @@ from meshagent.cli import async_typer
 from meshagent.cli.helper import (
     cleanup_args,
     get_client,
+    parse_shell_tool_mounts,
     parse_storage_tool_mounts,
     resolve_key,
     resolve_project_id,
@@ -84,7 +85,11 @@ from meshagent.api import RequiredToolkit, RequiredSchema
 import logging
 import os.path
 
-from meshagent.api.specs.service import AgentSpec, ANNOTATION_AGENT_TYPE
+from meshagent.api.specs.service import (
+    AgentSpec,
+    ANNOTATION_AGENT_TYPE,
+    ContainerMountSpec,
+)
 
 from meshagent.cli.host import get_service, run_services, get_deferred, service_specs
 
@@ -121,6 +126,7 @@ def build_chatbot(
     mcp: Optional[str] = None,
     storage: Optional[str] = None,
     storage_tool_mounts: Optional[list[StorageToolMount]] = None,
+    shell_tool_mounts: Optional[ContainerMountSpec] = None,
     require_image_generation: Optional[str] = None,
     require_local_shell: Optional[str] = None,
     require_shell: Optional[bool] = None,
@@ -340,22 +346,24 @@ def build_chatbot(
 
             if require_shell:
                 if is_openai:
-                    providers.append(
-                        ShellTool(
-                            working_directory=working_directory,
-                            config=ShellConfig(name="shell"),
-                            image=shell_image or "python:3.13",
-                            env=env,
-                        )
-                    )
+                    shell_kwargs = {
+                        "working_directory": working_directory,
+                        "config": ShellConfig(name="shell"),
+                        "image": shell_image or "python:3.13",
+                        "env": env,
+                    }
+                    if shell_tool_mounts is not None:
+                        shell_kwargs["mounts"] = shell_tool_mounts
+                    providers.append(ShellTool(**shell_kwargs))
                 else:
-                    providers.append(
-                        ContainerShellTool(
-                            image=shell_image or "python:3.13",
-                            name="shell",
-                            env=env,
-                        )
-                    )
+                    shell_kwargs = {
+                        "image": shell_image or "python:3.13",
+                        "name": "shell",
+                        "env": env,
+                    }
+                    if shell_tool_mounts is not None:
+                        shell_kwargs["mounts"] = shell_tool_mounts
+                    providers.append(ContainerShellTool(**shell_kwargs))
 
             if require_apply_patch:
                 providers.append(
@@ -488,12 +496,13 @@ def build_chatbot(
                 )
 
             if shell:
-                providers.append(
-                    ShellToolkitBuilder(
-                        working_directory=working_directory,
-                        image=shell_image,
-                    )
-                )
+                shell_builder_kwargs = {
+                    "working_directory": working_directory,
+                    "image": shell_image,
+                }
+                if shell_tool_mounts is not None:
+                    shell_builder_kwargs["mounts"] = shell_tool_mounts
+                providers.append(ShellToolkitBuilder(**shell_builder_kwargs))
 
             if mcp:
                 providers.append(MCPToolkitBuilder())
@@ -616,6 +625,20 @@ async def join(
         typer.Option(
             "--storage-tool-room-path",
             help="Mount room path as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    shell_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    shell_tool_project_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
     require_image_generation: Annotated[
@@ -760,6 +783,10 @@ async def join(
             local_paths=storage_tool_local_path,
             room_paths=storage_tool_room_path,
         )
+        shell_tool_mounts = parse_shell_tool_mounts(
+            room_paths=shell_tool_room_path,
+            project_paths=shell_tool_project_path,
+        )
 
         CustomChatbot = build_chatbot(
             computer_use=computer_use,
@@ -780,6 +807,7 @@ async def join(
             mcp=mcp,
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
+            shell_tool_mounts=shell_tool_mounts,
             require_apply_patch=require_apply_patch,
             require_web_search=require_web_search,
             require_web_fetch=require_web_fetch,
@@ -925,6 +953,20 @@ async def service(
             help="Mount room path as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
+    shell_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    shell_tool_project_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -1045,6 +1087,10 @@ async def service(
         local_paths=storage_tool_local_path,
         room_paths=storage_tool_room_path,
     )
+    shell_tool_mounts = parse_shell_tool_mounts(
+        room_paths=shell_tool_room_path,
+        project_paths=shell_tool_project_path,
+    )
 
     if path is None:
         path = "/agent"
@@ -1079,6 +1125,7 @@ async def service(
             mcp=mcp,
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
+            shell_tool_mounts=shell_tool_mounts,
             database_namespace=database_namespace,
             require_web_search=require_web_search,
             require_web_fetch=require_web_fetch,
@@ -1210,6 +1257,20 @@ async def spec(
             help="Mount room path as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
+    shell_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    shell_tool_project_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -1330,6 +1391,10 @@ async def spec(
         local_paths=storage_tool_local_path,
         room_paths=storage_tool_room_path,
     )
+    shell_tool_mounts = parse_shell_tool_mounts(
+        room_paths=shell_tool_room_path,
+        project_paths=shell_tool_project_path,
+    )
 
     if path is None:
         path = "/agent"
@@ -1364,6 +1429,7 @@ async def spec(
             mcp=mcp,
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
+            shell_tool_mounts=shell_tool_mounts,
             database_namespace=database_namespace,
             require_web_search=require_web_search,
             require_web_fetch=require_web_fetch,
@@ -1508,6 +1574,20 @@ async def deploy(
             help="Mount room path as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
+    shell_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    shell_tool_project_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -1635,6 +1715,10 @@ async def deploy(
         local_paths=storage_tool_local_path,
         room_paths=storage_tool_room_path,
     )
+    shell_tool_mounts = parse_shell_tool_mounts(
+        room_paths=shell_tool_room_path,
+        project_paths=shell_tool_project_path,
+    )
 
     if path is None:
         path = "/agent"
@@ -1669,6 +1753,7 @@ async def deploy(
             mcp=mcp,
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
+            shell_tool_mounts=shell_tool_mounts,
             database_namespace=database_namespace,
             require_web_search=require_web_search,
             require_web_fetch=require_web_fetch,
@@ -1941,6 +2026,20 @@ async def run(
             help="Mount room path as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
+    shell_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    shell_tool_project_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -2104,6 +2203,10 @@ async def run(
             local_paths=storage_tool_local_path,
             room_paths=storage_tool_room_path,
         )
+        shell_tool_mounts = parse_shell_tool_mounts(
+            room_paths=shell_tool_room_path,
+            project_paths=shell_tool_project_path,
+        )
 
         async with RoomClient(
             protocol=WebSocketClientProtocol(
@@ -2130,6 +2233,7 @@ async def run(
                 mcp=mcp,
                 storage=storage,
                 storage_tool_mounts=storage_tool_mounts,
+                shell_tool_mounts=shell_tool_mounts,
                 require_apply_patch=require_apply_patch,
                 require_web_search=require_web_search,
                 require_web_fetch=require_web_fetch,

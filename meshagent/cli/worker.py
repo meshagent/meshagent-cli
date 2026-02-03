@@ -15,6 +15,7 @@ from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.cli.helper import (
     cleanup_args,
     get_client,
+    parse_shell_tool_mounts,
     parse_storage_tool_mounts,
     resolve_key,
     resolve_project_id,
@@ -76,7 +77,11 @@ from meshagent.openai.tools.responses_adapter import (
 )
 
 from meshagent.cli.host import get_service, run_services, get_deferred, service_specs
-from meshagent.api.specs.service import AgentSpec, ANNOTATION_AGENT_TYPE
+from meshagent.api.specs.service import (
+    AgentSpec,
+    ANNOTATION_AGENT_TYPE,
+    ContainerMountSpec,
+)
 
 import yaml
 
@@ -115,6 +120,7 @@ def build_worker(
     mcp: Optional[str] = None,
     storage: Optional[str] = None,
     storage_tool_mounts: Optional[list[StorageToolMount]] = None,
+    shell_tool_mounts: Optional[ContainerMountSpec] = None,
     working_directory: Optional[str] = None,
     require_image_generation: Optional[str] = None,
     require_local_shell: bool = False,
@@ -289,12 +295,13 @@ def build_worker(
                 )
 
             if shell:
-                providers.append(
-                    ShellToolkitBuilder(
-                        working_directory=working_directory,
-                        image=shell_image,
-                    )
-                )
+                shell_builder_kwargs = {
+                    "working_directory": working_directory,
+                    "image": shell_image,
+                }
+                if shell_tool_mounts is not None:
+                    shell_builder_kwargs["mounts"] = shell_tool_mounts
+                providers.append(ShellToolkitBuilder(**shell_builder_kwargs))
 
             if mcp:
                 providers.append(MCPToolkitBuilder())
@@ -337,22 +344,24 @@ def build_worker(
 
             if require_shell:
                 if is_openai:
-                    thread_toolkit.tools.append(
-                        ShellTool(
-                            working_directory=working_directory,
-                            config=ShellConfig(name="shell"),
-                            image=shell_image or "python:3.13",
-                            env=env,
-                        )
-                    )
+                    shell_kwargs = {
+                        "working_directory": working_directory,
+                        "config": ShellConfig(name="shell"),
+                        "image": shell_image or "python:3.13",
+                        "env": env,
+                    }
+                    if shell_tool_mounts is not None:
+                        shell_kwargs["mounts"] = shell_tool_mounts
+                    thread_toolkit.tools.append(ShellTool(**shell_kwargs))
                 else:
-                    thread_toolkit.tools.append(
-                        ContainerShellTool(
-                            image=shell_image or "python:3.13",
-                            name="shell",
-                            env=env,
-                        )
-                    )
+                    shell_kwargs = {
+                        "image": shell_image or "python:3.13",
+                        "name": "shell",
+                        "env": env,
+                    }
+                    if shell_tool_mounts is not None:
+                        shell_kwargs["mounts"] = shell_tool_mounts
+                    thread_toolkit.tools.append(ContainerShellTool(**shell_kwargs))
 
             if require_apply_patch:
                 thread_toolkit.tools.append(
@@ -553,6 +562,20 @@ async def join(
             help="Mount room path as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
+    shell_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    shell_tool_project_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
@@ -658,6 +681,10 @@ async def join(
             local_paths=storage_tool_local_path,
             room_paths=storage_tool_room_path,
         )
+        shell_tool_mounts = parse_shell_tool_mounts(
+            room_paths=shell_tool_room_path,
+            project_paths=shell_tool_project_path,
+        )
 
         CustomWorker = build_worker(
             WorkerBase=WorkerBase,
@@ -678,6 +705,7 @@ async def join(
             mcp=mcp,
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
+            shell_tool_mounts=shell_tool_mounts,
             require_local_shell=require_local_shell,
             require_web_search=require_web_search,
             require_web_fetch=require_web_fetch,
@@ -827,6 +855,20 @@ async def service(
     path: Annotated[
         Optional[str], typer.Option(help="HTTP path to mount the service at")
     ] = None,
+    shell_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    shell_tool_project_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     queue: Annotated[str, typer.Option(..., help="the queue to consume")],
     toolkit_name: Annotated[
         Optional[str], typer.Option(..., help="Toolkit name to expose (optional)")
@@ -917,6 +959,10 @@ async def service(
         local_paths=storage_tool_local_path,
         room_paths=storage_tool_room_path,
     )
+    shell_tool_mounts = parse_shell_tool_mounts(
+        room_paths=shell_tool_room_path,
+        project_paths=shell_tool_project_path,
+    )
 
     if path is None:
         path = "/agent"
@@ -956,6 +1002,7 @@ async def service(
             mcp=mcp,
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
+            shell_tool_mounts=shell_tool_mounts,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
             require_local_shell=require_local_shell,
@@ -1095,6 +1142,20 @@ async def spec(
     path: Annotated[
         Optional[str], typer.Option(help="HTTP path to mount the service at")
     ] = None,
+    shell_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    shell_tool_project_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     queue: Annotated[str, typer.Option(..., help="the queue to consume")],
     toolkit_name: Annotated[
         Optional[str], typer.Option(..., help="Toolkit name to expose (optional)")
@@ -1185,6 +1246,10 @@ async def spec(
         local_paths=storage_tool_local_path,
         room_paths=storage_tool_room_path,
     )
+    shell_tool_mounts = parse_shell_tool_mounts(
+        room_paths=shell_tool_room_path,
+        project_paths=shell_tool_project_path,
+    )
 
     if path is None:
         path = "/agent"
@@ -1224,6 +1289,7 @@ async def spec(
             mcp=mcp,
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
+            shell_tool_mounts=shell_tool_mounts,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
             require_local_shell=require_local_shell,
@@ -1376,6 +1442,20 @@ async def deploy(
     path: Annotated[
         Optional[str], typer.Option(help="HTTP path to mount the service at")
     ] = None,
+    shell_tool_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    shell_tool_project_path: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-tool-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     queue: Annotated[str, typer.Option(..., help="the queue to consume")],
     toolkit_name: Annotated[
         Optional[str], typer.Option(..., help="Toolkit name to expose (optional)")
@@ -1473,6 +1553,10 @@ async def deploy(
         local_paths=storage_tool_local_path,
         room_paths=storage_tool_room_path,
     )
+    shell_tool_mounts = parse_shell_tool_mounts(
+        room_paths=shell_tool_room_path,
+        project_paths=shell_tool_project_path,
+    )
 
     if path is None:
         path = "/agent"
@@ -1512,6 +1596,7 @@ async def deploy(
             mcp=mcp,
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
+            shell_tool_mounts=shell_tool_mounts,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
             require_local_shell=require_local_shell,

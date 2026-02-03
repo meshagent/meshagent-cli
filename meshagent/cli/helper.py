@@ -7,7 +7,12 @@ from typing import Optional
 from meshagent.cli import auth_async
 from meshagent.cli import async_typer
 from meshagent.api.helpers import meshagent_base_url
-from meshagent.api.specs.service import ServiceSpec
+from meshagent.api.specs.service import (
+    ContainerMountSpec,
+    ProjectStorageMountSpec,
+    RoomStorageMountSpec,
+    ServiceSpec,
+)
 from meshagent.agents.context import AgentChatContext
 from meshagent.api.client import Meshagent, RoomConnectionInfo
 from meshagent.tools.storage import (
@@ -233,6 +238,34 @@ def split_storage_mount(value: str, option_name: str) -> tuple[str, str, bool]:
     return source, mount, read_only
 
 
+def split_container_mount(
+    value: str, option_name: str, default_read_only: bool
+) -> tuple[str, str, bool]:
+    cleaned = value.strip()
+    if cleaned == "":
+        raise typer.BadParameter(f"{option_name} cannot be empty")
+
+    read_only = default_read_only
+    lowered = cleaned.lower()
+    if lowered.endswith(":ro") or lowered.endswith(":rw"):
+        cleaned, suffix = cleaned.rsplit(":", 1)
+        read_only = suffix.lower() == "ro"
+
+    parts = cleaned.rsplit(":", 1)
+    if len(parts) != 2:
+        raise typer.BadParameter(
+            f"{option_name} must be in the form '<source>:<mount>[:ro|rw]'"
+        )
+
+    source, mount = (part.strip() for part in parts)
+    if source == "" or mount == "":
+        raise typer.BadParameter(
+            f"{option_name} must include both source and mount paths"
+        )
+
+    return source, mount, read_only
+
+
 def parse_storage_tool_mounts(
     *,
     local_paths: list[str],
@@ -258,6 +291,41 @@ def parse_storage_tool_mounts(
         )
 
     return mounts or None
+
+
+def parse_shell_tool_mounts(
+    *,
+    room_paths: list[str],
+    project_paths: list[str],
+) -> Optional[ContainerMountSpec]:
+    room_mounts: list[RoomStorageMountSpec] = []
+    project_mounts: list[ProjectStorageMountSpec] = []
+
+    for value in room_paths:
+        source, mount, read_only = split_container_mount(
+            value, "--shell-tool-room-path", False
+        )
+        subpath = source if source not in {"", ".", "/"} else None
+        room_mounts.append(
+            RoomStorageMountSpec(path=mount, subpath=subpath, read_only=read_only)
+        )
+
+    for value in project_paths:
+        source, mount, read_only = split_container_mount(
+            value, "--shell-tool-project-path", True
+        )
+        subpath = source if source not in {"", ".", "/"} else None
+        project_mounts.append(
+            ProjectStorageMountSpec(path=mount, subpath=subpath, read_only=read_only)
+        )
+
+    if not room_mounts and not project_mounts:
+        return None
+
+    return ContainerMountSpec(
+        room=room_mounts or None,
+        project=project_mounts or None,
+    )
 
 
 def cleanup_args(args: list[str]):
