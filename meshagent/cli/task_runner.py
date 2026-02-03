@@ -518,6 +518,12 @@ async def join(
         ),
     ] = [],
     rules_file: Optional[str] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
     toolkit: Annotated[
         List[str],
         typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
@@ -730,7 +736,7 @@ async def join(
             shell=shell,
             apply_patch=apply_patch,
             rule=rule,
-            toolkit=toolkit,
+            toolkit=require_toolkit + toolkit,
             schema=schema,
             rules_file=rules_file,
             image_generation=image_generation,
@@ -809,6 +815,12 @@ async def run(
         ),
     ] = [],
     rules_file: Optional[str] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
+        ),
+    ] = [],
     toolkit: Annotated[
         List[str],
         typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
@@ -834,6 +846,9 @@ async def run(
     ] = False,
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
+    ] = False,
+    web_fetch: Annotated[
+        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
     ] = False,
     discover_script_tools: Annotated[
         Optional[bool],
@@ -877,6 +892,10 @@ async def run(
     require_web_search: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable web search tool calling", hidden=True),
+    ] = False,
+    require_web_fetch: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Enable web fetch tool calling", hidden=True),
     ] = False,
     require_mcp: Annotated[
         Optional[bool], typer.Option(..., help="Enable mcp tool calling", hidden=True)
@@ -1023,17 +1042,19 @@ async def run(
             shell=shell,
             apply_patch=apply_patch,
             rule=rule,
-            toolkit=toolkit,
+            toolkit=require_toolkit + toolkit,
             schema=schema,
             rules_file=rules_file,
             image_generation=image_generation,
             web_search=web_search,
+            web_fetch=web_fetch,
             discover_script_tools=discover_script_tools,
             mcp=mcp,
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
             require_apply_patch=require_apply_patch,
             require_web_search=require_web_search,
+            require_web_fetch=require_web_fetch,
             require_local_shell=require_local_shell,
             require_shell=require_shell,
             require_image_generation=require_image_generation,
@@ -1120,6 +1141,12 @@ async def service(
             "--room-rules",
             "-rr",
             help="a path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
         ),
     ] = [],
     toolkit: Annotated[
@@ -1321,7 +1348,7 @@ async def service(
             allow_thread_selection=allow_thread_selection,
             log_llm_requests=log_llm_requests,
             rule=rule,
-            toolkit=toolkit,
+            toolkit=require_toolkit + toolkit,
             schema=schema,
             rules_file=rules_file,
             web_search=web_search,
@@ -1378,6 +1405,12 @@ async def spec(
             "--room-rules",
             "-rr",
             help="a path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
         ),
     ] = [],
     toolkit: Annotated[
@@ -1577,7 +1610,7 @@ async def spec(
             allow_thread_selection=allow_thread_selection,
             log_llm_requests=log_llm_requests,
             rule=rule,
-            toolkit=toolkit,
+            toolkit=require_toolkit + toolkit,
             schema=schema,
             rules_file=rules_file,
             web_search=web_search,
@@ -1647,6 +1680,12 @@ async def deploy(
             "--room-rules",
             "-rr",
             help="a path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
         ),
     ] = [],
     toolkit: Annotated[
@@ -1853,7 +1892,7 @@ async def deploy(
             allow_thread_selection=allow_thread_selection,
             log_llm_requests=log_llm_requests,
             rule=rule,
-            toolkit=toolkit,
+            toolkit=require_toolkit + toolkit,
             schema=schema,
             rules_file=rules_file,
             web_search=web_search,
