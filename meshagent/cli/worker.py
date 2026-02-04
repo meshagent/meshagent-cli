@@ -65,6 +65,7 @@ from meshagent.openai.tools.responses_adapter import (
     MCPToolkitBuilder,
     WebSearchTool,
     ShellConfig,
+    LocalShellConfig,
     ApplyPatchConfig,
     ApplyPatchTool,
     ApplyPatchToolkitBuilder,
@@ -221,6 +222,7 @@ def build_worker(
                 skill_dirs=skill_dirs,
             )
             self._room_rules_paths = room_rules_paths or []
+            self.shell_tool = None
 
         def get_prompt_for_message(self, *, message: dict) -> str:
             return prompt or super().get_prompt_for_message(message=message)
@@ -238,6 +240,32 @@ def build_worker(
                 "[bold green]Worker connected. It will consume queue messages.[/bold green]"
             )
             await super().start(room=room)
+
+            env = {}
+            if delegate_shell_token:
+                env["MESHAGENT_TOKEN"] = self.room.protocol.token
+
+            if require_shell:
+                if is_openai:
+                    shell_kwargs = {
+                        "working_directory": working_directory,
+                        "config": ShellConfig(name="shell"),
+                        "image": shell_image or "python:3.13",
+                        "env": env,
+                    }
+                    if shell_tool_mounts is not None:
+                        shell_kwargs["mounts"] = shell_tool_mounts
+                    self.shell_tool = ShellTool(**shell_kwargs)
+                else:
+                    shell_kwargs = {
+                        "image": shell_image or "python:3.13",
+                        "name": "shell",
+                        "env": env,
+                    }
+                    if shell_tool_mounts is not None:
+                        shell_kwargs["mounts"] = shell_tool_mounts
+                    self.shell_tool = ContainerShellTool(**shell_kwargs)
+
             if room_rules_paths is not None:
                 for p in room_rules_paths:
                     await self._load_room_rules(path=p)
@@ -336,32 +364,15 @@ def build_worker(
                 thread_toolkit.tools.extend(await get_script_tools(self.room))
 
             if require_local_shell:
-                thread_toolkit.tools.append(LocalShellTool())
+                thread_toolkit.tools.append(
+                    LocalShellTool(
+                        working_directory=working_directory,
+                        config=LocalShellConfig(name="local_shell"),
+                    )
+                )
 
-            env = {}
-            if delegate_shell_token:
-                env["MESHAGENT_TOKEN"] = self.room.protocol.token
-
-            if require_shell:
-                if is_openai:
-                    shell_kwargs = {
-                        "working_directory": working_directory,
-                        "config": ShellConfig(name="shell"),
-                        "image": shell_image or "python:3.13",
-                        "env": env,
-                    }
-                    if shell_tool_mounts is not None:
-                        shell_kwargs["mounts"] = shell_tool_mounts
-                    thread_toolkit.tools.append(ShellTool(**shell_kwargs))
-                else:
-                    shell_kwargs = {
-                        "image": shell_image or "python:3.13",
-                        "name": "shell",
-                        "env": env,
-                    }
-                    if shell_tool_mounts is not None:
-                        shell_kwargs["mounts"] = shell_tool_mounts
-                    thread_toolkit.tools.append(ContainerShellTool(**shell_kwargs))
+            if self.shell_tool is not None:
+                thread_toolkit.tools.append(self.shell_tool)
 
             if require_apply_patch:
                 thread_toolkit.tools.append(

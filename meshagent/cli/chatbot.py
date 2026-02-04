@@ -241,8 +241,37 @@ def build_chatbot(
                 decision_model=decision_model,
             )
 
+            self.shell_tool = None
+
         async def start(self, *, room: RoomClient):
             await super().start(room=room)
+
+            env = {}
+
+            if delegate_shell_token:
+                env["MESHAGENT_TOKEN"] = self.room.protocol.token
+
+            if require_shell:
+                if is_openai:
+                    shell_kwargs = {
+                        "working_directory": working_directory,
+                        "config": ShellConfig(name="shell"),
+                        "image": shell_image or "python:3.13",
+                        "env": env,
+                    }
+                    if shell_tool_mounts is not None:
+                        shell_kwargs["mounts"] = shell_tool_mounts
+                    self.shell_tool = ShellTool(**shell_kwargs)
+                else:
+                    shell_kwargs = {
+                        "image": shell_image or "python:3.13",
+                        "name": "shell",
+                        "env": env,
+                    }
+                    if shell_tool_mounts is not None:
+                        shell_kwargs["mounts"] = shell_tool_mounts
+
+                    self.shell_tool = ContainerShellTool(**shell_kwargs)
 
             if room_rules_path is not None:
                 for p in room_rules_path:
@@ -339,32 +368,6 @@ def build_chatbot(
                     )
                 )
 
-            env = {}
-
-            if delegate_shell_token:
-                env["MESHAGENT_TOKEN"] = self.room.protocol.token
-
-            if require_shell:
-                if is_openai:
-                    shell_kwargs = {
-                        "working_directory": working_directory,
-                        "config": ShellConfig(name="shell"),
-                        "image": shell_image or "python:3.13",
-                        "env": env,
-                    }
-                    if shell_tool_mounts is not None:
-                        shell_kwargs["mounts"] = shell_tool_mounts
-                    providers.append(ShellTool(**shell_kwargs))
-                else:
-                    shell_kwargs = {
-                        "image": shell_image or "python:3.13",
-                        "name": "shell",
-                        "env": env,
-                    }
-                    if shell_tool_mounts is not None:
-                        shell_kwargs["mounts"] = shell_tool_mounts
-                    providers.append(ContainerShellTool(**shell_kwargs))
-
             if require_apply_patch:
                 providers.append(
                     ApplyPatchTool(
@@ -372,6 +375,8 @@ def build_chatbot(
                     )
                 )
 
+            if self.shell_tool is not None:
+                providers.append(self.shell_tool)
             if require_mcp:
                 raise Exception(
                     "mcp tool cannot be required by cli currently, use 'optional' instead"
