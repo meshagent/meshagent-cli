@@ -394,8 +394,9 @@ async def list_containers(
             table.add_column("Image")
             table.add_column("Status")
             table.add_column("Name")
+            table.add_column("ServiceID")
             for c in containers:
-                table.add_row(c.id, c.image or "", c.status or "", c.name or "")
+                table.add_row(c.id, c.image or "", c.status or "", c.name or "", c.service_id or "")
             Console().print(table)
         else:
             # default json-ish
