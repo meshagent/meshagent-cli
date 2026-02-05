@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 
+from meshagent.api import RoomClient, WebSocketClientProtocol
+from meshagent.api.helpers import websocket_room_url
 
-from typing import Annotated
+from typing import Annotated, Optional
 
 import typer
 
@@ -28,14 +30,22 @@ async def forward(
             help="Room name containing the target container",
         ),
     ],
-    container_id: Annotated[
-        str,
+    name: Annotated[
+        Optional[str],
         typer.Option(
-            "--container-id",
+            "-n",
+            "--name",
+            help="Container name to port-forward into",
+        ),
+    ] = None,
+    container_id: Annotated[
+        Optional[str],
+        typer.Option(
             "-c",
+            "--container-id",
             help="Container ID to port-forward into",
         ),
-    ],
+    ] = None,
     port: Annotated[
         str,
         typer.Option(
@@ -54,6 +64,26 @@ async def forward(
         connection = await client.connect_room(project_id=project_id, room=room)
 
         ports = port.split(":")
+
+        if name is not None:
+            async with RoomClient(
+                protocol=WebSocketClientProtocol(
+                    url=websocket_room_url(room_name=room),
+                    token=connection.jwt,
+                )
+            ) as r:
+                containers = await r.containers.list()
+                for container in containers:
+                    if container.name == name:
+                        container_id = container.id
+
+        if container_id is None:
+            if name is not None:
+                print(f"[red]container not found {name}[/red]")
+            else:
+                print("[red]container not specified[/red]")
+
+            raise typer.Exit(1)
 
         handler = await port_forward(
             listen_port=int(ports[0]),
