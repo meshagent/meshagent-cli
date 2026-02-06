@@ -287,6 +287,7 @@ async def streamable_http(
                 async with ClientSession(
                     read_stream=read_stream, write_stream=write_stream
                 ) as session:
+                    await session.initialize()
                     mcp_tools_response = await session.list_tools()
 
                     toolkit = MCPToolkit(
