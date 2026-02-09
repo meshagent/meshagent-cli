@@ -20,13 +20,18 @@ from meshagent.api.services import ServiceHost
 from meshagent.api import ParticipantToken
 
 
-def _kv_to_dict(pairs: List[str], separator: str = "=") -> dict[str, str]:
+def _kv_to_dict(
+    pairs: List[str], separator: str = "=", *, trim: bool = False
+) -> dict[str, str]:
     """Convert ["A=1","B=2"] → {"A":"1","B":"2"}."""
     out: dict[str, str] = {}
     for p in pairs:
         if separator not in p:
             raise typer.BadParameter(f"'{p}' must be KEY{separator}VALUE")
         k, v = p.split(separator, 1)
+        if trim:
+            k = k.strip()
+            v = v.strip()
         out[k] = v
     return out
 
@@ -173,7 +178,7 @@ async def sse(
                 token=jwt,
             )
         ) as client:
-            headers = _kv_to_dict(header, separator=":") if header else {}
+            headers = _kv_to_dict(header, separator=":", trim=True) if header else {}
             secret_headers = await _resolve_header_secrets(client, header_secret)
             headers = {**headers, **secret_headers}
             if not headers:
@@ -282,7 +287,7 @@ async def streamable_http(
                 token=jwt,
             )
         ) as client:
-            headers = _kv_to_dict(header, separator=":") if header else {}
+            headers = _kv_to_dict(header, separator=":", trim=True) if header else {}
             secret_headers = await _resolve_header_secrets(client, header_secret)
             headers = {**headers, **secret_headers}
             if not headers:
