@@ -535,11 +535,15 @@ async def join(
     rules_file: Optional[str] = None,
     toolkit: Annotated[
         List[str],
-        typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option("--schema", "-s", help="the name or url of a required schema"),
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the task runner")
@@ -601,49 +605,45 @@ async def join(
         ),
     ] = [],
     require_image_generation: Annotated[
-        Optional[str], typer.Option(..., help="Name of an image gen model", hidden=True)
+        Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
     require_local_shell: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable local shell tool calling", hidden=True),
+        typer.Option(..., help="Enable local shell tool calling"),
     ] = False,
     require_shell: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable function shell tool calling", hidden=True),
+        typer.Option(..., help="Enable function shell tool calling"),
     ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable apply patch tool calling", hidden=True),
+        typer.Option(..., help="Enable apply patch tool calling"),
     ] = False,
     require_web_search: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable web search tool calling", hidden=True),
+        typer.Option(..., help="Enable web search tool calling"),
     ] = False,
     require_web_fetch: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable web fetch tool calling", hidden=True),
+        typer.Option(..., help="Enable web fetch tool calling"),
     ] = False,
     require_mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling", hidden=True)
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
     require_storage: Annotated[
-        Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
     require_table_read: Annotated[
         list[str],
-        typer.Option(
-            ..., help="Enable table read tools for a specific table", hidden=True
-        ),
+        typer.Option(..., help="Enable table read tools for a specific table"),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(
-            ..., help="Enable table write tools for a specific table", hidden=True
-        ),
+        typer.Option(..., help="Enable table write tools for a specific table"),
     ] = [],
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit", hidden=True),
+        typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
     require_uuid: Annotated[
         bool,
@@ -651,11 +651,11 @@ async def join(
     ] = False,
     require_document_authoring: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable MeshDocument authoring", hidden=True),
+        typer.Option(..., help="Enable MeshDocument authoring"),
     ] = False,
     require_discovery: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable discovery of agents and tools", hidden=True),
+        typer.Option(..., help="Enable discovery of agents and tools"),
     ] = False,
     working_directory: Annotated[
         Optional[str],
@@ -671,17 +671,15 @@ async def join(
     ] = None,
     llm_participant: Annotated[
         Optional[str],
-        typer.Option(
-            ..., help="Delegate LLM interactions to a remote participant", hidden=True
-        ),
+        typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
     output_schema: Annotated[
         Optional[str],
-        typer.Option(..., help="an output schema to use", hidden=True),
+        typer.Option(..., help="an output schema to use"),
     ] = None,
     output_schema_path: Annotated[
         Optional[str],
-        typer.Option(..., help="the path or url to output schema to use", hidden=True),
+        typer.Option(..., help="the path or url to output schema to use"),
     ] = None,
     annotations: Annotated[
         str,
@@ -845,11 +843,15 @@ async def run(
     rules_file: Optional[str] = None,
     toolkit: Annotated[
         List[str],
-        typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option("--schema", "-s", help="the name or url of a required schema"),
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the task runner")
@@ -908,45 +910,41 @@ async def run(
         ),
     ] = [],
     require_image_generation: Annotated[
-        Optional[str], typer.Option(..., help="Name of an image gen model", hidden=True)
+        Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
     require_local_shell: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable local shell tool calling", hidden=True),
+        typer.Option(..., help="Enable local shell tool calling"),
     ] = False,
     require_shell: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable function shell tool calling", hidden=True),
+        typer.Option(..., help="Enable function shell tool calling"),
     ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable apply patch tool calling", hidden=True),
+        typer.Option(..., help="Enable apply patch tool calling"),
     ] = False,
     require_web_search: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable web search tool calling", hidden=True),
+        typer.Option(..., help="Enable web search tool calling"),
     ] = False,
     require_mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling", hidden=True)
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
     require_storage: Annotated[
-        Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
     require_table_read: Annotated[
         list[str],
-        typer.Option(
-            ..., help="Enable table read tools for a specific table", hidden=True
-        ),
+        typer.Option(..., help="Enable table read tools for a specific table"),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(
-            ..., help="Enable table write tools for a specific table", hidden=True
-        ),
+        typer.Option(..., help="Enable table write tools for a specific table"),
     ] = [],
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit", hidden=True),
+        typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
     require_uuid: Annotated[
         bool,
@@ -954,11 +952,11 @@ async def run(
     ] = False,
     require_document_authoring: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable MeshDocument authoring", hidden=True),
+        typer.Option(..., help="Enable MeshDocument authoring"),
     ] = False,
     require_discovery: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable discovery of agents and tools", hidden=True),
+        typer.Option(..., help="Enable discovery of agents and tools"),
     ] = False,
     working_directory: Annotated[
         Optional[str],
@@ -975,16 +973,17 @@ async def run(
     llm_participant: Annotated[
         Optional[str],
         typer.Option(
-            ..., help="Delegate LLM interactions to a remote participant", hidden=True
+            ...,
+            help="Delegate LLM interactions to a remote participant",
         ),
     ] = None,
     output_schema: Annotated[
         Optional[str],
-        typer.Option(..., help="an output schema to use", hidden=True),
+        typer.Option(..., help="an output schema to use"),
     ] = None,
     output_schema_path: Annotated[
         Optional[str],
-        typer.Option(..., help="the path or url to output schema to use", hidden=True),
+        typer.Option(..., help="the path or url to output schema to use"),
     ] = None,
     annotations: Annotated[
         str,
@@ -1177,11 +1176,15 @@ async def service(
     ] = [],
     toolkit: Annotated[
         List[str],
-        typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option("--schema", "-s", help="the name or url of a required schema"),
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the task runner")
@@ -1243,48 +1246,44 @@ async def service(
         ),
     ] = [],
     require_image_generation: Annotated[
-        Optional[str], typer.Option(..., help="Name of an image gen model", hidden=True)
+        Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
     require_local_shell: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable local shell tool calling", hidden=True),
+        typer.Option(..., help="Enable local shell tool calling"),
     ] = False,
     require_shell: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable function shell tool calling", hidden=True),
+        typer.Option(..., help="Enable function shell tool calling"),
     ] = False,
     require_apply_patch: Annotated[
-        Optional[bool], typer.Option(..., help="Enable apply patch tool", hidden=True)
+        Optional[bool], typer.Option(..., help="Enable apply patch tool")
     ] = False,
     require_web_search: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable web search tool calling", hidden=True),
+        typer.Option(..., help="Enable web search tool calling"),
     ] = False,
     require_web_fetch: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable web fetch tool calling", hidden=True),
+        typer.Option(..., help="Enable web fetch tool calling"),
     ] = False,
     require_mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling", hidden=True)
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
     require_storage: Annotated[
-        Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
     require_table_read: Annotated[
         list[str],
-        typer.Option(
-            ..., help="Enable table read tools for a specific table", hidden=True
-        ),
+        typer.Option(..., help="Enable table read tools for a specific table"),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(
-            ..., help="Enable table write tools for a specific table", hidden=True
-        ),
+        typer.Option(..., help="Enable table write tools for a specific table"),
     ] = [],
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit", hidden=True),
+        typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
     require_uuid: Annotated[
         bool,
@@ -1300,17 +1299,15 @@ async def service(
     ] = False,
     require_document_authoring: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable document authoring", hidden=True),
+        typer.Option(..., help="Enable document authoring"),
     ] = False,
     require_discovery: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable discovery of agents and tools", hidden=True),
+        typer.Option(..., help="Enable discovery of agents and tools"),
     ] = False,
     llm_participant: Annotated[
         Optional[str],
-        typer.Option(
-            ..., help="Delegate LLM interactions to a remote participant", hidden=True
-        ),
+        typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
@@ -1323,11 +1320,11 @@ async def service(
     ] = None,
     output_schema: Annotated[
         Optional[str],
-        typer.Option(..., help="an output schema to use", hidden=True),
+        typer.Option(..., help="an output schema to use"),
     ] = None,
     output_schema_path: Annotated[
         Optional[str],
-        typer.Option(..., help="the path or url to output schema to use", hidden=True),
+        typer.Option(..., help="the path or url to output schema to use"),
     ] = None,
     annotations: Annotated[
         str,
@@ -1454,11 +1451,15 @@ async def spec(
     ] = [],
     toolkit: Annotated[
         List[str],
-        typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option("--schema", "-s", help="the name or url of a required schema"),
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the task runner")
@@ -1520,48 +1521,44 @@ async def spec(
         ),
     ] = [],
     require_image_generation: Annotated[
-        Optional[str], typer.Option(..., help="Name of an image gen model", hidden=True)
+        Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
     require_local_shell: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable local shell tool calling", hidden=True),
+        typer.Option(..., help="Enable local shell tool calling"),
     ] = False,
     require_shell: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable function shell tool calling", hidden=True),
+        typer.Option(..., help="Enable function shell tool calling"),
     ] = False,
     require_apply_patch: Annotated[
-        Optional[bool], typer.Option(..., help="Enable apply patch tool", hidden=True)
+        Optional[bool], typer.Option(..., help="Enable apply patch tool")
     ] = False,
     require_web_search: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable web search tool calling", hidden=True),
+        typer.Option(..., help="Enable web search tool calling"),
     ] = False,
     require_web_fetch: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable web fetch tool calling", hidden=True),
+        typer.Option(..., help="Enable web fetch tool calling"),
     ] = False,
     require_mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling", hidden=True)
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
     require_storage: Annotated[
-        Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
     require_table_read: Annotated[
         list[str],
-        typer.Option(
-            ..., help="Enable table read tools for a specific table", hidden=True
-        ),
+        typer.Option(..., help="Enable table read tools for a specific table"),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(
-            ..., help="Enable table write tools for a specific table", hidden=True
-        ),
+        typer.Option(..., help="Enable table write tools for a specific table"),
     ] = [],
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit", hidden=True),
+        typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
     require_uuid: Annotated[
         bool,
@@ -1577,17 +1574,15 @@ async def spec(
     ] = False,
     require_document_authoring: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable document authoring", hidden=True),
+        typer.Option(..., help="Enable document authoring"),
     ] = False,
     require_discovery: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable discovery of agents and tools", hidden=True),
+        typer.Option(..., help="Enable discovery of agents and tools"),
     ] = False,
     llm_participant: Annotated[
         Optional[str],
-        typer.Option(
-            ..., help="Delegate LLM interactions to a remote participant", hidden=True
-        ),
+        typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
@@ -1600,11 +1595,11 @@ async def spec(
     ] = None,
     output_schema: Annotated[
         Optional[str],
-        typer.Option(..., help="an output schema to use", hidden=True),
+        typer.Option(..., help="an output schema to use"),
     ] = None,
     output_schema_path: Annotated[
         Optional[str],
-        typer.Option(..., help="the path or url to output schema to use", hidden=True),
+        typer.Option(..., help="the path or url to output schema to use"),
     ] = None,
     annotations: Annotated[
         str,
@@ -1742,11 +1737,15 @@ async def deploy(
     ] = [],
     toolkit: Annotated[
         List[str],
-        typer.Option("--toolkit", "-t", help="the name or url of a required toolkit"),
+        typer.Option(
+            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+        ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option("--schema", "-s", help="the name or url of a required schema"),
+        typer.Option(
+            "--schema", "-s", help="the name or url of a required schema", hidden=True
+        ),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the task runner")
@@ -1808,48 +1807,44 @@ async def deploy(
         ),
     ] = [],
     require_image_generation: Annotated[
-        Optional[str], typer.Option(..., help="Name of an image gen model", hidden=True)
+        Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
     require_local_shell: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable local shell tool calling", hidden=True),
+        typer.Option(..., help="Enable local shell tool calling"),
     ] = False,
     require_shell: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable function shell tool calling", hidden=True),
+        typer.Option(..., help="Enable function shell tool calling"),
     ] = False,
     require_apply_patch: Annotated[
-        Optional[bool], typer.Option(..., help="Enable apply patch tool", hidden=True)
+        Optional[bool], typer.Option(..., help="Enable apply patch tool")
     ] = False,
     require_web_search: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable web search tool calling", hidden=True),
+        typer.Option(..., help="Enable web search tool calling"),
     ] = False,
     require_web_fetch: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable web fetch tool calling", hidden=True),
+        typer.Option(..., help="Enable web fetch tool calling"),
     ] = False,
     require_mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling", hidden=True)
+        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
     require_storage: Annotated[
-        Optional[bool], typer.Option(..., help="Enable storage toolkit", hidden=True)
+        Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
     require_table_read: Annotated[
         list[str],
-        typer.Option(
-            ..., help="Enable table read tools for a specific table", hidden=True
-        ),
+        typer.Option(..., help="Enable table read tools for a specific table"),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(
-            ..., help="Enable table write tools for a specific table", hidden=True
-        ),
+        typer.Option(..., help="Enable table write tools for a specific table"),
     ] = [],
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit", hidden=True),
+        typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
     require_uuid: Annotated[
         bool,
@@ -1865,17 +1860,15 @@ async def deploy(
     ] = False,
     require_document_authoring: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable document authoring", hidden=True),
+        typer.Option(..., help="Enable document authoring"),
     ] = False,
     require_discovery: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable discovery of agents and tools", hidden=True),
+        typer.Option(..., help="Enable discovery of agents and tools"),
     ] = False,
     llm_participant: Annotated[
         Optional[str],
-        typer.Option(
-            ..., help="Delegate LLM interactions to a remote participant", hidden=True
-        ),
+        typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
@@ -1888,11 +1881,11 @@ async def deploy(
     ] = None,
     output_schema: Annotated[
         Optional[str],
-        typer.Option(..., help="an output schema to use", hidden=True),
+        typer.Option(..., help="an output schema to use"),
     ] = None,
     output_schema_path: Annotated[
         Optional[str],
-        typer.Option(..., help="the path or url to output schema to use", hidden=True),
+        typer.Option(..., help="the path or url to output schema to use"),
     ] = None,
     annotations: Annotated[
         str,
