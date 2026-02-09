@@ -1,3 +1,7 @@
+import json
+import os
+import shlex
+
 import typer
 from rich import print
 from typing import Annotated, Optional, List
@@ -6,20 +10,12 @@ from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.api.helpers import websocket_room_url
 from meshagent.api import RoomClient, WebSocketClientProtocol, RoomException
 from meshagent.cli import async_typer
-from meshagent.cli.helper import (
-    get_client,
-    resolve_project_id,
-    resolve_room,
-    resolve_key,
-)
+from meshagent.cli.helper import resolve_project_id, resolve_room, resolve_key
 
 from meshagent.tools.hosting import RemoteToolkit
 
 
 from meshagent.api.services import ServiceHost
-import os
-
-import shlex
 
 from meshagent.api import ParticipantToken
 
@@ -50,14 +46,12 @@ def _parse_header_secret(value: str) -> tuple[str, str, Optional[str]]:
 
 
 async def _resolve_header_secrets(
-    account_client, project_id: str, header_secret: List[str]
+    room_client: RoomClient, header_secret: List[str]
 ) -> dict[str, str]:
     if not header_secret:
         return {}
 
-    from meshagent.api.client import KeysSecret
-
-    secrets = await account_client.list_secrets(project_id=project_id)
+    secrets = await room_client.secrets.list_secrets()
     secrets_by_id = {secret.id: secret for secret in secrets}
     secrets_by_name = {secret.name: secret for secret in secrets}
 
@@ -69,22 +63,37 @@ async def _resolve_header_secrets(
             raise typer.BadParameter(
                 f"Secret '{secret_id}' not found (use secret id or name)"
             )
-        if not isinstance(secret, KeysSecret):
+        if secret.type != "keys":
             raise typer.BadParameter(
                 f"Secret '{secret_id}' is not a keys secret (type={secret.type})"
             )
+        secret_response = await room_client.secrets.get_secret(secret_id=secret.id)
+        if secret_response is None:
+            raise typer.BadParameter(f"Secret '{secret_id}' has no data")
+        try:
+            secret_data = json.loads(secret_response.data.decode())
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise typer.BadParameter(
+                f"Secret '{secret_id}' is not valid JSON for keys secret"
+            ) from exc
+        if not isinstance(secret_data, dict):
+            raise typer.BadParameter(
+                f"Secret '{secret_id}' is not a JSON object for keys secret"
+            )
         if secret_key is None:
-            if len(secret.data) != 1:
+            if len(secret_data) != 1:
                 raise typer.BadParameter(
                     f"Secret '{secret_id}' contains multiple keys; use HEADER=SECRET_ID:KEY"
                 )
-            resolved_value = next(iter(secret.data.values()))
+            resolved_value = next(iter(secret_data.values()))
         else:
-            if secret_key not in secret.data:
+            if secret_key not in secret_data:
                 raise typer.BadParameter(
                     f"Secret '{secret_id}' does not contain key '{secret_key}'"
                 )
-            resolved_value = secret.data[secret_key]
+            resolved_value = secret_data[secret_key]
+        if not isinstance(resolved_value, str):
+            resolved_value = str(resolved_value)
         resolved[header_name] = resolved_value
 
     return resolved
@@ -139,7 +148,6 @@ async def sse(
     if toolkit_name is None:
         toolkit_name = "mcp"
 
-    account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
         room = resolve_room(room)
@@ -163,9 +171,7 @@ async def sse(
             )
         ) as client:
             headers = _kv_to_dict(header) if header else {}
-            secret_headers = await _resolve_header_secrets(
-                account_client, project_id, header_secret
-            )
+            secret_headers = await _resolve_header_secrets(client, header_secret)
             headers = {**headers, **secret_headers}
             if not headers:
                 headers = None
@@ -196,8 +202,6 @@ async def sse(
 
     except RoomException as e:
         print(e)
-    finally:
-        await account_client.close()
 
 
 @app.async_command(
@@ -249,7 +253,6 @@ async def streamable_http(
     if toolkit_name is None:
         toolkit_name = "mcp"
 
-    account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
         room = resolve_room(room)
@@ -273,9 +276,7 @@ async def streamable_http(
             )
         ) as client:
             headers = _kv_to_dict(header) if header else {}
-            secret_headers = await _resolve_header_secrets(
-                account_client, project_id, header_secret
-            )
+            secret_headers = await _resolve_header_secrets(client, header_secret)
             headers = {**headers, **secret_headers}
             if not headers:
                 headers = None
@@ -311,8 +312,6 @@ async def streamable_http(
 
     except RoomException as e:
         print(e)
-    finally:
-        await account_client.close()
 
 
 @app.async_command(
@@ -352,7 +351,6 @@ async def stdio(
     if toolkit_name is None:
         toolkit_name = "mcp"
 
-    account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
         room = resolve_room(room)
@@ -412,8 +410,6 @@ async def stdio(
 
     except RoomException as e:
         print(e)
-    finally:
-        await account_client.close()
 
 
 @app.async_command("http-proxy", help="Expose a stdio MCP server over streamable HTTP")
