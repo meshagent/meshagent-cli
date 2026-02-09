@@ -471,6 +471,13 @@ async def join(
     agent_name: Annotated[
         Optional[str], typer.Option(..., help="Name of the worker agent")
     ] = None,
+    token_from_env: Annotated[
+        Optional[str],
+        typer.Option(
+            "--token-from-env",
+            help="Name of environment variable containing a MeshAgent token",
+        ),
+    ] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[str] = None,
     require_toolkit: Annotated[
@@ -669,11 +676,17 @@ async def join(
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
 
-        jwt = os.getenv("MESHAGENT_TOKEN")
+        token_env = token_from_env or "MESHAGENT_TOKEN"
+        jwt = os.getenv(token_env)
         if jwt is None:
+            if token_from_env:
+                print(
+                    f"[bold red]{token_env} environment variable is not set[/bold red]"
+                )
+                raise typer.Exit(1)
             if agent_name is None:
                 print(
-                    "[bold red]--agent-name must be specified when the MESHAGENT_TOKEN environment variable is not set[/bold red]"
+                    f"[bold red]--agent-name must be specified when the {token_env} environment variable is not set[/bold red]"
                 )
                 raise typer.Exit(1)
 
