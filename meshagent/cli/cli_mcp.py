@@ -1,6 +1,6 @@
-import json
 import os
 import shlex
+import string
 
 import typer
 from rich import print
@@ -8,7 +8,7 @@ from typing import Annotated, Optional, List
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
 
 from meshagent.api.helpers import websocket_room_url
-from meshagent.api import RoomClient, WebSocketClientProtocol, RoomException
+from meshagent.api import RoomClient, WebSocketClientProtocol, RoomException, ApiScope
 from meshagent.cli import async_typer
 from meshagent.cli.helper import resolve_project_id, resolve_room, resolve_key
 
@@ -20,29 +20,30 @@ from meshagent.api.services import ServiceHost
 from meshagent.api import ParticipantToken
 
 
-def _kv_to_dict(pairs: List[str]) -> dict[str, str]:
+def _kv_to_dict(pairs: List[str], separator: str = "=") -> dict[str, str]:
     """Convert ["A=1","B=2"] → {"A":"1","B":"2"}."""
     out: dict[str, str] = {}
     for p in pairs:
-        if "=" not in p:
-            raise typer.BadParameter(f"'{p}' must be KEY=VALUE")
-        k, v = p.split("=", 1)
+        if separator not in p:
+            raise typer.BadParameter(f"'{p}' must be KEY{separator}VALUE")
+        k, v = p.split(separator, 1)
         out[k] = v
     return out
 
 
-def _parse_header_secret(value: str) -> tuple[str, str, Optional[str]]:
-    if "=" not in value:
-        raise typer.BadParameter(f"'{value}' must be HEADER=SECRET_ID[:KEY]")
-    header_name, secret_spec = value.split("=", 1)
+def _parse_header_secret(value: str) -> tuple[str, str]:
+    if ":" not in value:
+        raise typer.BadParameter(
+            f"'{value}' must be HEADER:FORMAT (e.g. Header:Bearer {{secret}})"
+        )
+    header_name, format_spec = value.split(":", 1)
     header_name = header_name.strip()
-    secret_spec = secret_spec.strip()
-    if header_name == "" or secret_spec == "":
-        raise typer.BadParameter(f"'{value}' must be HEADER=SECRET_ID[:KEY]")
-    if ":" in secret_spec:
-        secret_id, secret_key = secret_spec.split(":", 1)
-        return header_name, secret_id.strip(), secret_key.strip()
-    return header_name, secret_spec, None
+    format_spec = format_spec.strip()
+    if header_name == "" or format_spec == "":
+        raise typer.BadParameter(
+            f"'{value}' must be HEADER:FORMAT (e.g. Header:Bearer {{secret}})"
+        )
+    return header_name, format_spec
 
 
 async def _resolve_header_secrets(
@@ -57,44 +58,42 @@ async def _resolve_header_secrets(
 
     resolved: dict[str, str] = {}
     for item in header_secret:
-        header_name, secret_id, secret_key = _parse_header_secret(item)
-        secret = secrets_by_id.get(secret_id) or secrets_by_name.get(secret_id)
-        if secret is None:
+        header_name, format_spec = _parse_header_secret(item)
+        placeholder_names = {
+            field_name
+            for _, field_name, _, _ in string.Formatter().parse(format_spec)
+            if field_name
+        }
+        if not placeholder_names:
             raise typer.BadParameter(
-                f"Secret '{secret_id}' not found (use secret id or name)"
+                f"Header secret format '{format_spec}' must include a placeholder"
             )
-        if secret.type != "keys":
-            raise typer.BadParameter(
-                f"Secret '{secret_id}' is not a keys secret (type={secret.type})"
-            )
-        secret_response = await room_client.secrets.get_secret(secret_id=secret.id)
-        if secret_response is None:
-            raise typer.BadParameter(f"Secret '{secret_id}' has no data")
+
+        secrets_values: dict[str, str] = {}
+        for secret_key in placeholder_names:
+            secret = secrets_by_id.get(secret_key) or secrets_by_name.get(secret_key)
+            if secret is None:
+                raise typer.BadParameter(
+                    f"Secret '{secret_key}' not found (use secret id or name)"
+                )
+            secret_response = await room_client.secrets.get_secret(secret_id=secret.id)
+            if secret_response is None:
+                raise typer.BadParameter(f"Secret '{secret_key}' has no data")
+            try:
+                resolved_value = secret_response.data.decode()
+            except UnicodeDecodeError as exc:
+                raise typer.BadParameter(
+                    f"Secret '{secret_key}' is not valid UTF-8 text"
+                ) from exc
+            secrets_values[secret_key] = resolved_value
+
         try:
-            secret_data = json.loads(secret_response.data.decode())
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            formatted_value = format_spec.format(**secrets_values)
+        except (KeyError, IndexError, ValueError) as exc:
             raise typer.BadParameter(
-                f"Secret '{secret_id}' is not valid JSON for keys secret"
+                f"Header secret format '{format_spec}' is invalid"
             ) from exc
-        if not isinstance(secret_data, dict):
-            raise typer.BadParameter(
-                f"Secret '{secret_id}' is not a JSON object for keys secret"
-            )
-        if secret_key is None:
-            if len(secret_data) != 1:
-                raise typer.BadParameter(
-                    f"Secret '{secret_id}' contains multiple keys; use HEADER=SECRET_ID:KEY"
-                )
-            resolved_value = next(iter(secret_data.values()))
-        else:
-            if secret_key not in secret_data:
-                raise typer.BadParameter(
-                    f"Secret '{secret_id}' does not contain key '{secret_key}'"
-                )
-            resolved_value = secret_data[secret_key]
-        if not isinstance(resolved_value, str):
-            resolved_value = str(resolved_value)
-        resolved[header_name] = resolved_value
+        resolved[header_name] = formatted_value
 
     return resolved
 
@@ -117,14 +116,17 @@ async def sse(
         typer.Option(
             "--header",
             "-H",
-            help="Request header (KEY=VALUE). Repeat for multiple headers",
+            help="Request header (KEY:VALUE). Repeat for multiple headers",
         ),
     ] = [],
     header_secret: Annotated[
         List[str],
         typer.Option(
             "--header-secret",
-            help="Header from secret (HEADER=SECRET_ID[:KEY])",
+            help=(
+                "Header from secret (HEADER:FORMAT). "
+                "FORMAT uses secret placeholders, e.g. Header:Bearer {my_secret}"
+            ),
         ),
     ] = [],
     toolkit_name: Annotated[
@@ -160,6 +162,7 @@ async def sse(
 
             token.add_role_grant(role=role)
             token.add_room_grant(room)
+            token.add_api_grant(ApiScope.full())
 
             jwt = token.to_jwt(api_key=key)
 
@@ -170,7 +173,7 @@ async def sse(
                 token=jwt,
             )
         ) as client:
-            headers = _kv_to_dict(header) if header else {}
+            headers = _kv_to_dict(header, separator=":") if header else {}
             secret_headers = await _resolve_header_secrets(client, header_secret)
             headers = {**headers, **secret_headers}
             if not headers:
@@ -222,14 +225,17 @@ async def streamable_http(
         typer.Option(
             "--header",
             "-H",
-            help="Request header (KEY=VALUE). Repeat for multiple headers",
+            help="Request header (KEY:VALUE). Repeat for multiple headers",
         ),
     ] = [],
     header_secret: Annotated[
         List[str],
         typer.Option(
             "--header-secret",
-            help="Header from secret (HEADER=SECRET_ID[:KEY])",
+            help=(
+                "Header from secret (HEADER:FORMAT). "
+                "FORMAT uses secret placeholders, e.g. Header:Bearer {my_secret}"
+            ),
         ),
     ] = [],
     toolkit_name: Annotated[
@@ -265,6 +271,7 @@ async def streamable_http(
 
             token.add_role_grant(role=role)
             token.add_room_grant(room)
+            token.add_api_grant(ApiScope.full())
 
             jwt = token.to_jwt(api_key=key)
 
@@ -275,7 +282,7 @@ async def streamable_http(
                 token=jwt,
             )
         ) as client:
-            headers = _kv_to_dict(header) if header else {}
+            headers = _kv_to_dict(header, separator=":") if header else {}
             secret_headers = await _resolve_header_secrets(client, header_secret)
             headers = {**headers, **secret_headers}
             if not headers:
@@ -363,6 +370,7 @@ async def stdio(
 
             token.add_role_grant(role=role)
             token.add_room_grant(room)
+            token.add_api_grant(ApiScope.full())
 
             jwt = token.to_jwt(api_key=key)
 
