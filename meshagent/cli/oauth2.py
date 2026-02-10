@@ -188,7 +188,7 @@ async def secret_get(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
-    secret_id: Annotated[str, typer.Option(..., help="Secret ID")],
+    id: Annotated[str, typer.Option(..., help="Secret ID")],
     delegated_to: Annotated[
         Optional[str],
         typer.Option(help="Fetch a secret delegated to this participant name"),
@@ -218,7 +218,7 @@ async def secret_get(
             )
         ) as consumer:
             resp = await consumer.secrets.get_secret(
-                secret_id=secret_id,
+                secret_id=id,
                 delegated_to=delegated_to,
             )
 
@@ -243,7 +243,7 @@ async def secret_set(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
-    secret_id: Annotated[str, typer.Option(..., help="Secret ID")],
+    id: Annotated[str, typer.Option(..., help="Secret ID")],
     type: Annotated[
         Optional[str],
         typer.Option("--type", help="Secret type"),
@@ -305,7 +305,7 @@ async def secret_set(
             )
         ) as consumer:
             await consumer.secrets.set_secret(
-                secret_id=secret_id,
+                secret_id=id,
                 type=type,
                 name=name,
                 delegated_to=delegated_to,
