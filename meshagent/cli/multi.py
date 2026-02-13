@@ -320,6 +320,9 @@ async def join(
         str,
         typer.Option("--key", help="an api key to sign the token with"),
     ] = None,
+    agent_name: Annotated[
+        Optional[str], typer.Option(..., help="Name of the agent to call")
+    ] = None,
 ):
     set_deferred(True)
 
@@ -329,8 +332,10 @@ async def join(
 
     for c in command.split(";"):
         print(c, flush=True)
-
-        execute_via_root(cli_join, c + f" --room={room}", prog_name="meshagent")
+        command_args = c + f" --room={room}"
+        if agent_name and "--agent-name" not in c:
+            command_args += f" --agent-name={agent_name}"
+        execute_via_root(cli_join, command_args, prog_name="meshagent")
 
     from meshagent.cli.host import agents
 
