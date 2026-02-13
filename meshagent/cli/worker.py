@@ -108,7 +108,7 @@ def build_worker(
     description: Optional[str] = None,
     tool_adapter: Optional[ToolResponseAdapter] = None,
     toolkits: Optional[list[Toolkit]] = None,
-    rules_file: Optional[str] = None,
+    rules_file: Optional[list[str]] = None,
     room_rules_paths: list[str] | None = None,
     # thread/tool controls (mirrors mailbot)
     image_generation: Optional[str] = None,
@@ -163,11 +163,12 @@ def build_worker(
 
     # merge in rules file contents
     if rules_file is not None:
-        try:
-            with open(Path(rules_file).resolve(), "r") as f:
-                rule.extend(f.read().splitlines())
-        except FileNotFoundError:
-            print(f"[yellow]rules file not found at {rules_file}[/yellow]")
+        for rules_path in rules_file:
+            try:
+                with open(Path(rules_path).resolve(), "r") as f:
+                    rule.extend(f.read().splitlines())
+            except FileNotFoundError:
+                print(f"[yellow]rules file not found at {rules_path}[/yellow]")
 
     is_claude_model = model.startswith("claude-")
     is_openai = not is_claude_model
@@ -479,7 +480,7 @@ async def join(
         ),
     ] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
-    rules_file: Optional[str] = None,
+    rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
         typer.Option(
@@ -784,7 +785,7 @@ async def service(
     *,
     agent_name: Annotated[str, typer.Option(..., help="Name of the worker agent")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
-    rules_file: Optional[str] = None,
+    rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
         typer.Option(
@@ -1071,7 +1072,7 @@ async def spec(
     ] = None,
     agent_name: Annotated[str, typer.Option(..., help="Name of the worker agent")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
-    rules_file: Optional[str] = None,
+    rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
         typer.Option(
@@ -1371,7 +1372,7 @@ async def deploy(
     ] = None,
     agent_name: Annotated[str, typer.Option(..., help="Name of the worker agent")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
-    rules_file: Optional[str] = None,
+    rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
         typer.Option(

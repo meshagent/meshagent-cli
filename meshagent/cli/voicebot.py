@@ -38,7 +38,7 @@ logger = logging.getLogger("voicebot")
 def build_voicebot(
     *,
     rules: list[str],
-    rules_file: Optional[str] = None,
+    rules_file: Optional[list[str]] = None,
     toolkits: list[str],
     schemas: list[str],
     auto_greet_message: Optional[str] = None,
@@ -54,11 +54,12 @@ def build_voicebot(
         requirements.append(RequiredSchema(name=t))
 
     if rules_file is not None:
-        try:
-            with open(Path(rules_file).resolve(), "r") as f:
-                rules.extend(f.read().splitlines())
-        except FileNotFoundError:
-            print(f"[yellow]rules file not found at {rules_file}[/yellow]")
+        for rules_path in rules_file:
+            try:
+                with open(Path(rules_path).resolve(), "r") as f:
+                    rules.extend(f.read().splitlines())
+            except FileNotFoundError:
+                print(f"[yellow]rules file not found at {rules_path}[/yellow]")
 
     try:
         from meshagent.livekit.agents.voice import VoiceBot
@@ -169,7 +170,7 @@ async def join(
         ),
     ] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
-    rules_file: Optional[str] = None,
+    rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
         typer.Option(
@@ -291,7 +292,7 @@ async def service(
     *,
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
-    rules_file: Optional[str] = None,
+    rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
         typer.Option(
@@ -384,7 +385,7 @@ async def spec(
     ] = None,
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
-    rules_file: Optional[str] = None,
+    rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
         typer.Option(
@@ -489,7 +490,7 @@ async def deploy(
     ] = None,
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
-    rules_file: Optional[str] = None,
+    rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
         typer.Option(

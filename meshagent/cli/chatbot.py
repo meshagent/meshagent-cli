@@ -141,7 +141,7 @@ def build_chatbot(
     require_read_only_storage: Optional[str] = None,
     require_time: bool = True,
     require_uuid: bool = False,
-    rules_file: Optional[str] = None,
+    rules_file: Optional[list[str]] = None,
     room_rules_path: Optional[list[str]] = None,
     require_discovery: Optional[str] = None,
     require_document_authoring: Optional[str] = None,
@@ -171,14 +171,17 @@ def build_chatbot(
     client_rules = {}
 
     if rules_file is not None:
-        try:
-            with open(Path(os.path.expanduser(rules_file)).resolve(), "r") as f:
-                rules_config = RulesConfig.parse(f.read())
-                rule.extend(rules_config.rules)
-                client_rules = rules_config.client_rules
+        for rules_path in rules_file:
+            try:
+                with open(Path(os.path.expanduser(rules_path)).resolve(), "r") as f:
+                    rules_config = RulesConfig.parse(f.read())
+                    if rules_config.rules is not None:
+                        rule.extend(rules_config.rules)
+                    if rules_config.client_rules is not None:
+                        client_rules.update(rules_config.client_rules)
 
-        except FileNotFoundError:
-            print(f"[yellow]rules file not found at {rules_file}[/yellow]")
+            except FileNotFoundError:
+                print(f"[yellow]rules file not found at {rules_path}[/yellow]")
 
     is_claude_model = model.startswith("claude-")
     is_openai = not is_claude_model
@@ -562,7 +565,7 @@ async def join(
             help="a path to a rules file within the room that can be used to customize the agent's behavior",
         ),
     ] = [],
-    rules_file: Optional[str] = None,
+    rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
         typer.Option(
@@ -886,7 +889,7 @@ async def service(
     *,
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
-    rules_file: Optional[str] = None,
+    rules_file: Optional[list[str]] = None,
     room_rules: Annotated[
         List[str],
         typer.Option(
@@ -1190,7 +1193,7 @@ async def spec(
     ] = None,
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
-    rules_file: Optional[str] = None,
+    rules_file: Optional[list[str]] = None,
     room_rules: Annotated[
         List[str],
         typer.Option(
@@ -1507,7 +1510,7 @@ async def deploy(
     ] = None,
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
-    rules_file: Optional[str] = None,
+    rules_file: Optional[list[str]] = None,
     room_rules: Annotated[
         List[str],
         typer.Option(
@@ -1967,7 +1970,7 @@ async def run(
             help="a path to a rules file within the room that can be used to customize the agent's behavior",
         ),
     ] = [],
-    rules_file: Optional[str] = None,
+    rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
         typer.Option(
