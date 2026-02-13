@@ -473,12 +473,14 @@ async def exec_container(
 
     try:
         import termios
+        import shlex
 
         from contextlib import contextmanager
 
+        parsed_command = shlex.split(command) if command else None
         container = await client.containers.exec(
             container_id=container_id,
-            command=command,
+            command=parsed_command,
             tty=tty,
         )
 
