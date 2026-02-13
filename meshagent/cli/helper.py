@@ -212,33 +212,7 @@ async def resolve_key(project_id: str | None, key: str | None):
     return key
 
 
-def split_storage_mount(value: str, option_name: str) -> tuple[str, str, bool]:
-    cleaned = value.strip()
-    if cleaned == "":
-        raise typer.BadParameter(f"{option_name} cannot be empty")
-
-    read_only = False
-    lowered = cleaned.lower()
-    if lowered.endswith(":ro") or lowered.endswith(":rw"):
-        cleaned, suffix = cleaned.rsplit(":", 1)
-        read_only = suffix.lower() == "ro"
-
-    parts = cleaned.rsplit(":", 1)
-    if len(parts) != 2:
-        raise typer.BadParameter(
-            f"{option_name} must be in the form '<source>:<mount>[:ro|rw]'"
-        )
-
-    source, mount = (part.strip() for part in parts)
-    if source == "" or mount == "":
-        raise typer.BadParameter(
-            f"{option_name} must include both source and mount paths"
-        )
-
-    return source, mount, read_only
-
-
-def split_container_mount(
+def _split_mount_value(
     value: str, option_name: str, default_read_only: bool
 ) -> tuple[str, str, bool]:
     cleaned = value.strip()
@@ -246,10 +220,10 @@ def split_container_mount(
         raise typer.BadParameter(f"{option_name} cannot be empty")
 
     read_only = default_read_only
-    lowered = cleaned.lower()
-    if lowered.endswith(":ro") or lowered.endswith(":rw"):
-        cleaned, suffix = cleaned.rsplit(":", 1)
-        read_only = suffix.lower() == "ro"
+    parts = cleaned.rsplit(":", 2)
+    if len(parts) == 3 and parts[2].lower() in {"ro", "rw"}:
+        cleaned = f"{parts[0]}:{parts[1]}"
+        read_only = parts[2].lower() == "ro"
 
     parts = cleaned.rsplit(":", 1)
     if len(parts) != 2:
@@ -264,6 +238,16 @@ def split_container_mount(
         )
 
     return source, mount, read_only
+
+
+def split_storage_mount(value: str, option_name: str) -> tuple[str, str, bool]:
+    return _split_mount_value(value, option_name, False)
+
+
+def split_container_mount(
+    value: str, option_name: str, default_read_only: bool
+) -> tuple[str, str, bool]:
+    return _split_mount_value(value, option_name, default_read_only)
 
 
 def parse_storage_tool_mounts(

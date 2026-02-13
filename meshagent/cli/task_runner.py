@@ -671,6 +671,10 @@ async def join(
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
     delegate_shell_token: Annotated[
         Optional[bool],
         typer.Option(..., help="Delegate the room token to shell tools"),
@@ -804,6 +808,7 @@ async def join(
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
             working_directory=working_directory,
+            shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
             llm_participant=llm_participant,
             output_schema_str=output_schema,
@@ -978,6 +983,10 @@ async def run(
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
     delegate_shell_token: Annotated[
         Optional[bool],
         typer.Option(..., help="Delegate the room token to shell tools"),
@@ -1115,6 +1124,7 @@ async def run(
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
             working_directory=working_directory,
+            shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
             llm_participant=llm_participant,
             output_schema_str=output_schema,
@@ -1309,6 +1319,10 @@ async def service(
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
     delegate_shell_token: Annotated[
         Optional[bool],
         typer.Option(..., help="Delegate the room token to shell tools"),
@@ -1429,6 +1443,7 @@ async def service(
             require_uuid=require_uuid,
             room_rules_path=room_rules,
             working_directory=working_directory,
+            shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
@@ -1584,6 +1599,10 @@ async def spec(
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
     delegate_shell_token: Annotated[
         Optional[bool],
         typer.Option(..., help="Delegate the room token to shell tools"),
@@ -1702,6 +1721,7 @@ async def spec(
             require_uuid=require_uuid,
             room_rules_path=room_rules,
             working_directory=working_directory,
+            shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
@@ -1870,6 +1890,10 @@ async def deploy(
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
+    shell_image: Annotated[
+        Optional[str],
+        typer.Option(..., help="an image tag to use to run shell commands in"),
+    ] = None,
     delegate_shell_token: Annotated[
         Optional[bool],
         typer.Option(..., help="Delegate the room token to shell tools"),
@@ -1995,6 +2019,7 @@ async def deploy(
             require_uuid=require_uuid,
             room_rules_path=room_rules,
             working_directory=working_directory,
+            shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
