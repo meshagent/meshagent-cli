@@ -80,10 +80,12 @@ from meshagent.api.messaging import JsonResponse, TextResponse
 
 from meshagent.cli.host import get_service, run_services, get_deferred, service_specs
 from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
+from meshagent.tools.datetime import DatetimeToolkit
 from meshagent.tools.script import get_script_tools
 from meshagent.tools.uuid import UUIDToolkit
 from meshagent.agents.adapter import MessageStreamLLMAdapter
 from meshagent.agents.context import TaskContext
+from meshagent.agents.skills import to_prompt
 
 from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.api.specs.service import (
@@ -153,6 +155,7 @@ def build_task_runner(
     require_table_read: list[str] = None,
     require_table_write: list[str] = None,
     require_read_only_storage: Optional[str] = None,
+    require_time: bool = True,
     require_uuid: bool = False,
     rules_file: Optional[list[str]] = None,
     room_rules_path: Optional[list[str]] = None,
@@ -166,6 +169,7 @@ def build_task_runner(
     title: Optional[str] = None,
     description: Optional[str] = None,
     shell_image: Optional[str] = None,
+    skill_dirs: Optional[list[str]] = None,
     delegate_shell_token: Optional[bool] = None,
     log_llm_requests: Optional[bool] = False,
 ):
@@ -347,6 +351,15 @@ def build_task_runner(
         async def get_rules(self, *, context: TaskContext):
             rules = await super().get_rules(context=context)
 
+            if skill_dirs is not None and len(skill_dirs) > 0:
+                rules.append(
+                    "You have access to to following skills which follow the agentskills spec:"
+                )
+                rules.append(await to_prompt([*(Path(p) for p in skill_dirs)]))
+                rules.append(
+                    "Use the shell or storage tool to find out more about skills and execute them when they are required"
+                )
+
             if room_rules_path is not None:
                 for p in room_rules_path:
                     rules.extend(
@@ -425,6 +438,9 @@ def build_task_runner(
                         )
                     ).tools
                 )
+
+            if require_time:
+                providers.extend(DatetimeToolkit().tools)
 
             if require_uuid:
                 providers.extend((UUIDToolkit()).tools)
@@ -655,6 +671,10 @@ async def join(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(..., help="Enable time/datetime tools"),
+    ] = True,
     require_uuid: Annotated[
         bool,
         typer.Option(..., help="Enable UUID generation tools"),
@@ -671,6 +691,10 @@ async def join(
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
     shell_image: Annotated[
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
@@ -803,12 +827,14 @@ async def join(
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
             require_uuid=require_uuid,
             room_rules_path=room_rules,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
             working_directory=working_directory,
             shell_image=shell_image,
+            skill_dirs=skill_dir,
             delegate_shell_token=delegate_shell_token,
             llm_participant=llm_participant,
             output_schema_str=output_schema,
@@ -967,6 +993,10 @@ async def run(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(..., help="Enable time/datetime tools"),
+    ] = True,
     require_uuid: Annotated[
         bool,
         typer.Option(..., help="Enable UUID generation tools"),
@@ -983,6 +1013,10 @@ async def run(
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
     shell_image: Annotated[
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
@@ -1119,12 +1153,14 @@ async def run(
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
             require_uuid=require_uuid,
             room_rules_path=room_rules,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
             working_directory=working_directory,
             shell_image=shell_image,
+            skill_dirs=skill_dir,
             delegate_shell_token=delegate_shell_token,
             llm_participant=llm_participant,
             output_schema_str=output_schema,
@@ -1311,6 +1347,10 @@ async def service(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(..., help="Enable time/datetime tools"),
+    ] = True,
     require_uuid: Annotated[
         bool,
         typer.Option(..., help="Enable UUID generation tools"),
@@ -1319,6 +1359,10 @@ async def service(
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
     shell_image: Annotated[
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
@@ -1440,10 +1484,12 @@ async def service(
             require_table_write=require_table_write,
             require_table_read=require_table_read,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
             require_uuid=require_uuid,
             room_rules_path=room_rules,
             working_directory=working_directory,
             shell_image=shell_image,
+            skill_dirs=skill_dir,
             delegate_shell_token=delegate_shell_token,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
@@ -1591,6 +1637,10 @@ async def spec(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(..., help="Enable time/datetime tools"),
+    ] = True,
     require_uuid: Annotated[
         bool,
         typer.Option(..., help="Enable UUID generation tools"),
@@ -1599,6 +1649,10 @@ async def spec(
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
     shell_image: Annotated[
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
@@ -1718,10 +1772,12 @@ async def spec(
             require_table_write=require_table_write,
             require_table_read=require_table_read,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
             require_uuid=require_uuid,
             room_rules_path=room_rules,
             working_directory=working_directory,
             shell_image=shell_image,
+            skill_dirs=skill_dir,
             delegate_shell_token=delegate_shell_token,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
@@ -1882,6 +1938,10 @@ async def deploy(
         Optional[bool],
         typer.Option(..., help="Enable read only storage toolkit"),
     ] = False,
+    require_time: Annotated[
+        bool,
+        typer.Option(..., help="Enable time/datetime tools"),
+    ] = True,
     require_uuid: Annotated[
         bool,
         typer.Option(..., help="Enable UUID generation tools"),
@@ -1890,6 +1950,10 @@ async def deploy(
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
+    skill_dir: Annotated[
+        list[str],
+        typer.Option(..., help="an agent skills directory"),
+    ] = [],
     shell_image: Annotated[
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
@@ -2016,10 +2080,12 @@ async def deploy(
             require_table_write=require_table_write,
             require_table_read=require_table_read,
             require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
             require_uuid=require_uuid,
             room_rules_path=room_rules,
             working_directory=working_directory,
             shell_image=shell_image,
+            skill_dirs=skill_dir,
             delegate_shell_token=delegate_shell_token,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
