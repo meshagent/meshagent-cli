@@ -9,6 +9,7 @@ from meshagent.cli import async_typer
 from meshagent.api.helpers import meshagent_base_url
 from meshagent.api.specs.service import (
     ContainerMountSpec,
+    ImageStorageMountSpec,
     ProjectStorageMountSpec,
     RoomStorageMountSpec,
     ServiceSpec,
@@ -250,6 +251,50 @@ def split_container_mount(
     return _split_mount_value(value, option_name, default_read_only)
 
 
+def split_image_mount(
+    value: str, option_name: str
+) -> tuple[str, str, Optional[str], bool]:
+    cleaned = value.strip()
+    if cleaned == "":
+        raise typer.BadParameter(f"{option_name} cannot be empty")
+
+    if "=" not in cleaned:
+        raise typer.BadParameter(
+            f"{option_name} must be in the form '<image>=<mount>[:ro|rw]'"
+        )
+
+    image, remainder = (part.strip() for part in cleaned.split("=", 1))
+    if image == "" or remainder == "":
+        raise typer.BadParameter(
+            f"{option_name} must include both image and mount paths"
+        )
+
+    read_only = True
+    subpath: Optional[str] = None
+    parts = [part.strip() for part in remainder.split(":")]
+    if len(parts) == 1:
+        mount = parts[0]
+    elif len(parts) == 2:
+        if parts[1].lower() in {"ro", "rw"}:
+            mount = parts[0]
+            read_only = parts[1].lower() == "ro"
+        else:
+            raise typer.BadParameter(
+                f"{option_name} must be in the form '<image>=<mount>[:ro|rw]'"
+            )
+    else:
+        raise typer.BadParameter(
+            f"{option_name} must be in the form '<image>=<mount>[:ro|rw]'"
+        )
+
+    if mount == "":
+        raise typer.BadParameter(
+            f"{option_name} must include both image and mount paths"
+        )
+
+    return image, mount, subpath, read_only
+
+
 def parse_storage_tool_mounts(
     *,
     local_paths: list[str],
@@ -273,7 +318,6 @@ def parse_storage_tool_mounts(
         mounts.append(
             StorageToolRoomMount(path=mount, subpath=subpath, read_only=read_only)
         )
-
     return mounts or None
 
 
@@ -281,9 +325,14 @@ def parse_shell_tool_mounts(
     *,
     room_paths: list[str],
     project_paths: list[str],
+    image_paths: Optional[list[str]] = None,
 ) -> Optional[ContainerMountSpec]:
     room_mounts: list[RoomStorageMountSpec] = []
     project_mounts: list[ProjectStorageMountSpec] = []
+    image_mounts: list[ImageStorageMountSpec] = []
+
+    if image_paths is None:
+        image_paths = []
 
     for value in room_paths:
         source, mount, read_only = split_container_mount(
@@ -303,12 +352,27 @@ def parse_shell_tool_mounts(
             ProjectStorageMountSpec(path=mount, subpath=subpath, read_only=read_only)
         )
 
-    if not room_mounts and not project_mounts:
+    for value in image_paths:
+        image, mount, subpath, read_only = split_image_mount(
+            value, "--shell-image-mount"
+        )
+
+        image_mounts.append(
+            ImageStorageMountSpec(
+                image=image,
+                path=mount,
+                subpath=subpath,
+                read_only=read_only,
+            )
+        )
+
+    if not room_mounts and not project_mounts and not image_mounts:
         return None
 
     return ContainerMountSpec(
         room=room_mounts or None,
         project=project_mounts or None,
+        images=image_mounts or None,
     )
 
 

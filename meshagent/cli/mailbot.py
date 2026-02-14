@@ -538,6 +538,13 @@ async def join(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
+    shell_image_mount: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-image-mount",
+            help="Mount image as <image>=<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_time: Annotated[
         bool,
         typer.Option(
@@ -644,6 +651,7 @@ async def join(
         shell_tool_mounts = parse_shell_tool_mounts(
             room_paths=shell_tool_room_path,
             project_paths=shell_tool_project_path,
+            image_paths=shell_image_mount,
         )
 
         CustomMailbot = build_mailbot(
@@ -833,6 +841,13 @@ async def service(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
+    shell_image_mount: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-image-mount",
+            help="Mount image as <image>=<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_time: Annotated[
         bool,
         typer.Option(
@@ -906,6 +921,7 @@ async def service(
     shell_tool_mounts = parse_shell_tool_mounts(
         room_paths=shell_tool_room_path,
         project_paths=shell_tool_project_path,
+        image_paths=shell_image_mount,
     )
     if path is None:
         path = "/agent"
@@ -1096,6 +1112,13 @@ async def spec(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
+    shell_image_mount: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-image-mount",
+            help="Mount image as <image>=<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_time: Annotated[
         bool,
         typer.Option(
@@ -1169,6 +1192,7 @@ async def spec(
     shell_tool_mounts = parse_shell_tool_mounts(
         room_paths=shell_tool_room_path,
         project_paths=shell_tool_project_path,
+        image_paths=shell_image_mount,
     )
     if path is None:
         path = "/agent"
@@ -1372,6 +1396,13 @@ async def deploy(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
+    shell_image_mount: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-image-mount",
+            help="Mount image as <image>=<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_time: Annotated[
         bool,
         typer.Option(
@@ -1452,6 +1483,7 @@ async def deploy(
     shell_tool_mounts = parse_shell_tool_mounts(
         room_paths=shell_tool_room_path,
         project_paths=shell_tool_project_path,
+        image_paths=shell_image_mount,
     )
     if path is None:
         path = "/agent"

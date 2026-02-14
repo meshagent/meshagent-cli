@@ -630,6 +630,13 @@ async def join(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
+    shell_image_mount: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-image-mount",
+            help="Mount image as <image>=<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -792,6 +799,7 @@ async def join(
         shell_tool_mounts = parse_shell_tool_mounts(
             room_paths=shell_tool_room_path,
             project_paths=shell_tool_project_path,
+            image_paths=shell_image_mount,
         )
 
         CustomTaskRunner = build_task_runner(
@@ -954,6 +962,13 @@ async def run(
         typer.Option(
             "--shell-tool-project-path",
             help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    shell_image_mount: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-image-mount",
+            help="Mount image as <image>=<mount>[:ro|rw]",
         ),
     ] = [],
     require_image_generation: Annotated[
@@ -1120,6 +1135,7 @@ async def run(
         shell_tool_mounts = parse_shell_tool_mounts(
             room_paths=shell_tool_room_path,
             project_paths=shell_tool_project_path,
+            image_paths=shell_image_mount,
         )
 
         CustomTaskRunner = build_task_runner(
@@ -1307,6 +1323,13 @@ async def service(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
+    shell_image_mount: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-image-mount",
+            help="Mount image as <image>=<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -1435,6 +1458,7 @@ async def service(
     shell_tool_mounts = parse_shell_tool_mounts(
         room_paths=shell_tool_room_path,
         project_paths=shell_tool_project_path,
+        image_paths=shell_image_mount,
     )
 
     service = get_service(host=host, port=port)
@@ -1597,6 +1621,13 @@ async def spec(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
+    shell_image_mount: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-image-mount",
+            help="Mount image as <image>=<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -1723,6 +1754,7 @@ async def spec(
     shell_tool_mounts = parse_shell_tool_mounts(
         room_paths=shell_tool_room_path,
         project_paths=shell_tool_project_path,
+        image_paths=shell_image_mount,
     )
 
     service = get_service(host=host, port=port)

@@ -658,6 +658,13 @@ async def join(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
+    shell_image_mount: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-image-mount",
+            help="Mount image as <image>=<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -809,6 +816,7 @@ async def join(
         shell_tool_mounts = parse_shell_tool_mounts(
             room_paths=shell_tool_room_path,
             project_paths=shell_tool_project_path,
+            image_paths=shell_image_mount,
         )
 
         CustomChatbot = build_chatbot(
@@ -990,6 +998,13 @@ async def service(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
+    shell_image_mount: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-image-mount",
+            help="Mount image as <image>=<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -1113,6 +1128,7 @@ async def service(
     shell_tool_mounts = parse_shell_tool_mounts(
         room_paths=shell_tool_room_path,
         project_paths=shell_tool_project_path,
+        image_paths=shell_image_mount,
     )
 
     if path is None:

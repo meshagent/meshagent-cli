@@ -13,6 +13,7 @@ from meshagent.cli import participant_token
 from meshagent.cli import webhook
 from meshagent.cli import services
 from meshagent.cli import mailboxes
+from meshagent.cli import routes
 
 from meshagent.cli import call
 from meshagent.cli import cli_mcp
@@ -55,10 +56,11 @@ app.add_typer(participant_token.app, name="token")
 app.add_typer(webhook.app, name="webhook")
 app.add_typer(services.app, name="service")
 app.add_typer(cli_mcp.app, name="mcp")
-app.add_typer(cli_secrets.app, name="secrets")
+app.add_typer(cli_secrets.app, name="secret")
 app.add_typer(helpers.app, name="helpers")
 app.add_typer(rooms.app, name="rooms")
 app.add_typer(mailboxes.app, name="mailbox")
+app.add_typer(routes.app, name="route")
 app.add_typer(meeting_transcriber.app, name="meeting-transcriber")
 app.add_typer(port.app, name="port")
 

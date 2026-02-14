@@ -1,8 +1,11 @@
-# meshagent/cli/mailboxes.py
+# meshagent/cli/routes.py
 
 from __future__ import annotations
 
 from typing import Annotated, Optional
+
+import json
+import os
 
 import typer
 from aiohttp import ClientResponseError
@@ -17,10 +20,7 @@ from meshagent.cli.helper import (
     resolve_room,
 )
 
-import json
-import os
-
-app = async_typer.AsyncTyper(help="Manage mailboxes for your project")
+app = async_typer.AsyncTyper(help="Manage routes for your project")
 
 
 def _parse_annotations(annotations: Optional[str]) -> Optional[dict[str, str]]:
@@ -35,35 +35,28 @@ def _parse_annotations(annotations: Optional[str]) -> Optional[dict[str, str]]:
 
 
 @app.async_command("create")
-async def mailbox_create(
+async def route_create(
     *,
     project_id: ProjectIdOption,
-    address: Annotated[
+    domain: Annotated[
         str,
         typer.Option(
-            "--address",
-            "-a",
-            help="Mailbox email address (unique per project)",
+            "--domain",
+            "-d",
+            help="Domain name to route (unique per project)",
         ),
     ],
     room: Annotated[
         Optional[str], typer.Option("--room", help="Room name")
     ] = os.getenv("MESHAGENT_ROOM"),
-    queue: Annotated[
+    port: Annotated[
         str,
         typer.Option(
-            "--queue",
-            "-q",
-            help="Queue name to deliver inbound messages to",
+            "--port",
+            "-p",
+            help="Published port to route to",
         ),
     ],
-    public: Annotated[
-        bool,
-        typer.Option(
-            "--public",
-            help="Queue name to deliver inbound messages to",
-        ),
-    ] = False,
     annotations: Annotated[
         Optional[str],
         typer.Option(
@@ -73,64 +66,55 @@ async def mailbox_create(
         ),
     ] = None,
 ):
-    """Create a mailbox attached to the project."""
+    """Create a route attached to the project."""
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
         room = resolve_room(room)
         try:
             parsed_annotations = _parse_annotations(annotations) or {}
-            await client.create_mailbox(
+            await client.create_route(
                 project_id=project_id,
-                address=address,
-                room=room,
-                queue=queue,
-                public=public,
+                domain=domain,
+                room_name=room,
+                port=port,
                 annotations=parsed_annotations,
             )
         except ClientResponseError as exc:
-            # Common patterns: 409 conflict on duplicate address, 400 validation, etc.
             if exc.status == 409:
-                print(f"[red]Mailbox address already in use:[/] {address}")
+                print(f"[red]Route domain already in use:[/] {domain}")
                 raise typer.Exit(code=1)
             raise
         else:
-            print(f"[green]Created mailbox:[/] {address}")
+            print(f"[green]Created route:[/] {domain}")
     finally:
         await client.close()
 
 
 @app.async_command("update")
-async def mailbox_update(
+async def route_update(
     *,
     project_id: ProjectIdOption,
-    address: Annotated[
+    domain: Annotated[
         str,
-        typer.Argument(help="Mailbox email address to update"),
+        typer.Argument(help="Domain name to update"),
     ],
     room: Annotated[
         Optional[str],
         typer.Option(
             "--room",
             "-r",
-            help="Room name to route inbound mail into",
+            help="Room name to route traffic into",
         ),
     ] = os.getenv("MESHAGENT_ROOM"),
-    queue: Annotated[
+    port: Annotated[
         Optional[str],
         typer.Option(
-            "--queue",
-            "-q",
-            help="Queue name to deliver inbound messages to",
+            "--port",
+            "-p",
+            help="Published port to route to",
         ),
     ] = None,
-    public: Annotated[
-        bool,
-        typer.Option(
-            "--public",
-            help="Queue name to deliver inbound messages to",
-        ),
-    ] = False,
     annotations: Annotated[
         Optional[str],
         typer.Option(
@@ -140,72 +124,72 @@ async def mailbox_update(
         ),
     ] = None,
 ):
-    """Update a mailbox routing configuration."""
+    """Update a route configuration."""
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
         room = resolve_room(room)
-        # Keep parity with other CLIs: allow partial update by reading existing first
         parsed_annotations = _parse_annotations(annotations)
 
-        if room is None or queue is None or parsed_annotations is None:
+        if room is None or port is None or parsed_annotations is None:
             try:
-                mb = await client.get_mailbox(project_id=project_id, address=address)
+                route = await client.get_route(project_id=project_id, domain=domain)
             except ClientResponseError as exc:
                 if exc.status == 404:
-                    print(f"[red]Mailbox not found:[/] {address}")
+                    print(f"[red]Route not found:[/] {domain}")
                     raise typer.Exit(code=1)
                 raise
-            room = room or mb.room
-            queue = queue or mb.queue
+            room = room or route.room_name
+            port = port or route.port
             parsed_annotations = (
-                parsed_annotations if parsed_annotations is not None else mb.annotations
+                parsed_annotations
+                if parsed_annotations is not None
+                else route.annotations
             )
 
         try:
-            await client.update_mailbox(
+            await client.update_route(
                 project_id=project_id,
-                address=address,
-                room=room,
-                queue=queue,
-                public=public,
+                domain=domain,
+                room_name=room,
+                port=port,
                 annotations=parsed_annotations,
             )
         except ClientResponseError as exc:
             if exc.status == 404:
-                print(f"[red]Mailbox not found:[/] {address}")
+                print(f"[red]Route not found:[/] {domain}")
                 raise typer.Exit(code=1)
             raise
         else:
-            print(f"[green]Updated mailbox:[/] {address}")
+            print(f"[green]Updated route:[/] {domain}")
     finally:
         await client.close()
 
 
 @app.async_command("show")
-async def mailbox_show(
+async def route_show(
     *,
     project_id: ProjectIdOption,
-    address: Annotated[str, typer.Argument(help="Mailbox address to show")],
+    domain: Annotated[str, typer.Argument(help="Domain name to show")],
 ):
-    """Show mailbox details."""
+    """Show route details."""
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
         try:
-            mb = await client.get_mailbox(project_id=project_id, address=address)
+            route = await client.get_route(project_id=project_id, domain=domain)
         except ClientResponseError as exc:
             if exc.status == 404:
-                print(f"[red]Mailbox not found:[/] {address}")
+                print(f"[red]Route not found:[/] {domain}")
                 raise typer.Exit(code=1)
             raise
-        print(mb.model_dump(mode="json"))
+        print(route.model_dump(mode="json"))
     finally:
         await client.close()
 
 
 @app.async_command("list")
-async def mailbox_list(
+async def route_list(
     *,
     project_id: ProjectIdOption,
     room: Annotated[
@@ -213,59 +197,57 @@ async def mailbox_list(
     ] = os.getenv("MESHAGENT_ROOM"),
     o: OutputFormatOption = "table",
 ):
-    """List mailboxes for the project."""
+    """List routes for the project."""
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
         room = resolve_room(room)
 
         if room is not None:
-            mailboxes = await client.list_room_mailboxes(
+            routes = await client.list_room_routes(
                 project_id=project_id, room_name=room
             )
         else:
-            mailboxes = await client.list_mailboxes(project_id=project_id)
+            routes = await client.list_routes(project_id=project_id)
 
         if o == "json":
-            # Keep your existing conventions: wrap in an object.
-            print({"mailboxes": [mb.model_dump(mode="json") for mb in mailboxes]})
+            print({"routes": [route.model_dump(mode="json") for route in routes]})
         else:
             print_json_table(
                 [
                     {
-                        "address": mb.address,
-                        "room": mb.room,
-                        "queue": mb.queue,
-                        "public": mb.public,
+                        "domain": route.domain,
+                        "room": route.room_name,
+                        "port": route.port,
                     }
-                    for mb in mailboxes
+                    for route in routes
                 ],
-                "address",
+                "domain",
                 "room",
-                "queue",
+                "port",
             )
     finally:
         await client.close()
 
 
 @app.async_command("delete")
-async def mailbox_delete(
+async def route_delete(
     *,
     project_id: ProjectIdOption,
-    address: Annotated[str, typer.Argument(help="Mailbox address to delete")],
+    domain: Annotated[str, typer.Argument(help="Domain name to delete")],
 ):
-    """Delete a mailbox."""
+    """Delete a route."""
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
         try:
-            await client.delete_mailbox(project_id=project_id, address=address)
+            await client.delete_route(project_id=project_id, domain=domain)
         except ClientResponseError as exc:
             if exc.status == 404:
-                print(f"[red]Mailbox not found:[/] {address}")
+                print(f"[red]Route not found:[/] {domain}")
                 raise typer.Exit(code=1)
             raise
         else:
-            print(f"[green]Mailbox deleted:[/] {address}")
+            print(f"[green]Route deleted:[/] {domain}")
     finally:
         await client.close()

@@ -597,6 +597,13 @@ async def join(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
+    shell_image_mount: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-image-mount",
+            help="Mount image as <image>=<mount>[:ro|rw]",
+        ),
+    ] = [],
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
@@ -711,6 +718,7 @@ async def join(
         shell_tool_mounts = parse_shell_tool_mounts(
             room_paths=shell_tool_room_path,
             project_paths=shell_tool_project_path,
+            image_paths=shell_image_mount,
         )
 
         CustomWorker = build_worker(
@@ -896,6 +904,13 @@ async def service(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
+    shell_image_mount: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-image-mount",
+            help="Mount image as <image>=<mount>[:ro|rw]",
+        ),
+    ] = [],
     queue: Annotated[str, typer.Option(..., help="the queue to consume")],
     toolkit_name: Annotated[
         Optional[str], typer.Option(..., help="Toolkit name to expose (optional)")
@@ -989,6 +1004,7 @@ async def service(
     shell_tool_mounts = parse_shell_tool_mounts(
         room_paths=shell_tool_room_path,
         project_paths=shell_tool_project_path,
+        image_paths=shell_image_mount,
     )
 
     if path is None:
@@ -1183,6 +1199,13 @@ async def spec(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
+    shell_image_mount: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-image-mount",
+            help="Mount image as <image>=<mount>[:ro|rw]",
+        ),
+    ] = [],
     queue: Annotated[str, typer.Option(..., help="the queue to consume")],
     toolkit_name: Annotated[
         Optional[str], typer.Option(..., help="Toolkit name to expose (optional)")
@@ -1276,6 +1299,7 @@ async def spec(
     shell_tool_mounts = parse_shell_tool_mounts(
         room_paths=shell_tool_room_path,
         project_paths=shell_tool_project_path,
+        image_paths=shell_image_mount,
     )
 
     if path is None:
@@ -1555,6 +1579,13 @@ async def deploy(
         Optional[str],
         typer.Option(..., help="an image tag to use to run shell commands in"),
     ] = None,
+    shell_image_mount: Annotated[
+        List[str],
+        typer.Option(
+            "--shell-image-mount",
+            help="Mount image as <image>=<mount>[:ro|rw]",
+        ),
+    ] = [],
     delegate_shell_token: Annotated[
         Optional[bool],
         typer.Option(..., help="Delegate the room token to shell tools"),
@@ -1583,6 +1614,7 @@ async def deploy(
     shell_tool_mounts = parse_shell_tool_mounts(
         room_paths=shell_tool_room_path,
         project_paths=shell_tool_project_path,
+        image_paths=shell_image_mount,
     )
 
     if path is None:
