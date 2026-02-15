@@ -1,5 +1,9 @@
+import asyncio
 import os
 import shlex
+import json
+import sys
+import yaml
 from pathlib import Path
 from typing import Annotated, List, Optional
 
@@ -12,21 +16,42 @@ from meshagent.api import (
     ParticipantToken,
     RequiredSchema,
     RequiredToolkit,
+    RemoteParticipant,
     RoomClient,
     WebSocketClientProtocol,
 )
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
+from meshagent.api.messaging import JsonResponse, TextResponse
+from meshagent.api.specs.service import (
+    AgentSpec,
+    ANNOTATION_AGENT_TYPE,
+    ContainerMountSpec,
+    ProjectStorageMountSpec,
+    RoomStorageMountSpec,
+)
+from meshagent.api.client import ConflictError
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.cli.helper import (
+    cleanup_args,
     get_client,
+    split_container_mount,
     resolve_key,
     resolve_project_id,
     resolve_room,
 )
-from meshagent.cli.host import get_deferred
+from meshagent.cli.host import (
+    get_deferred,
+    get_service,
+    run_services,
+    service_specs,
+)
 
-app = async_typer.AsyncTyper(help="Join a codex chatbot to a room")
+app = async_typer.AsyncTyper(help="Codex-backed agents")
+chatbot_app = async_typer.AsyncTyper(help="Run codex chatbot agents")
+task_runner_app = async_typer.AsyncTyper(help="Run codex task-runner agents")
+app.add_typer(chatbot_app, name="chatbot")
+app.add_typer(task_runner_app, name="task-runner")
 
 
 def _room_openai_base_url(*, room_name: str) -> str:
@@ -40,9 +65,196 @@ def _room_openai_base_url(*, room_name: str) -> str:
     return f"{room_url}/openai/v1"
 
 
+def _load_rules(
+    *,
+    rule: list[str],
+    rules_file: Optional[list[str]],
+) -> dict[str, list[str]]:
+    client_rules: dict[str, list[str]] = {}
+    if rules_file is None:
+        return client_rules
+
+    for rules_path in rules_file:
+        try:
+            with open(Path(os.path.expanduser(rules_path)).resolve(), "r") as f:
+                rules_config = RulesConfig.parse(f.read())
+                if rules_config.rules is not None:
+                    rule.extend(rules_config.rules)
+                if rules_config.client_rules is not None:
+                    client_rules.update(rules_config.client_rules)
+        except FileNotFoundError:
+            print(f"[yellow]rules file not found at {rules_path}[/yellow]")
+
+    return client_rules
+
+
+def _default_codex_command(*, room_name: str) -> str:
+    openai_base_url = _room_openai_base_url(room_name=room_name)
+    return (
+        "codex app-server "
+        "-c model_providers.openai.name='OpenAI' "
+        "-c "
+        f"model_providers.openai.base_url={shlex.quote(openai_base_url)}"
+    )
+
+
+def _default_codex_container_command() -> str:
+    return (
+        "codex app-server "
+        "-c model_providers.openai.name='OpenAI' "
+        '-c model_providers.openai.base_url="$OPENAI_BASE_URL"'
+    )
+
+
+def _read_task_runner_input(input_value: Optional[str]) -> str:
+    if input_value is None:
+        if sys.stdin.isatty():
+            print("[bold red]--input is required unless stdin is provided[/bold red]")
+            raise typer.Exit(1)
+        input_value = sys.stdin.read()
+    elif input_value == "-":
+        input_value = sys.stdin.read()
+
+    if not input_value:
+        print("[bold red]input payload is empty[/bold red]")
+        raise typer.Exit(1)
+
+    return input_value
+
+
+def _normalize_codex_image(codex_image: Optional[str]) -> Optional[str]:
+    if codex_image is None:
+        return None
+
+    normalized = codex_image.strip()
+    if normalized == "":
+        return None
+
+    if normalized.lower() == "none":
+        return None
+
+    return normalized
+
+
+def _parse_codex_mounts(
+    *,
+    mount_room_path: list[str],
+    mount_project_path: list[str],
+) -> Optional[ContainerMountSpec]:
+    room_mounts: list[RoomStorageMountSpec] = []
+    project_mounts: list[ProjectStorageMountSpec] = []
+
+    for value in mount_room_path:
+        source, mount, read_only = split_container_mount(
+            value, "--mount-room-path", False
+        )
+        subpath = source if source not in {"", ".", "/"} else None
+        room_mounts.append(
+            RoomStorageMountSpec(path=mount, subpath=subpath, read_only=read_only)
+        )
+
+    for value in mount_project_path:
+        source, mount, read_only = split_container_mount(
+            value, "--mount-project-path", True
+        )
+        subpath = source if source not in {"", ".", "/"} else None
+        project_mounts.append(
+            ProjectStorageMountSpec(path=mount, subpath=subpath, read_only=read_only)
+        )
+
+    if not room_mounts and not project_mounts:
+        return None
+
+    return ContainerMountSpec(
+        room=room_mounts or None,
+        project=project_mounts or None,
+    )
+
+
+async def _upsert_service(
+    *,
+    project_id: str,
+    room: Optional[str],
+    service_spec,
+):
+    client = await get_client()
+    try:
+        service_id = None
+        if room is None:
+            services = await client.list_services(project_id=project_id)
+        else:
+            services = await client.list_room_services(
+                project_id=project_id, room_name=room
+            )
+
+        for service in services:
+            if service.metadata.name == service_spec.metadata.name:
+                service_id = service.id
+                break
+
+        if service_id is None:
+            if room is None:
+                service_id = await client.create_service(
+                    project_id=project_id, service=service_spec
+                )
+            else:
+                service_id = await client.create_room_service(
+                    project_id=project_id,
+                    service=service_spec,
+                    room_name=room,
+                )
+        else:
+            service_spec.id = service_id
+            if room is None:
+                await client.update_service(
+                    project_id=project_id,
+                    service_id=service_id,
+                    service=service_spec,
+                )
+            else:
+                await client.update_room_service(
+                    project_id=project_id,
+                    service_id=service_id,
+                    service=service_spec,
+                    room_name=room,
+                )
+
+        return service_id
+    finally:
+        await client.close()
+
+
+def _resolve_codex_runtime(
+    *,
+    command: Optional[str],
+    ws_url: Optional[str],
+    codex_image: Optional[str] = None,
+    room_name: Optional[str] = None,
+    jwt: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str], Optional[dict[str, str]]]:
+    if command is not None and ws_url is not None:
+        print(
+            "[yellow]Both --command and --ws-url were provided. Using --ws-url and ignoring --command.[/yellow]"
+        )
+
+    if ws_url is not None:
+        return None, ws_url, None
+
+    app_server_env = None
+    if room_name is not None and command is None:
+        if codex_image is not None:
+            command = _default_codex_container_command()
+        else:
+            command = _default_codex_command(room_name=room_name)
+
+    return command, None, app_server_env
+
+
 def build_codex_chatbot(
     *,
     model: str,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
     rule: list[str],
     toolkit: list[str],
     schema: list[str],
@@ -50,6 +262,8 @@ def build_codex_chatbot(
     skill_dirs: Optional[list[str]] = None,
     command: Optional[str] = None,
     ws_url: Optional[str] = None,
+    codex_image: Optional[str] = None,
+    codex_mounts: Optional[ContainerMountSpec] = None,
     working_directory: Optional[str] = None,
     approval_policy: Optional[str] = None,
     sandbox_policy: Optional[str] = None,
@@ -63,29 +277,21 @@ def build_codex_chatbot(
         ) from exc
 
     requirements = []
-
     for toolkit_name in toolkit:
         requirements.append(RequiredToolkit(name=toolkit_name))
-
     for schema_name in schema:
         requirements.append(RequiredSchema(name=schema_name))
 
-    client_rules: dict[str, list[str]] = {}
-    if rules_file is not None:
-        for rules_path in rules_file:
-            try:
-                with open(Path(os.path.expanduser(rules_path)).resolve(), "r") as f:
-                    rules_config = RulesConfig.parse(f.read())
-                    if rules_config.rules is not None:
-                        rule.extend(rules_config.rules)
-                    if rules_config.client_rules is not None:
-                        client_rules.update(rules_config.client_rules)
-            except FileNotFoundError:
-                print(f"[yellow]rules file not found at {rules_path}[/yellow]")
+    client_rules = _load_rules(
+        rule=rule,
+        rules_file=rules_file,
+    )
 
     class CustomCodexChatBot(CodexChatBot):
         def __init__(self):
             super().__init__(
+                title=title,
+                description=description,
                 requires=requirements,
                 rules=rule if len(rule) > 0 else None,
                 client_rules=client_rules if len(client_rules) > 0 else None,
@@ -93,6 +299,8 @@ def build_codex_chatbot(
                 model=model,
                 command=command,
                 ws_url=ws_url,
+                image=codex_image,
+                mounts=codex_mounts,
                 cwd=working_directory,
                 approval_policy=approval_policy,
                 sandbox_policy=sandbox_policy,
@@ -121,8 +329,77 @@ def build_codex_chatbot(
     return CustomCodexChatBot
 
 
-@app.async_command("join")
-async def join(
+def build_codex_task_runner(
+    *,
+    model: str,
+    title: Optional[str],
+    description: Optional[str],
+    supports_tools: bool,
+    rule: list[str],
+    toolkit: list[str],
+    schema: list[str],
+    rules_file: Optional[list[str]] = None,
+    skill_dirs: Optional[list[str]] = None,
+    command: Optional[str] = None,
+    ws_url: Optional[str] = None,
+    codex_image: Optional[str] = None,
+    codex_mounts: Optional[ContainerMountSpec] = None,
+    working_directory: Optional[str] = None,
+    approval_policy: Optional[str] = None,
+    sandbox_policy: Optional[str] = None,
+    app_server_env: Optional[dict[str, str]] = None,
+):
+    try:
+        from meshagent.codex import CodexTaskRunner
+    except ImportError as exc:
+        raise typer.BadParameter(
+            "meshagent-codex is required for this command. Install the package and try again."
+        ) from exc
+
+    requirements = []
+    for toolkit_name in toolkit:
+        requirements.append(RequiredToolkit(name=toolkit_name))
+    for schema_name in schema:
+        requirements.append(RequiredSchema(name=schema_name))
+
+    client_rules = _load_rules(
+        rule=rule,
+        rules_file=rules_file,
+    )
+
+    class CustomCodexTaskRunner(CodexTaskRunner):
+        def __init__(self):
+            super().__init__(
+                title=title,
+                description=description,
+                requires=requirements,
+                supports_tools=supports_tools,
+                rules=rule if len(rule) > 0 else None,
+                client_rules=client_rules if len(client_rules) > 0 else None,
+                skill_dirs=skill_dirs if len(skill_dirs or []) > 0 else None,
+                model=model,
+                command=command,
+                ws_url=ws_url,
+                image=codex_image,
+                mounts=codex_mounts,
+                cwd=working_directory,
+                approval_policy=approval_policy,
+                sandbox_policy=sandbox_policy,
+                app_server_env=app_server_env,
+            )
+
+        async def init_chat_context(self):
+            from meshagent.cli.helper import init_context_from_spec
+
+            context = await super().init_chat_context()
+            await init_context_from_spec(context)
+            return context
+
+    return CustomCodexTaskRunner
+
+
+@chatbot_app.async_command("join")
+async def chatbot_join(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
@@ -175,6 +452,27 @@ async def join(
         Optional[str],
         typer.Option(..., help="Websocket URL for an existing codex app-server"),
     ] = None,
+    codex_image: Annotated[
+        str,
+        typer.Option(
+            "--codex-image",
+            help="Container image used to run codex app-server; use 'none' to disable",
+        ),
+    ] = "meshagent/shell-codex:default",
+    mount_room_path: Annotated[
+        list[str],
+        typer.Option(
+            "--mount-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    mount_project_path: Annotated[
+        list[str],
+        typer.Option(
+            "--mount-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
     working_directory: Annotated[
         Optional[str],
         typer.Option(..., help="Working directory passed to codex app-server"),
@@ -192,10 +490,11 @@ async def join(
         Optional[str], typer.Option("--key", help="An api key to sign the token with")
     ] = None,
 ):
-    if command is not None and ws_url is not None:
-        print(
-            "[yellow]Both --command and --ws-url were provided. Using --ws-url and ignoring --command.[/yellow]"
-        )
+    codex_image = _normalize_codex_image(codex_image)
+    codex_mounts = _parse_codex_mounts(
+        mount_room_path=mount_room_path,
+        mount_project_path=mount_project_path,
+    )
 
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -226,18 +525,13 @@ async def join(
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
 
-        app_server_env = None
-        if ws_url is None:
-            if command is None:
-                openai_base_url = _room_openai_base_url(room_name=room_name)
-                command = (
-                    "codex app-server "
-                    "-c model_providers.openai.name='OpenAI' "
-                    "-c "
-                    f"model_providers.openai.base_url={shlex.quote(openai_base_url)}"
-                )
-
-            app_server_env = {"OPENAI_API_KEY": jwt}
+        command, ws_url, app_server_env = _resolve_codex_runtime(
+            command=command,
+            ws_url=ws_url,
+            codex_image=codex_image,
+            room_name=room_name,
+            jwt=jwt,
+        )
 
         CustomCodexChatBot = build_codex_chatbot(
             model=model,
@@ -248,6 +542,8 @@ async def join(
             skill_dirs=skill_dir,
             command=command,
             ws_url=ws_url,
+            codex_image=codex_image,
+            codex_mounts=codex_mounts,
             working_directory=working_directory,
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
@@ -277,3 +573,1640 @@ async def join(
                     await bot.stop()
     finally:
         await account_client.close()
+
+
+@task_runner_app.async_command("join")
+async def task_runner_join(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    role: Annotated[str, typer.Option(..., help="Role to use for the agent token")] = (
+        "agent"
+    ),
+    agent_name: Annotated[
+        Optional[str], typer.Option(..., help="Name of the agent to run")
+    ] = None,
+    token_from_env: Annotated[
+        Optional[str],
+        typer.Option(
+            "--token-from-env",
+            help="Name of environment variable containing a MeshAgent token",
+        ),
+    ] = None,
+    rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    rules_file: Optional[list[str]] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="The name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="The name or url of a required schema"
+        ),
+    ] = [],
+    toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--toolkit", "-t", help="The name or url of a required toolkit", hidden=True
+        ),
+    ] = [],
+    schema: Annotated[
+        List[str],
+        typer.Option(
+            "--schema", "-s", help="The name or url of a required schema", hidden=True
+        ),
+    ] = [],
+    model: Annotated[
+        str, typer.Option(..., help="Codex model to use")
+    ] = "gpt-5.2-codex",
+    title: Annotated[
+        Optional[str], typer.Option(..., help="A friendly title for the task runner")
+    ] = None,
+    description: Annotated[
+        Optional[str], typer.Option(..., help="A description for the task runner")
+    ] = None,
+    supports_tools: Annotated[
+        bool, typer.Option(..., help="Whether the task runner supports tools")
+    ] = True,
+    command: Annotated[
+        Optional[str], typer.Option(..., help="Command used to launch codex app-server")
+    ] = None,
+    ws_url: Annotated[
+        Optional[str],
+        typer.Option(..., help="Websocket URL for an existing codex app-server"),
+    ] = None,
+    codex_image: Annotated[
+        str,
+        typer.Option(
+            "--codex-image",
+            help="Container image used to run codex app-server; use 'none' to disable",
+        ),
+    ] = "meshagent/shell-codex:default",
+    mount_room_path: Annotated[
+        list[str],
+        typer.Option(
+            "--mount-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    mount_project_path: Annotated[
+        list[str],
+        typer.Option(
+            "--mount-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="Working directory passed to codex app-server"),
+    ] = None,
+    approval_policy: Annotated[
+        Optional[str], typer.Option(..., help="Codex approval policy")
+    ] = None,
+    sandbox_policy: Annotated[
+        Optional[str], typer.Option(..., help="Codex sandbox policy")
+    ] = None,
+    skill_dir: Annotated[
+        list[str], typer.Option(..., help="An agent skills directory")
+    ] = [],
+    key: Annotated[
+        Optional[str], typer.Option("--key", help="An api key to sign the token with")
+    ] = None,
+):
+    codex_image = _normalize_codex_image(codex_image)
+    codex_mounts = _parse_codex_mounts(
+        mount_room_path=mount_room_path,
+        mount_project_path=mount_project_path,
+    )
+
+    key = await resolve_key(project_id=project_id, key=key)
+
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        room_name = resolve_room(room)
+
+        token_env = token_from_env or "MESHAGENT_TOKEN"
+        jwt = os.getenv(token_env)
+        if jwt is None:
+            if token_from_env:
+                print(
+                    f"[bold red]{token_env} environment variable is not set[/bold red]"
+                )
+                raise typer.Exit(1)
+            if agent_name is None:
+                print(
+                    f"[bold red]--agent-name must be specified when the {token_env} environment variable is not set[/bold red]"
+                )
+                raise typer.Exit(1)
+
+            token = ParticipantToken(name=agent_name)
+            token.add_api_grant(ApiScope.agent_default())
+            token.add_role_grant(role=role)
+            token.add_room_grant(room_name)
+            jwt = token.to_jwt(api_key=key)
+
+        print("[bold green]Connecting to room...[/bold green]", flush=True)
+
+        command, ws_url, app_server_env = _resolve_codex_runtime(
+            command=command,
+            ws_url=ws_url,
+            codex_image=codex_image,
+            room_name=room_name,
+            jwt=jwt,
+        )
+
+        CustomCodexTaskRunner = build_codex_task_runner(
+            title=title,
+            description=description,
+            supports_tools=supports_tools,
+            model=model,
+            rule=rule,
+            toolkit=require_toolkit + toolkit,
+            schema=require_schema + schema,
+            rules_file=rules_file,
+            skill_dirs=skill_dir,
+            command=command,
+            ws_url=ws_url,
+            codex_image=codex_image,
+            codex_mounts=codex_mounts,
+            working_directory=working_directory,
+            approval_policy=approval_policy,
+            sandbox_policy=sandbox_policy,
+            app_server_env=app_server_env,
+        )
+        bot = CustomCodexTaskRunner()
+
+        if get_deferred():
+            from meshagent.cli.host import agents
+
+            agents.append((bot, jwt))
+        else:
+            async with RoomClient(
+                protocol=WebSocketClientProtocol(
+                    url=websocket_room_url(room_name=room_name),
+                    token=jwt,
+                )
+            ) as client:
+                await bot.start(room=client)
+                try:
+                    print(
+                        f"[bold green]Open the studio to interact with your agent: {meshagent_base_url().replace('api.', 'studio.')}/projects/{project_id}/rooms/{client.room_name}[/bold green]",
+                        flush=True,
+                    )
+                    await client.protocol.wait_for_close()
+                except KeyboardInterrupt:
+                    await bot.stop()
+    finally:
+        await account_client.close()
+
+
+@chatbot_app.async_command("service")
+async def chatbot_service(
+    *,
+    agent_name: Annotated[str, typer.Option(..., help="Name of the agent to run")],
+    title: Annotated[
+        Optional[str], typer.Option(..., help="A friendly title for the chatbot")
+    ] = None,
+    description: Annotated[
+        Optional[str], typer.Option(..., help="A description for the chatbot")
+    ] = None,
+    rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    rules_file: Optional[list[str]] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="The name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="The name or url of a required schema"
+        ),
+    ] = [],
+    toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--toolkit", "-t", help="The name or url of a required toolkit", hidden=True
+        ),
+    ] = [],
+    schema: Annotated[
+        List[str],
+        typer.Option(
+            "--schema", "-s", help="The name or url of a required schema", hidden=True
+        ),
+    ] = [],
+    model: Annotated[
+        str, typer.Option(..., help="Codex model to use")
+    ] = "gpt-5.2-codex",
+    command: Annotated[
+        Optional[str], typer.Option(..., help="Command used to launch codex app-server")
+    ] = None,
+    ws_url: Annotated[
+        Optional[str],
+        typer.Option(..., help="Websocket URL for an existing codex app-server"),
+    ] = None,
+    codex_image: Annotated[
+        str,
+        typer.Option(
+            "--codex-image",
+            help="Container image used to run codex app-server; use 'none' to disable",
+        ),
+    ] = "meshagent/shell-codex:default",
+    mount_room_path: Annotated[
+        list[str],
+        typer.Option(
+            "--mount-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    mount_project_path: Annotated[
+        list[str],
+        typer.Option(
+            "--mount-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="Working directory passed to codex app-server"),
+    ] = None,
+    approval_policy: Annotated[
+        Optional[str], typer.Option(..., help="Codex approval policy")
+    ] = None,
+    sandbox_policy: Annotated[
+        Optional[str], typer.Option(..., help="Codex sandbox policy")
+    ] = None,
+    skill_dir: Annotated[
+        list[str], typer.Option(..., help="An agent skills directory")
+    ] = [],
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
+):
+    codex_image = _normalize_codex_image(codex_image)
+    codex_mounts = _parse_codex_mounts(
+        mount_room_path=mount_room_path,
+        mount_project_path=mount_project_path,
+    )
+    command, ws_url, app_server_env = _resolve_codex_runtime(
+        command=command,
+        ws_url=ws_url,
+        codex_image=codex_image,
+    )
+    service = get_service(host=host, port=port)
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+    )
+
+    service.add_path(
+        identity=agent_name,
+        path=path,
+        cls=build_codex_chatbot(
+            model=model,
+            title=title,
+            description=description,
+            rule=rule,
+            toolkit=require_toolkit + toolkit,
+            schema=require_schema + schema,
+            rules_file=rules_file,
+            skill_dirs=skill_dir,
+            command=command,
+            ws_url=ws_url,
+            codex_image=codex_image,
+            codex_mounts=codex_mounts,
+            working_directory=working_directory,
+            approval_policy=approval_policy,
+            sandbox_policy=sandbox_policy,
+            app_server_env=app_server_env,
+        ),
+    )
+
+    if not get_deferred():
+        await run_services()
+
+
+@chatbot_app.async_command("spec")
+async def chatbot_spec(
+    *,
+    service_name: Annotated[str, typer.Option("--service-name", help="Service name")],
+    service_description: Annotated[
+        Optional[str], typer.Option("--service-description", help="Service description")
+    ] = None,
+    service_title: Annotated[
+        Optional[str],
+        typer.Option("--service-title", help="A display name for service"),
+    ] = None,
+    agent_name: Annotated[str, typer.Option(..., help="Name of the agent to run")],
+    title: Annotated[
+        Optional[str], typer.Option(..., help="A friendly title for the chatbot")
+    ] = None,
+    description: Annotated[
+        Optional[str], typer.Option(..., help="A description for the chatbot")
+    ] = None,
+    rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    rules_file: Optional[list[str]] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="The name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="The name or url of a required schema"
+        ),
+    ] = [],
+    toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--toolkit", "-t", help="The name or url of a required toolkit", hidden=True
+        ),
+    ] = [],
+    schema: Annotated[
+        List[str],
+        typer.Option(
+            "--schema", "-s", help="The name or url of a required schema", hidden=True
+        ),
+    ] = [],
+    model: Annotated[
+        str, typer.Option(..., help="Codex model to use")
+    ] = "gpt-5.2-codex",
+    command: Annotated[
+        Optional[str], typer.Option(..., help="Command used to launch codex app-server")
+    ] = None,
+    ws_url: Annotated[
+        Optional[str],
+        typer.Option(..., help="Websocket URL for an existing codex app-server"),
+    ] = None,
+    codex_image: Annotated[
+        str,
+        typer.Option(
+            "--codex-image",
+            help="Container image used to run codex app-server; use 'none' to disable",
+        ),
+    ] = "meshagent/shell-codex:default",
+    mount_room_path: Annotated[
+        list[str],
+        typer.Option(
+            "--mount-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    mount_project_path: Annotated[
+        list[str],
+        typer.Option(
+            "--mount-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="Working directory passed to codex app-server"),
+    ] = None,
+    approval_policy: Annotated[
+        Optional[str], typer.Option(..., help="Codex approval policy")
+    ] = None,
+    sandbox_policy: Annotated[
+        Optional[str], typer.Option(..., help="Codex sandbox policy")
+    ] = None,
+    skill_dir: Annotated[
+        list[str], typer.Option(..., help="An agent skills directory")
+    ] = [],
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
+):
+    del service_title
+
+    codex_image = _normalize_codex_image(codex_image)
+    codex_mounts = _parse_codex_mounts(
+        mount_room_path=mount_room_path,
+        mount_project_path=mount_project_path,
+    )
+    command, ws_url, app_server_env = _resolve_codex_runtime(
+        command=command,
+        ws_url=ws_url,
+        codex_image=codex_image,
+    )
+    service = get_service(host=host, port=port)
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+    )
+    service.add_path(
+        identity=agent_name,
+        path=path,
+        cls=build_codex_chatbot(
+            model=model,
+            title=title,
+            description=description,
+            rule=rule,
+            toolkit=require_toolkit + toolkit,
+            schema=require_schema + schema,
+            rules_file=rules_file,
+            skill_dirs=skill_dir,
+            command=command,
+            ws_url=ws_url,
+            codex_image=codex_image,
+            codex_mounts=codex_mounts,
+            working_directory=working_directory,
+            approval_policy=approval_policy,
+            sandbox_policy=sandbox_policy,
+            app_server_env=app_server_env,
+        ),
+    )
+
+    spec = service_specs()[0]
+    spec.metadata.annotations = {
+        "meshagent.service.id": service_name,
+    }
+    spec.metadata.name = service_name
+    spec.metadata.description = service_description
+    spec.container.image = (
+        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
+    )
+    spec.container.command = shlex.join(
+        ["meshagent", "codex", "chatbot", "service", *cleanup_args(sys.argv[3:])]
+    )
+
+    print(yaml.dump(spec.model_dump(mode="json", exclude_none=True), sort_keys=False))
+
+
+@chatbot_app.async_command("deploy")
+async def chatbot_deploy(
+    *,
+    service_name: Annotated[str, typer.Option("--service-name", help="Service name")],
+    service_description: Annotated[
+        Optional[str], typer.Option("--service-description", help="Service description")
+    ] = None,
+    service_title: Annotated[
+        Optional[str],
+        typer.Option("--service-title", help="A display name for service"),
+    ] = None,
+    project_id: ProjectIdOption,
+    room: Annotated[
+        Optional[str],
+        typer.Option("--room", help="The name of a room to create the service for"),
+    ] = os.getenv("MESHAGENT_ROOM"),
+    agent_name: Annotated[str, typer.Option(..., help="Name of the agent to run")],
+    title: Annotated[
+        Optional[str], typer.Option(..., help="A friendly title for the chatbot")
+    ] = None,
+    description: Annotated[
+        Optional[str], typer.Option(..., help="A description for the chatbot")
+    ] = None,
+    rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    rules_file: Optional[list[str]] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="The name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="The name or url of a required schema"
+        ),
+    ] = [],
+    toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--toolkit", "-t", help="The name or url of a required toolkit", hidden=True
+        ),
+    ] = [],
+    schema: Annotated[
+        List[str],
+        typer.Option(
+            "--schema", "-s", help="The name or url of a required schema", hidden=True
+        ),
+    ] = [],
+    model: Annotated[
+        str, typer.Option(..., help="Codex model to use")
+    ] = "gpt-5.2-codex",
+    command: Annotated[
+        Optional[str], typer.Option(..., help="Command used to launch codex app-server")
+    ] = None,
+    ws_url: Annotated[
+        Optional[str],
+        typer.Option(..., help="Websocket URL for an existing codex app-server"),
+    ] = None,
+    codex_image: Annotated[
+        str,
+        typer.Option(
+            "--codex-image",
+            help="Container image used to run codex app-server; use 'none' to disable",
+        ),
+    ] = "meshagent/shell-codex:default",
+    mount_room_path: Annotated[
+        list[str],
+        typer.Option(
+            "--mount-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    mount_project_path: Annotated[
+        list[str],
+        typer.Option(
+            "--mount-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="Working directory passed to codex app-server"),
+    ] = None,
+    approval_policy: Annotated[
+        Optional[str], typer.Option(..., help="Codex approval policy")
+    ] = None,
+    sandbox_policy: Annotated[
+        Optional[str], typer.Option(..., help="Codex sandbox policy")
+    ] = None,
+    skill_dir: Annotated[
+        list[str], typer.Option(..., help="An agent skills directory")
+    ] = [],
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
+):
+    del service_title
+
+    project_id = await resolve_project_id(project_id=project_id)
+
+    codex_image = _normalize_codex_image(codex_image)
+    codex_mounts = _parse_codex_mounts(
+        mount_room_path=mount_room_path,
+        mount_project_path=mount_project_path,
+    )
+    command, ws_url, app_server_env = _resolve_codex_runtime(
+        command=command,
+        ws_url=ws_url,
+        codex_image=codex_image,
+    )
+    service = get_service(host=host, port=port)
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+    )
+    service.add_path(
+        identity=agent_name,
+        path=path,
+        cls=build_codex_chatbot(
+            model=model,
+            title=title,
+            description=description,
+            rule=rule,
+            toolkit=require_toolkit + toolkit,
+            schema=require_schema + schema,
+            rules_file=rules_file,
+            skill_dirs=skill_dir,
+            command=command,
+            ws_url=ws_url,
+            codex_image=codex_image,
+            codex_mounts=codex_mounts,
+            working_directory=working_directory,
+            approval_policy=approval_policy,
+            sandbox_policy=sandbox_policy,
+            app_server_env=app_server_env,
+        ),
+    )
+
+    spec = service_specs()[0]
+    spec.metadata.annotations = {
+        "meshagent.service.id": service_name,
+    }
+    spec.metadata.name = service_name
+    spec.metadata.description = service_description
+    spec.container.image = (
+        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
+    )
+    spec.container.command = shlex.join(
+        ["meshagent", "codex", "chatbot", "service", *cleanup_args(sys.argv[3:])]
+    )
+
+    try:
+        service_id = await _upsert_service(
+            project_id=project_id,
+            room=room,
+            service_spec=spec,
+        )
+    except ConflictError:
+        print(f"[red]Service name already in use: {spec.metadata.name}[/red]")
+        raise typer.Exit(code=1)
+    else:
+        print(f"[green]Deployed service:[/] {service_id}")
+
+
+@chatbot_app.async_command("run")
+async def chatbot_run(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    role: Annotated[str, typer.Option(..., help="Role to use for the agent token")] = (
+        "agent"
+    ),
+    agent_name: Annotated[
+        Optional[str], typer.Option(..., help="Name of the agent to run")
+    ] = None,
+    token_from_env: Annotated[
+        Optional[str],
+        typer.Option(
+            "--token-from-env",
+            help="Name of environment variable containing a MeshAgent token",
+        ),
+    ] = None,
+    title: Annotated[
+        Optional[str], typer.Option(..., help="A friendly title for the chatbot")
+    ] = None,
+    description: Annotated[
+        Optional[str], typer.Option(..., help="A description for the chatbot")
+    ] = None,
+    rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    rules_file: Optional[list[str]] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="The name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="The name or url of a required schema"
+        ),
+    ] = [],
+    toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--toolkit", "-t", help="The name or url of a required toolkit", hidden=True
+        ),
+    ] = [],
+    schema: Annotated[
+        List[str],
+        typer.Option(
+            "--schema", "-s", help="The name or url of a required schema", hidden=True
+        ),
+    ] = [],
+    model: Annotated[
+        str, typer.Option(..., help="Codex model to use")
+    ] = "gpt-5.2-codex",
+    command: Annotated[
+        Optional[str], typer.Option(..., help="Command used to launch codex app-server")
+    ] = None,
+    ws_url: Annotated[
+        Optional[str],
+        typer.Option(..., help="Websocket URL for an existing codex app-server"),
+    ] = None,
+    codex_image: Annotated[
+        str,
+        typer.Option(
+            "--codex-image",
+            help="Container image used to run codex app-server; use 'none' to disable",
+        ),
+    ] = "meshagent/shell-codex:default",
+    mount_room_path: Annotated[
+        list[str],
+        typer.Option(
+            "--mount-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    mount_project_path: Annotated[
+        list[str],
+        typer.Option(
+            "--mount-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="Working directory passed to codex app-server"),
+    ] = None,
+    approval_policy: Annotated[
+        Optional[str], typer.Option(..., help="Codex approval policy")
+    ] = None,
+    sandbox_policy: Annotated[
+        Optional[str], typer.Option(..., help="Codex sandbox policy")
+    ] = None,
+    skill_dir: Annotated[
+        list[str], typer.Option(..., help="An agent skills directory")
+    ] = [],
+    key: Annotated[
+        Optional[str], typer.Option("--key", help="An api key to sign the token with")
+    ] = None,
+    thread_path: Annotated[
+        Optional[str],
+        typer.Option(..., help="Thread path to use for chat history"),
+    ] = None,
+    message: Annotated[
+        Optional[str],
+        typer.Option(..., help="Optional one-shot message"),
+    ] = None,
+    use_web_search: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Request the web search tool"),
+    ] = None,
+    use_image_gen: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Request the image generation tool"),
+    ] = None,
+    use_storage: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Request the storage tool"),
+    ] = None,
+):
+    from meshagent.cli.chatbot import chat_with
+
+    codex_image = _normalize_codex_image(codex_image)
+    codex_mounts = _parse_codex_mounts(
+        mount_room_path=mount_room_path,
+        mount_project_path=mount_project_path,
+    )
+    key = await resolve_key(project_id=project_id, key=key)
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        room_name = resolve_room(room)
+
+        token_env = token_from_env or "MESHAGENT_TOKEN"
+        jwt = os.getenv(token_env)
+        if jwt is None:
+            if token_from_env:
+                print(
+                    f"[bold red]{token_env} environment variable is not set[/bold red]"
+                )
+                raise typer.Exit(1)
+            if agent_name is None:
+                print(
+                    f"[bold red]--agent-name must be specified when the {token_env} environment variable is not set[/bold red]"
+                )
+                raise typer.Exit(1)
+
+            token = ParticipantToken(name=agent_name)
+            token.add_api_grant(ApiScope.agent_default())
+            token.add_role_grant(role=role)
+            token.add_room_grant(room_name)
+            jwt = token.to_jwt(api_key=key)
+
+        command, ws_url, app_server_env = _resolve_codex_runtime(
+            command=command,
+            ws_url=ws_url,
+            codex_image=codex_image,
+            room_name=room_name,
+            jwt=jwt,
+        )
+
+        CustomCodexChatBot = build_codex_chatbot(
+            model=model,
+            title=title,
+            description=description,
+            rule=rule,
+            toolkit=require_toolkit + toolkit,
+            schema=require_schema + schema,
+            rules_file=rules_file,
+            skill_dirs=skill_dir,
+            command=command,
+            ws_url=ws_url,
+            codex_image=codex_image,
+            codex_mounts=codex_mounts,
+            working_directory=working_directory,
+            approval_policy=approval_policy,
+            sandbox_policy=sandbox_policy,
+            app_server_env=app_server_env,
+        )
+        bot = CustomCodexChatBot()
+
+        async with RoomClient(
+            protocol=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room_name),
+                token=jwt,
+            )
+        ) as client:
+            await bot.start(room=client)
+
+            _, pending = await asyncio.wait(
+                [
+                    asyncio.create_task(client.protocol.wait_for_close()),
+                    asyncio.create_task(
+                        chat_with(
+                            participant_name=client.local_participant.get_attribute(
+                                "name"
+                            ),
+                            room=room_name,
+                            project_id=project_id,
+                            thread_path=thread_path,
+                            message=message,
+                            use_web_search=bool(use_web_search),
+                            use_image_gen=bool(use_image_gen),
+                            use_storage=bool(use_storage),
+                        )
+                    ),
+                ],
+                return_when="FIRST_COMPLETED",
+            )
+
+            for task in pending:
+                task.cancel()
+    finally:
+        await account_client.close()
+
+
+@chatbot_app.async_command("use")
+async def chatbot_use(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    agent_name: Annotated[
+        Optional[str], typer.Option(..., help="Name of the agent to call")
+    ] = None,
+    thread_path: Annotated[
+        Optional[str],
+        typer.Option(..., help="Thread path to use for chat history"),
+    ] = None,
+    message: Annotated[
+        Optional[str],
+        typer.Option(..., help="Optional one-shot message"),
+    ] = None,
+    use_web_search: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Request the web search tool"),
+    ] = None,
+    use_image_gen: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Request the image generation tool"),
+    ] = None,
+    use_storage: Annotated[
+        Optional[bool],
+        typer.Option(..., help="Request the storage tool"),
+    ] = None,
+):
+    from meshagent.cli.chatbot import chat_with
+
+    project_id = await resolve_project_id(project_id=project_id)
+    room_name = resolve_room(room)
+
+    await chat_with(
+        participant_name=agent_name,
+        project_id=project_id,
+        room=room_name,
+        thread_path=thread_path,
+        message=message,
+        use_web_search=bool(use_web_search),
+        use_image_gen=bool(use_image_gen),
+        use_storage=bool(use_storage),
+    )
+
+
+@task_runner_app.async_command("run")
+async def task_runner_run(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    role: Annotated[str, typer.Option(..., help="Role to use for the agent token")] = (
+        "agent"
+    ),
+    agent_name: Annotated[
+        Optional[str], typer.Option(..., help="Name of the agent to run")
+    ] = None,
+    token_from_env: Annotated[
+        Optional[str],
+        typer.Option(
+            "--token-from-env",
+            help="Name of environment variable containing a MeshAgent token",
+        ),
+    ] = None,
+    rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    rules_file: Optional[list[str]] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="The name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="The name or url of a required schema"
+        ),
+    ] = [],
+    toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--toolkit", "-t", help="The name or url of a required toolkit", hidden=True
+        ),
+    ] = [],
+    schema: Annotated[
+        List[str],
+        typer.Option(
+            "--schema", "-s", help="The name or url of a required schema", hidden=True
+        ),
+    ] = [],
+    model: Annotated[
+        str, typer.Option(..., help="Codex model to use")
+    ] = "gpt-5.2-codex",
+    title: Annotated[
+        Optional[str], typer.Option(..., help="A friendly title for the task runner")
+    ] = None,
+    description: Annotated[
+        Optional[str], typer.Option(..., help="A description for the task runner")
+    ] = None,
+    supports_tools: Annotated[
+        bool, typer.Option(..., help="Whether the task runner supports tools")
+    ] = True,
+    command: Annotated[
+        Optional[str], typer.Option(..., help="Command used to launch codex app-server")
+    ] = None,
+    ws_url: Annotated[
+        Optional[str],
+        typer.Option(..., help="Websocket URL for an existing codex app-server"),
+    ] = None,
+    codex_image: Annotated[
+        str,
+        typer.Option(
+            "--codex-image",
+            help="Container image used to run codex app-server; use 'none' to disable",
+        ),
+    ] = "meshagent/shell-codex:default",
+    mount_room_path: Annotated[
+        list[str],
+        typer.Option(
+            "--mount-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    mount_project_path: Annotated[
+        list[str],
+        typer.Option(
+            "--mount-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="Working directory passed to codex app-server"),
+    ] = None,
+    approval_policy: Annotated[
+        Optional[str], typer.Option(..., help="Codex approval policy")
+    ] = None,
+    sandbox_policy: Annotated[
+        Optional[str], typer.Option(..., help="Codex sandbox policy")
+    ] = None,
+    skill_dir: Annotated[
+        list[str], typer.Option(..., help="An agent skills directory")
+    ] = [],
+    key: Annotated[
+        Optional[str], typer.Option("--key", help="An api key to sign the token with")
+    ] = None,
+    input: Annotated[
+        Optional[str],
+        typer.Option(..., help="JSON input for the task runner, or '-' for stdin"),
+    ] = None,
+    with_caller: Annotated[
+        bool,
+        typer.Option(
+            help="Whether to invoke the tool with the currently logged in user as the caller"
+        ),
+    ] = os.getenv("MESHAGENT_TOKEN") is None,
+):
+    codex_image = _normalize_codex_image(codex_image)
+    codex_mounts = _parse_codex_mounts(
+        mount_room_path=mount_room_path,
+        mount_project_path=mount_project_path,
+    )
+    key = await resolve_key(project_id=project_id, key=key)
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        room_name = resolve_room(room)
+
+        token_env = token_from_env or "MESHAGENT_TOKEN"
+        jwt = os.getenv(token_env)
+        if jwt is None:
+            if token_from_env:
+                print(
+                    f"[bold red]{token_env} environment variable is not set[/bold red]"
+                )
+                raise typer.Exit(1)
+            if agent_name is None:
+                print(
+                    f"[bold red]--agent-name must be specified when the {token_env} environment variable is not set[/bold red]"
+                )
+                raise typer.Exit(1)
+
+            token = ParticipantToken(name=agent_name)
+            token.add_api_grant(ApiScope.agent_default())
+            token.add_role_grant(role=role)
+            token.add_room_grant(room_name)
+            jwt = token.to_jwt(api_key=key)
+
+        command, ws_url, app_server_env = _resolve_codex_runtime(
+            command=command,
+            ws_url=ws_url,
+            codex_image=codex_image,
+            room_name=room_name,
+            jwt=jwt,
+        )
+
+        CustomCodexTaskRunner = build_codex_task_runner(
+            title=title,
+            description=description,
+            supports_tools=supports_tools,
+            model=model,
+            rule=rule,
+            toolkit=require_toolkit + toolkit,
+            schema=require_schema + schema,
+            rules_file=rules_file,
+            skill_dirs=skill_dir,
+            command=command,
+            ws_url=ws_url,
+            codex_image=codex_image,
+            codex_mounts=codex_mounts,
+            working_directory=working_directory,
+            approval_policy=approval_policy,
+            sandbox_policy=sandbox_policy,
+            app_server_env=app_server_env,
+        )
+        bot = CustomCodexTaskRunner()
+
+        input_payload = _read_task_runner_input(input)
+        arguments = json.loads(input_payload)
+
+        async with RoomClient(
+            protocol=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room_name),
+                token=jwt,
+            )
+        ) as client:
+            if with_caller:
+                connection = await account_client.connect_room(
+                    project_id=project_id, room=room_name
+                )
+                async with RoomClient(
+                    protocol=WebSocketClientProtocol(
+                        url=websocket_room_url(room_name=room_name),
+                        token=connection.jwt,
+                    ),
+                ) as user_client:
+                    result = await bot.run(
+                        room=client,
+                        arguments=arguments,
+                        attachment=None,
+                        caller=user_client.local_participant,
+                    )
+            else:
+                result = await bot.run(
+                    room=client,
+                    arguments=arguments,
+                    attachment=None,
+                )
+
+            if isinstance(result, JsonResponse):
+                print(result.json)
+            elif isinstance(result, TextResponse):
+                print(result.text)
+            else:
+                print(result)
+    finally:
+        await account_client.close()
+
+
+@task_runner_app.async_command("service")
+async def task_runner_service(
+    *,
+    agent_name: Annotated[str, typer.Option(..., help="Name of the agent to run")],
+    title: Annotated[
+        Optional[str], typer.Option(..., help="A friendly title for the task runner")
+    ] = None,
+    description: Annotated[
+        Optional[str], typer.Option(..., help="A description for the task runner")
+    ] = None,
+    supports_tools: Annotated[
+        bool, typer.Option(..., help="Whether the task runner supports tools")
+    ] = True,
+    rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    rules_file: Optional[list[str]] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="The name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="The name or url of a required schema"
+        ),
+    ] = [],
+    toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--toolkit", "-t", help="The name or url of a required toolkit", hidden=True
+        ),
+    ] = [],
+    schema: Annotated[
+        List[str],
+        typer.Option(
+            "--schema", "-s", help="The name or url of a required schema", hidden=True
+        ),
+    ] = [],
+    model: Annotated[
+        str, typer.Option(..., help="Codex model to use")
+    ] = "gpt-5.2-codex",
+    command: Annotated[
+        Optional[str], typer.Option(..., help="Command used to launch codex app-server")
+    ] = None,
+    ws_url: Annotated[
+        Optional[str],
+        typer.Option(..., help="Websocket URL for an existing codex app-server"),
+    ] = None,
+    codex_image: Annotated[
+        str,
+        typer.Option(
+            "--codex-image",
+            help="Container image used to run codex app-server; use 'none' to disable",
+        ),
+    ] = "meshagent/shell-codex:default",
+    mount_room_path: Annotated[
+        list[str],
+        typer.Option(
+            "--mount-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    mount_project_path: Annotated[
+        list[str],
+        typer.Option(
+            "--mount-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="Working directory passed to codex app-server"),
+    ] = None,
+    approval_policy: Annotated[
+        Optional[str], typer.Option(..., help="Codex approval policy")
+    ] = None,
+    sandbox_policy: Annotated[
+        Optional[str], typer.Option(..., help="Codex sandbox policy")
+    ] = None,
+    skill_dir: Annotated[
+        list[str], typer.Option(..., help="An agent skills directory")
+    ] = [],
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
+):
+    codex_image = _normalize_codex_image(codex_image)
+    codex_mounts = _parse_codex_mounts(
+        mount_room_path=mount_room_path,
+        mount_project_path=mount_project_path,
+    )
+    command, ws_url, app_server_env = _resolve_codex_runtime(
+        command=command,
+        ws_url=ws_url,
+        codex_image=codex_image,
+    )
+    service = get_service(host=host, port=port)
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "TaskRunner"})
+    )
+    service.add_path(
+        identity=agent_name,
+        path=path,
+        cls=build_codex_task_runner(
+            title=title,
+            description=description,
+            supports_tools=supports_tools,
+            model=model,
+            rule=rule,
+            toolkit=require_toolkit + toolkit,
+            schema=require_schema + schema,
+            rules_file=rules_file,
+            skill_dirs=skill_dir,
+            command=command,
+            ws_url=ws_url,
+            codex_image=codex_image,
+            codex_mounts=codex_mounts,
+            working_directory=working_directory,
+            approval_policy=approval_policy,
+            sandbox_policy=sandbox_policy,
+            app_server_env=app_server_env,
+        ),
+    )
+
+    if not get_deferred():
+        await run_services()
+
+
+@task_runner_app.async_command("spec")
+async def task_runner_spec(
+    *,
+    service_name: Annotated[str, typer.Option("--service-name", help="Service name")],
+    service_description: Annotated[
+        Optional[str], typer.Option("--service-description", help="Service description")
+    ] = None,
+    service_title: Annotated[
+        Optional[str],
+        typer.Option("--service-title", help="A display name for service"),
+    ] = None,
+    agent_name: Annotated[str, typer.Option(..., help="Name of the agent to run")],
+    title: Annotated[
+        Optional[str], typer.Option(..., help="A friendly title for the task runner")
+    ] = None,
+    description: Annotated[
+        Optional[str], typer.Option(..., help="A description for the task runner")
+    ] = None,
+    supports_tools: Annotated[
+        bool, typer.Option(..., help="Whether the task runner supports tools")
+    ] = True,
+    rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    rules_file: Optional[list[str]] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="The name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="The name or url of a required schema"
+        ),
+    ] = [],
+    toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--toolkit", "-t", help="The name or url of a required toolkit", hidden=True
+        ),
+    ] = [],
+    schema: Annotated[
+        List[str],
+        typer.Option(
+            "--schema", "-s", help="The name or url of a required schema", hidden=True
+        ),
+    ] = [],
+    model: Annotated[
+        str, typer.Option(..., help="Codex model to use")
+    ] = "gpt-5.2-codex",
+    command: Annotated[
+        Optional[str], typer.Option(..., help="Command used to launch codex app-server")
+    ] = None,
+    ws_url: Annotated[
+        Optional[str],
+        typer.Option(..., help="Websocket URL for an existing codex app-server"),
+    ] = None,
+    codex_image: Annotated[
+        str,
+        typer.Option(
+            "--codex-image",
+            help="Container image used to run codex app-server; use 'none' to disable",
+        ),
+    ] = "meshagent/shell-codex:default",
+    mount_room_path: Annotated[
+        list[str],
+        typer.Option(
+            "--mount-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    mount_project_path: Annotated[
+        list[str],
+        typer.Option(
+            "--mount-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="Working directory passed to codex app-server"),
+    ] = None,
+    approval_policy: Annotated[
+        Optional[str], typer.Option(..., help="Codex approval policy")
+    ] = None,
+    sandbox_policy: Annotated[
+        Optional[str], typer.Option(..., help="Codex sandbox policy")
+    ] = None,
+    skill_dir: Annotated[
+        list[str], typer.Option(..., help="An agent skills directory")
+    ] = [],
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
+):
+    del service_title
+
+    codex_image = _normalize_codex_image(codex_image)
+    codex_mounts = _parse_codex_mounts(
+        mount_room_path=mount_room_path,
+        mount_project_path=mount_project_path,
+    )
+    command, ws_url, app_server_env = _resolve_codex_runtime(
+        command=command,
+        ws_url=ws_url,
+        codex_image=codex_image,
+    )
+    service = get_service(host=host, port=port)
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "TaskRunner"})
+    )
+    service.add_path(
+        identity=agent_name,
+        path=path,
+        cls=build_codex_task_runner(
+            title=title,
+            description=description,
+            supports_tools=supports_tools,
+            model=model,
+            rule=rule,
+            toolkit=require_toolkit + toolkit,
+            schema=require_schema + schema,
+            rules_file=rules_file,
+            skill_dirs=skill_dir,
+            command=command,
+            ws_url=ws_url,
+            codex_image=codex_image,
+            codex_mounts=codex_mounts,
+            working_directory=working_directory,
+            approval_policy=approval_policy,
+            sandbox_policy=sandbox_policy,
+            app_server_env=app_server_env,
+        ),
+    )
+
+    spec = service_specs()[0]
+    spec.metadata.annotations = {
+        "meshagent.service.id": service_name,
+    }
+    spec.metadata.name = service_name
+    spec.metadata.description = service_description
+    spec.container.image = (
+        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
+    )
+    spec.container.command = shlex.join(
+        [
+            "meshagent",
+            "codex",
+            "task-runner",
+            "service",
+            *cleanup_args(sys.argv[3:]),
+        ]
+    )
+
+    print(yaml.dump(spec.model_dump(mode="json", exclude_none=True), sort_keys=False))
+
+
+@task_runner_app.async_command("deploy")
+async def task_runner_deploy(
+    *,
+    service_name: Annotated[str, typer.Option("--service-name", help="Service name")],
+    service_description: Annotated[
+        Optional[str], typer.Option("--service-description", help="Service description")
+    ] = None,
+    service_title: Annotated[
+        Optional[str],
+        typer.Option("--service-title", help="A display name for service"),
+    ] = None,
+    project_id: ProjectIdOption,
+    room: Annotated[
+        Optional[str],
+        typer.Option("--room", help="The name of a room to create the service for"),
+    ] = os.getenv("MESHAGENT_ROOM"),
+    agent_name: Annotated[str, typer.Option(..., help="Name of the agent to run")],
+    title: Annotated[
+        Optional[str], typer.Option(..., help="A friendly title for the task runner")
+    ] = None,
+    description: Annotated[
+        Optional[str], typer.Option(..., help="A description for the task runner")
+    ] = None,
+    supports_tools: Annotated[
+        bool, typer.Option(..., help="Whether the task runner supports tools")
+    ] = True,
+    rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    rules_file: Optional[list[str]] = None,
+    require_toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--require-toolkit", "-rt", help="The name or url of a required toolkit"
+        ),
+    ] = [],
+    require_schema: Annotated[
+        List[str],
+        typer.Option(
+            "--require-schema", "-rs", help="The name or url of a required schema"
+        ),
+    ] = [],
+    toolkit: Annotated[
+        List[str],
+        typer.Option(
+            "--toolkit", "-t", help="The name or url of a required toolkit", hidden=True
+        ),
+    ] = [],
+    schema: Annotated[
+        List[str],
+        typer.Option(
+            "--schema", "-s", help="The name or url of a required schema", hidden=True
+        ),
+    ] = [],
+    model: Annotated[
+        str, typer.Option(..., help="Codex model to use")
+    ] = "gpt-5.2-codex",
+    command: Annotated[
+        Optional[str], typer.Option(..., help="Command used to launch codex app-server")
+    ] = None,
+    ws_url: Annotated[
+        Optional[str],
+        typer.Option(..., help="Websocket URL for an existing codex app-server"),
+    ] = None,
+    codex_image: Annotated[
+        str,
+        typer.Option(
+            "--codex-image",
+            help="Container image used to run codex app-server; use 'none' to disable",
+        ),
+    ] = "meshagent/shell-codex:default",
+    mount_room_path: Annotated[
+        list[str],
+        typer.Option(
+            "--mount-room-path",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    mount_project_path: Annotated[
+        list[str],
+        typer.Option(
+            "--mount-project-path",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    working_directory: Annotated[
+        Optional[str],
+        typer.Option(..., help="Working directory passed to codex app-server"),
+    ] = None,
+    approval_policy: Annotated[
+        Optional[str], typer.Option(..., help="Codex approval policy")
+    ] = None,
+    sandbox_policy: Annotated[
+        Optional[str], typer.Option(..., help="Codex sandbox policy")
+    ] = None,
+    skill_dir: Annotated[
+        list[str], typer.Option(..., help="An agent skills directory")
+    ] = [],
+    host: Annotated[
+        Optional[str], typer.Option(help="Host to bind the service on")
+    ] = None,
+    port: Annotated[
+        Optional[int], typer.Option(help="Port to bind the service on")
+    ] = None,
+    path: Annotated[
+        Optional[str], typer.Option(help="HTTP path to mount the service at")
+    ] = None,
+):
+    del service_title
+
+    project_id = await resolve_project_id(project_id=project_id)
+
+    codex_image = _normalize_codex_image(codex_image)
+    codex_mounts = _parse_codex_mounts(
+        mount_room_path=mount_room_path,
+        mount_project_path=mount_project_path,
+    )
+    command, ws_url, app_server_env = _resolve_codex_runtime(
+        command=command,
+        ws_url=ws_url,
+        codex_image=codex_image,
+    )
+    service = get_service(host=host, port=port)
+    if path is None:
+        path = "/agent"
+        i = 0
+        while service.has_path(path):
+            i += 1
+            path = f"/agent{i}"
+
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "TaskRunner"})
+    )
+    service.add_path(
+        identity=agent_name,
+        path=path,
+        cls=build_codex_task_runner(
+            title=title,
+            description=description,
+            supports_tools=supports_tools,
+            model=model,
+            rule=rule,
+            toolkit=require_toolkit + toolkit,
+            schema=require_schema + schema,
+            rules_file=rules_file,
+            skill_dirs=skill_dir,
+            command=command,
+            ws_url=ws_url,
+            codex_image=codex_image,
+            codex_mounts=codex_mounts,
+            working_directory=working_directory,
+            approval_policy=approval_policy,
+            sandbox_policy=sandbox_policy,
+            app_server_env=app_server_env,
+        ),
+    )
+
+    spec = service_specs()[0]
+    spec.metadata.annotations = {
+        "meshagent.service.id": service_name,
+    }
+    spec.metadata.name = service_name
+    spec.metadata.description = service_description
+    spec.container.image = (
+        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
+    )
+    spec.container.command = shlex.join(
+        [
+            "meshagent",
+            "codex",
+            "task-runner",
+            "service",
+            *cleanup_args(sys.argv[3:]),
+        ]
+    )
+
+    try:
+        service_id = await _upsert_service(
+            project_id=project_id,
+            room=room,
+            service_spec=spec,
+        )
+    except ConflictError:
+        print(f"[red]Service name already in use: {spec.metadata.name}[/red]")
+        raise typer.Exit(code=1)
+    else:
+        print(f"[green]Deployed service:[/] {service_id}")
