@@ -16,7 +16,6 @@ from meshagent.api import (
     ParticipantToken,
     RequiredSchema,
     RequiredToolkit,
-    RemoteParticipant,
     RoomClient,
     WebSocketClientProtocol,
 )
@@ -134,6 +133,21 @@ def _normalize_codex_image(codex_image: Optional[str]) -> Optional[str]:
         return None
 
     return normalized
+
+
+def _resolve_sandbox_policy(
+    *,
+    codex_image: Optional[str],
+    ws_url: Optional[str],
+    sandbox_policy: Optional[str],
+) -> Optional[str]:
+    if sandbox_policy is not None:
+        return sandbox_policy
+
+    if codex_image is not None and ws_url is None:
+        return "danger-full-access"
+
+    return None
 
 
 def _parse_codex_mounts(
@@ -268,6 +282,7 @@ def build_codex_chatbot(
     approval_policy: Optional[str] = None,
     sandbox_policy: Optional[str] = None,
     app_server_env: Optional[dict[str, str]] = None,
+    verbose: bool = False,
 ):
     try:
         from meshagent.codex import CodexChatBot
@@ -305,6 +320,7 @@ def build_codex_chatbot(
                 approval_policy=approval_policy,
                 sandbox_policy=sandbox_policy,
                 app_server_env=app_server_env,
+                verbose=verbose,
             )
 
         async def create_thread_context(
@@ -348,6 +364,7 @@ def build_codex_task_runner(
     approval_policy: Optional[str] = None,
     sandbox_policy: Optional[str] = None,
     app_server_env: Optional[dict[str, str]] = None,
+    verbose: bool = False,
 ):
     try:
         from meshagent.codex import CodexTaskRunner
@@ -386,6 +403,7 @@ def build_codex_task_runner(
                 approval_policy=approval_policy,
                 sandbox_policy=sandbox_policy,
                 app_server_env=app_server_env,
+                verbose=verbose,
             )
 
         async def init_chat_context(self):
@@ -486,11 +504,21 @@ async def chatbot_join(
     skill_dir: Annotated[
         list[str], typer.Option(..., help="An agent skills directory")
     ] = [],
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            help="Log codex app-server JSON-RPC requests/responses",
+        ),
+    ] = False,
     key: Annotated[
         Optional[str], typer.Option("--key", help="An api key to sign the token with")
     ] = None,
 ):
     codex_image = _normalize_codex_image(codex_image)
+    sandbox_policy = _resolve_sandbox_policy(
+        codex_image=codex_image, ws_url=ws_url, sandbox_policy=sandbox_policy
+    )
     codex_mounts = _parse_codex_mounts(
         mount_room_path=mount_room_path,
         mount_project_path=mount_project_path,
@@ -548,6 +576,7 @@ async def chatbot_join(
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
+            verbose=verbose,
         )
         bot = CustomCodexChatBot()
 
@@ -672,11 +701,21 @@ async def task_runner_join(
     skill_dir: Annotated[
         list[str], typer.Option(..., help="An agent skills directory")
     ] = [],
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            help="Log codex app-server JSON-RPC requests/responses",
+        ),
+    ] = False,
     key: Annotated[
         Optional[str], typer.Option("--key", help="An api key to sign the token with")
     ] = None,
 ):
     codex_image = _normalize_codex_image(codex_image)
+    sandbox_policy = _resolve_sandbox_policy(
+        codex_image=codex_image, ws_url=ws_url, sandbox_policy=sandbox_policy
+    )
     codex_mounts = _parse_codex_mounts(
         mount_room_path=mount_room_path,
         mount_project_path=mount_project_path,
@@ -737,6 +776,7 @@ async def task_runner_join(
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
+            verbose=verbose,
         )
         bot = CustomCodexTaskRunner()
 
@@ -844,6 +884,13 @@ async def chatbot_service(
     skill_dir: Annotated[
         list[str], typer.Option(..., help="An agent skills directory")
     ] = [],
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            help="Log codex app-server JSON-RPC requests/responses",
+        ),
+    ] = False,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -855,6 +902,9 @@ async def chatbot_service(
     ] = None,
 ):
     codex_image = _normalize_codex_image(codex_image)
+    sandbox_policy = _resolve_sandbox_policy(
+        codex_image=codex_image, ws_url=ws_url, sandbox_policy=sandbox_policy
+    )
     codex_mounts = _parse_codex_mounts(
         mount_room_path=mount_room_path,
         mount_project_path=mount_project_path,
@@ -896,6 +946,7 @@ async def chatbot_service(
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
+            verbose=verbose,
         ),
     )
 
@@ -991,6 +1042,13 @@ async def chatbot_spec(
     skill_dir: Annotated[
         list[str], typer.Option(..., help="An agent skills directory")
     ] = [],
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            help="Log codex app-server JSON-RPC requests/responses",
+        ),
+    ] = False,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -1004,6 +1062,9 @@ async def chatbot_spec(
     del service_title
 
     codex_image = _normalize_codex_image(codex_image)
+    sandbox_policy = _resolve_sandbox_policy(
+        codex_image=codex_image, ws_url=ws_url, sandbox_policy=sandbox_policy
+    )
     codex_mounts = _parse_codex_mounts(
         mount_room_path=mount_room_path,
         mount_project_path=mount_project_path,
@@ -1044,6 +1105,7 @@ async def chatbot_spec(
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
+            verbose=verbose,
         ),
     )
 
@@ -1156,6 +1218,13 @@ async def chatbot_deploy(
     skill_dir: Annotated[
         list[str], typer.Option(..., help="An agent skills directory")
     ] = [],
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            help="Log codex app-server JSON-RPC requests/responses",
+        ),
+    ] = False,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -1171,6 +1240,9 @@ async def chatbot_deploy(
     project_id = await resolve_project_id(project_id=project_id)
 
     codex_image = _normalize_codex_image(codex_image)
+    sandbox_policy = _resolve_sandbox_policy(
+        codex_image=codex_image, ws_url=ws_url, sandbox_policy=sandbox_policy
+    )
     codex_mounts = _parse_codex_mounts(
         mount_room_path=mount_room_path,
         mount_project_path=mount_project_path,
@@ -1211,6 +1283,7 @@ async def chatbot_deploy(
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
+            verbose=verbose,
         ),
     )
 
@@ -1334,6 +1407,13 @@ async def chatbot_run(
     skill_dir: Annotated[
         list[str], typer.Option(..., help="An agent skills directory")
     ] = [],
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            help="Log codex app-server JSON-RPC requests/responses",
+        ),
+    ] = False,
     key: Annotated[
         Optional[str], typer.Option("--key", help="An api key to sign the token with")
     ] = None,
@@ -1361,6 +1441,9 @@ async def chatbot_run(
     from meshagent.cli.chatbot import chat_with
 
     codex_image = _normalize_codex_image(codex_image)
+    sandbox_policy = _resolve_sandbox_policy(
+        codex_image=codex_image, ws_url=ws_url, sandbox_policy=sandbox_policy
+    )
     codex_mounts = _parse_codex_mounts(
         mount_room_path=mount_room_path,
         mount_project_path=mount_project_path,
@@ -1416,6 +1499,7 @@ async def chatbot_run(
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
+            verbose=verbose,
         )
         bot = CustomCodexChatBot()
 
@@ -1597,6 +1681,13 @@ async def task_runner_run(
     skill_dir: Annotated[
         list[str], typer.Option(..., help="An agent skills directory")
     ] = [],
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            help="Log codex app-server JSON-RPC requests/responses",
+        ),
+    ] = False,
     key: Annotated[
         Optional[str], typer.Option("--key", help="An api key to sign the token with")
     ] = None,
@@ -1612,6 +1703,9 @@ async def task_runner_run(
     ] = os.getenv("MESHAGENT_TOKEN") is None,
 ):
     codex_image = _normalize_codex_image(codex_image)
+    sandbox_policy = _resolve_sandbox_policy(
+        codex_image=codex_image, ws_url=ws_url, sandbox_policy=sandbox_policy
+    )
     codex_mounts = _parse_codex_mounts(
         mount_room_path=mount_room_path,
         mount_project_path=mount_project_path,
@@ -1668,6 +1762,7 @@ async def task_runner_run(
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
+            verbose=verbose,
         )
         bot = CustomCodexTaskRunner()
 
@@ -1796,6 +1891,13 @@ async def task_runner_service(
     skill_dir: Annotated[
         list[str], typer.Option(..., help="An agent skills directory")
     ] = [],
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            help="Log codex app-server JSON-RPC requests/responses",
+        ),
+    ] = False,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -1807,6 +1909,9 @@ async def task_runner_service(
     ] = None,
 ):
     codex_image = _normalize_codex_image(codex_image)
+    sandbox_policy = _resolve_sandbox_policy(
+        codex_image=codex_image, ws_url=ws_url, sandbox_policy=sandbox_policy
+    )
     codex_mounts = _parse_codex_mounts(
         mount_room_path=mount_room_path,
         mount_project_path=mount_project_path,
@@ -1848,6 +1953,7 @@ async def task_runner_service(
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
+            verbose=verbose,
         ),
     )
 
@@ -1946,6 +2052,13 @@ async def task_runner_spec(
     skill_dir: Annotated[
         list[str], typer.Option(..., help="An agent skills directory")
     ] = [],
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            help="Log codex app-server JSON-RPC requests/responses",
+        ),
+    ] = False,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -1959,6 +2072,9 @@ async def task_runner_spec(
     del service_title
 
     codex_image = _normalize_codex_image(codex_image)
+    sandbox_policy = _resolve_sandbox_policy(
+        codex_image=codex_image, ws_url=ws_url, sandbox_policy=sandbox_policy
+    )
     codex_mounts = _parse_codex_mounts(
         mount_room_path=mount_room_path,
         mount_project_path=mount_project_path,
@@ -2000,6 +2116,7 @@ async def task_runner_spec(
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
+            verbose=verbose,
         ),
     )
 
@@ -2121,6 +2238,13 @@ async def task_runner_deploy(
     skill_dir: Annotated[
         list[str], typer.Option(..., help="An agent skills directory")
     ] = [],
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            help="Log codex app-server JSON-RPC requests/responses",
+        ),
+    ] = False,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -2136,6 +2260,9 @@ async def task_runner_deploy(
     project_id = await resolve_project_id(project_id=project_id)
 
     codex_image = _normalize_codex_image(codex_image)
+    sandbox_policy = _resolve_sandbox_policy(
+        codex_image=codex_image, ws_url=ws_url, sandbox_policy=sandbox_policy
+    )
     codex_mounts = _parse_codex_mounts(
         mount_room_path=mount_room_path,
         mount_project_path=mount_project_path,
@@ -2177,6 +2304,7 @@ async def task_runner_deploy(
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
+            verbose=verbose,
         ),
     )
 
