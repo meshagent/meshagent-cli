@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import importlib.util
 import inspect
 import os
 import shlex
 import sys
 from pathlib import Path
-from typing import Annotated, Any, Callable, Optional, cast
+from typing import Annotated, Any, Callable, Literal, Optional, cast
 
 import typer
 import yaml
 from aiohttp import web
+from pydantic import BaseModel, ConfigDict, ValidationError
 from rich import print
 
 from meshagent.api import (
@@ -38,25 +40,173 @@ from meshagent.cli.host import get_deferred, get_service, run_services, service_
 app = async_typer.AsyncTyper(help="Run a webserver connected to a room")
 
 
-def _parse_route_mapping(value: str, option_name: str) -> tuple[str, Path]:
-    if ":" not in value:
-        raise typer.BadParameter(
-            f"{option_name} must be in the form /route:/path (got {value!r})"
-        )
-    route_path, raw_path = value.split(":", 1)
-    route_path = route_path.strip()
-    raw_path = raw_path.strip()
-    if not route_path or not route_path.startswith("/"):
-        raise typer.BadParameter(
-            f"{option_name} route must start with '/' (got {route_path!r})"
-        )
-    if not raw_path:
-        raise typer.BadParameter(f"{option_name} path is required")
-    path = Path(raw_path).expanduser().resolve()
-    return route_path, path
+@dataclass(frozen=True)
+class StaticRoute:
+    path: str
+    source: Path
 
 
-def _load_python_handler(path: Path) -> tuple[Callable[..., Any], list[str]]:
+@dataclass(frozen=True)
+class PythonRoute:
+    path: str
+    source: Path
+    methods: list[str]
+
+
+@dataclass(frozen=True)
+class LoadedPythonRoute:
+    path: str
+    source: Path
+    methods: list[str]
+    handler: Callable[..., Any]
+
+
+class RouteConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    methods: list[str] | None = None
+    python: str | None = None
+    static: str | None = None
+
+
+class RoutesConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["Routes"]
+    version: Literal["v1"]
+    routes: list[RouteConfig]
+
+
+def _normalize_methods(*, methods: list[str], source: str) -> list[str]:
+    if len(methods) == 0:
+        raise typer.BadParameter(f"{source} must include at least one HTTP method")
+
+    normalized: list[str] = []
+    for method in methods:
+        if not isinstance(method, str):
+            raise typer.BadParameter(f"{source} contains a non-string HTTP method")
+        value = method.strip().upper()
+        if not value:
+            raise typer.BadParameter(f"{source} contains an empty HTTP method")
+        normalized.append(value)
+    return normalized
+
+
+def _resolve_path(*, raw_path: str, base_dir: Path) -> Path:
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = base_dir / path
+    return path.resolve()
+
+
+def _load_routes_file(
+    *,
+    routes_file: str,
+) -> tuple[list[StaticRoute], list[PythonRoute]]:
+    routes_path = Path(routes_file).expanduser().resolve()
+    if not routes_path.exists():
+        raise typer.BadParameter(f"Routes file not found: {routes_path}")
+    if not routes_path.is_file():
+        raise typer.BadParameter(f"Routes file must be a file: {routes_path}")
+
+    try:
+        raw = yaml.safe_load(routes_path.read_text())
+    except yaml.YAMLError as exc:
+        raise typer.BadParameter(
+            f"Unable to parse routes file {routes_path}: {exc}"
+        ) from exc
+
+    if raw is None:
+        raw = {}
+
+    try:
+        config = RoutesConfig.model_validate(raw)
+    except ValidationError as exc:
+        raise typer.BadParameter(f"Invalid routes file {routes_path}:\n{exc}") from exc
+
+    static_routes: list[StaticRoute] = []
+    python_routes: list[PythonRoute] = []
+    for index, route in enumerate(config.routes):
+        source_label = f"--routes-file {routes_path} routes[{index}]"
+        route_path = route.path.strip()
+        if not route_path.startswith("/"):
+            raise typer.BadParameter(
+                f"{source_label}.path must start with '/' (got {route.path!r})"
+            )
+
+        has_python = route.python is not None
+        has_static = route.static is not None
+        if has_python == has_static:
+            raise typer.BadParameter(
+                f"{source_label} must define exactly one of 'python' or 'static'"
+            )
+
+        if route.static is not None:
+            if route.methods is not None:
+                raise typer.BadParameter(
+                    f"{source_label}.methods is only valid for python routes"
+                )
+            static_path = route.static.strip()
+            if not static_path:
+                raise typer.BadParameter(
+                    f"{source_label}.static must be a non-empty path"
+                )
+            static_routes.append(
+                StaticRoute(
+                    path=route_path,
+                    source=_resolve_path(
+                        raw_path=static_path,
+                        base_dir=routes_path.parent,
+                    ),
+                )
+            )
+            continue
+
+        python_path = cast(str, route.python).strip()
+        if not python_path:
+            raise typer.BadParameter(f"{source_label}.python must be a non-empty path")
+        methods = _normalize_methods(
+            methods=["GET"] if route.methods is None else route.methods,
+            source=f"{source_label}.methods",
+        )
+        python_routes.append(
+            PythonRoute(
+                path=route_path,
+                source=_resolve_path(
+                    raw_path=python_path,
+                    base_dir=routes_path.parent,
+                ),
+                methods=methods,
+            )
+        )
+
+    return static_routes, python_routes
+
+
+def _resolve_routes(
+    *,
+    routes_file: str,
+) -> tuple[list[StaticRoute], list[PythonRoute]]:
+    return _load_routes_file(routes_file=routes_file)
+
+
+def _load_python_routes(routes: list[PythonRoute]) -> list[LoadedPythonRoute]:
+    loaded: list[LoadedPythonRoute] = []
+    for route in routes:
+        handler = _load_python_handler(route.source)
+        loaded.append(
+            LoadedPythonRoute(
+                path=route.path,
+                source=route.source,
+                methods=route.methods,
+                handler=handler,
+            )
+        )
+    return loaded
+
+
+def _load_python_handler(path: Path) -> Callable[..., Any]:
     if not path.exists():
         raise typer.BadParameter(f"Python route file not found: {path}")
     if path.suffix != ".py":
@@ -77,36 +227,42 @@ def _load_python_handler(path: Path) -> tuple[Callable[..., Any], list[str]]:
         raise typer.BadParameter(
             f"Python route file must define 'handler(*, room, req)': {path}"
         )
-
-    methods = getattr(module, "METHODS", None)
-    if methods is None:
-        method = getattr(module, "METHOD", None)
-        if method is not None:
-            methods = [method]
-    if methods is None:
-        methods = ["GET"]
-    if isinstance(methods, str):
-        methods = [methods]
-
-    normalized = [m.upper() for m in methods]
-    return cast(Callable[..., Any], handler), normalized
-
-
-def _ensure_routes(
-    *, file_route: list[str] | None, python_route: list[str] | None
-) -> None:
-    if not file_route and not python_route:
+    if not callable(handler):
         raise typer.BadParameter(
-            "At least one --file-route or --python-route is required"
+            f"Python route file 'handler' must be callable: {path}"
         )
 
+    if hasattr(module, "METHODS") or hasattr(module, "METHOD"):
+        raise typer.BadParameter(
+            f"Python route file must not define METHOD/METHODS; configure methods in --routes-file instead: {path}"
+        )
 
-def _python_route_paths(python_route: list[str] | None) -> list[Path]:
-    paths: list[Path] = []
-    for entry in python_route or []:
-        _, path = _parse_route_mapping(entry, "--python-route")
-        paths.append(path)
-    return paths
+    return cast(Callable[..., Any], handler)
+
+
+def _watch_paths(
+    *,
+    routes_file: str,
+) -> list[Path]:
+    routes_path = Path(routes_file).expanduser().resolve()
+    paths = [routes_path]
+    try:
+        _, routes_python = _resolve_routes(routes_file=routes_file)
+        for route in routes_python:
+            paths.append(route.source)
+    except typer.BadParameter:
+        pass
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+
+    return unique
 
 
 def _collect_mtimes(paths: list[Path]) -> dict[str, float | None]:
@@ -118,12 +274,21 @@ def _collect_mtimes(paths: list[Path]) -> dict[str, float | None]:
 
 def build_webserver(
     *,
-    file_route: list[str] | None,
-    python_route: list[str] | None,
+    routes_file: str,
     host: str,
     port: int,
 ):
-    _ensure_routes(file_route=file_route, python_route=python_route)
+    static_routes, python_routes = _resolve_routes(routes_file=routes_file)
+    if len(static_routes) == 0 and len(python_routes) == 0:
+        raise typer.BadParameter("No routes were defined")
+
+    for route in static_routes:
+        if not route.source.exists() or not route.source.is_dir():
+            raise typer.BadParameter(
+                f"File route path must be a directory: {route.source}"
+            )
+
+    loaded_python_routes = _load_python_routes(python_routes)
 
     class WebServer:
         def __init__(self):
@@ -138,31 +303,24 @@ def build_webserver(
             app = web.Application()
             mounted: list[tuple[str, str]] = []
 
-            for entry in file_route or []:
-                route_path, path = _parse_route_mapping(entry, "--file-route")
-                if not path.exists() or not path.is_dir():
-                    raise typer.BadParameter(
-                        f"File route path must be a directory: {path}"
-                    )
-                app.router.add_static(route_path, path, show_index=True)
-                mounted.append((route_path, f"static:{path}"))
+            for route in static_routes:
+                app.router.add_static(route.path, route.source, show_index=True)
+                mounted.append((route.path, f"static:{route.source}"))
 
-            for entry in python_route or []:
-                route_path, path = _parse_route_mapping(entry, "--python-route")
-                handler, methods = _load_python_handler(path)
+            for route in loaded_python_routes:
 
                 async def _wrapped(
                     request: web.Request,
-                    _handler: Callable[..., Any] = handler,
+                    _handler: Callable[..., Any] = route.handler,
                 ) -> web.StreamResponse:
                     result = _handler(room=room, req=request)
                     if inspect.isawaitable(result):
                         result = await result
                     return result
 
-                for method in methods:
-                    app.router.add_route(method, route_path, _wrapped)
-                mounted.append((route_path, f"python:{path}"))
+                for method in route.methods:
+                    app.router.add_route(method, route.path, _wrapped)
+                mounted.append((route.path, f"python:{route.source}"))
 
             self._mounted = mounted
             self._runner = web.AppRunner(app, access_log=None)
@@ -211,32 +369,23 @@ async def join(
     key: Annotated[
         Optional[str], typer.Option("--key", help="an api key to sign the token with")
     ] = None,
-    file_route: Annotated[
-        list[str] | None,
+    routes_file: Annotated[
+        str,
         typer.Option(
-            "--file-route",
-            help="Expose a local folder as /route:/path (repeatable)",
+            "--routes-file",
+            help="Path to a routes.yaml file with route definitions",
         ),
-    ] = None,
-    python_route: Annotated[
-        list[str] | None,
-        typer.Option(
-            "--python-route",
-            help="Mount a python handler as /route:/path.py (repeatable)",
-        ),
-    ] = None,
+    ],
     host: Annotated[str, typer.Option(help="Host to bind the server")] = "127.0.0.1",
     port: Annotated[int, typer.Option(help="Port to bind the server")] = 8000,
     watch: Annotated[
         bool,
         typer.Option(
             "--watch",
-            help="Reload python routes when files change",
+            help="Reload routes when the routes file or python handlers change",
         ),
     ] = False,
 ):
-    _ensure_routes(file_route=file_route, python_route=python_route)
-
     room_name = resolve_room(room)
     if room_name is None:
         print("[red]--room is required (or set MESHAGENT_ROOM).[/red]")
@@ -265,8 +414,7 @@ async def join(
         print("[green]Connecting to room...[/green]", flush=True)
 
         WebServer = build_webserver(
-            file_route=file_route,
-            python_route=python_route,
+            routes_file=routes_file,
             host=host,
             port=port,
         )
@@ -274,27 +422,39 @@ async def join(
         server_ref = {"server": server}
 
         async def _watch_routes(*, room: RoomClient) -> None:
-            route_paths = _python_route_paths(python_route)
+            route_paths = _watch_paths(routes_file=routes_file)
             if not route_paths:
                 return
 
             previous = _collect_mtimes(route_paths)
             while True:
                 await asyncio.sleep(0.5)
+                route_paths = _watch_paths(routes_file=routes_file)
                 current = _collect_mtimes(route_paths)
                 if current == previous:
                     continue
                 previous = current
                 print("[yellow]Detected route changes, reloading...[/yellow]")
-                await server_ref["server"].stop()
-                WebServer = build_webserver(
-                    file_route=file_route,
-                    python_route=python_route,
-                    host=host,
-                    port=port,
-                )
+                try:
+                    WebServer = build_webserver(
+                        routes_file=routes_file,
+                        host=host,
+                        port=port,
+                    )
+                except typer.BadParameter as exc:
+                    print(f"[red]Failed to reload routes: {exc}[/red]")
+                    continue
+
+                previous_server = server_ref["server"]
+                await previous_server.stop()
                 server_ref["server"] = WebServer()
-                await server_ref["server"].start(room=room)
+                try:
+                    await server_ref["server"].start(room=room)
+                except Exception as exc:
+                    print(f"[red]Failed to apply route changes: {exc}[/red]")
+                    server_ref["server"] = previous_server
+                    await server_ref["server"].start(room=room)
+                    continue
                 for route_path, source in server_ref["server"].mounted:
                     print(f"  {route_path} -> {source}")
 
@@ -331,20 +491,13 @@ async def join(
 async def service(
     *,
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
-    file_route: Annotated[
-        list[str] | None,
+    routes_file: Annotated[
+        str,
         typer.Option(
-            "--file-route",
-            help="Expose a local folder as /route:/path (repeatable)",
+            "--routes-file",
+            help="Path to a routes.yaml file with route definitions",
         ),
-    ] = None,
-    python_route: Annotated[
-        list[str] | None,
-        typer.Option(
-            "--python-route",
-            help="Mount a python handler as /route:/path.py (repeatable)",
-        ),
-    ] = None,
+    ],
     web_host: Annotated[
         str, typer.Option(help="Host to bind the webserver")
     ] = "0.0.0.0",
@@ -359,8 +512,6 @@ async def service(
         Optional[str], typer.Option(help="HTTP path to mount the service at")
     ] = None,
 ):
-    _ensure_routes(file_route=file_route, python_route=python_route)
-
     service = get_service(host=cast(str, host), port=cast(int, port))
 
     service.agents.append(
@@ -375,8 +526,7 @@ async def service(
             path = f"/agent{i}"
 
     WebServer = build_webserver(
-        file_route=file_route,
-        python_route=python_route,
+        routes_file=routes_file,
         host=web_host,
         port=web_port,
     )
@@ -398,20 +548,13 @@ async def spec(
         typer.Option("--service-title", help="a display name for the service"),
     ] = None,
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
-    file_route: Annotated[
-        list[str] | None,
+    routes_file: Annotated[
+        str,
         typer.Option(
-            "--file-route",
-            help="Expose a local folder as /route:/path (repeatable)",
+            "--routes-file",
+            help="Path to a routes.yaml file with route definitions",
         ),
-    ] = None,
-    python_route: Annotated[
-        list[str] | None,
-        typer.Option(
-            "--python-route",
-            help="Mount a python handler as /route:/path.py (repeatable)",
-        ),
-    ] = None,
+    ],
     web_host: Annotated[
         str, typer.Option(help="Host to bind the webserver")
     ] = "0.0.0.0",
@@ -426,8 +569,6 @@ async def spec(
         Optional[str], typer.Option(help="HTTP path to mount the service at")
     ] = None,
 ):
-    _ensure_routes(file_route=file_route, python_route=python_route)
-
     service = get_service(host=cast(str, host), port=cast(int, port))
 
     service.agents.append(
@@ -442,8 +583,7 @@ async def spec(
             path = f"/agent{i}"
 
     WebServer = build_webserver(
-        file_route=file_route,
-        python_route=python_route,
+        routes_file=routes_file,
         host=web_host,
         port=web_port,
     )
@@ -478,20 +618,13 @@ async def deploy(
         typer.Option("--service-title", help="a display name for the service"),
     ] = None,
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
-    file_route: Annotated[
-        list[str] | None,
+    routes_file: Annotated[
+        str,
         typer.Option(
-            "--file-route",
-            help="Expose a local folder as /route:/path (repeatable)",
+            "--routes-file",
+            help="Path to a routes.yaml file with route definitions",
         ),
-    ] = None,
-    python_route: Annotated[
-        list[str] | None,
-        typer.Option(
-            "--python-route",
-            help="Mount a python handler as /route:/path.py (repeatable)",
-        ),
-    ] = None,
+    ],
     web_host: Annotated[
         str, typer.Option(help="Host to bind the webserver")
     ] = "0.0.0.0",
@@ -511,8 +644,6 @@ async def deploy(
         typer.Option("--room", help="The name of a room to create the service for"),
     ] = os.getenv("MESHAGENT_ROOM"),
 ):
-    _ensure_routes(file_route=file_route, python_route=python_route)
-
     project_id = await resolve_project_id(project_id=project_id)
 
     service = get_service(host=cast(str, host), port=cast(int, port))
@@ -529,8 +660,7 @@ async def deploy(
             path = f"/agent{i}"
 
     WebServer = build_webserver(
-        file_route=file_route,
-        python_route=python_route,
+        routes_file=routes_file,
         host=web_host,
         port=web_port,
     )

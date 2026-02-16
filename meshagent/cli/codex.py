@@ -17,6 +17,8 @@ from meshagent.api import (
     RequiredSchema,
     RequiredToolkit,
     RoomClient,
+    RoomException,
+    RemoteParticipant,
     WebSocketClientProtocol,
 )
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
@@ -326,6 +328,7 @@ def build_codex_chatbot(
     toolkit: list[str],
     schema: list[str],
     rules_file: Optional[list[str]] = None,
+    room_rules_path: Optional[list[str]] = None,
     skill_dirs: Optional[list[str]] = None,
     command: Optional[str] = None,
     ws_url: Optional[str] = None,
@@ -376,6 +379,67 @@ def build_codex_chatbot(
                 verbose=verbose,
             )
 
+        async def start(self, *, room: RoomClient):
+            await super().start(room=room)
+
+            if room_rules_path is not None:
+                for path in room_rules_path:
+                    await self._load_room_rules(path=path)
+
+        async def _load_room_rules(
+            self,
+            *,
+            path: str,
+            participant: Optional[RemoteParticipant] = None,
+        ) -> list[str]:
+            rules = []
+            try:
+                room_rules = await self.room.storage.download(path=path)
+
+                rules_txt = room_rules.data.decode()
+
+                rules_config = RulesConfig.parse(rules_txt)
+
+                if rules_config.rules is not None:
+                    rules.extend(rules_config.rules)
+
+                if participant is not None:
+                    client = participant.get_attribute("client")
+                    if rules_config.client_rules is not None and client is not None:
+                        client_rules = rules_config.client_rules.get(client)
+                        if client_rules is not None:
+                            rules.extend(client_rules)
+
+            except RoomException:
+                try:
+                    handle = await self.room.storage.open(path=path, overwrite=False)
+                    await self.room.storage.write(
+                        handle=handle,
+                        data="# Add rules to this file to customize your agent's behavior, lines starting with # will be ignored.\n\n".encode(),
+                    )
+                    await self.room.storage.close(handle=handle)
+                except RoomException:
+                    pass
+
+            return rules
+
+        async def get_rules(self, *, thread_context, participant):
+            rules = await super().get_rules(
+                thread_context=thread_context,
+                participant=participant,
+            )
+
+            if room_rules_path is not None:
+                for path in room_rules_path:
+                    rules.extend(
+                        await self._load_room_rules(
+                            path=path,
+                            participant=participant,
+                        )
+                    )
+
+            return rules
+
         async def create_thread_context(
             self,
             *,
@@ -408,6 +472,7 @@ def build_codex_task_runner(
     toolkit: list[str],
     schema: list[str],
     rules_file: Optional[list[str]] = None,
+    room_rules_path: Optional[list[str]] = None,
     skill_dirs: Optional[list[str]] = None,
     command: Optional[str] = None,
     ws_url: Optional[str] = None,
@@ -459,6 +524,62 @@ def build_codex_task_runner(
                 verbose=verbose,
             )
 
+        async def start(self, *, room: RoomClient):
+            await super().start(room=room)
+
+            if room_rules_path is not None:
+                for path in room_rules_path:
+                    await self._load_room_rules(path=path)
+
+        async def _load_room_rules(
+            self,
+            *,
+            path: str,
+            participant: Optional[RemoteParticipant] = None,
+        ) -> list[str]:
+            rules = []
+            try:
+                room_rules = await self.room.storage.download(path=path)
+                rules_txt = room_rules.data.decode()
+                rules_config = RulesConfig.parse(rules_txt)
+
+                if rules_config.rules is not None:
+                    rules.extend(rules_config.rules)
+
+                if participant is not None:
+                    client = participant.get_attribute("client")
+                    if rules_config.client_rules is not None and client is not None:
+                        client_rules = rules_config.client_rules.get(client)
+                        if client_rules is not None:
+                            rules.extend(client_rules)
+
+            except RoomException:
+                try:
+                    handle = await self.room.storage.open(path=path, overwrite=False)
+                    await self.room.storage.write(
+                        handle=handle,
+                        data="# Add rules to this file to customize your agent's behavior, lines starting with # will be ignored.\n\n".encode(),
+                    )
+                    await self.room.storage.close(handle=handle)
+                except RoomException:
+                    pass
+
+            return rules
+
+        async def get_rules(self, *, context):
+            rules = await super().get_rules(context=context)
+
+            if room_rules_path is not None:
+                for path in room_rules_path:
+                    rules.extend(
+                        await self._load_room_rules(
+                            path=path,
+                            participant=context.caller,
+                        )
+                    )
+
+            return rules
+
         async def init_chat_context(self):
             from meshagent.cli.helper import init_context_from_spec
 
@@ -481,6 +602,7 @@ def build_codex_worker(
     toolkit: list[str],
     schema: list[str],
     rules_file: Optional[list[str]] = None,
+    room_rules_path: Optional[list[str]] = None,
     skill_dirs: Optional[list[str]] = None,
     command: Optional[str] = None,
     ws_url: Optional[str] = None,
@@ -534,6 +656,44 @@ def build_codex_worker(
                 verbose=verbose,
             )
 
+        async def start(self, *, room: RoomClient):
+            await super().start(room=room)
+
+            if room_rules_path is not None:
+                for path in room_rules_path:
+                    await self._load_room_rules(path=path)
+
+        async def _load_room_rules(self, *, path: str) -> list[str]:
+            rules = []
+            try:
+                room_rules = await self.room.storage.download(path=path)
+                rules_txt = room_rules.data.decode()
+                rules_config = RulesConfig.parse(rules_txt)
+                if rules_config.rules is not None:
+                    rules.extend(rules_config.rules)
+            except RoomException:
+                try:
+                    handle = await self.room.storage.open(path=path, overwrite=False)
+                    await self.room.storage.write(
+                        handle=handle,
+                        data=(
+                            "# Add rules to this file to customize your worker's behavior. "
+                            "Lines starting with # will be ignored.\n\n"
+                        ).encode(),
+                    )
+                    await self.room.storage.close(handle=handle)
+                except RoomException:
+                    pass
+
+            return rules
+
+        async def get_rules(self):
+            rules = [*await super().get_rules()]
+            if room_rules_path is not None:
+                for path in room_rules_path:
+                    rules.extend(await self._load_room_rules(path=path))
+            return rules
+
         def get_prompt_for_message(self, *, message: dict) -> str:
             if prompt:
                 return prompt
@@ -568,6 +728,14 @@ async def chatbot_join(
         ),
     ] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="A path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
     rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
@@ -711,6 +879,7 @@ async def chatbot_join(
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
             rules_file=rules_file,
+            room_rules_path=room_rules,
             skill_dirs=skill_dir,
             command=command,
             ws_url=ws_url,
@@ -767,6 +936,14 @@ async def task_runner_join(
         ),
     ] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="A path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
     rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
@@ -922,6 +1099,7 @@ async def task_runner_join(
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
             rules_file=rules_file,
+            room_rules_path=room_rules,
             skill_dirs=skill_dir,
             command=command,
             ws_url=ws_url,
@@ -970,6 +1148,14 @@ async def chatbot_service(
         Optional[str], typer.Option(..., help="A description for the chatbot")
     ] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="A path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
     rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
@@ -1103,6 +1289,7 @@ async def chatbot_service(
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
             rules_file=rules_file,
+            room_rules_path=room_rules,
             skill_dirs=skill_dir,
             command=command,
             ws_url=ws_url,
@@ -1139,6 +1326,14 @@ async def chatbot_spec(
         Optional[str], typer.Option(..., help="A description for the chatbot")
     ] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="A path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
     rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
@@ -1273,6 +1468,7 @@ async def chatbot_spec(
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
             rules_file=rules_file,
+            room_rules_path=room_rules,
             skill_dirs=skill_dir,
             command=command,
             ws_url=ws_url,
@@ -1326,6 +1522,14 @@ async def chatbot_deploy(
         Optional[str], typer.Option(..., help="A description for the chatbot")
     ] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="A path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
     rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
@@ -1462,6 +1666,7 @@ async def chatbot_deploy(
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
             rules_file=rules_file,
+            room_rules_path=room_rules,
             skill_dirs=skill_dir,
             command=command,
             ws_url=ws_url,
@@ -1537,6 +1742,14 @@ async def worker_join(
         typer.Option(..., help="Optional toolkit name to expose worker operations"),
     ] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="A path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
     rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
@@ -1685,6 +1898,7 @@ async def worker_join(
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
             rules_file=rules_file,
+            room_rules_path=room_rules,
             skill_dirs=skill_dir,
             command=command,
             ws_url=ws_url,
@@ -1745,6 +1959,14 @@ async def worker_service(
         typer.Option(..., help="Optional toolkit name to expose worker operations"),
     ] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="A path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
     rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
@@ -1881,6 +2103,7 @@ async def worker_service(
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
             rules_file=rules_file,
+            room_rules_path=room_rules,
             skill_dirs=skill_dir,
             command=command,
             ws_url=ws_url,
@@ -1928,6 +2151,14 @@ async def worker_spec(
         typer.Option(..., help="Optional toolkit name to expose worker operations"),
     ] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="A path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
     rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
@@ -2066,6 +2297,7 @@ async def worker_spec(
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
             rules_file=rules_file,
+            room_rules_path=room_rules,
             skill_dirs=skill_dir,
             command=command,
             ws_url=ws_url,
@@ -2136,6 +2368,14 @@ async def worker_deploy(
         typer.Option(..., help="Optional toolkit name to expose worker operations"),
     ] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="A path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
     rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
@@ -2276,6 +2516,7 @@ async def worker_deploy(
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
             rules_file=rules_file,
+            room_rules_path=room_rules,
             skill_dirs=skill_dir,
             command=command,
             ws_url=ws_url,
@@ -2346,6 +2587,14 @@ async def chatbot_run(
         Optional[str], typer.Option(..., help="A description for the chatbot")
     ] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="A path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
     rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
@@ -2509,6 +2758,7 @@ async def chatbot_run(
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
             rules_file=rules_file,
+            room_rules_path=room_rules,
             skill_dirs=skill_dir,
             command=command,
             ws_url=ws_url,
@@ -2622,6 +2872,14 @@ async def task_runner_run(
         ),
     ] = None,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="A path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
     rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
@@ -2783,6 +3041,7 @@ async def task_runner_run(
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
             rules_file=rules_file,
+            room_rules_path=room_rules,
             skill_dirs=skill_dir,
             command=command,
             ws_url=ws_url,
@@ -2852,6 +3111,14 @@ async def task_runner_service(
         bool, typer.Option(..., help="Whether the task runner supports tools")
     ] = True,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="A path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
     rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
@@ -2985,6 +3252,7 @@ async def task_runner_service(
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
             rules_file=rules_file,
+            room_rules_path=room_rules,
             skill_dirs=skill_dir,
             command=command,
             ws_url=ws_url,
@@ -3024,6 +3292,14 @@ async def task_runner_spec(
         bool, typer.Option(..., help="Whether the task runner supports tools")
     ] = True,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="A path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
     rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
@@ -3159,6 +3435,7 @@ async def task_runner_spec(
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
             rules_file=rules_file,
+            room_rules_path=room_rules,
             skill_dirs=skill_dir,
             command=command,
             ws_url=ws_url,
@@ -3221,6 +3498,14 @@ async def task_runner_deploy(
         bool, typer.Option(..., help="Whether the task runner supports tools")
     ] = True,
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
+    room_rules: Annotated[
+        List[str],
+        typer.Option(
+            "--room-rules",
+            "-rr",
+            help="A path to a rules file within the room that can be used to customize the agent's behavior",
+        ),
+    ] = [],
     rules_file: Optional[list[str]] = None,
     require_toolkit: Annotated[
         List[str],
@@ -3358,6 +3643,7 @@ async def task_runner_deploy(
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
             rules_file=rules_file,
+            room_rules_path=room_rules,
             skill_dirs=skill_dir,
             command=command,
             ws_url=ws_url,
