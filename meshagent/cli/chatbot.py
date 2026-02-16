@@ -173,6 +173,7 @@ def build_chatbot(
     if rules_file is not None:
         for rules_path in rules_file:
             try:
+                logger.info(f"loading rules from {rules_path}")
                 with open(Path(os.path.expanduser(rules_path)).resolve(), "r") as f:
                     rules_config = RulesConfig.parse(f.read())
                     if rules_config.rules is not None:
