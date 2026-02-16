@@ -32,11 +32,13 @@ from meshagent.cli.chatbot import service as chatbot_service
 from meshagent.cli.worker import service as worker_service
 from meshagent.cli.mailbot import service as mailbot_service
 from meshagent.cli.voicebot import service as voicebot_service
+from meshagent.cli.webserver import service as webserver_service
 
 from meshagent.cli.chatbot import join as chatbot_join
 from meshagent.cli.worker import join as worker_join
 from meshagent.cli.mailbot import join as mailbot_join
 from meshagent.cli.voicebot import join as voicebot_join
+from meshagent.cli.webserver import join as webserver_join
 
 import yaml
 
@@ -49,12 +51,14 @@ cli_service.command("chatbot")(chatbot_service)
 cli_service.command("worker")(worker_service)
 cli_service.command("mailbot")(mailbot_service)
 cli_service.command("voicebot")(voicebot_service)
+cli_service.command("webserver")(webserver_service)
 
 cli_join = async_typer.AsyncTyper(help="Add agents to a team")
 cli_join.command("chatbot")(chatbot_join)
 cli_join.command("worker")(worker_join)
 cli_join.command("mailbot")(mailbot_join)
 cli_join.command("voicebot")(voicebot_join)
+cli_join.command("webserver")(webserver_join)
 
 
 @cli_service.async_command("python")
@@ -110,9 +114,10 @@ chatbot ...;
 mailbot ...;
 worker ...;
 voicebot ...;
+webserver ...;
 python path-to-python-file.py --name=NameOfModule;
 
-chatbot, worker, and mailbot command arguments mirror those of the respective meshagent chatbot service, meshagent mailbot service, meshagent voicebot service, and meshagent worker service commands.
+chatbot, worker, mailbot, voicebot, and webserver command arguments mirror those of the respective meshagent chatbot service, meshagent worker service, meshagent mailbot service, meshagent voicebot service, and meshagent webserver service commands.
 """
 
 
