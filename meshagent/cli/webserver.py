@@ -47,7 +47,7 @@ from meshagent.cli.helper import (
     resolve_project_id,
     resolve_room,
 )
-from meshagent.cli.host import get_deferred, get_service, run_services, service_specs
+from meshagent.cli.host import get_service, service_specs
 
 
 DEFAULT_ROUTES_FILE = "webserver.yaml"
@@ -948,7 +948,7 @@ def _normalize_website_subpath(*, website_path: str) -> str:
         raise typer.BadParameter("--website-path must resolve to a non-root room path")
     if any(part in {"", ".", ".."} for part in PurePosixPath(normalized).parts):
         raise typer.BadParameter("--website-path cannot contain '.' or '..' segments")
-    return normalized
+    return "/" + normalized
 
 
 def _relative_copy_source_path(*, source: Path, source_label: str) -> str:
@@ -1532,69 +1532,6 @@ async def join(
         await account_client.close()
 
 
-@app.async_command("service")
-async def service(
-    *,
-    agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
-    routes_file: Annotated[
-        str,
-        typer.Option(
-            "-f",
-            "--routes-file",
-            help=ROUTES_FILE_HELP,
-        ),
-    ] = DEFAULT_ROUTES_FILE,
-    app_dir: Annotated[
-        Optional[str],
-        typer.Option("--app-dir", help=APP_DIR_HELP),
-    ] = None,
-    web_host: Annotated[
-        str, typer.Option(help="Host to bind the webserver")
-    ] = DEFAULT_SERVICE_BIND_HOST,
-    web_port: Annotated[
-        int, typer.Option(help="Port to bind the webserver")
-    ] = DEFAULT_BIND_PORT,
-    host: Annotated[
-        Optional[str], typer.Option(help="Host to bind the service on")
-    ] = None,
-    port: Annotated[
-        Optional[int], typer.Option(help="Port to bind the service on")
-    ] = None,
-    path: Annotated[
-        Optional[str], typer.Option(help="HTTP path to mount the service at")
-    ] = None,
-):
-    """Run the webserver as a MeshAgent service in the current runtime."""
-    service = get_service(host=cast(str, host), port=cast(int, port))
-
-    service.agents.append(
-        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "WebServer"})
-    )
-
-    if path is None:
-        path = "/agent"
-        i = 0
-        while service.has_path(path):
-            i += 1
-            path = f"/agent{i}"
-
-    web_host_override = _cli_override_or_none(value=web_host, option_name="web_host")
-    web_port_override = _cli_override_or_none(value=web_port, option_name="web_port")
-
-    WebServer, _, _ = build_webserver(
-        routes_file=routes_file,
-        default_host=DEFAULT_SERVICE_BIND_HOST,
-        default_port=DEFAULT_BIND_PORT,
-        host_override=web_host_override,
-        port_override=web_port_override,
-        app_dir=app_dir,
-    )
-    service.add_path(identity=agent_name, path=path, cls=WebServer)
-
-    if not get_deferred():
-        await run_services()
-
-
 @app.async_command("spec")
 async def spec(
     *,
@@ -1726,7 +1663,7 @@ async def spec(
         [
             "meshagent",
             "webserver",
-            "service",
+            "join",
             *_replace_routes_file_arg(
                 args=cleanup_args(sys.argv[2:]),
                 mounted_routes_path=mounted_routes_path,
@@ -1891,7 +1828,7 @@ async def deploy(
         [
             "meshagent",
             "webserver",
-            "service",
+            "join",
             *_replace_routes_file_arg(
                 args=cleanup_args(sys.argv[2:]),
                 mounted_routes_path=mounted_routes_path,

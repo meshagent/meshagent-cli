@@ -32,7 +32,6 @@ from meshagent.cli.chatbot import service as chatbot_service
 from meshagent.cli.worker import service as worker_service
 from meshagent.cli.mailbot import service as mailbot_service
 from meshagent.cli.voicebot import service as voicebot_service
-from meshagent.cli.webserver import service as webserver_service
 
 from meshagent.cli.chatbot import join as chatbot_join
 from meshagent.cli.worker import join as worker_join
@@ -51,7 +50,6 @@ cli_service.command("chatbot")(chatbot_service)
 cli_service.command("worker")(worker_service)
 cli_service.command("mailbot")(mailbot_service)
 cli_service.command("voicebot")(voicebot_service)
-cli_service.command("webserver")(webserver_service)
 
 cli_join = async_typer.AsyncTyper(help="Add agents to a team")
 cli_join.command("chatbot")(chatbot_join)
