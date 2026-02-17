@@ -127,6 +127,25 @@ ShellSetEnvOption = Annotated[
     ),
 ]
 
+WORKING_DIR_HELP = "The default working directory for shell commands"
+
+WorkingDirOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--working-dir",
+        help=WORKING_DIR_HELP,
+    ),
+]
+
+WorkingDirectoryAliasOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--working-directory",
+        help="Alias for --working-dir",
+        hidden=True,
+    ),
+]
+
 
 def _copy_shell_env_vars(*, copy_env: Optional[list[str]]) -> dict[str, str]:
     if copy_env is None:
@@ -179,6 +198,22 @@ def _set_shell_env_vars(*, set_env: Optional[list[str]]) -> dict[str, str]:
         env[name] = assigned_value
 
     return env
+
+
+def _resolve_working_dir_option(
+    *,
+    working_dir: Optional[str],
+    working_directory: Optional[str],
+) -> Optional[str]:
+    if (
+        working_dir is not None
+        and working_directory is not None
+        and working_dir != working_directory
+    ):
+        raise typer.BadParameter(
+            "Conflicting values for --working-dir and --working-directory"
+        )
+    return working_dir if working_dir is not None else working_directory
 
 
 def read_task_runner_input(input_value: Optional[str]) -> str:
@@ -771,10 +806,8 @@ async def join(
         Optional[bool],
         typer.Option(..., help="Enable discovery of agents and tools"),
     ] = False,
-    working_dir: Annotated[
-        Optional[str],
-        typer.Option(..., help="The default working directory for shell commands"),
-    ] = None,
+    working_dir: WorkingDirOption = None,
+    working_directory: WorkingDirectoryAliasOption = None,
     skill_dir: Annotated[
         list[str],
         typer.Option(..., help="an agent skills directory"),
@@ -831,6 +864,10 @@ async def join(
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
 ):
+    working_dir = _resolve_working_dir_option(
+        working_dir=working_dir,
+        working_directory=working_directory,
+    )
     key = await resolve_key(project_id=project_id, key=key)
     account_client = await get_client()
     try:
@@ -1105,10 +1142,8 @@ async def run(
         Optional[bool],
         typer.Option(..., help="Enable discovery of agents and tools"),
     ] = False,
-    working_dir: Annotated[
-        Optional[str],
-        typer.Option(..., help="The default working directory for shell commands"),
-    ] = None,
+    working_dir: WorkingDirOption = None,
+    working_directory: WorkingDirectoryAliasOption = None,
     skill_dir: Annotated[
         list[str],
         typer.Option(..., help="an agent skills directory"),
@@ -1185,6 +1220,10 @@ async def run(
         ),
     ] = os.getenv("MESHAGENT_TOKEN") is None,
 ):
+    working_dir = _resolve_working_dir_option(
+        working_dir=working_dir,
+        working_directory=working_directory,
+    )
     if not verbose:
         root = logging.getLogger()
         root.setLevel(logging.ERROR)
@@ -1474,10 +1513,8 @@ async def service(
         bool,
         typer.Option(..., help="Enable UUID generation tools"),
     ] = False,
-    working_dir: Annotated[
-        Optional[str],
-        typer.Option(..., help="The default working directory for shell commands"),
-    ] = None,
+    working_dir: WorkingDirOption = None,
+    working_directory: WorkingDirectoryAliasOption = None,
     skill_dir: Annotated[
         list[str],
         typer.Option(..., help="an agent skills directory"),
@@ -1547,6 +1584,10 @@ async def service(
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
 ):
+    working_dir = _resolve_working_dir_option(
+        working_dir=working_dir,
+        working_directory=working_directory,
+    )
     print("[bold green]Connecting to room...[/bold green]", flush=True)
 
     storage_tool_mounts = parse_storage_tool_mounts(
@@ -1776,10 +1817,8 @@ async def spec(
         bool,
         typer.Option(..., help="Enable UUID generation tools"),
     ] = False,
-    working_dir: Annotated[
-        Optional[str],
-        typer.Option(..., help="The default working directory for shell commands"),
-    ] = None,
+    working_dir: WorkingDirOption = None,
+    working_directory: WorkingDirectoryAliasOption = None,
     skill_dir: Annotated[
         list[str],
         typer.Option(..., help="an agent skills directory"),
@@ -1849,6 +1888,10 @@ async def spec(
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
 ):
+    working_dir = _resolve_working_dir_option(
+        working_dir=working_dir,
+        working_directory=working_directory,
+    )
     storage_tool_mounts = parse_storage_tool_mounts(
         local_paths=storage_tool_local_path,
         room_paths=storage_tool_room_path,
@@ -2080,10 +2123,8 @@ async def deploy(
         bool,
         typer.Option(..., help="Enable UUID generation tools"),
     ] = False,
-    working_dir: Annotated[
-        Optional[str],
-        typer.Option(..., help="The default working directory for shell commands"),
-    ] = None,
+    working_dir: WorkingDirOption = None,
+    working_directory: WorkingDirectoryAliasOption = None,
     skill_dir: Annotated[
         list[str],
         typer.Option(..., help="an agent skills directory"),
@@ -2158,6 +2199,10 @@ async def deploy(
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
 ):
+    working_dir = _resolve_working_dir_option(
+        working_dir=working_dir,
+        working_directory=working_directory,
+    )
     project_id = await resolve_project_id(project_id=project_id)
 
     storage_tool_mounts = parse_storage_tool_mounts(

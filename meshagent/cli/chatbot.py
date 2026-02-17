@@ -128,6 +128,25 @@ ShellSetEnvOption = Annotated[
     ),
 ]
 
+WORKING_DIR_HELP = "The default working directory for shell commands"
+
+WorkingDirOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--working-dir",
+        help=WORKING_DIR_HELP,
+    ),
+]
+
+WorkingDirectoryAliasOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--working-directory",
+        help="Alias for --working-dir",
+        hidden=True,
+    ),
+]
+
 
 def _copy_shell_env_vars(*, copy_env: Optional[list[str]]) -> dict[str, str]:
     if copy_env is None:
@@ -180,6 +199,22 @@ def _set_shell_env_vars(*, set_env: Optional[list[str]]) -> dict[str, str]:
         env[name] = assigned_value
 
     return env
+
+
+def _resolve_working_dir_option(
+    *,
+    working_dir: Optional[str],
+    working_directory: Optional[str],
+) -> Optional[str]:
+    if (
+        working_dir is not None
+        and working_directory is not None
+        and working_dir != working_directory
+    ):
+        raise typer.BadParameter(
+            "Conflicting values for --working-dir and --working-directory"
+        )
+    return working_dir if working_dir is not None else working_directory
 
 
 def build_chatbot(
@@ -820,10 +855,8 @@ async def join(
         Optional[bool],
         typer.Option(..., help="Enable discovery of agents and tools"),
     ] = False,
-    working_dir: Annotated[
-        Optional[str],
-        typer.Option(..., help="The default working directory for shell commands"),
-    ] = None,
+    working_dir: WorkingDirOption = None,
+    working_directory: WorkingDirectoryAliasOption = None,
     key: Annotated[
         str,
         typer.Option("--key", help="an api key to sign the token with"),
@@ -855,6 +888,10 @@ async def join(
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
 ):
+    working_dir = _resolve_working_dir_option(
+        working_dir=working_dir,
+        working_directory=working_directory,
+    )
     if database_namespace is not None:
         database_namespace = database_namespace.split("::")
 
@@ -1155,10 +1192,8 @@ async def service(
             help="Enable UUID generation tools",
         ),
     ] = False,
-    working_dir: Annotated[
-        Optional[str],
-        typer.Option(..., help="The default working directory for shell commands"),
-    ] = None,
+    working_dir: WorkingDirOption = None,
+    working_directory: WorkingDirectoryAliasOption = None,
     require_document_authoring: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable document authoring"),
@@ -1203,6 +1238,10 @@ async def service(
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
 ):
+    working_dir = _resolve_working_dir_option(
+        working_dir=working_dir,
+        working_directory=working_directory,
+    )
     if database_namespace is not None:
         database_namespace = database_namespace.split("::")
 
@@ -1464,10 +1503,8 @@ async def spec(
             help="Enable UUID generation tools",
         ),
     ] = False,
-    working_dir: Annotated[
-        Optional[str],
-        typer.Option(..., help="The default working directory for shell commands"),
-    ] = None,
+    working_dir: WorkingDirOption = None,
+    working_directory: WorkingDirectoryAliasOption = None,
     require_document_authoring: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable document authoring"),
@@ -1512,6 +1549,10 @@ async def spec(
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
 ):
+    working_dir = _resolve_working_dir_option(
+        working_dir=working_dir,
+        working_directory=working_directory,
+    )
     if database_namespace is not None:
         database_namespace = database_namespace.split("::")
 
@@ -1783,10 +1824,8 @@ async def deploy(
             help="Enable UUID generation tools",
         ),
     ] = False,
-    working_dir: Annotated[
-        Optional[str],
-        typer.Option(..., help="The default working directory for shell commands"),
-    ] = None,
+    working_dir: WorkingDirOption = None,
+    working_directory: WorkingDirectoryAliasOption = None,
     require_document_authoring: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable document authoring"),
@@ -1836,6 +1875,10 @@ async def deploy(
         typer.Option("--room", help="The name of a room to create the service for"),
     ] = os.getenv("MESHAGENT_ROOM"),
 ):
+    working_dir = _resolve_working_dir_option(
+        working_dir=working_dir,
+        working_directory=working_directory,
+    )
     project_id = await resolve_project_id(project_id=project_id)
 
     if database_namespace is not None:
@@ -3584,10 +3627,8 @@ async def run(
         Optional[bool],
         typer.Option(..., help="Enable discovery of agents and tools"),
     ] = False,
-    working_dir: Annotated[
-        Optional[str],
-        typer.Option(..., help="The default working directory for shell commands"),
-    ] = None,
+    working_dir: WorkingDirOption = None,
+    working_directory: WorkingDirectoryAliasOption = None,
     key: Annotated[
         str,
         typer.Option("--key", help="an api key to sign the token with"),
@@ -3646,6 +3687,10 @@ async def run(
         typer.Option(..., help="request the storage tool"),
     ] = None,
 ):
+    working_dir = _resolve_working_dir_option(
+        working_dir=working_dir,
+        working_directory=working_directory,
+    )
     if not verbose:
         root = logging.getLogger()
         root.setLevel(logging.ERROR)
