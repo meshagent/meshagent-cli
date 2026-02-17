@@ -2134,7 +2134,9 @@ async def chat_with(
             pulse_start = min(max(self._divider_pulse_position, 0), max_position)
             pulse_end = min(divider_length, pulse_start + pulse_width)
 
-            divider_text = Text("─" * divider_length, style="bright_black", justify="center")
+            divider_text = Text(
+                "─" * divider_length, style="bright_black", justify="center"
+            )
             if pulse_end > pulse_start:
                 divider_text.stylize("bold green", pulse_start, pulse_end)
             self._divider_view.update(divider_text)
@@ -2170,7 +2172,9 @@ async def chat_with(
 
             if len(self._statuses) == 0:
                 lines = Text(justify="center")
-                lines.append(f"{self._spinner_frames[self._spinner_frame]} ", style="cyan")
+                lines.append(
+                    f"{self._spinner_frames[self._spinner_frame]} ", style="cyan"
+                )
                 lines.append("connecting to room")
                 self._status_view.update(lines)
                 return
@@ -2710,7 +2714,10 @@ async def chat_with(
     chat_client: ChatBotClient | None = None
 
     def _queue_status(
-        status_queue: "asyncio.Queue[tuple[str, str]] | None", *, status: str, message: str
+        status_queue: "asyncio.Queue[tuple[str, str]] | None",
+        *,
+        status: str,
+        message: str,
     ) -> None:
         if status_queue is None:
             return
@@ -2746,13 +2753,9 @@ async def chat_with(
             )
             account_client = await get_client()
 
-        _queue_status(
-            status_queue, status="starting_room", message="starting room"
-        )
+        _queue_status(status_queue, status="starting_room", message="starting room")
         connection = await account_client.connect_room(project_id=project_id, room=room)
-        _queue_status(
-            status_queue, status="connecting", message="connecting to room"
-        )
+        _queue_status(status_queue, status="connecting", message="connecting to room")
 
         connecting_client = RoomClient(
             protocol=WebSocketClientProtocol(
@@ -2804,7 +2807,9 @@ async def chat_with(
             )
             await prepared_user_client.messaging.enable()
 
-            local_user_name = prepared_user_client.local_participant.get_attribute("name")
+            local_user_name = prepared_user_client.local_participant.get_attribute(
+                "name"
+            )
             resolved_thread_path = thread_path
             if resolved_thread_path is None:
                 resolved_thread_path = (
