@@ -57,6 +57,17 @@ app.add_typer(chatbot_app, name="chatbot")
 app.add_typer(task_runner_app, name="task-runner")
 app.add_typer(worker_app, name="worker")
 
+DelegateShellTokenOption = Annotated[
+    bool,
+    typer.Option(
+        "--delegate-shell-token",
+        help=(
+            "Pass the room token through to codex app-server as "
+            "MESHAGENT_TOKEN / OPENAI_API_KEY / ANTHROPIC_API_KEY."
+        ),
+    ),
+]
+
 
 def _room_openai_base_url(*, room_name: str) -> str:
     room_url = websocket_room_url(room_name=room_name)
@@ -108,6 +119,22 @@ def _default_codex_container_command() -> str:
         "-c model_providers.openai.name='OpenAI' "
         '-c model_providers.openai.base_url="$OPENAI_BASE_URL"'
     )
+
+
+def _delegate_shell_token_env(*, jwt: Optional[str]) -> Optional[dict[str, str]]:
+    token = jwt or os.getenv("MESHAGENT_TOKEN")
+    if token is None:
+        return None
+
+    normalized = token.strip()
+    if normalized == "":
+        return None
+
+    return {
+        "MESHAGENT_TOKEN": normalized,
+        "OPENAI_API_KEY": normalized,
+        "ANTHROPIC_API_KEY": normalized,
+    }
 
 
 def _read_task_runner_input(input_value: Optional[str]) -> str:
@@ -301,6 +328,7 @@ def _resolve_codex_runtime(
     codex_image: Optional[str] = None,
     room_name: Optional[str] = None,
     jwt: Optional[str] = None,
+    delegate_shell_token: bool = False,
 ) -> tuple[Optional[str], Optional[str], Optional[dict[str, str]]]:
     if command is not None and ws_url is not None:
         print(
@@ -310,7 +338,9 @@ def _resolve_codex_runtime(
     if ws_url is not None:
         return None, ws_url, None
 
-    app_server_env = None
+    app_server_env = (
+        _delegate_shell_token_env(jwt=jwt) if delegate_shell_token else None
+    )
     if room_name is not None and command is None:
         if codex_image is not None:
             command = _default_codex_container_command()
@@ -820,6 +850,7 @@ async def chatbot_join(
             help="Log codex app-server JSON-RPC requests/responses",
         ),
     ] = False,
+    delegate_shell_token: DelegateShellTokenOption = False,
     key: Annotated[
         Optional[str], typer.Option("--key", help="An api key to sign the token with")
     ] = None,
@@ -872,6 +903,7 @@ async def chatbot_join(
             codex_image=codex_image,
             room_name=room_name,
             jwt=jwt,
+            delegate_shell_token=delegate_shell_token,
         )
 
         CustomCodexChatBot = build_codex_chatbot(
@@ -1039,6 +1071,7 @@ async def task_runner_join(
             help="Log codex app-server JSON-RPC requests/responses",
         ),
     ] = False,
+    delegate_shell_token: DelegateShellTokenOption = False,
     key: Annotated[
         Optional[str], typer.Option("--key", help="An api key to sign the token with")
     ] = None,
@@ -1091,6 +1124,7 @@ async def task_runner_join(
             codex_image=codex_image,
             room_name=room_name,
             jwt=jwt,
+            delegate_shell_token=delegate_shell_token,
         )
 
         CustomCodexTaskRunner = build_codex_task_runner(
@@ -1242,6 +1276,7 @@ async def chatbot_service(
             help="Log codex app-server JSON-RPC requests/responses",
         ),
     ] = False,
+    delegate_shell_token: DelegateShellTokenOption = False,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -1268,6 +1303,7 @@ async def chatbot_service(
         command=command,
         ws_url=ws_url,
         codex_image=codex_image,
+        delegate_shell_token=delegate_shell_token,
     )
     service = get_service(host=host, port=port)
     if path is None:
@@ -1422,6 +1458,7 @@ async def chatbot_spec(
             help="Log codex app-server JSON-RPC requests/responses",
         ),
     ] = False,
+    delegate_shell_token: DelegateShellTokenOption = False,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -1450,6 +1487,7 @@ async def chatbot_spec(
         command=command,
         ws_url=ws_url,
         codex_image=codex_image,
+        delegate_shell_token=delegate_shell_token,
     )
     service = get_service(host=host, port=port)
     if path is None:
@@ -1618,6 +1656,7 @@ async def chatbot_deploy(
             help="Log codex app-server JSON-RPC requests/responses",
         ),
     ] = False,
+    delegate_shell_token: DelegateShellTokenOption = False,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -1648,6 +1687,7 @@ async def chatbot_deploy(
         command=command,
         ws_url=ws_url,
         codex_image=codex_image,
+        delegate_shell_token=delegate_shell_token,
     )
     service = get_service(host=host, port=port)
     if path is None:
@@ -1836,6 +1876,7 @@ async def worker_join(
             help="Log codex app-server JSON-RPC requests/responses",
         ),
     ] = False,
+    delegate_shell_token: DelegateShellTokenOption = False,
     key: Annotated[
         Optional[str], typer.Option("--key", help="An api key to sign the token with")
     ] = None,
@@ -1888,6 +1929,7 @@ async def worker_join(
             codex_image=codex_image,
             room_name=room_name,
             jwt=jwt,
+            delegate_shell_token=delegate_shell_token,
         )
 
         CustomCodexWorker = build_codex_worker(
@@ -2053,6 +2095,7 @@ async def worker_service(
             help="Log codex app-server JSON-RPC requests/responses",
         ),
     ] = False,
+    delegate_shell_token: DelegateShellTokenOption = False,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -2079,6 +2122,7 @@ async def worker_service(
         command=command,
         ws_url=ws_url,
         codex_image=codex_image,
+        delegate_shell_token=delegate_shell_token,
     )
     service = get_service(host=host, port=port)
     if path is None:
@@ -2247,6 +2291,7 @@ async def worker_spec(
             help="Log codex app-server JSON-RPC requests/responses",
         ),
     ] = False,
+    delegate_shell_token: DelegateShellTokenOption = False,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -2275,6 +2320,7 @@ async def worker_spec(
         command=command,
         ws_url=ws_url,
         codex_image=codex_image,
+        delegate_shell_token=delegate_shell_token,
     )
     service = get_service(host=host, port=port)
     if path is None:
@@ -2464,6 +2510,7 @@ async def worker_deploy(
             help="Log codex app-server JSON-RPC requests/responses",
         ),
     ] = False,
+    delegate_shell_token: DelegateShellTokenOption = False,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -2494,6 +2541,7 @@ async def worker_deploy(
         command=command,
         ws_url=ws_url,
         codex_image=codex_image,
+        delegate_shell_token=delegate_shell_token,
     )
     service = get_service(host=host, port=port)
     if path is None:
@@ -2683,6 +2731,7 @@ async def chatbot_run(
             help="Log codex app-server JSON-RPC requests/responses",
         ),
     ] = False,
+    delegate_shell_token: DelegateShellTokenOption = False,
     key: Annotated[
         Optional[str], typer.Option("--key", help="An api key to sign the token with")
     ] = None,
@@ -2757,6 +2806,7 @@ async def chatbot_run(
             codex_image=codex_image,
             room_name=room_name,
             jwt=jwt,
+            delegate_shell_token=delegate_shell_token,
         )
 
         CustomCodexChatBot = build_codex_chatbot(
@@ -2986,6 +3036,7 @@ async def task_runner_run(
             help="Log codex app-server JSON-RPC requests/responses",
         ),
     ] = False,
+    delegate_shell_token: DelegateShellTokenOption = False,
     key: Annotated[
         Optional[str], typer.Option("--key", help="An api key to sign the token with")
     ] = None,
@@ -3048,6 +3099,7 @@ async def task_runner_run(
             codex_image=codex_image,
             room_name=room_name,
             jwt=jwt,
+            delegate_shell_token=delegate_shell_token,
         )
 
         CustomCodexTaskRunner = build_codex_task_runner(
@@ -3220,6 +3272,7 @@ async def task_runner_service(
             help="Log codex app-server JSON-RPC requests/responses",
         ),
     ] = False,
+    delegate_shell_token: DelegateShellTokenOption = False,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -3246,6 +3299,7 @@ async def task_runner_service(
         command=command,
         ws_url=ws_url,
         codex_image=codex_image,
+        delegate_shell_token=delegate_shell_token,
     )
     service = get_service(host=host, port=port)
     if path is None:
@@ -3403,6 +3457,7 @@ async def task_runner_spec(
             help="Log codex app-server JSON-RPC requests/responses",
         ),
     ] = False,
+    delegate_shell_token: DelegateShellTokenOption = False,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -3431,6 +3486,7 @@ async def task_runner_spec(
         command=command,
         ws_url=ws_url,
         codex_image=codex_image,
+        delegate_shell_token=delegate_shell_token,
     )
     service = get_service(host=host, port=port)
     if path is None:
@@ -3609,6 +3665,7 @@ async def task_runner_deploy(
             help="Log codex app-server JSON-RPC requests/responses",
         ),
     ] = False,
+    delegate_shell_token: DelegateShellTokenOption = False,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -3639,6 +3696,7 @@ async def task_runner_deploy(
         command=command,
         ws_url=ws_url,
         codex_image=codex_image,
+        delegate_shell_token=delegate_shell_token,
     )
     service = get_service(host=host, port=port)
     if path is None:
