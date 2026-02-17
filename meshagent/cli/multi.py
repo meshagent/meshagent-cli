@@ -158,9 +158,7 @@ def build_spec(
 
     spec.metadata.name = service_name
     spec.metadata.description = service_description
-    spec.container.image = (
-        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
-    )
+    spec.container.image = "meshagent/cli:default"
     spec.container.command = (
         f'meshagent multi service -c "{command.replace('"', '\\"')}"'
     )

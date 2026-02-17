@@ -21,6 +21,7 @@ from meshagent.cli.helper import (
 )
 
 app = async_typer.AsyncTyper(help="Manage routes for your project")
+MESHAGENT_APP_DOMAIN_SUFFIX = ".meshagent.app"
 
 
 def _parse_annotations(annotations: Optional[str]) -> Optional[dict[str, str]]:
@@ -32,6 +33,14 @@ def _parse_annotations(annotations: Optional[str]) -> Optional[dict[str, str]]:
         return json.loads(annotations)
     except json.JSONDecodeError as exc:
         raise typer.BadParameter("Invalid JSON for --annotations") from exc
+
+
+def _warn_if_non_meshagent_app_domain(domain: str) -> None:
+    if domain.strip().lower().endswith(MESHAGENT_APP_DOMAIN_SUFFIX):
+        return
+    print(
+        f"[yellow]Warning:[/] domain does not end with {MESHAGENT_APP_DOMAIN_SUFFIX}: {domain}"
+    )
 
 
 @app.async_command("create")
@@ -71,6 +80,7 @@ async def route_create(
     try:
         project_id = await resolve_project_id(project_id)
         room = resolve_room(room)
+        _warn_if_non_meshagent_app_domain(domain)
         try:
             parsed_annotations = _parse_annotations(annotations) or {}
             await client.create_route(
@@ -129,6 +139,7 @@ async def route_update(
     try:
         project_id = await resolve_project_id(project_id)
         room = resolve_room(room)
+        _warn_if_non_meshagent_app_domain(domain)
         parsed_annotations = _parse_annotations(annotations)
 
         if room is None or port is None or parsed_annotations is None:

@@ -1488,9 +1488,7 @@ async def chatbot_spec(
     }
     spec.metadata.name = service_name
     spec.metadata.description = service_description
-    spec.container.image = (
-        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
-    )
+    spec.container.image = "meshagent/cli:default"
     spec.container.command = shlex.join(
         ["meshagent", "codex", "chatbot", "service", *cleanup_args(sys.argv[3:])]
     )
@@ -1686,9 +1684,7 @@ async def chatbot_deploy(
     }
     spec.metadata.name = service_name
     spec.metadata.description = service_description
-    spec.container.image = (
-        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
-    )
+    spec.container.image = "meshagent/cli:default"
     spec.container.command = shlex.join(
         ["meshagent", "codex", "chatbot", "service", *cleanup_args(sys.argv[3:])]
     )
@@ -2317,9 +2313,7 @@ async def worker_spec(
     }
     spec.metadata.name = service_name
     spec.metadata.description = service_description
-    spec.container.image = (
-        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
-    )
+    spec.container.image = "meshagent/cli:default"
     spec.container.command = shlex.join(
         [
             "meshagent",
@@ -2536,9 +2530,7 @@ async def worker_deploy(
     }
     spec.metadata.name = service_name
     spec.metadata.description = service_description
-    spec.container.image = (
-        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
-    )
+    spec.container.image = "meshagent/cli:default"
     spec.container.command = shlex.join(
         [
             "meshagent",
@@ -3455,9 +3447,7 @@ async def task_runner_spec(
     }
     spec.metadata.name = service_name
     spec.metadata.description = service_description
-    spec.container.image = (
-        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
-    )
+    spec.container.image = "meshagent/cli:default"
     spec.container.command = shlex.join(
         [
             "meshagent",
@@ -3663,9 +3653,7 @@ async def task_runner_deploy(
     }
     spec.metadata.name = service_name
     spec.metadata.description = service_description
-    spec.container.image = (
-        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
-    )
+    spec.container.image = "meshagent/cli:default"
     spec.container.command = shlex.join(
         [
             "meshagent",

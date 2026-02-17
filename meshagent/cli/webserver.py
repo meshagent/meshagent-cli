@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import builtins
 from dataclasses import dataclass
@@ -8,7 +9,7 @@ import inspect
 import os
 import shlex
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Callable, Literal, Optional, TypeVar, cast
 
 import click
@@ -27,7 +28,15 @@ from meshagent.api import (
 )
 from meshagent.api.client import ConflictError
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
-from meshagent.api.specs.service import AgentSpec, ANNOTATION_AGENT_TYPE, PortSpec
+from meshagent.api.specs.service import (
+    AgentSpec,
+    ANNOTATION_AGENT_TYPE,
+    ContainerMountSpec,
+    FileStorageMountSpec,
+    PortSpec,
+    RoomStorageMountSpec,
+    ServiceSpec,
+)
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.cli.helper import (
@@ -44,12 +53,47 @@ DEFAULT_ROUTES_FILE = "webserver.yaml"
 DEFAULT_LOCAL_BIND_HOST = "127.0.0.1"
 DEFAULT_SERVICE_BIND_HOST = "0.0.0.0"
 DEFAULT_BIND_PORT = 8000
+ROUTES_FILE_MOUNT_DIR = "/meshagent/webserver-config"
+DEFAULT_WEBSITE_MOUNT_PATH = "/meshagent/webserver"
+EMPTY_DIR_MARKER_NAME = ".meshagent.keep"
 ROUTE_ADD_COMMANDS = [
     "meshagent webserver add --path / --python handlers/home.py",
     "meshagent webserver add --path /assets --static ./public",
 ]
 ROUTE_ADD_USAGE_TEXT = "Add routes with the CLI:\n" + "\n".join(
     f"  {command}" for command in ROUTE_ADD_COMMANDS
+)
+JOIN_COMMANDS = [
+    "meshagent webserver join --room my-room --agent-name my-web -f webserver.yaml --watch",
+]
+JOIN_USAGE_TEXT = "Start it locally by joining a room:\n" + "\n".join(
+    f"  {command}" for command in JOIN_COMMANDS
+)
+LOCAL_BROWSER_USAGE_TEXT = """View the site from your local machine:
+  http://127.0.0.1:8000
+
+Use the host/port from webserver.yaml (or explicit --host/--port or --web-host/--web-port overrides).
+"""
+EXTERNAL_ACCESS_COMMANDS = [
+    "meshagent webserver deploy --service-name my-web --agent-name my-web --room my-room -f webserver.yaml",
+    "meshagent route create --room my-room --port 8000 --domain my-web.meshagent.app",
+]
+EXTERNAL_ACCESS_USAGE_TEXT = (
+    """To make the site available outside your machine:
+"""
+    + "\n".join(f"  {command}" for command in EXTERNAL_ACCESS_COMMANDS)
+    + """
+
+You must configure a route that targets the same room and port as the deployed webserver.
+"""
+)
+WEBSERVER_USAGE_TEXT = "\n\n".join(
+    [
+        ROUTE_ADD_USAGE_TEXT,
+        JOIN_USAGE_TEXT,
+        LOCAL_BROWSER_USAGE_TEXT.strip(),
+        EXTERNAL_ACCESS_USAGE_TEXT.strip(),
+    ]
 )
 WEBSERVER_APP_HELP = f"""Run an HTTP webserver connected to a MeshAgent room.
 
@@ -60,7 +104,7 @@ room's full feature set.
 
 Default routes file: webserver.yaml
 
-{ROUTE_ADD_USAGE_TEXT}
+{WEBSERVER_USAGE_TEXT}
 
 Example routes file:
 kind: WebServer
@@ -131,6 +175,13 @@ class LoadedPythonRoute:
     source: Path
     methods: list[str]
     handler: Callable[..., Any]
+
+
+@dataclass(frozen=True)
+class WebsiteUploadFile:
+    local_source: Path | None
+    relative_path: str
+    content: bytes | None = None
 
 
 class RouteConfig(BaseModel):
@@ -415,6 +466,78 @@ def _load_python_handler(path: Path) -> Callable[..., Any]:
     return cast(Callable[..., Any], handler)
 
 
+def _validate_python_handler_file(path: Path) -> None:
+    if not path.exists():
+        raise typer.BadParameter(f"Python route file not found: {path}")
+    if path.suffix != ".py":
+        raise typer.BadParameter(f"Python route must point to a .py file: {path}")
+
+    try:
+        source = path.read_text()
+    except OSError as exc:
+        raise typer.BadParameter(
+            f"Unable to read python route file: {path} ({exc})"
+        ) from exc
+
+    try:
+        module = ast.parse(source, filename=str(path))
+    except SyntaxError as exc:
+        location = f"{path}:{exc.lineno}:{exc.offset}"
+        raise typer.BadParameter(
+            f"Invalid python route file syntax at {location}: {exc.msg}"
+        ) from exc
+
+    def _assigned_name(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Name):
+            return node.id
+        return None
+
+    for node in module.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                name = _assigned_name(target)
+                if name in {"METHOD", "METHODS"}:
+                    raise typer.BadParameter(
+                        f"Python route file must not define METHOD/METHODS; configure methods in -f/--routes-file instead: {path}"
+                    )
+        if isinstance(node, ast.AnnAssign):
+            name = _assigned_name(node.target)
+            if name in {"METHOD", "METHODS"}:
+                raise typer.BadParameter(
+                    f"Python route file must not define METHOD/METHODS; configure methods in -f/--routes-file instead: {path}"
+                )
+
+    handler_node: ast.FunctionDef | ast.AsyncFunctionDef | None = None
+    for node in module.body:
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "handler"
+        ):
+            handler_node = node
+            break
+
+    if handler_node is None:
+        raise typer.BadParameter(
+            f"Python route file must define "
+            f"'handler(*, room: RoomClient, req: web.Request)': {path}"
+        )
+
+    positional_only = {arg.arg for arg in handler_node.args.posonlyargs}
+    if "room" in positional_only or "req" in positional_only:
+        raise typer.BadParameter(
+            f"Python route handler must accept keyword arguments room and req: {path}"
+        )
+
+    keyword_compatible = {
+        *[arg.arg for arg in handler_node.args.args],
+        *[arg.arg for arg in handler_node.args.kwonlyargs],
+    }
+    if "room" not in keyword_compatible or "req" not in keyword_compatible:
+        raise typer.BadParameter(
+            f"Python route handler must define room and req parameters: {path}"
+        )
+
+
 def _resolve_web_bind(
     *,
     config: WebServerConfig,
@@ -580,6 +703,17 @@ def build_webserver(
     return WebServer, host, port
 
 
+def _spec_stub_webserver_class() -> type[Any]:
+    class WebServer:
+        async def start(self, *, room: RoomClient) -> None:
+            return
+
+        async def stop(self) -> None:
+            return
+
+    return WebServer
+
+
 def _set_port_spec(spec, *, web_port: int) -> None:
     spec.ports = [
         PortSpec(
@@ -589,6 +723,334 @@ def _set_port_spec(spec, *, web_port: int) -> None:
             published=True,
             liveness="/",
         )
+    ]
+
+
+def _build_routes_file_mount(*, routes_file: str) -> tuple[str, FileStorageMountSpec]:
+    routes_path = _routes_file_path(routes_file)
+    try:
+        routes_text = routes_path.read_text()
+    except OSError as exc:
+        raise typer.BadParameter(
+            f"Unable to read routes file for spec/deploy mount: {routes_path} ({exc})"
+        ) from exc
+
+    mounted_routes_path = f"{ROUTES_FILE_MOUNT_DIR}/{routes_path.name}"
+    return (
+        mounted_routes_path,
+        FileStorageMountSpec(
+            path=mounted_routes_path, text=routes_text, read_only=True
+        ),
+    )
+
+
+def _website_config_relative_path(*, routes_file: str) -> str:
+    return _routes_file_path(routes_file).name
+
+
+def _website_mount_path(*, website_subpath: str) -> str:
+    return str(PurePosixPath("/").joinpath(website_subpath))
+
+
+def _website_config_mounted_path(*, routes_file: str, website_mount_path: str) -> str:
+    return str(
+        PurePosixPath(website_mount_path).joinpath(
+            _website_config_relative_path(routes_file=routes_file)
+        )
+    )
+
+
+def _attach_routes_file_mount(*, spec: ServiceSpec, routes_file: str) -> str:
+    if spec.container is None:
+        raise typer.BadParameter("Service spec is missing container configuration")
+
+    mounted_routes_path, mount = _build_routes_file_mount(routes_file=routes_file)
+    if spec.container.storage is None:
+        spec.container.storage = ContainerMountSpec(files=[mount])
+        return mounted_routes_path
+
+    existing_files = spec.container.storage.files or []
+    spec.container.storage.files = [
+        *[file for file in existing_files if file.path != mounted_routes_path],
+        mount,
+    ]
+    return mounted_routes_path
+
+
+def _replace_routes_file_arg(*, args: list[str], mounted_routes_path: str) -> list[str]:
+    out: list[str] = []
+    replaced = False
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--website-path":
+            i += 2
+            continue
+        if arg.startswith("--website-path="):
+            i += 1
+            continue
+        if arg in {"-f", "--routes-file"}:
+            replaced = True
+            out.extend([arg, mounted_routes_path])
+            i += 2
+            continue
+        if arg.startswith("--routes-file="):
+            replaced = True
+            out.append(f"--routes-file={mounted_routes_path}")
+            i += 1
+            continue
+        out.append(arg)
+        i += 1
+
+    if not replaced:
+        out.extend(["-f", mounted_routes_path])
+    return out
+
+
+def _normalize_website_subpath(*, website_path: str) -> str:
+    raw = website_path.strip()
+    if raw == "":
+        raise typer.BadParameter("--website-path must be a non-empty path")
+    if raw.startswith("room://"):
+        raw = raw[len("room://") :]
+    normalized = PurePosixPath("/" + raw).as_posix().strip("/")
+    if normalized in {"", ".", ".."}:
+        raise typer.BadParameter("--website-path must resolve to a non-root room path")
+    if any(part in {"", ".", ".."} for part in PurePosixPath(normalized).parts):
+        raise typer.BadParameter("--website-path cannot contain '.' or '..' segments")
+    return normalized
+
+
+def _relative_copy_source_path(*, source: Path, source_label: str) -> str:
+    resolved_source = source.resolve()
+    cwd = Path.cwd().resolve()
+    try:
+        relative = resolved_source.relative_to(cwd)
+    except ValueError as exc:
+        raise typer.BadParameter(
+            f"--website-path copy {source_label} must be under current directory {cwd}; found: {resolved_source}"
+        ) from exc
+
+    value = relative.as_posix()
+    if value in {"", ".", ".."}:
+        raise typer.BadParameter(
+            f"--website-path copy {source_label} must not resolve to the current directory root: {resolved_source}"
+        )
+    if any(part in {"", ".", ".."} for part in PurePosixPath(value).parts):
+        raise typer.BadParameter(
+            f"--website-path copy {source_label} resolved to invalid relative path: {value}"
+        )
+    return value
+
+
+def _resolve_website_copy_source(
+    *,
+    raw_source: str,
+    routes_root: Path,
+    source_label: str,
+) -> tuple[Path, str]:
+    raw = raw_source.strip()
+    if raw == "":
+        raise typer.BadParameter(f"{source_label} must be a non-empty path")
+
+    parsed = Path(raw).expanduser()
+    if parsed.is_absolute():
+        # In website copy mode, absolute route sources map to {cwd}/<absolute-path-without-leading-slash>.
+        local_source = (Path.cwd() / parsed.as_posix().lstrip("/")).resolve()
+    else:
+        local_source = (routes_root / parsed).resolve()
+
+    relative_path = _relative_copy_source_path(
+        source=local_source,
+        source_label=source_label,
+    )
+    return local_source, relative_path
+
+
+def _collect_website_upload_files(
+    *,
+    routes_file: str,
+    include_routes_config: bool,
+    website_mount_path: str = DEFAULT_WEBSITE_MOUNT_PATH,
+) -> list[WebsiteUploadFile]:
+    routes_path = _routes_file_path(routes_file)
+    routes_root = routes_path.parent.resolve()
+    source_config = _load_routes_config_file(routes_path=routes_path)
+    local_config = source_config.model_copy(deep=True)
+    runtime_config = source_config.model_copy(deep=True)
+    files: dict[str, WebsiteUploadFile] = {}
+    static_source_roots: dict[str, str] = {}
+
+    for index, route in enumerate(source_config.routes):
+        source_prefix = f"-f/--routes-file {routes_path} routes[{index}]"
+        route_target = local_config.routes[index]
+        runtime_target = runtime_config.routes[index]
+
+        if route.python is not None:
+            local_source, relative_path = _resolve_website_copy_source(
+                raw_source=route.python,
+                routes_root=routes_root,
+                source_label=f"{source_prefix}.python",
+            )
+            route_target.python = str(local_source)
+            runtime_target.python = str(
+                PurePosixPath(website_mount_path).joinpath(relative_path)
+            )
+            files[relative_path] = WebsiteUploadFile(
+                local_source=local_source,
+                relative_path=relative_path,
+            )
+
+        if route.static is not None:
+            local_source, relative_path = _resolve_website_copy_source(
+                raw_source=route.static,
+                routes_root=routes_root,
+                source_label=f"{source_prefix}.static",
+            )
+            route_target.static = str(local_source)
+            runtime_target.static = str(
+                PurePosixPath(website_mount_path).joinpath(relative_path)
+            )
+            static_source_roots[str(local_source)] = relative_path
+
+    static_routes, loaded_python_routes = _resolve_validated_routes(
+        config=local_config,
+        routes_path=routes_path,
+    )
+
+    for route in static_routes:
+        source_key = str(route.source.resolve())
+        if source_key not in static_source_roots:
+            raise typer.BadParameter(
+                f"Unable to resolve static route copy source for website deployment: {route.source}"
+            )
+        relative_dir = static_source_roots[source_key]
+        static_files = sorted(
+            path for path in route.source.rglob("*") if path.is_file()
+        )
+        if len(static_files) == 0:
+            marker_path = f"{relative_dir}/{EMPTY_DIR_MARKER_NAME}"
+            marker_path = marker_path.lstrip("/")
+            files[marker_path] = WebsiteUploadFile(
+                local_source=None,
+                relative_path=marker_path,
+                content=b"",
+            )
+            continue
+
+        for local_path in static_files:
+            relative_file_path = str(
+                PurePosixPath(relative_dir).joinpath(
+                    local_path.relative_to(route.source).as_posix()
+                )
+            )
+            files[relative_file_path] = WebsiteUploadFile(
+                local_source=local_path,
+                relative_path=relative_file_path,
+            )
+
+    # Ensure python route handler modules remain valid with strongly-typed signature rules.
+    for route in loaded_python_routes:
+        _validate_python_handler_file(route.source)
+
+    if include_routes_config:
+        config_relative_path = _website_config_relative_path(routes_file=routes_file)
+        config_bytes = yaml.safe_dump(
+            runtime_config.model_dump(mode="json", exclude_none=True),
+            sort_keys=False,
+        ).encode()
+        files[config_relative_path] = WebsiteUploadFile(
+            local_source=None,
+            relative_path=config_relative_path,
+            content=config_bytes,
+        )
+
+    return [files[key] for key in sorted(files.keys())]
+
+
+async def _write_room_storage_file(
+    *,
+    room: RoomClient,
+    path: str,
+    data: bytes,
+) -> None:
+    handle = await room.storage.open(path=path, overwrite=True)
+    try:
+        await room.storage.write(handle=handle, data=data)
+    finally:
+        await room.storage.close(handle=handle)
+
+
+async def _sync_website_files_to_room_storage(
+    *,
+    account_client,
+    project_id: str,
+    room_name: str,
+    routes_file: str,
+    website_subpath: str,
+    include_routes_config: bool,
+) -> None:
+    website_mount_path = _website_mount_path(website_subpath=website_subpath)
+    uploads = _collect_website_upload_files(
+        routes_file=routes_file,
+        include_routes_config=include_routes_config,
+        website_mount_path=website_mount_path,
+    )
+    connection = await account_client.connect_room(
+        project_id=project_id, room=room_name
+    )
+
+    async with RoomClient(
+        protocol=WebSocketClientProtocol(
+            url=websocket_room_url(room_name=room_name),
+            token=connection.jwt,
+        )
+    ) as room:
+        for upload in uploads:
+            remote_path = str(
+                PurePosixPath(website_subpath).joinpath(upload.relative_path)
+            )
+            print(f"{upload.relative_path} -> {remote_path}")
+            if upload.content is not None:
+                data = upload.content
+            elif upload.local_source is None:
+                data = b""
+            else:
+                try:
+                    data = upload.local_source.read_bytes()
+                except OSError as exc:
+                    raise typer.BadParameter(
+                        f"Unable to read local file for --website-path sync: {upload.local_source} ({exc})"
+                    ) from exc
+            await _write_room_storage_file(room=room, path=remote_path, data=data)
+
+    print(
+        f"[green]Synced {len(uploads)} route file(s) to room storage:[/] {website_subpath}"
+    )
+
+
+def _attach_website_storage_mount(
+    *,
+    spec: ServiceSpec,
+    website_subpath: str,
+    website_mount_path: str,
+) -> None:
+    if spec.container is None:
+        raise typer.BadParameter("Service spec is missing container configuration")
+
+    room_mount = RoomStorageMountSpec(
+        path=website_mount_path,
+        subpath=website_subpath,
+        read_only=True,
+    )
+    if spec.container.storage is None:
+        spec.container.storage = ContainerMountSpec(room=[room_mount])
+        return
+
+    existing_room_mounts = spec.container.storage.room or []
+    spec.container.storage.room = [
+        *[mount for mount in existing_room_mounts if mount.path != website_mount_path],
+        room_mount,
     ]
 
 
@@ -656,7 +1118,7 @@ async def init(
     _write_routes_config(routes_path=routes_path, config=config)
     print(f"[green]Created routes file:[/] {routes_path}")
     _print_file_contents(path=routes_path)
-    print(f"[green]{ROUTE_ADD_USAGE_TEXT}[/green]")
+    print(f"[green]{WEBSERVER_USAGE_TEXT}[/green]")
 
 
 @app.async_command("add")
@@ -743,7 +1205,7 @@ async def add(
             print(f"[yellow]Scaffolded missing python handler:[/] {python_path}")
             _print_file_contents(path=python_path)
 
-        _load_python_handler(python_path)
+        _validate_python_handler_file(python_path)
 
         route = RouteConfig(
             path=route_path,
@@ -1003,6 +1465,13 @@ async def spec(
     path: Annotated[
         Optional[str], typer.Option(help="HTTP path to mount the service at")
     ] = None,
+    website_path: Annotated[
+        Optional[str],
+        typer.Option(
+            "--website-path",
+            help="Room storage subpath for route-referenced files (under the routes file directory) and the routes config file; adds a room storage mount so routes resolve in container",
+        ),
+    ] = None,
 ):
     service = get_service(host=cast(str, host), port=cast(int, port))
 
@@ -1020,27 +1489,76 @@ async def spec(
     web_host_override = _cli_override_or_none(value=web_host, option_name="web_host")
     web_port_override = _cli_override_or_none(value=web_port, option_name="web_port")
 
-    WebServer, _, resolved_web_port = build_webserver(
-        routes_file=routes_file,
-        default_host=DEFAULT_SERVICE_BIND_HOST,
-        default_port=DEFAULT_BIND_PORT,
-        host_override=web_host_override,
-        port_override=web_port_override,
+    website_subpath = (
+        _normalize_website_subpath(website_path=website_path)
+        if website_path is not None
+        else None
     )
+    website_mount_path = (
+        _website_mount_path(website_subpath=website_subpath)
+        if website_subpath is not None
+        else None
+    )
+
+    if website_path is None:
+        WebServer, _, resolved_web_port = build_webserver(
+            routes_file=routes_file,
+            default_host=DEFAULT_SERVICE_BIND_HOST,
+            default_port=DEFAULT_BIND_PORT,
+            host_override=web_host_override,
+            port_override=web_port_override,
+        )
+    else:
+        routes_path = _routes_file_path(routes_file)
+        config = _load_routes_config_file(routes_path=routes_path)
+        _, resolved_web_port = _resolve_web_bind(
+            config=config,
+            routes_path=routes_path,
+            default_host=DEFAULT_SERVICE_BIND_HOST,
+            default_port=DEFAULT_BIND_PORT,
+            host_override=web_host_override,
+            port_override=web_port_override,
+        )
+        _collect_website_upload_files(
+            routes_file=routes_file,
+            include_routes_config=True,
+            website_mount_path=cast(str, website_mount_path),
+        )
+        WebServer = _spec_stub_webserver_class()
     service.add_path(identity=agent_name, path=path, cls=WebServer)
 
     spec = service_specs()[0]
     _set_port_spec(spec, web_port=resolved_web_port)
+    if website_path is not None:
+        _attach_website_storage_mount(
+            spec=spec,
+            website_subpath=cast(str, website_subpath),
+            website_mount_path=cast(str, website_mount_path),
+        )
+        mounted_routes_path = _website_config_mounted_path(
+            routes_file=routes_file,
+            website_mount_path=cast(str, website_mount_path),
+        )
+    else:
+        mounted_routes_path = _attach_routes_file_mount(
+            spec=spec, routes_file=routes_file
+        )
     spec.metadata.annotations = {
         "meshagent.service.id": service_name,
     }
     spec.metadata.name = service_name
     spec.metadata.description = service_description
-    spec.container.image = (
-        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
-    )
+    spec.container.image = "meshagent/cli:default"
     spec.container.command = shlex.join(
-        ["meshagent", "webserver", "service", *cleanup_args(sys.argv[2:])]
+        [
+            "meshagent",
+            "webserver",
+            "service",
+            *_replace_routes_file_arg(
+                args=cleanup_args(sys.argv[2:]),
+                mounted_routes_path=mounted_routes_path,
+            ),
+        ]
     )
 
     print(yaml.dump(spec.model_dump(mode="json", exclude_none=True), sort_keys=False))
@@ -1086,8 +1604,16 @@ async def deploy(
         Optional[str],
         typer.Option("--room", help="The name of a room to create the service for"),
     ] = os.getenv("MESHAGENT_ROOM"),
+    website_path: Annotated[
+        Optional[str],
+        typer.Option(
+            "--website-path",
+            help="Room storage subpath to upload route-referenced files (under the routes file directory) and the routes config file into and mount at runtime",
+        ),
+    ] = None,
 ):
     project_id = await resolve_project_id(project_id=project_id)
+    room_name = resolve_room(room)
 
     service = get_service(host=cast(str, host), port=cast(int, port))
 
@@ -1105,39 +1631,102 @@ async def deploy(
     web_host_override = _cli_override_or_none(value=web_host, option_name="web_host")
     web_port_override = _cli_override_or_none(value=web_port, option_name="web_port")
 
-    WebServer, _, resolved_web_port = build_webserver(
-        routes_file=routes_file,
-        default_host=DEFAULT_SERVICE_BIND_HOST,
-        default_port=DEFAULT_BIND_PORT,
-        host_override=web_host_override,
-        port_override=web_port_override,
+    website_subpath = (
+        _normalize_website_subpath(website_path=website_path)
+        if website_path is not None
+        else None
     )
+    website_mount_path = (
+        _website_mount_path(website_subpath=website_subpath)
+        if website_subpath is not None
+        else None
+    )
+
+    if website_path is None:
+        WebServer, _, resolved_web_port = build_webserver(
+            routes_file=routes_file,
+            default_host=DEFAULT_SERVICE_BIND_HOST,
+            default_port=DEFAULT_BIND_PORT,
+            host_override=web_host_override,
+            port_override=web_port_override,
+        )
+    else:
+        routes_path = _routes_file_path(routes_file)
+        config = _load_routes_config_file(routes_path=routes_path)
+        _, resolved_web_port = _resolve_web_bind(
+            config=config,
+            routes_path=routes_path,
+            default_host=DEFAULT_SERVICE_BIND_HOST,
+            default_port=DEFAULT_BIND_PORT,
+            host_override=web_host_override,
+            port_override=web_port_override,
+        )
+        _collect_website_upload_files(
+            routes_file=routes_file,
+            include_routes_config=True,
+            website_mount_path=cast(str, website_mount_path),
+        )
+        WebServer = _spec_stub_webserver_class()
     service.add_path(identity=agent_name, path=path, cls=WebServer)
 
     spec = service_specs()[0]
     _set_port_spec(spec, web_port=resolved_web_port)
+    if website_path is not None:
+        _attach_website_storage_mount(
+            spec=spec,
+            website_subpath=cast(str, website_subpath),
+            website_mount_path=cast(str, website_mount_path),
+        )
+        mounted_routes_path = _website_config_mounted_path(
+            routes_file=routes_file,
+            website_mount_path=cast(str, website_mount_path),
+        )
+    else:
+        mounted_routes_path = _attach_routes_file_mount(
+            spec=spec, routes_file=routes_file
+        )
     spec.metadata.annotations = {
         "meshagent.service.id": service_name,
     }
     spec.metadata.name = service_name
     spec.metadata.description = service_description
-    spec.container.image = (
-        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
-    )
+    spec.container.image = "meshagent/cli:default"
     spec.container.command = shlex.join(
-        ["meshagent", "webserver", "service", *cleanup_args(sys.argv[2:])]
+        [
+            "meshagent",
+            "webserver",
+            "service",
+            *_replace_routes_file_arg(
+                args=cleanup_args(sys.argv[2:]),
+                mounted_routes_path=mounted_routes_path,
+            ),
+        ]
     )
 
     client = await get_client()
     try:
+        if website_subpath is not None:
+            if room_name is None:
+                raise typer.BadParameter(
+                    "--website-path requires --room (or MESHAGENT_ROOM) so files can be uploaded to room storage"
+                )
+            await _sync_website_files_to_room_storage(
+                account_client=client,
+                project_id=project_id,
+                room_name=room_name,
+                routes_file=routes_file,
+                website_subpath=website_subpath,
+                include_routes_config=True,
+            )
+
         id = None
         try:
             if id is None:
-                if room is None:
+                if room_name is None:
                     services = await client.list_services(project_id=project_id)
                 else:
                     services = await client.list_room_services(
-                        project_id=project_id, room_name=room
+                        project_id=project_id, room_name=room_name
                     )
 
                 for s in services:
@@ -1145,18 +1734,18 @@ async def deploy(
                         id = s.id
 
             if id is None:
-                if room is None:
+                if room_name is None:
                     id = await client.create_service(
                         project_id=project_id, service=spec
                     )
                 else:
                     id = await client.create_room_service(
-                        project_id=project_id, service=spec, room_name=room
+                        project_id=project_id, service=spec, room_name=room_name
                     )
 
             else:
                 spec.id = id
-                if room is None:
+                if room_name is None:
                     await client.update_service(
                         project_id=project_id, service_id=id, service=spec
                     )
@@ -1165,7 +1754,7 @@ async def deploy(
                         project_id=project_id,
                         service_id=id,
                         service=spec,
-                        room_name=room,
+                        room_name=room_name,
                     )
 
         except ConflictError:

@@ -467,9 +467,7 @@ async def spec(
     }
     spec.metadata.name = service_name
     spec.metadata.description = service_description
-    spec.container.image = (
-        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
-    )
+    spec.container.image = "meshagent/cli:default"
     spec.container.command = shlex.join(
         ["meshagent", "voicebot", "service", *cleanup_args(sys.argv[2:])]
     )
@@ -579,9 +577,7 @@ async def deploy(
     }
     spec.metadata.name = service_name
     spec.metadata.description = service_description
-    spec.container.image = (
-        "us-central1-docker.pkg.dev/meshagent-public/images/cli:{SERVER_VERSION}-esgz"
-    )
+    spec.container.image = "meshagent/cli:default"
     spec.container.command = shlex.join(
         ["meshagent", "voicebot", "service", *cleanup_args(sys.argv[2:])]
     )
