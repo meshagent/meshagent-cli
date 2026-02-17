@@ -1894,7 +1894,7 @@ async def chat_with(
     participant_name: str,
     project_id: str,
     room: str,
-    thread_path: str,
+    thread_path: Optional[str],
     message: Optional[str] = None,
     use_web_search: bool = False,
     use_image_gen: bool = False,
@@ -1907,7 +1907,7 @@ async def chat_with(
         from textual.app import App, ComposeResult
         from textual.binding import Binding
         from textual.containers import Horizontal, VerticalScroll
-        from textual.widgets import Input, Static
+        from textual.widgets import Static, TextArea
         from rich.align import Align
         from rich.console import Group
         from rich.console import RenderableType
@@ -1957,6 +1957,253 @@ async def chat_with(
 
     caret = "›"
 
+    class RoomConnectTextualApp(App[None]):
+        CSS = """
+        Screen {
+            layout: vertical;
+            align: center middle;
+            padding: 0 2;
+        }
+        #connect-title {
+            content-align: center middle;
+            width: 100%;
+        }
+        #connect-title-gap-top {
+            width: 100%;
+            height: 1;
+        }
+        #connect-title-divider {
+            width: 100%;
+            content-align: center middle;
+        }
+        #connect-title-gap-bottom {
+            width: 100%;
+            height: 1;
+        }
+        #connect-header {
+            content-align: center middle;
+            width: 100%;
+            padding: 0 0 1 0;
+        }
+        #connect-status {
+            content-align: center middle;
+            width: 100%;
+        }
+        """
+
+        BINDINGS = [
+            Binding("ctrl+c", "cancel_connect", "Cancel", priority=True),
+        ]
+
+        def __init__(
+            self,
+            *,
+            room_name: str,
+            status_queue: "asyncio.Queue[tuple[str, str]]",
+            connect_task: "asyncio.Task[RoomClient]",
+        ) -> None:
+            super().__init__()
+            self._room_name = room_name
+            self._status_queue = status_queue
+            self._connect_task = connect_task
+            self._divider_view: Static | None = None
+            self._header_view: Static | None = None
+            self._status_view: Static | None = None
+            self._consume_task: asyncio.Task | None = None
+            self._watch_task: asyncio.Task | None = None
+            self._spinner_timer = None
+            self._spinner_frames = (
+                "⠋",
+                "⠙",
+                "⠹",
+                "⠸",
+                "⠼",
+                "⠴",
+                "⠦",
+                "⠧",
+                "⠇",
+                "⠏",
+            )
+            self._spinner_frame = 0
+            self._divider_pulse_position = 0
+            self._divider_pulse_direction = 1
+            self._statuses: list[tuple[str, str]] = []
+            self._connect_complete = False
+            self._connect_failed = False
+
+        def compose(self) -> ComposeResult:
+            yield Static(Text("MeshAgent", style="bold green"), id="connect-title")
+            yield Static(" ", id="connect-title-gap-top")
+            yield Static(Rule(style="bright_black"), id="connect-title-divider")
+            yield Static(" ", id="connect-title-gap-bottom")
+            yield Static("", id="connect-header")
+            yield Static("", id="connect-status")
+
+        async def on_mount(self) -> None:
+            self._divider_view = self.query_one("#connect-title-divider", Static)
+            self._header_view = self.query_one("#connect-header", Static)
+            self._status_view = self.query_one("#connect-status", Static)
+            self._spinner_timer = self.set_interval(0.12, self._on_spinner_tick)
+            self._consume_task = asyncio.create_task(self._consume_statuses())
+            self._watch_task = asyncio.create_task(self._watch_connect_task())
+            self._render_title_divider()
+            self._render_statuses()
+
+        async def on_unmount(self) -> None:
+            if self._spinner_timer is not None:
+                self._spinner_timer.stop()
+                self._spinner_timer = None
+            if self._consume_task is not None:
+                if not self._consume_task.done():
+                    self._consume_task.cancel()
+                await asyncio.gather(self._consume_task, return_exceptions=True)
+                self._consume_task = None
+            if self._watch_task is not None:
+                if not self._watch_task.done():
+                    self._watch_task.cancel()
+                await asyncio.gather(self._watch_task, return_exceptions=True)
+                self._watch_task = None
+
+        async def action_cancel_connect(self) -> None:
+            if not self._connect_task.done():
+                self._connect_task.cancel()
+            self.exit()
+
+        async def _consume_statuses(self) -> None:
+            try:
+                while True:
+                    status, message = await self._status_queue.get()
+                    self._push_status(status=status, message=message)
+            except asyncio.CancelledError:
+                return
+
+        async def _watch_connect_task(self) -> None:
+            try:
+                await self._connect_task
+            except asyncio.CancelledError:
+                return
+            except Exception as ex:
+                self._connect_failed = True
+                self._push_status(status="error", message=str(ex))
+                await asyncio.sleep(0.75)
+            else:
+                self._connect_complete = True
+                await asyncio.sleep(0.2)
+            finally:
+                self.exit()
+
+        def _on_spinner_tick(self) -> None:
+            if self._connect_complete or self._connect_failed:
+                return
+            if len(self._spinner_frames) == 0:
+                return
+            self._spinner_frame = (self._spinner_frame + 1) % len(self._spinner_frames)
+            self._advance_title_divider_pulse()
+            self._advance_title_divider_pulse()
+            self._render_title_divider()
+            self._render_statuses()
+
+        def _title_divider_length(self) -> int:
+            available_width = max(self.size.width - 4, 1)
+            return max(8, int(round(available_width * 0.3)))
+
+        def _advance_title_divider_pulse(self) -> None:
+            divider_length = self._title_divider_length()
+            pulse_width = max(2, min(5, divider_length // 6))
+            max_position = max(0, divider_length - pulse_width)
+
+            next_position = self._divider_pulse_position + self._divider_pulse_direction
+            if next_position >= max_position:
+                self._divider_pulse_position = max_position
+                self._divider_pulse_direction = -1
+                return
+            if next_position <= 0:
+                self._divider_pulse_position = 0
+                self._divider_pulse_direction = 1
+                return
+
+            self._divider_pulse_position = next_position
+
+        def _render_title_divider(self) -> None:
+            if self._divider_view is None:
+                return
+
+            divider_length = self._title_divider_length()
+            pulse_width = max(2, min(5, divider_length // 6))
+            max_position = max(0, divider_length - pulse_width)
+            pulse_start = min(max(self._divider_pulse_position, 0), max_position)
+            pulse_end = min(divider_length, pulse_start + pulse_width)
+
+            divider_text = Text("─" * divider_length, style="bright_black", justify="center")
+            if pulse_end > pulse_start:
+                divider_text.stylize("bold green", pulse_start, pulse_end)
+            self._divider_view.update(divider_text)
+
+        def _push_status(self, *, status: str, message: str) -> None:
+            normalized_status = status.strip() if isinstance(status, str) else ""
+            normalized_message = message.strip() if isinstance(message, str) else ""
+            if normalized_message == "":
+                normalized_message = normalized_status.replace("_", " ").strip()
+            if normalized_message == "":
+                normalized_message = "connecting to room"
+
+            if len(self._statuses) > 0 and self._statuses[-1][0] == normalized_status:
+                self._statuses[-1] = (normalized_status, normalized_message)
+            else:
+                self._statuses.append((normalized_status, normalized_message))
+
+            if len(self._statuses) > 12:
+                self._statuses = self._statuses[-12:]
+            self._render_statuses()
+
+        def _render_statuses(self) -> None:
+            if self._header_view is None or self._status_view is None:
+                return
+
+            self._header_view.update(
+                Text(
+                    f"Connecting to room '{self._room_name}'...",
+                    style="bold",
+                    justify="center",
+                )
+            )
+
+            if len(self._statuses) == 0:
+                lines = Text(justify="center")
+                lines.append(f"{self._spinner_frames[self._spinner_frame]} ", style="cyan")
+                lines.append("connecting to room")
+                self._status_view.update(lines)
+                return
+
+            body = Text(justify="center")
+            last_index = len(self._statuses) - 1
+            for index, (status, message) in enumerate(self._statuses):
+                active = index == last_index and not self._connect_complete
+                prefix_style = "dim"
+                prefix = "• "
+                if index == last_index:
+                    if self._connect_failed:
+                        prefix = "✖ "
+                        prefix_style = "bold red"
+                    elif self._connect_complete:
+                        prefix = "✓ "
+                        prefix_style = "bold green"
+                    elif active:
+                        prefix = f"{self._spinner_frames[self._spinner_frame]} "
+                        prefix_style = "cyan"
+
+                body.append(prefix, style=prefix_style)
+                body.append(message)
+
+                status_label = status.replace("_", " ").strip()
+                if status_label != "" and status_label != message:
+                    body.append(f" ({status_label})", style="dim")
+
+                if index < last_index:
+                    body.append("\n")
+
+            self._status_view.update(body)
+
     class ChatWithTextualApp(App[None]):
         CSS = """
         Screen {
@@ -1981,8 +2228,8 @@ async def chat_with(
         }
         #input-prompt {
             width: 2;
-            height: 1;
-            content-align: center middle;
+            height: auto;
+            content-align: center top;
             color: $text-muted;
             background: #2f2f2f;
         }
@@ -1990,11 +2237,12 @@ async def chat_with(
             width: 1fr;
             height: 1;
             min-height: 1;
-            max-height: 1;
+            max-height: 6;
             border: none;
             outline: none;
             padding: 0;
             margin: 0;
+            color: white;
             background: #2f2f2f;
             background-tint: 0%;
         }
@@ -2003,10 +2251,20 @@ async def chat_with(
             background: #2f2f2f;
             background-tint: 0%;
         }
+        #chat-input .text-area--cursor-line {
+            background: #2f2f2f;
+        }
+        #chat-input .text-area--gutter {
+            background: #2f2f2f;
+        }
+        #chat-input .text-area--cursor-gutter {
+            background: #2f2f2f;
+        }
         """
 
         BINDINGS = [
             Binding("ctrl+c", "quit_app", "Quit", priority=True),
+            Binding("enter", "submit_chat_input", "Send", priority=True),
             Binding("escape", "cancel_turn", "Cancel"),
             Binding("ctrl+l", "clear_thread", "Clear thread"),
         ]
@@ -2024,6 +2282,8 @@ async def chat_with(
             self._local_user_name = local_user_name
             self._messages_view: Static | None = None
             self._messages_scroll: VerticalScroll | None = None
+            self._chat_input: TextArea | None = None
+            self._chat_input_height = 1
             self._doc_watch_task: asyncio.Task | None = None
             self._doc_changed = asyncio.Event()
             self._spinner_frames = (
@@ -2047,15 +2307,19 @@ async def chat_with(
                 yield Static("", id="messages")
             with Horizontal(id="input-row"):
                 yield Static(caret, id="input-prompt")
-                yield Input(
+                yield TextArea(
+                    "",
                     id="chat-input",
-                    placeholder="Type a message. Commands: /clear, /exit, /quit",
+                    soft_wrap=True,
+                    show_line_numbers=False,
                 )
 
         async def on_mount(self) -> None:
             self._messages_view = self.query_one("#messages", Static)
             self._messages_scroll = self.query_one("#messages-scroll", VerticalScroll)
-            self.query_one("#chat-input", Input).focus()
+            self._chat_input = self.query_one("#chat-input", TextArea)
+            self._chat_input.focus()
+            self._resize_chat_input(self._chat_input)
             self._bind_thread_document_events()
             self._spinner_timer = self.set_interval(0.12, self._on_spinner_tick)
             self._doc_watch_task = asyncio.create_task(self._watch_thread_document())
@@ -2100,9 +2364,13 @@ async def chat_with(
             self._spinner_frame = (self._spinner_frame + 1) % count
             self._render_from_thread_document()
 
-        async def on_input_submitted(self, event: Input.Submitted) -> None:
-            user_input = event.value.strip()
-            event.input.value = ""
+        async def action_submit_chat_input(self) -> None:
+            if self._chat_input is None or self.focused is not self._chat_input:
+                return
+
+            user_input = self._chat_input.text.strip()
+            self._chat_input.load_text("")
+            self._resize_chat_input(self._chat_input)
 
             if not user_input:
                 return
@@ -2119,6 +2387,20 @@ async def chat_with(
                 return
 
             await self._chat_client.send(text=user_input, tools=build_tools())
+
+        def on_text_area_changed(self, event: TextArea.Changed) -> None:
+            if self._chat_input is None or event.text_area is not self._chat_input:
+                return
+            self._resize_chat_input(event.text_area)
+
+        def _resize_chat_input(self, chat_input: TextArea) -> None:
+            target_height = max(1, min(6, chat_input.virtual_size.height))
+            if target_height == self._chat_input_height:
+                return
+            self._chat_input_height = target_height
+            chat_input.styles.height = target_height
+            # Reflow message area after input height changes to keep feed visible.
+            self._render_from_thread_document()
 
         def _bind_thread_document_events(self) -> None:
             doc = getattr(self._chat_client, "_doc", None)
@@ -2423,51 +2705,218 @@ async def chat_with(
                 text = f"{widget} via {renderer}"
             return Align.center(Panel(Text(text), border_style="blue", title="ui"))
 
-    account_client = await get_client()
-    try:
+    account_client = None
+    user_client: RoomClient | None = None
+    chat_client: ChatBotClient | None = None
+
+    def _queue_status(
+        status_queue: "asyncio.Queue[tuple[str, str]] | None", *, status: str, message: str
+    ) -> None:
+        if status_queue is None:
+            return
+        status_queue.put_nowait((status, message))
+
+    async def _close_chat_client(client: ChatBotClient | None) -> None:
+        if client is None:
+            return
+        try:
+            await client.__aexit__(None, None, None)
+        except Exception:
+            pass
+
+    async def _close_user_client(client: RoomClient | None) -> None:
+        if client is None:
+            return
+        try:
+            await client.__aexit__(None, None, None)
+        except Exception:
+            pass
+
+    async def _open_user_client(
+        *,
+        status_queue: "asyncio.Queue[tuple[str, str]] | None",
+    ) -> RoomClient:
+        nonlocal account_client
+
+        if account_client is None:
+            _queue_status(
+                status_queue,
+                status="initializing",
+                message="initializing account client",
+            )
+            account_client = await get_client()
+
+        _queue_status(
+            status_queue, status="starting_room", message="starting room"
+        )
         connection = await account_client.connect_room(project_id=project_id, room=room)
-        async with RoomClient(
+        _queue_status(
+            status_queue, status="connecting", message="connecting to room"
+        )
+
+        connecting_client = RoomClient(
             protocol=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=connection.jwt,
             ),
-        ) as user_client:
+        )
+
+        def _on_room_status(**kwargs) -> None:
+            status = kwargs.get("status", "")
+            message = kwargs.get("message", "")
+            if not isinstance(status, str):
+                status = str(status)
+            if not isinstance(message, str):
+                message = str(message)
+            _queue_status(status_queue, status=status, message=message)
+
+        connecting_client.on("room.status", _on_room_status)
+
+        try:
+            await connecting_client.__aenter__()
+        except asyncio.CancelledError:
+            try:
+                await connecting_client.__aexit__(None, None, None)
+            except Exception:
+                pass
+            raise
+        except Exception:
+            try:
+                await connecting_client.__aexit__(None, None, None)
+            except Exception:
+                pass
+            raise
+
+        _queue_status(status_queue, status="connected", message="connected to room")
+        return connecting_client
+
+    async def _prepare_chat_session(
+        *,
+        status_queue: "asyncio.Queue[tuple[str, str]] | None",
+    ) -> tuple[RoomClient, ChatBotClient, str]:
+        prepared_user_client = await _open_user_client(status_queue=status_queue)
+        prepared_chat_client: ChatBotClient | None = None
+        try:
+            _queue_status(
+                status_queue,
+                status="syncing",
+                message="initializing room state",
+            )
+            await prepared_user_client.messaging.enable()
+
+            local_user_name = prepared_user_client.local_participant.get_attribute("name")
+            resolved_thread_path = thread_path
+            if resolved_thread_path is None:
+                resolved_thread_path = (
+                    f".threads/{participant_name}/{local_user_name}.thread"
+                )
+
+            _queue_status(
+                status_queue,
+                status="opening_thread",
+                message="opening chat thread",
+            )
+            prepared_chat_client = ChatBotClient(
+                room=prepared_user_client,
+                participant_name=participant_name,
+                thread_path=resolved_thread_path,
+            )
+            await prepared_chat_client.__aenter__()
+
+            _queue_status(
+                status_queue,
+                status="starting_ui",
+                message="starting chat ui",
+            )
+            return prepared_user_client, prepared_chat_client, local_user_name
+        except asyncio.CancelledError:
+            await _close_chat_client(prepared_chat_client)
+            await _close_user_client(prepared_user_client)
+            raise
+        except Exception:
+            await _close_chat_client(prepared_chat_client)
+            await _close_user_client(prepared_user_client)
+            raise
+
+    try:
+        if message is None:
+            _suppress_textual_debug_features()
+            status_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+            connect_task = asyncio.create_task(
+                _prepare_chat_session(status_queue=status_queue)
+            )
+
+            connect_app = RoomConnectTextualApp(
+                room_name=room,
+                status_queue=status_queue,
+                connect_task=connect_task,
+            )
+            connect_token = active_app.set(connect_app)
+            try:
+                await connect_app.run_async()
+            except KeyboardInterrupt:
+                if not connect_task.done():
+                    connect_task.cancel()
+                await asyncio.gather(connect_task, return_exceptions=True)
+                return
+            finally:
+                active_app.reset(connect_token)
+
+            if not connect_task.done():
+                connect_task.cancel()
+                await asyncio.gather(connect_task, return_exceptions=True)
+                return
+
+            try:
+                user_client, chat_client, local_user_name = await connect_task
+            except asyncio.CancelledError:
+                return
+            except Exception as ex:
+                print(f"[bold red]Unable to connect to room: {ex}[/bold red]")
+                return
+
+            app = ChatWithTextualApp(
+                chat_client=chat_client,
+                participant_name=participant_name,
+                local_user_name=local_user_name,
+            )
+            token = active_app.set(app)
+            try:
+                await app.run_async()
+            except KeyboardInterrupt:
+                return
+            finally:
+                active_app.reset(token)
+        else:
+            user_client = await _open_user_client(status_queue=None)
             await user_client.messaging.enable()
 
             local_user_name = user_client.local_participant.get_attribute("name")
-            if thread_path is None:
-                thread_path = f".threads/{participant_name}/{local_user_name}.thread"
+            resolved_thread_path = thread_path
+            if resolved_thread_path is None:
+                resolved_thread_path = (
+                    f".threads/{participant_name}/{local_user_name}.thread"
+                )
 
-            async with ChatBotClient(
+            chat_client = ChatBotClient(
                 room=user_client,
                 participant_name=participant_name,
-                thread_path=thread_path,
-            ) as chat_client:
-                if message is not None:
-                    await chat_client.send(text=message, tools=build_tools())
-                    response = await chat_client.receive()
-                    print(response)
-                    return
-
-                _suppress_textual_debug_features()
-                app = ChatWithTextualApp(
-                    chat_client=chat_client,
-                    participant_name=participant_name,
-                    local_user_name=local_user_name,
-                )
-                token = active_app.set(app)
-                try:
-                    await app.run_async()
-                except KeyboardInterrupt:
-                    return
-                finally:
-                    active_app.reset(token)
+                thread_path=resolved_thread_path,
+            )
+            await chat_client.__aenter__()
+            await chat_client.send(text=message, tools=build_tools())
+            response = await chat_client.receive()
+            print(response)
+            return
 
     except asyncio.CancelledError:
         pass
 
     finally:
-        await account_client.close()
+        await _close_chat_client(chat_client)
+        await _close_user_client(user_client)
+        if account_client is not None:
+            await account_client.close()
 
 
 @app.async_command("run", help="Join a room, run the chatbot, and wait for messages.")
