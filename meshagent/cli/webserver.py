@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import builtins
+from contextlib import contextmanager
 from dataclasses import dataclass
 import importlib.util
 import inspect
@@ -56,6 +57,7 @@ DEFAULT_BIND_PORT = 8000
 ROUTES_FILE_MOUNT_DIR = "/meshagent/webserver-config"
 DEFAULT_WEBSITE_MOUNT_PATH = "/meshagent/webserver"
 EMPTY_DIR_MARKER_NAME = ".meshagent.keep"
+MESHAGENT_APP_DOMAIN_SUFFIX = ".meshagent.app"
 ROUTE_ADD_COMMANDS = [
     "meshagent webserver add --path / --python handlers/home.py",
     "meshagent webserver add --path /assets --static ./public",
@@ -75,8 +77,7 @@ LOCAL_BROWSER_USAGE_TEXT = """View the site from your local machine:
 Use the host/port from webserver.yaml (or explicit --host/--port or --web-host/--web-port overrides).
 """
 EXTERNAL_ACCESS_COMMANDS = [
-    "meshagent webserver deploy --service-name my-web --agent-name my-web --room my-room -f webserver.yaml",
-    "meshagent route create --room my-room --port 8000 --domain my-web.meshagent.app",
+    "meshagent webserver deploy --service-name my-web --agent-name my-web --room my-room -f webserver.yaml --domain my-web.meshagent.app",
 ]
 EXTERNAL_ACCESS_USAGE_TEXT = (
     """To make the site available outside your machine:
@@ -84,7 +85,10 @@ EXTERNAL_ACCESS_USAGE_TEXT = (
     + "\n".join(f"  {command}" for command in EXTERNAL_ACCESS_COMMANDS)
     + """
 
-You must configure a route that targets the same room and port as the deployed webserver.
+`--domain` automatically creates or updates the route to the deployed room and webserver port.
+If the domain already targets a different room, deploy fails to avoid accidental repoints.
+Without `--domain`, create the route manually:
+  meshagent route create --room my-room --port 8000 --domain my-web.meshagent.app
 """
 )
 WEBSERVER_USAGE_TEXT = "\n\n".join(
@@ -95,6 +99,12 @@ WEBSERVER_USAGE_TEXT = "\n\n".join(
         EXTERNAL_ACCESS_USAGE_TEXT.strip(),
     ]
 )
+ROUTE_SOURCE_USAGE_TEXT = """Route source path rules:
+- `python` and `static` sources that start with `/` resolve to `{cwd}/...`.
+- `python` and `static` sources without a leading `/` resolve relative to the routes file.
+- `static` supports both files and directories.
+- Set `--app-dir` to control Python import root (defaults to routes file directory).
+"""
 WEBSERVER_APP_HELP = f"""Run an HTTP webserver connected to a MeshAgent room.
 
 The webserver mounts static files/folders and python handlers from a routes file.
@@ -105,6 +115,8 @@ room's full feature set.
 Default routes file: webserver.yaml
 
 {WEBSERVER_USAGE_TEXT}
+
+{ROUTE_SOURCE_USAGE_TEXT}
 
 Example routes file:
 kind: WebServer
@@ -134,11 +146,18 @@ ROUTES_FILE_HELP = (
     "Path to routes file (default: webserver.yaml). "
     "YAML format: kind: WebServer, version: v1, host?, port?, routes: "
     "[{path, methods?, python?|static?}]. "
+    "Route source resolution: '/x' -> '{cwd}/x'; 'x' -> relative to routes file. "
+    "'static' supports files and directories. "
+    "Use --app-dir to control Python import root (defaults to routes file directory). "
     "When --host/--port (or --web-host/--web-port) are not explicitly set, "
     "host/port from the routes file are used. "
     "Python handler signature: "
     "handler(*, room: RoomClient, req: web.Request) -> web.StreamResponse. "
     "Do not define METHOD/METHODS in handler files."
+)
+APP_DIR_HELP = (
+    "Python import root for route handlers (similar to uvicorn --app-dir). "
+    "Defaults to the routes file directory."
 )
 PYTHON_HANDLER_TEMPLATE = """from aiohttp import web
 from meshagent.api import RoomClient
@@ -234,6 +253,54 @@ def _new_routes_config() -> WebServerConfig:
         port=DEFAULT_BIND_PORT,
         routes=[],
     )
+
+
+def _warn_if_non_meshagent_app_domain(domain: str) -> None:
+    if domain.strip().lower().endswith(MESHAGENT_APP_DOMAIN_SUFFIX):
+        return
+    print(
+        f"[yellow]Warning:[/] domain does not end with {MESHAGENT_APP_DOMAIN_SUFFIX}: {domain}"
+    )
+
+
+async def _upsert_domain_route(
+    *,
+    client: Any,
+    project_id: str,
+    domain: str,
+    room_name: str,
+    port: str,
+) -> None:
+    _warn_if_non_meshagent_app_domain(domain)
+    try:
+        await client.create_route(
+            project_id=project_id,
+            domain=domain,
+            room_name=room_name,
+            port=port,
+            annotations={},
+        )
+    except ConflictError:
+        existing = await client.get_route(project_id=project_id, domain=domain)
+        if existing.room_name != room_name:
+            raise typer.BadParameter(
+                f"--domain {domain} already routes to room {existing.room_name}. "
+                f"Refusing to change it to room {room_name}. "
+                "Use `meshagent route update` if you want to repoint it."
+            )
+        if existing.port == port:
+            print(f"[green]Route already configured:[/] {domain} -> {room_name}:{port}")
+            return
+        await client.update_route(
+            project_id=project_id,
+            domain=domain,
+            room_name=room_name,
+            port=port,
+            annotations=existing.annotations,
+        )
+        print(f"[green]Updated route:[/] {domain} -> {room_name}:{port}")
+    else:
+        print(f"[green]Created route:[/] {domain} -> {room_name}:{port}")
 
 
 T = TypeVar("T")
@@ -417,10 +484,46 @@ def _resolve_routes(
     return _load_routes_file(routes_file=routes_file)
 
 
-def _load_python_routes(routes: list[PythonRoute]) -> list[LoadedPythonRoute]:
+def _resolve_app_dir_path(*, routes_path: Path, app_dir: str | None) -> Path:
+    if app_dir is None:
+        resolved = routes_path.parent.resolve()
+    else:
+        candidate = Path(app_dir).expanduser()
+        if candidate.is_absolute():
+            resolved = candidate.resolve()
+        else:
+            resolved = (Path.cwd() / candidate).resolve()
+
+    if not resolved.exists():
+        raise typer.BadParameter(f"--app-dir was not found: {resolved}")
+    if not resolved.is_dir():
+        raise typer.BadParameter(f"--app-dir must be a directory: {resolved}")
+    return resolved
+
+
+@contextmanager
+def _with_app_dir_on_syspath(*, app_dir_path: Path):
+    app_dir_entry = str(app_dir_path)
+    inserted = False
+    if app_dir_entry not in sys.path:
+        sys.path.insert(0, app_dir_entry)
+        inserted = True
+    try:
+        yield
+    finally:
+        if inserted:
+            try:
+                sys.path.remove(app_dir_entry)
+            except ValueError:
+                pass
+
+
+def _load_python_routes(
+    routes: list[PythonRoute], *, app_dir_path: Path
+) -> list[LoadedPythonRoute]:
     loaded: list[LoadedPythonRoute] = []
     for route in routes:
-        handler = _load_python_handler(route.source)
+        handler = _load_python_handler(route.source, app_dir_path=app_dir_path)
         loaded.append(
             LoadedPythonRoute(
                 path=route.path,
@@ -432,7 +535,7 @@ def _load_python_routes(routes: list[PythonRoute]) -> list[LoadedPythonRoute]:
     return loaded
 
 
-def _load_python_handler(path: Path) -> Callable[..., Any]:
+def _load_python_handler(path: Path, *, app_dir_path: Path) -> Callable[..., Any]:
     if not path.exists():
         raise typer.BadParameter(f"Python route file not found: {path}")
     if path.suffix != ".py":
@@ -446,7 +549,8 @@ def _load_python_handler(path: Path) -> Callable[..., Any]:
         raise typer.BadParameter(f"Unable to import python route file: {path}")
 
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    with _with_app_dir_on_syspath(app_dir_path=app_dir_path):
+        spec.loader.exec_module(module)
 
     handler = getattr(module, "handler", None)
     if handler is None:
@@ -574,6 +678,7 @@ def _resolve_validated_routes(
     *,
     config: WebServerConfig,
     routes_path: Path,
+    app_dir_path: Path,
 ) -> tuple[list[StaticRoute], list[LoadedPythonRoute]]:
     static_routes, python_routes = _resolve_routes_config(
         config=config,
@@ -590,7 +695,10 @@ def _resolve_validated_routes(
                 f"File route path must be a file or directory: {route.source}"
             )
 
-    loaded_python_routes = _load_python_routes(python_routes)
+    loaded_python_routes = _load_python_routes(
+        python_routes,
+        app_dir_path=app_dir_path,
+    )
     return static_routes, loaded_python_routes
 
 
@@ -629,10 +737,16 @@ def _collect_mtimes(paths: list[Path]) -> dict[str, float | None]:
 def _validate_routes_file(
     *,
     routes_file: str,
+    app_dir: str | None,
 ) -> tuple[list[StaticRoute], list[LoadedPythonRoute]]:
     routes_path = _routes_file_path(routes_file)
+    app_dir_path = _resolve_app_dir_path(routes_path=routes_path, app_dir=app_dir)
     config = _load_routes_config_file(routes_path=routes_path)
-    return _resolve_validated_routes(config=config, routes_path=routes_path)
+    return _resolve_validated_routes(
+        config=config,
+        routes_path=routes_path,
+        app_dir_path=app_dir_path,
+    )
 
 
 def build_webserver(
@@ -642,8 +756,10 @@ def build_webserver(
     default_port: int,
     host_override: str | None,
     port_override: int | None,
+    app_dir: str | None,
 ) -> tuple[type[Any], str, int]:
     routes_path = _routes_file_path(routes_file)
+    app_dir_path = _resolve_app_dir_path(routes_path=routes_path, app_dir=app_dir)
     config = _load_routes_config_file(routes_path=routes_path)
     host, port = _resolve_web_bind(
         config=config,
@@ -656,6 +772,7 @@ def build_webserver(
     static_routes, loaded_python_routes = _resolve_validated_routes(
         config=config,
         routes_path=routes_path,
+        app_dir_path=app_dir_path,
     )
 
     class WebServer:
@@ -796,6 +913,12 @@ def _replace_routes_file_arg(*, args: list[str], mounted_routes_path: str) -> li
         if arg.startswith("--website-path="):
             i += 1
             continue
+        if arg == "--domain":
+            i += 2
+            continue
+        if arg.startswith("--domain="):
+            i += 1
+            continue
         if arg in {"-f", "--routes-file"}:
             replaced = True
             out.extend([arg, mounted_routes_path])
@@ -880,8 +1003,10 @@ def _collect_website_upload_files(
     include_routes_config: bool,
     website_mount_path: str = DEFAULT_WEBSITE_MOUNT_PATH,
     runtime_paths_relative_to_working_dir: bool = False,
+    app_dir: str | None = None,
 ) -> list[WebsiteUploadFile]:
     routes_path = _routes_file_path(routes_file)
+    app_dir_path = _resolve_app_dir_path(routes_path=routes_path, app_dir=app_dir)
     routes_root = routes_path.parent.resolve()
     source_config = _load_routes_config_file(routes_path=routes_path)
     local_config = source_config.model_copy(deep=True)
@@ -925,6 +1050,7 @@ def _collect_website_upload_files(
     static_routes, loaded_python_routes = _resolve_validated_routes(
         config=local_config,
         routes_path=routes_path,
+        app_dir_path=app_dir_path,
     )
 
     for route in static_routes:
@@ -1005,6 +1131,7 @@ async def _sync_website_files_to_room_storage(
     routes_file: str,
     website_subpath: str,
     include_routes_config: bool,
+    app_dir: str | None,
 ) -> None:
     website_mount_path = _website_mount_path(website_subpath=website_subpath)
     uploads = _collect_website_upload_files(
@@ -1012,6 +1139,7 @@ async def _sync_website_files_to_room_storage(
         include_routes_config=include_routes_config,
         website_mount_path=website_mount_path,
         runtime_paths_relative_to_working_dir=True,
+        app_dir=app_dir,
     )
     connection = await account_client.connect_room(
         project_id=project_id, room=room_name
@@ -1082,9 +1210,16 @@ async def check(
             help=ROUTES_FILE_HELP,
         ),
     ] = DEFAULT_ROUTES_FILE,
+    app_dir: Annotated[
+        Optional[str],
+        typer.Option("--app-dir", help=APP_DIR_HELP),
+    ] = None,
 ):
     """Validate a routes file and print the resolved routes."""
-    static_routes, python_routes = _validate_routes_file(routes_file=routes_file)
+    static_routes, python_routes = _validate_routes_file(
+        routes_file=routes_file,
+        app_dir=app_dir,
+    )
     routes_path = _routes_file_path(routes_file)
 
     print(f"[green]Routes file is valid:[/] {routes_path}")
@@ -1159,7 +1294,7 @@ async def add(
         Optional[str],
         typer.Option(
             "--static",
-            help="Static directory path (relative to routes file)",
+            help="Static file or directory path (relative to routes file)",
         ),
     ] = None,
     method: Annotated[
@@ -1268,6 +1403,10 @@ async def join(
             help=ROUTES_FILE_HELP,
         ),
     ] = DEFAULT_ROUTES_FILE,
+    app_dir: Annotated[
+        Optional[str],
+        typer.Option("--app-dir", help=APP_DIR_HELP),
+    ] = None,
     host: Annotated[
         str, typer.Option(help="Host to bind the server")
     ] = DEFAULT_LOCAL_BIND_HOST,
@@ -1318,6 +1457,7 @@ async def join(
             default_port=DEFAULT_BIND_PORT,
             host_override=host_override,
             port_override=port_override,
+            app_dir=app_dir,
         )
         server = WebServer()
         server_ref = {"server": server}
@@ -1343,6 +1483,7 @@ async def join(
                         default_port=DEFAULT_BIND_PORT,
                         host_override=host_override,
                         port_override=port_override,
+                        app_dir=app_dir,
                     )
                 except typer.BadParameter as exc:
                     print(f"[red]Failed to reload routes: {exc}[/red]")
@@ -1402,6 +1543,10 @@ async def service(
             help=ROUTES_FILE_HELP,
         ),
     ] = DEFAULT_ROUTES_FILE,
+    app_dir: Annotated[
+        Optional[str],
+        typer.Option("--app-dir", help=APP_DIR_HELP),
+    ] = None,
     web_host: Annotated[
         str, typer.Option(help="Host to bind the webserver")
     ] = DEFAULT_SERVICE_BIND_HOST,
@@ -1440,6 +1585,7 @@ async def service(
         default_port=DEFAULT_BIND_PORT,
         host_override=web_host_override,
         port_override=web_port_override,
+        app_dir=app_dir,
     )
     service.add_path(identity=agent_name, path=path, cls=WebServer)
 
@@ -1467,6 +1613,10 @@ async def spec(
             help=ROUTES_FILE_HELP,
         ),
     ] = DEFAULT_ROUTES_FILE,
+    app_dir: Annotated[
+        Optional[str],
+        typer.Option("--app-dir", help=APP_DIR_HELP),
+    ] = None,
     web_host: Annotated[
         str, typer.Option(help="Host to bind the webserver")
     ] = DEFAULT_SERVICE_BIND_HOST,
@@ -1524,6 +1674,7 @@ async def spec(
             default_port=DEFAULT_BIND_PORT,
             host_override=web_host_override,
             port_override=web_port_override,
+            app_dir=app_dir,
         )
     else:
         routes_path = _routes_file_path(routes_file)
@@ -1541,6 +1692,7 @@ async def spec(
             include_routes_config=True,
             website_mount_path=cast(str, website_mount_path),
             runtime_paths_relative_to_working_dir=True,
+            app_dir=app_dir,
         )
         WebServer = _spec_stub_webserver_class()
     service.add_path(identity=agent_name, path=path, cls=WebServer)
@@ -1602,6 +1754,10 @@ async def deploy(
             help=ROUTES_FILE_HELP,
         ),
     ] = DEFAULT_ROUTES_FILE,
+    app_dir: Annotated[
+        Optional[str],
+        typer.Option("--app-dir", help=APP_DIR_HELP),
+    ] = None,
     web_host: Annotated[
         str, typer.Option(help="Host to bind the webserver")
     ] = DEFAULT_SERVICE_BIND_HOST,
@@ -1622,6 +1778,13 @@ async def deploy(
         Optional[str],
         typer.Option("--room", help="The name of a room to create the service for"),
     ] = os.getenv("MESHAGENT_ROOM"),
+    domain: Annotated[
+        Optional[str],
+        typer.Option(
+            "--domain",
+            help="Domain to create/update route for this deploy (must already target this room if it exists)",
+        ),
+    ] = None,
     website_path: Annotated[
         Optional[str],
         typer.Option(
@@ -1632,6 +1795,14 @@ async def deploy(
 ):
     project_id = await resolve_project_id(project_id=project_id)
     room_name = resolve_room(room)
+    if domain is not None:
+        domain = domain.strip()
+        if domain == "":
+            raise typer.BadParameter("--domain must be a non-empty string")
+        if room_name is None:
+            raise typer.BadParameter(
+                "--domain requires --room (or MESHAGENT_ROOM) so the route can target a specific room"
+            )
 
     service = get_service(host=cast(str, host), port=cast(int, port))
 
@@ -1667,6 +1838,7 @@ async def deploy(
             default_port=DEFAULT_BIND_PORT,
             host_override=web_host_override,
             port_override=web_port_override,
+            app_dir=app_dir,
         )
     else:
         routes_path = _routes_file_path(routes_file)
@@ -1684,6 +1856,7 @@ async def deploy(
             include_routes_config=True,
             website_mount_path=cast(str, website_mount_path),
             runtime_paths_relative_to_working_dir=True,
+            app_dir=app_dir,
         )
         WebServer = _spec_stub_webserver_class()
     service.add_path(identity=agent_name, path=path, cls=WebServer)
@@ -1736,6 +1909,7 @@ async def deploy(
                 routes_file=routes_file,
                 website_subpath=website_subpath,
                 include_routes_config=True,
+                app_dir=app_dir,
             )
 
         id = None
@@ -1781,6 +1955,14 @@ async def deploy(
             raise typer.Exit(code=1)
         else:
             print(f"[green]Deployed service:[/] {id}")
+            if domain is not None:
+                await _upsert_domain_route(
+                    client=client,
+                    project_id=project_id,
+                    domain=domain,
+                    room_name=cast(str, room_name),
+                    port=str(resolved_web_port),
+                )
 
     finally:
         await client.close()

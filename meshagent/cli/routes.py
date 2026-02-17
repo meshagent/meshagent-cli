@@ -21,7 +21,7 @@ from meshagent.cli.helper import (
 )
 
 app = async_typer.AsyncTyper(help="Manage routes for your project")
-MESHAGENT_APP_DOMAIN_SUFFIX = ".meshagent.app"
+MESHAGENT_APP_DOMAIN_SUFFIX = os.getenv("MESAHGENT_APP_DOMAIN_SUFFIX", ".meshagent.app")
 
 
 def _parse_annotations(annotations: Optional[str]) -> Optional[dict[str, str]]:
