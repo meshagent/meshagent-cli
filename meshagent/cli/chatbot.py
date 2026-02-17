@@ -84,6 +84,7 @@ from meshagent.agents.adapter import MessageStreamLLMAdapter
 from meshagent.api import RequiredToolkit, RequiredSchema
 import logging
 import os.path
+import os
 
 from meshagent.api.specs.service import (
     AgentSpec,
@@ -99,6 +100,7 @@ import shlex
 import sys
 
 import asyncio
+from datetime import datetime, timezone
 
 
 from meshagent.api.client import ConflictError
@@ -1898,13 +1900,528 @@ async def chat_with(
     use_image_gen: bool = False,
     use_storage: bool = False,
 ):
-    from prompt_toolkit.shortcuts import PromptSession
-    from prompt_toolkit.key_binding import KeyBindings
     from meshagent.agents.chat import ChatBotClient
 
-    kb = KeyBindings()
+    try:
+        from textual._context import active_app
+        from textual.app import App, ComposeResult
+        from textual.binding import Binding
+        from textual.containers import Horizontal, VerticalScroll
+        from textual.widgets import Input, Static
+        from rich.align import Align
+        from rich.console import Group
+        from rich.console import RenderableType
+        from rich.markdown import Markdown
+        from rich.padding import Padding
+        from rich.panel import Panel
+        from rich.rule import Rule
+        from rich.table import Table
+        from rich.text import Text
+    except ImportError as exc:
+        print(
+            "[bold red]Textual is required for chatbot UI. Install meshagent-cli dependencies and retry.[/bold red]"
+        )
+        raise typer.Exit(1) from exc
 
-    session = PromptSession("> ", key_bindings=kb)
+    def build_tools() -> list[ToolkitConfig]:
+        tools: list[ToolkitConfig] = []
+        if use_web_search:
+            tools.append(WebSearchConfig())
+        elif use_image_gen:
+            tools.append(ImageGenerationConfig())
+        elif use_storage:
+            tools.append(StorageToolkitConfig())
+        return tools
+
+    def _suppress_textual_debug_features() -> None:
+        raw_features = os.environ.get("TEXTUAL")
+        if raw_features is None or raw_features.strip() == "":
+            return
+
+        parsed = [
+            value.strip() for value in raw_features.split(",") if value.strip() != ""
+        ]
+        if len(parsed) == 0:
+            return
+
+        filtered = [
+            value for value in parsed if value.lower() not in ("debug", "devtools")
+        ]
+        if len(filtered) == len(parsed):
+            return
+
+        if len(filtered) == 0:
+            os.environ.pop("TEXTUAL", None)
+        else:
+            os.environ["TEXTUAL"] = ",".join(filtered)
+
+    caret = "›"
+
+    class ChatWithTextualApp(App[None]):
+        CSS = """
+        Screen {
+            layout: grid;
+            grid-size: 1 2;
+            grid-rows: 1fr auto;
+            padding: 0;
+        }
+        #messages-scroll {
+            height: 1fr;
+            padding: 0;
+            align: left bottom;
+        }
+        #messages {
+            content-align: left bottom;
+            width: 100%;
+        }
+        #input-row {
+            margin: 0;
+            background: #2f2f2f;
+            padding: 1 0 1 0;
+        }
+        #input-prompt {
+            width: 2;
+            height: 1;
+            content-align: center middle;
+            color: $text-muted;
+            background: #2f2f2f;
+        }
+        #chat-input {
+            width: 1fr;
+            height: 1;
+            min-height: 1;
+            max-height: 1;
+            border: none;
+            outline: none;
+            padding: 0;
+            margin: 0;
+            background: #2f2f2f;
+            background-tint: 0%;
+        }
+        #chat-input:focus {
+            border: none;
+            background: #2f2f2f;
+            background-tint: 0%;
+        }
+        """
+
+        BINDINGS = [
+            Binding("ctrl+c", "quit_app", "Quit", priority=True),
+            Binding("escape", "cancel_turn", "Cancel"),
+            Binding("ctrl+l", "clear_thread", "Clear thread"),
+        ]
+
+        def __init__(
+            self,
+            *,
+            chat_client: ChatBotClient,
+            participant_name: str,
+            local_user_name: str,
+        ) -> None:
+            super().__init__()
+            self._chat_client = chat_client
+            self._participant_name = participant_name
+            self._local_user_name = local_user_name
+            self._messages_view: Static | None = None
+            self._messages_scroll: VerticalScroll | None = None
+            self._doc_watch_task: asyncio.Task | None = None
+            self._doc_changed = asyncio.Event()
+            self._spinner_frames = (
+                "⠋",
+                "⠙",
+                "⠹",
+                "⠸",
+                "⠼",
+                "⠴",
+                "⠦",
+                "⠧",
+                "⠇",
+                "⠏",
+            )
+            self._spinner_frame = 0
+            self._spinner_timer = None
+            self._has_active_events = False
+
+        def compose(self) -> ComposeResult:
+            with VerticalScroll(id="messages-scroll"):
+                yield Static("", id="messages")
+            with Horizontal(id="input-row"):
+                yield Static(caret, id="input-prompt")
+                yield Input(
+                    id="chat-input",
+                    placeholder="Type a message. Commands: /clear, /exit, /quit",
+                )
+
+        async def on_mount(self) -> None:
+            self._messages_view = self.query_one("#messages", Static)
+            self._messages_scroll = self.query_one("#messages-scroll", VerticalScroll)
+            self.query_one("#chat-input", Input).focus()
+            self._bind_thread_document_events()
+            self._spinner_timer = self.set_interval(0.12, self._on_spinner_tick)
+            self._doc_watch_task = asyncio.create_task(self._watch_thread_document())
+            self._doc_changed.set()
+
+        async def on_unmount(self) -> None:
+            self._stop_spinner_timer()
+            await self._stop_doc_watch_loop()
+
+        async def action_clear_thread(self) -> None:
+            await self._chat_client.clear()
+
+        async def action_cancel_turn(self) -> None:
+            await self._chat_client.cancel()
+
+        async def action_quit_app(self) -> None:
+            self._stop_spinner_timer()
+            await self._stop_doc_watch_loop()
+            self.exit()
+
+        def _stop_spinner_timer(self) -> None:
+            if self._spinner_timer is not None:
+                self._spinner_timer.stop()
+                self._spinner_timer = None
+
+        def _is_active_event_state(self, state: str) -> bool:
+            normalized = state.strip().lower()
+            return normalized in ("queued", "in_progress", "running", "pending")
+
+        def _event_spinner(self) -> str:
+            count = len(self._spinner_frames)
+            if count == 0:
+                return ""
+            return self._spinner_frames[self._spinner_frame % count]
+
+        def _on_spinner_tick(self) -> None:
+            if not self._has_active_events:
+                return
+            count = len(self._spinner_frames)
+            if count == 0:
+                return
+            self._spinner_frame = (self._spinner_frame + 1) % count
+            self._render_from_thread_document()
+
+        async def on_input_submitted(self, event: Input.Submitted) -> None:
+            user_input = event.value.strip()
+            event.input.value = ""
+
+            if not user_input:
+                return
+
+            if user_input in {"/exit", "/quit"}:
+                await self.action_quit_app()
+                return
+
+            if user_input == "/clear":
+                await self.action_clear_thread()
+                return
+            if user_input == "/cancel":
+                await self.action_cancel_turn()
+                return
+
+            await self._chat_client.send(text=user_input, tools=build_tools())
+
+        def _bind_thread_document_events(self) -> None:
+            doc = getattr(self._chat_client, "_doc", None)
+            if doc is None:
+                return
+
+            @doc.on("inserted")
+            def _on_inserted(_):
+                self._doc_changed.set()
+
+            @doc.on("updated")
+            def _on_updated(_, __):
+                self._doc_changed.set()
+
+            @doc.on("deleted")
+            def _on_deleted(_):
+                self._doc_changed.set()
+
+        async def _watch_thread_document(self) -> None:
+            try:
+                while True:
+                    await self._doc_changed.wait()
+                    self._doc_changed.clear()
+                    self._render_from_thread_document()
+            except asyncio.CancelledError:
+                return
+
+        async def _stop_doc_watch_loop(self) -> None:
+            if self._doc_watch_task is None:
+                return
+            if not self._doc_watch_task.done():
+                self._doc_watch_task.cancel()
+            await asyncio.gather(self._doc_watch_task, return_exceptions=True)
+            self._doc_watch_task = None
+
+        def _render_from_thread_document(self) -> None:
+            if self._messages_view is None:
+                return
+
+            doc = getattr(self._chat_client, "_doc", None)
+            if doc is None:
+                self._messages_view.update("")
+                return
+
+            message_nodes = doc.root.get_children_by_tag_name("messages")
+            if len(message_nodes) == 0:
+                self._messages_view.update("")
+                return
+
+            self._has_active_events = False
+            rendered_items: list[RenderableType] = []
+            for item in message_nodes[0].get_children():
+                for renderable in self._render_thread_item(item):
+                    rendered_items.append(renderable)
+
+            if len(rendered_items) == 0:
+                self._messages_view.update("")
+            else:
+                self._messages_view.update(Group(*rendered_items))
+
+            if self._messages_scroll is not None:
+                self._messages_scroll.scroll_end(animate=False)
+
+        def _render_thread_item(self, item) -> list[RenderableType]:
+            tag_name = getattr(item, "tag_name", None)
+            if tag_name == "message":
+                return [self._render_message_item(item)]
+            if tag_name == "event":
+                return [self._render_event_item(item)]
+            if tag_name == "reasoning":
+                summary = item.get_attribute("summary")
+                if not isinstance(summary, str) or summary.strip() == "":
+                    return []
+                return [self._render_reasoning_item(item)]
+            if tag_name == "exec":
+                return [self._render_exec_item(item)]
+            if tag_name == "ui":
+                return [self._render_ui_item(item)]
+            return []
+
+        def _render_message_item(self, item) -> RenderableType:
+            author = item.get_attribute("author_name") or "unknown"
+            text = item.get_attribute("text") or ""
+            relative_time = self._relative_time_label(item.get_attribute("created_at"))
+            sender_prefix = (
+                author if relative_time == "" else f"{author} ({relative_time})"
+            )
+            is_local = author == self._local_user_name
+            header_style = "bold white" if is_local else "bold"
+            body_style = "white" if is_local else ""
+            row_style = "on #3f3f3f" if is_local else ""
+
+            table = Table.grid(expand=True, padding=(0, 0))
+            table.add_column(width=2, no_wrap=True)
+            table.add_column(ratio=1)
+            table.add_column(width=2, no_wrap=True)
+
+            def add_message_row(
+                content: RenderableType, *, left_padding: str = "  "
+            ) -> None:
+                left = Text(left_padding, style=row_style if row_style != "" else "")
+                right = Text("  ", style=row_style if row_style != "" else "")
+                if row_style != "":
+                    table.add_row(left, content, right, style=row_style)
+                else:
+                    table.add_row(left, content, right)
+
+            # Top padding row for every message block.
+            add_message_row(Text(" "))
+
+            add_message_row(Text(sender_prefix, style=header_style))
+
+            markdown_text = text if text.strip() != "" else " "
+            add_message_row(Markdown(markdown_text), left_padding="  ")
+
+            for child in item.get_children():
+                if getattr(child, "tag_name", None) == "file":
+                    path = child.get_attribute("path")
+                    if path is not None and path != "":
+                        attachment_line = f"[attachment] {path}"
+                        if body_style != "":
+                            add_message_row(Text(attachment_line, style=body_style))
+                        else:
+                            add_message_row(Text(attachment_line, style="dim"))
+
+            # Bottom padding row for every message block.
+            add_message_row(Text(" "))
+
+            return table
+
+        def _relative_time_label(self, created_at: str | None) -> str:
+            if created_at is None or created_at == "":
+                return ""
+
+            try:
+                parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+            except Exception:
+                return ""
+
+            seconds = int((datetime.now(timezone.utc) - parsed).total_seconds())
+            if seconds < 0:
+                seconds = 0
+
+            if seconds < 10:
+                return "just now"
+            if seconds < 60:
+                return f"{seconds}s ago"
+
+            minutes = seconds // 60
+            if minutes < 60:
+                return f"{minutes}m ago"
+
+            hours = minutes // 60
+            if hours < 24:
+                return f"{hours}h ago"
+
+            days = hours // 24
+            if days < 7:
+                return f"{days}d ago"
+
+            weeks = days // 7
+            if weeks < 5:
+                return f"{weeks}w ago"
+
+            months = days // 30
+            if months < 12:
+                return f"{months}mo ago"
+
+            years = days // 365
+            return f"{years}y ago"
+
+        def _render_event_item(self, item) -> RenderableType:
+            kind = item.get_attribute("kind") or "event"
+            state = item.get_attribute("state") or "info"
+            active = self._is_active_event_state(state)
+            if active:
+                self._has_active_events = True
+            headline = (
+                item.get_attribute("headline")
+                or item.get_attribute("summary")
+                or item.get_attribute("name")
+                or ""
+            )
+            if not isinstance(headline, str):
+                headline = ""
+            headline = headline.strip()
+
+            summary = item.get_attribute("summary") or ""
+            if not isinstance(summary, str):
+                summary = ""
+            summary = summary.strip()
+
+            if headline == "":
+                headline = summary
+
+            if headline == "":
+                headline = "event"
+
+            if active:
+                headline_text = f"{self._event_spinner()} {headline}"
+            else:
+                headline_text = headline
+
+            table = Table.grid(expand=True, padding=(0, 0))
+            table.add_column(width=2, no_wrap=True)
+            table.add_column(ratio=1)
+            table.add_column(width=2, no_wrap=True)
+
+            # Top padding row.
+            table.add_row(Text("  "), Text(" "), Text("  "))
+            table.add_row(
+                Text("  "), Text(headline_text, style="bold magenta"), Text("  ")
+            )
+
+            if summary != "" and summary.casefold() != headline.casefold():
+                table.add_row(Text("  "), Text(summary, style="dim"), Text("  "))
+
+            detail_lines = self._event_detail_lines(item)
+            if len(detail_lines) > 0:
+                table.add_row(Text("  "), Text(" "), Text("  "))
+                for line in detail_lines:
+                    detail_text = Text("  ")
+                    detail_text.append_text(
+                        self._render_event_detail_line(kind=kind, line=line)
+                    )
+                    table.add_row(Text("  "), detail_text, Text("  "))
+                table.add_row(Text("  "), Text(" "), Text("  "))
+            # Bottom padding row.
+            table.add_row(Text("  "), Text(" "), Text("  "))
+
+            return table
+
+        def _event_detail_lines(self, item) -> list[str]:
+            details = item.get_attribute("details") or ""
+            if not isinstance(details, str) or details.strip() == "":
+                details = item.get_attribute("data") or ""
+            if not isinstance(details, str) or details.strip() == "":
+                return []
+            return details.splitlines()
+
+        def _render_event_detail_line(self, *, kind: str, line: str) -> Text:
+            if kind == "diff":
+                return self._render_diff_line(line)
+            return Text(line, style="dim")
+
+        def _render_diff_line(self, line: str) -> Text:
+            text = Text(line)
+            if line.startswith("@@"):
+                text.stylize("bold cyan")
+            elif line.startswith("+++ ") or line.startswith("--- "):
+                text.stylize("bold yellow")
+            elif line.startswith("+"):
+                text.stylize("green")
+            elif line.startswith("-"):
+                text.stylize("red")
+            elif line.startswith("diff ") or line.startswith("index "):
+                text.stylize("bold blue")
+            elif line.strip().startswith("```"):
+                text.stylize("dim")
+            return text
+
+        def _render_reasoning_item(self, item) -> RenderableType:
+            summary = item.get_attribute("summary") or ""
+            if not isinstance(summary, str):
+                summary = ""
+
+            markdown_text = summary if summary.strip() != "" else " "
+            return Group(
+                Text(" "),
+                Rule(style="bright_black"),
+                Text(" "),
+                Padding(Markdown(markdown_text), (0, 2)),
+                Text(" "),
+            )
+
+        def _render_exec_item(self, item) -> RenderableType:
+            command = item.get_attribute("command") or ""
+            outcome = item.get_attribute("outcome") or ""
+            stdout = item.get_attribute("stdout") or ""
+            stderr = item.get_attribute("stderr") or ""
+            parts = []
+            if command != "":
+                parts.append(f"$ {command}")
+            if outcome != "":
+                parts.append(f"outcome: {outcome}")
+            if stdout != "":
+                parts.append(stdout)
+            if stderr != "":
+                parts.append(stderr)
+            text = "\n".join(parts).strip() or "exec"
+            return Align.center(Panel(Text(text), border_style="yellow", title="exec"))
+
+        def _render_ui_item(self, item) -> RenderableType:
+            widget = item.get_attribute("widget") or "ui"
+            renderer = item.get_attribute("renderer") or "unknown"
+            data = item.get_attribute("data") or ""
+            if data != "":
+                text = f"{widget} via {renderer}\n{data}"
+            else:
+                text = f"{widget} via {renderer}"
+            return Align.center(Panel(Text(text), border_style="blue", title="ui"))
 
     account_client = await get_client()
     try:
@@ -1917,46 +2434,34 @@ async def chat_with(
         ) as user_client:
             await user_client.messaging.enable()
 
+            local_user_name = user_client.local_participant.get_attribute("name")
             if thread_path is None:
-                thread_path = f".threads/{participant_name}/{user_client.local_participant.get_attribute('name')}.thread"
+                thread_path = f".threads/{participant_name}/{local_user_name}.thread"
 
             async with ChatBotClient(
                 room=user_client,
                 participant_name=participant_name,
                 thread_path=thread_path,
             ) as chat_client:
+                if message is not None:
+                    await chat_client.send(text=message, tools=build_tools())
+                    response = await chat_client.receive()
+                    print(response)
+                    return
 
-                @kb.add("c-l")
-                def _(event):
-                    event.app.renderer.clear()
-                    asyncio.ensure_future(chat_client.clear())
-
-                while True:
-                    user_input = message or await session.prompt_async()
-
-                    if user_input == "/clear":
-                        await chat_client.clear()
-
-                    else:
-                        tools: list[ToolkitConfig] = []
-
-                        if use_web_search:
-                            tools.append(WebSearchConfig())
-
-                        elif use_image_gen:
-                            tools.append(ImageGenerationConfig())
-
-                        elif use_storage:
-                            tools.append(StorageToolkitConfig())
-
-                        await chat_client.send(text=user_input, tools=tools)
-
-                        response = await chat_client.receive()
-
-                        print(response)
-
-                    if message:
-                        break
+                _suppress_textual_debug_features()
+                app = ChatWithTextualApp(
+                    chat_client=chat_client,
+                    participant_name=participant_name,
+                    local_user_name=local_user_name,
+                )
+                token = active_app.set(app)
+                try:
+                    await app.run_async()
+                except KeyboardInterrupt:
+                    return
+                finally:
+                    active_app.reset(token)
 
     except asyncio.CancelledError:
         pass
@@ -2183,6 +2688,13 @@ async def run(
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            help="Enable verbose logging and disable default log suppression",
+        ),
+    ] = False,
     thread_path: Annotated[
         Optional[str],
         typer.Option(..., help="log all requests to the llm"),
@@ -2204,8 +2716,9 @@ async def run(
         typer.Option(..., help="request the storage tool"),
     ] = None,
 ):
-    root = logging.getLogger()
-    root.setLevel(logging.ERROR)
+    if not verbose:
+        root = logging.getLogger()
+        root.setLevel(logging.ERROR)
 
     if database_namespace is not None:
         database_namespace = database_namespace.split("::")

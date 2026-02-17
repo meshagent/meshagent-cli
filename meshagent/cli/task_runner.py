@@ -1088,6 +1088,13 @@ async def run(
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            help="Enable verbose logging and disable default log suppression",
+        ),
+    ] = False,
     with_caller: Annotated[
         bool,
         typer.Option(
@@ -1095,6 +1102,10 @@ async def run(
         ),
     ] = os.getenv("MESHAGENT_TOKEN") is None,
 ):
+    if not verbose:
+        root = logging.getLogger()
+        root.setLevel(logging.ERROR)
+
     key = await resolve_key(project_id=project_id, key=key)
     account_client = await get_client()
     try:

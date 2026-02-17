@@ -17,6 +17,7 @@ dependencies = [
   "pydantic-yaml~=1.5",
   "pathspec~=0.12.1",
   "rich~=14.3.0",
+  "textual>=0.50,<2.0",
   "prompt-toolkit~=3.0.52",
 ]
 

@@ -3,6 +3,7 @@ import os
 import shlex
 import json
 import sys
+import logging
 import yaml
 from pathlib import Path
 from typing import Annotated, List, Optional, Literal
@@ -2708,6 +2709,10 @@ async def chatbot_run(
 ):
     from meshagent.cli.chatbot import chat_with
 
+    if not verbose:
+        root = logging.getLogger()
+        root.setLevel(logging.ERROR)
+
     codex_image = _normalize_codex_image(codex_image)
     approval_policy, sandbox_policy = _resolve_codex_policies(
         mode=mode,
@@ -2995,6 +3000,10 @@ async def task_runner_run(
         ),
     ] = os.getenv("MESHAGENT_TOKEN") is None,
 ):
+    if not verbose:
+        root = logging.getLogger()
+        root.setLevel(logging.ERROR)
+
     codex_image = _normalize_codex_image(codex_image)
     approval_policy, sandbox_policy = _resolve_codex_policies(
         mode=mode,
