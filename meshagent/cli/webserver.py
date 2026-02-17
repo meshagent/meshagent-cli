@@ -33,7 +33,6 @@ from meshagent.api.specs.service import (
     AgentSpec,
     ANNOTATION_AGENT_TYPE,
     ContainerMountSpec,
-    FileStorageMountSpec,
     PortSpec,
     RoomStorageMountSpec,
     ServiceSpec,
@@ -54,8 +53,7 @@ DEFAULT_ROUTES_FILE = "webserver.yaml"
 DEFAULT_LOCAL_BIND_HOST = "127.0.0.1"
 DEFAULT_SERVICE_BIND_HOST = "0.0.0.0"
 DEFAULT_BIND_PORT = 8000
-ROUTES_FILE_MOUNT_DIR = "/meshagent/webserver-config"
-DEFAULT_WEBSITE_MOUNT_PATH = "/meshagent/webserver"
+DEFAULT_WEBSITE_MOUNT_PATH = "/website"
 EMPTY_DIR_MARKER_NAME = ".meshagent.keep"
 MESHAGENT_APP_DOMAIN_SUFFIX = ".meshagent.app"
 ROUTE_ADD_COMMANDS = [
@@ -77,7 +75,7 @@ LOCAL_BROWSER_USAGE_TEXT = """View the site from your local machine:
 Use the host/port from webserver.yaml (or explicit --host/--port or --web-host/--web-port overrides).
 """
 EXTERNAL_ACCESS_COMMANDS = [
-    "meshagent webserver deploy --service-name my-web --agent-name my-web --room my-room -f webserver.yaml --domain my-web.meshagent.app",
+    "meshagent webserver deploy --service-name my-web --agent-name my-web --room my-room -f webserver.yaml --website-path /website --domain my-web.meshagent.app",
 ]
 EXTERNAL_ACCESS_USAGE_TEXT = (
     """To make the site available outside your machine:
@@ -346,7 +344,7 @@ def _resolve_routes_config(
     static_routes: list[StaticRoute] = []
     python_routes: list[PythonRoute] = []
     for index, route in enumerate(config.routes):
-        source_label = f"-f/--routes-file {routes_path} routes[{index}]"
+        source_label = f"-f {routes_path} routes[{index}]"
         route_path = route.path.strip()
         if not route_path.startswith("/"):
             raise typer.BadParameter(
@@ -565,7 +563,7 @@ def _load_python_handler(path: Path, *, app_dir_path: Path) -> Callable[..., Any
 
     if hasattr(module, "METHODS") or hasattr(module, "METHOD"):
         raise typer.BadParameter(
-            f"Python route file must not define METHOD/METHODS; configure methods in -f/--routes-file instead: {path}"
+            f"Python route file must not define METHOD/METHODS; configure methods in -f instead: {path}"
         )
 
     return cast(Callable[..., Any], handler)
@@ -603,13 +601,13 @@ def _validate_python_handler_file(path: Path) -> None:
                 name = _assigned_name(target)
                 if name in {"METHOD", "METHODS"}:
                     raise typer.BadParameter(
-                        f"Python route file must not define METHOD/METHODS; configure methods in -f/--routes-file instead: {path}"
+                        f"Python route file must not define METHOD/METHODS; configure methods in -f instead: {path}"
                     )
         if isinstance(node, ast.AnnAssign):
             name = _assigned_name(node.target)
             if name in {"METHOD", "METHODS"}:
                 raise typer.BadParameter(
-                    f"Python route file must not define METHOD/METHODS; configure methods in -f/--routes-file instead: {path}"
+                    f"Python route file must not define METHOD/METHODS; configure methods in -f instead: {path}"
                 )
 
     handler_node: ast.FunctionDef | ast.AsyncFunctionDef | None = None
@@ -652,7 +650,7 @@ def _resolve_web_bind(
     host_override: str | None,
     port_override: int | None,
 ) -> tuple[str, int]:
-    source = f"-f/--routes-file {routes_path}"
+    source = f"-f {routes_path}"
 
     host = host_override
     if host is None:
@@ -858,47 +856,12 @@ def _set_port_spec(spec, *, web_port: int) -> None:
     ]
 
 
-def _build_routes_file_mount(*, routes_file: str) -> tuple[str, FileStorageMountSpec]:
-    routes_path = _routes_file_path(routes_file)
-    try:
-        routes_text = routes_path.read_text()
-    except OSError as exc:
-        raise typer.BadParameter(
-            f"Unable to read routes file for spec/deploy mount: {routes_path} ({exc})"
-        ) from exc
-
-    mounted_routes_path = f"{ROUTES_FILE_MOUNT_DIR}/{routes_path.name}"
-    return (
-        mounted_routes_path,
-        FileStorageMountSpec(
-            path=mounted_routes_path, text=routes_text, read_only=True
-        ),
-    )
-
-
 def _website_config_relative_path(*, routes_file: str) -> str:
     return _routes_file_path(routes_file).name
 
 
 def _website_mount_path(*, website_subpath: str) -> str:
     return str(PurePosixPath("/").joinpath(website_subpath))
-
-
-def _attach_routes_file_mount(*, spec: ServiceSpec, routes_file: str) -> str:
-    if spec.container is None:
-        raise typer.BadParameter("Service spec is missing container configuration")
-
-    mounted_routes_path, mount = _build_routes_file_mount(routes_file=routes_file)
-    if spec.container.storage is None:
-        spec.container.storage = ContainerMountSpec(files=[mount])
-        return mounted_routes_path
-
-    existing_files = spec.container.storage.files or []
-    spec.container.storage.files = [
-        *[file for file in existing_files if file.path != mounted_routes_path],
-        mount,
-    ]
-    return mounted_routes_path
 
 
 def _replace_routes_file_arg(*, args: list[str], mounted_routes_path: str) -> list[str]:
@@ -919,15 +882,10 @@ def _replace_routes_file_arg(*, args: list[str], mounted_routes_path: str) -> li
         if arg.startswith("--domain="):
             i += 1
             continue
-        if arg in {"-f", "--routes-file"}:
+        if arg == "-f":
             replaced = True
             out.extend([arg, mounted_routes_path])
             i += 2
-            continue
-        if arg.startswith("--routes-file="):
-            replaced = True
-            out.append(f"--routes-file={mounted_routes_path}")
-            i += 1
             continue
         out.append(arg)
         i += 1
@@ -1015,7 +973,7 @@ def _collect_website_upload_files(
     static_source_roots: dict[str, str] = {}
 
     for index, route in enumerate(source_config.routes):
-        source_prefix = f"-f/--routes-file {routes_path} routes[{index}]"
+        source_prefix = f"-f {routes_path} routes[{index}]"
         runtime_target = runtime_config.routes[index]
 
         if route.python is not None:
@@ -1206,7 +1164,6 @@ async def check(
         str,
         typer.Option(
             "-f",
-            "--routes-file",
             help=ROUTES_FILE_HELP,
         ),
     ] = DEFAULT_ROUTES_FILE,
@@ -1241,7 +1198,6 @@ async def init(
         str,
         typer.Option(
             "-f",
-            "--routes-file",
             help=ROUTES_FILE_HELP,
         ),
     ] = DEFAULT_ROUTES_FILE,
@@ -1309,7 +1265,6 @@ async def add(
         str,
         typer.Option(
             "-f",
-            "--routes-file",
             help=ROUTES_FILE_HELP,
         ),
     ] = DEFAULT_ROUTES_FILE,
@@ -1399,7 +1354,6 @@ async def join(
         str,
         typer.Option(
             "-f",
-            "--routes-file",
             help=ROUTES_FILE_HELP,
         ),
     ] = DEFAULT_ROUTES_FILE,
@@ -1548,7 +1502,6 @@ async def spec(
         str,
         typer.Option(
             "-f",
-            "--routes-file",
             help=ROUTES_FILE_HELP,
         ),
     ] = DEFAULT_ROUTES_FILE,
@@ -1572,12 +1525,12 @@ async def spec(
         Optional[str], typer.Option(help="HTTP path to mount the service at")
     ] = None,
     website_path: Annotated[
-        Optional[str],
+        str,
         typer.Option(
             "--website-path",
-            help="Room storage subpath for route-referenced files (under the routes file directory) and the routes config file; adds a room storage mount so routes resolve in container",
+            help="Required room storage subpath for route-referenced files (under the routes file directory) and the routes config file; adds a room storage mount so routes resolve in container (example: /website)",
         ),
-    ] = None,
+    ],
 ):
     """Generate a service spec for deploying this webserver configuration."""
     service = get_service(host=cast(str, host), port=cast(int, port))
@@ -1596,63 +1549,40 @@ async def spec(
     web_host_override = _cli_override_or_none(value=web_host, option_name="web_host")
     web_port_override = _cli_override_or_none(value=web_port, option_name="web_port")
 
-    website_subpath = (
-        _normalize_website_subpath(website_path=website_path)
-        if website_path is not None
-        else None
-    )
-    website_mount_path = (
-        _website_mount_path(website_subpath=website_subpath)
-        if website_subpath is not None
-        else None
-    )
+    website_subpath = _normalize_website_subpath(website_path=website_path)
+    website_mount_path = _website_mount_path(website_subpath=website_subpath)
 
-    if website_path is None:
-        WebServer, _, resolved_web_port = build_webserver(
-            routes_file=routes_file,
-            default_host=DEFAULT_SERVICE_BIND_HOST,
-            default_port=DEFAULT_BIND_PORT,
-            host_override=web_host_override,
-            port_override=web_port_override,
-            app_dir=app_dir,
-        )
-    else:
-        routes_path = _routes_file_path(routes_file)
-        config = _load_routes_config_file(routes_path=routes_path)
-        _, resolved_web_port = _resolve_web_bind(
-            config=config,
-            routes_path=routes_path,
-            default_host=DEFAULT_SERVICE_BIND_HOST,
-            default_port=DEFAULT_BIND_PORT,
-            host_override=web_host_override,
-            port_override=web_port_override,
-        )
-        _collect_website_upload_files(
-            routes_file=routes_file,
-            include_routes_config=True,
-            website_mount_path=cast(str, website_mount_path),
-            runtime_paths_relative_to_working_dir=True,
-            app_dir=app_dir,
-        )
-        WebServer = _spec_stub_webserver_class()
+    routes_path = _routes_file_path(routes_file)
+    config = _load_routes_config_file(routes_path=routes_path)
+    _, resolved_web_port = _resolve_web_bind(
+        config=config,
+        routes_path=routes_path,
+        default_host=DEFAULT_SERVICE_BIND_HOST,
+        default_port=DEFAULT_BIND_PORT,
+        host_override=web_host_override,
+        port_override=web_port_override,
+    )
+    _collect_website_upload_files(
+        routes_file=routes_file,
+        include_routes_config=True,
+        website_mount_path=website_mount_path,
+        runtime_paths_relative_to_working_dir=True,
+        app_dir=app_dir,
+    )
+    WebServer = _spec_stub_webserver_class()
     service.add_path(identity=agent_name, path=path, cls=WebServer)
 
     spec = service_specs()[0]
     _set_port_spec(spec, web_port=resolved_web_port)
-    if website_path is not None:
-        _attach_website_storage_mount(
-            spec=spec,
-            website_subpath=cast(str, website_subpath),
-            website_mount_path=cast(str, website_mount_path),
-        )
-        if spec.container is None:
-            raise typer.BadParameter("Service spec is missing container configuration")
-        spec.container.working_dir = cast(str, website_mount_path)
-        mounted_routes_path = _website_config_relative_path(routes_file=routes_file)
-    else:
-        mounted_routes_path = _attach_routes_file_mount(
-            spec=spec, routes_file=routes_file
-        )
+    _attach_website_storage_mount(
+        spec=spec,
+        website_subpath=website_subpath,
+        website_mount_path=website_mount_path,
+    )
+    if spec.container is None:
+        raise typer.BadParameter("Service spec is missing container configuration")
+    spec.container.working_dir = website_mount_path
+    mounted_routes_path = _website_config_relative_path(routes_file=routes_file)
     spec.metadata.annotations = {
         "meshagent.service.id": service_name,
     }
@@ -1690,7 +1620,6 @@ async def deploy(
         str,
         typer.Option(
             "-f",
-            "--routes-file",
             help=ROUTES_FILE_HELP,
         ),
     ] = DEFAULT_ROUTES_FILE,
@@ -1726,12 +1655,12 @@ async def deploy(
         ),
     ] = None,
     website_path: Annotated[
-        Optional[str],
+        str,
         typer.Option(
             "--website-path",
-            help="Room storage subpath to upload route-referenced files (under the routes file directory) and the routes config file into and mount at runtime",
+            help="Required room storage subpath to upload route-referenced files (under the routes file directory) and the routes config file into and mount at runtime (example: /website)",
         ),
-    ] = None,
+    ],
 ):
     """Deploy this webserver as a service, updating an existing service with the same name."""
     project_id = await resolve_project_id(project_id=project_id)
@@ -1761,63 +1690,40 @@ async def deploy(
     web_host_override = _cli_override_or_none(value=web_host, option_name="web_host")
     web_port_override = _cli_override_or_none(value=web_port, option_name="web_port")
 
-    website_subpath = (
-        _normalize_website_subpath(website_path=website_path)
-        if website_path is not None
-        else None
-    )
-    website_mount_path = (
-        _website_mount_path(website_subpath=website_subpath)
-        if website_subpath is not None
-        else None
-    )
+    website_subpath = _normalize_website_subpath(website_path=website_path)
+    website_mount_path = _website_mount_path(website_subpath=website_subpath)
 
-    if website_path is None:
-        WebServer, _, resolved_web_port = build_webserver(
-            routes_file=routes_file,
-            default_host=DEFAULT_SERVICE_BIND_HOST,
-            default_port=DEFAULT_BIND_PORT,
-            host_override=web_host_override,
-            port_override=web_port_override,
-            app_dir=app_dir,
-        )
-    else:
-        routes_path = _routes_file_path(routes_file)
-        config = _load_routes_config_file(routes_path=routes_path)
-        _, resolved_web_port = _resolve_web_bind(
-            config=config,
-            routes_path=routes_path,
-            default_host=DEFAULT_SERVICE_BIND_HOST,
-            default_port=DEFAULT_BIND_PORT,
-            host_override=web_host_override,
-            port_override=web_port_override,
-        )
-        _collect_website_upload_files(
-            routes_file=routes_file,
-            include_routes_config=True,
-            website_mount_path=cast(str, website_mount_path),
-            runtime_paths_relative_to_working_dir=True,
-            app_dir=app_dir,
-        )
-        WebServer = _spec_stub_webserver_class()
+    routes_path = _routes_file_path(routes_file)
+    config = _load_routes_config_file(routes_path=routes_path)
+    _, resolved_web_port = _resolve_web_bind(
+        config=config,
+        routes_path=routes_path,
+        default_host=DEFAULT_SERVICE_BIND_HOST,
+        default_port=DEFAULT_BIND_PORT,
+        host_override=web_host_override,
+        port_override=web_port_override,
+    )
+    _collect_website_upload_files(
+        routes_file=routes_file,
+        include_routes_config=True,
+        website_mount_path=website_mount_path,
+        runtime_paths_relative_to_working_dir=True,
+        app_dir=app_dir,
+    )
+    WebServer = _spec_stub_webserver_class()
     service.add_path(identity=agent_name, path=path, cls=WebServer)
 
     spec = service_specs()[0]
     _set_port_spec(spec, web_port=resolved_web_port)
-    if website_path is not None:
-        _attach_website_storage_mount(
-            spec=spec,
-            website_subpath=cast(str, website_subpath),
-            website_mount_path=cast(str, website_mount_path),
-        )
-        if spec.container is None:
-            raise typer.BadParameter("Service spec is missing container configuration")
-        spec.container.working_dir = cast(str, website_mount_path)
-        mounted_routes_path = _website_config_relative_path(routes_file=routes_file)
-    else:
-        mounted_routes_path = _attach_routes_file_mount(
-            spec=spec, routes_file=routes_file
-        )
+    _attach_website_storage_mount(
+        spec=spec,
+        website_subpath=website_subpath,
+        website_mount_path=website_mount_path,
+    )
+    if spec.container is None:
+        raise typer.BadParameter("Service spec is missing container configuration")
+    spec.container.working_dir = website_mount_path
+    mounted_routes_path = _website_config_relative_path(routes_file=routes_file)
     spec.metadata.annotations = {
         "meshagent.service.id": service_name,
     }
@@ -1838,20 +1744,19 @@ async def deploy(
 
     client = await get_client()
     try:
-        if website_subpath is not None:
-            if room_name is None:
-                raise typer.BadParameter(
-                    "--website-path requires --room (or MESHAGENT_ROOM) so files can be uploaded to room storage"
-                )
-            await _sync_website_files_to_room_storage(
-                account_client=client,
-                project_id=project_id,
-                room_name=room_name,
-                routes_file=routes_file,
-                website_subpath=website_subpath,
-                include_routes_config=True,
-                app_dir=app_dir,
+        if room_name is None:
+            raise typer.BadParameter(
+                "--website-path requires --room (or MESHAGENT_ROOM) so files can be uploaded to room storage"
             )
+        await _sync_website_files_to_room_storage(
+            account_client=client,
+            project_id=project_id,
+            room_name=room_name,
+            routes_file=routes_file,
+            website_subpath=website_subpath,
+            include_routes_config=True,
+            app_dir=app_dir,
+        )
 
         id = None
         try:
