@@ -183,7 +183,7 @@ def build_mailbot(
     reply_all: bool,
     database_namespace: Optional[list[str]] = None,
     enable_attachments: bool,
-    working_directory: Optional[str] = None,
+    working_dir: Optional[str] = None,
     skill_dirs: Optional[list[str]] = None,
     shell_image: Optional[str] = None,
     llm_participant: Optional[str] = None,
@@ -312,7 +312,7 @@ def build_mailbot(
             if require_shell:
                 if is_openai:
                     shell_kwargs = {
-                        "working_directory": working_directory,
+                        "working_dir": working_dir,
                         "config": ShellConfig(name="shell"),
                         "image": shell_image or "python:3.13",
                         "env": env,
@@ -388,7 +388,7 @@ def build_mailbot(
             if local_shell:
                 thread_toolkit.tools.append(
                     LocalShellTool(
-                        working_directory=working_directory,
+                        working_dir=working_dir,
                         config=LocalShellConfig(name="local_shell"),
                     )
                 )
@@ -661,7 +661,7 @@ async def join(
     enable_attachments: Annotated[
         bool, typer.Option(help="Allow downloading and processing email attachments")
     ] = False,
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
@@ -762,7 +762,7 @@ async def join(
             reply_all=reply_all,
             database_namespace=database_namespace,
             enable_attachments=enable_attachments,
-            working_directory=working_directory,
+            working_dir=working_dir,
             skill_dirs=skill_dir,
             shell_image=shell_image,
             llm_participant=llm_participant,
@@ -968,7 +968,7 @@ async def service(
     enable_attachments: Annotated[
         bool, typer.Option(help="Allow downloading and processing email attachments")
     ] = False,
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
@@ -1050,7 +1050,7 @@ async def service(
             reply_all=reply_all,
             database_namespace=database_namespace,
             enable_attachments=enable_attachments,
-            working_directory=working_directory,
+            working_dir=working_dir,
             skill_dirs=skill_dir,
             shell_image=shell_image,
             llm_participant=llm_participant,
@@ -1243,7 +1243,7 @@ async def spec(
     enable_attachments: Annotated[
         bool, typer.Option(help="Allow downloading and processing email attachments")
     ] = False,
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
@@ -1325,7 +1325,7 @@ async def spec(
             reply_all=reply_all,
             database_namespace=database_namespace,
             enable_attachments=enable_attachments,
-            working_directory=working_directory,
+            working_dir=working_dir,
             skill_dirs=skill_dir,
             shell_image=shell_image,
             llm_participant=llm_participant,
@@ -1529,7 +1529,7 @@ async def deploy(
     enable_attachments: Annotated[
         bool, typer.Option(help="Allow downloading and processing email attachments")
     ] = False,
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
@@ -1618,7 +1618,7 @@ async def deploy(
             reply_all=reply_all,
             database_namespace=database_namespace,
             enable_attachments=enable_attachments,
-            working_directory=working_directory,
+            working_dir=working_dir,
             skill_dirs=skill_dir,
             shell_image=shell_image,
             llm_participant=llm_participant,

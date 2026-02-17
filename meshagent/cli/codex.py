@@ -440,7 +440,7 @@ def build_codex_chatbot(
     ws_url: Optional[str] = None,
     codex_image: Optional[str] = None,
     codex_mounts: Optional[ContainerMountSpec] = None,
-    working_directory: Optional[str] = None,
+    working_dir: Optional[str] = None,
     approval_policy: Optional[str] = None,
     sandbox_policy: Optional[str] = None,
     app_server_env: Optional[dict[str, str]] = None,
@@ -478,7 +478,7 @@ def build_codex_chatbot(
                 ws_url=ws_url,
                 image=codex_image,
                 mounts=codex_mounts,
-                cwd=working_directory,
+                cwd=working_dir,
                 approval_policy=approval_policy,
                 sandbox_policy=sandbox_policy,
                 app_server_env=app_server_env,
@@ -584,7 +584,7 @@ def build_codex_task_runner(
     ws_url: Optional[str] = None,
     codex_image: Optional[str] = None,
     codex_mounts: Optional[ContainerMountSpec] = None,
-    working_directory: Optional[str] = None,
+    working_dir: Optional[str] = None,
     approval_policy: Optional[str] = None,
     sandbox_policy: Optional[str] = None,
     app_server_env: Optional[dict[str, str]] = None,
@@ -623,7 +623,7 @@ def build_codex_task_runner(
                 ws_url=ws_url,
                 image=codex_image,
                 mounts=codex_mounts,
-                cwd=working_directory,
+                cwd=working_dir,
                 approval_policy=approval_policy,
                 sandbox_policy=sandbox_policy,
                 app_server_env=app_server_env,
@@ -714,7 +714,7 @@ def build_codex_worker(
     ws_url: Optional[str] = None,
     codex_image: Optional[str] = None,
     codex_mounts: Optional[ContainerMountSpec] = None,
-    working_directory: Optional[str] = None,
+    working_dir: Optional[str] = None,
     approval_policy: Optional[str] = None,
     sandbox_policy: Optional[str] = None,
     app_server_env: Optional[dict[str, str]] = None,
@@ -755,7 +755,7 @@ def build_codex_worker(
                 ws_url=ws_url,
                 image=codex_image,
                 mounts=codex_mounts,
-                cwd=working_directory,
+                cwd=working_dir,
                 approval_policy=approval_policy,
                 sandbox_policy=sandbox_policy,
                 app_server_env=app_server_env,
@@ -898,7 +898,7 @@ async def chatbot_join(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="Working directory passed to codex app-server"),
     ] = None,
@@ -997,7 +997,7 @@ async def chatbot_join(
             ws_url=ws_url,
             codex_image=codex_image,
             codex_mounts=codex_mounts,
-            working_directory=working_directory,
+            working_dir=working_dir,
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
@@ -1123,7 +1123,7 @@ async def task_runner_join(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="Working directory passed to codex app-server"),
     ] = None,
@@ -1225,7 +1225,7 @@ async def task_runner_join(
             ws_url=ws_url,
             codex_image=codex_image,
             codex_mounts=codex_mounts,
-            working_directory=working_directory,
+            working_dir=working_dir,
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
@@ -1332,7 +1332,7 @@ async def chatbot_service(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="Working directory passed to codex app-server"),
     ] = None,
@@ -1421,7 +1421,7 @@ async def chatbot_service(
             ws_url=ws_url,
             codex_image=codex_image,
             codex_mounts=codex_mounts,
-            working_directory=working_directory,
+            working_dir=working_dir,
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
@@ -1518,7 +1518,7 @@ async def chatbot_spec(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="Working directory passed to codex app-server"),
     ] = None,
@@ -1608,7 +1608,7 @@ async def chatbot_spec(
             ws_url=ws_url,
             codex_image=codex_image,
             codex_mounts=codex_mounts,
-            working_directory=working_directory,
+            working_dir=working_dir,
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
@@ -1720,7 +1720,7 @@ async def chatbot_deploy(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="Working directory passed to codex app-server"),
     ] = None,
@@ -1812,7 +1812,7 @@ async def chatbot_deploy(
             ws_url=ws_url,
             codex_image=codex_image,
             codex_mounts=codex_mounts,
-            working_directory=working_directory,
+            working_dir=working_dir,
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
@@ -1944,7 +1944,7 @@ async def worker_join(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="Working directory passed to codex app-server"),
     ] = None,
@@ -2048,7 +2048,7 @@ async def worker_join(
             ws_url=ws_url,
             codex_image=codex_image,
             codex_mounts=codex_mounts,
-            working_directory=working_directory,
+            working_dir=working_dir,
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
@@ -2167,7 +2167,7 @@ async def worker_service(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="Working directory passed to codex app-server"),
     ] = None,
@@ -2259,7 +2259,7 @@ async def worker_service(
             ws_url=ws_url,
             codex_image=codex_image,
             codex_mounts=codex_mounts,
-            working_directory=working_directory,
+            working_dir=working_dir,
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
@@ -2367,7 +2367,7 @@ async def worker_spec(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="Working directory passed to codex app-server"),
     ] = None,
@@ -2461,7 +2461,7 @@ async def worker_spec(
             ws_url=ws_url,
             codex_image=codex_image,
             codex_mounts=codex_mounts,
-            working_directory=working_directory,
+            working_dir=working_dir,
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
@@ -2590,7 +2590,7 @@ async def worker_deploy(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="Working directory passed to codex app-server"),
     ] = None,
@@ -2686,7 +2686,7 @@ async def worker_deploy(
             ws_url=ws_url,
             codex_image=codex_image,
             codex_mounts=codex_mounts,
-            working_directory=working_directory,
+            working_dir=working_dir,
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
@@ -2815,7 +2815,7 @@ async def chatbot_run(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="Working directory passed to codex app-server"),
     ] = None,
@@ -2938,7 +2938,7 @@ async def chatbot_run(
             ws_url=ws_url,
             codex_image=codex_image,
             codex_mounts=codex_mounts,
-            working_directory=working_directory,
+            working_dir=working_dir,
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
@@ -3124,7 +3124,7 @@ async def task_runner_run(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="Working directory passed to codex app-server"),
     ] = None,
@@ -3236,7 +3236,7 @@ async def task_runner_run(
             ws_url=ws_url,
             codex_image=codex_image,
             codex_mounts=codex_mounts,
-            working_directory=working_directory,
+            working_dir=working_dir,
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
@@ -3364,7 +3364,7 @@ async def task_runner_service(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="Working directory passed to codex app-server"),
     ] = None,
@@ -3453,7 +3453,7 @@ async def task_runner_service(
             ws_url=ws_url,
             codex_image=codex_image,
             codex_mounts=codex_mounts,
-            working_directory=working_directory,
+            working_dir=working_dir,
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
@@ -3553,7 +3553,7 @@ async def task_runner_spec(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="Working directory passed to codex app-server"),
     ] = None,
@@ -3644,7 +3644,7 @@ async def task_runner_spec(
             ws_url=ws_url,
             codex_image=codex_image,
             codex_mounts=codex_mounts,
-            working_directory=working_directory,
+            working_dir=working_dir,
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
@@ -3765,7 +3765,7 @@ async def task_runner_deploy(
             help="Mount project storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="Working directory passed to codex app-server"),
     ] = None,
@@ -3858,7 +3858,7 @@ async def task_runner_deploy(
             ws_url=ws_url,
             codex_image=codex_image,
             codex_mounts=codex_mounts,
-            working_directory=working_directory,
+            working_dir=working_dir,
             approval_policy=approval_policy,
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,

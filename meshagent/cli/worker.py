@@ -194,7 +194,7 @@ def build_worker(
     storage: Optional[str] = None,
     storage_tool_mounts: Optional[list[StorageToolMount]] = None,
     shell_tool_mounts: Optional[ContainerMountSpec] = None,
-    working_directory: Optional[str] = None,
+    working_dir: Optional[str] = None,
     require_image_generation: Optional[str] = None,
     require_local_shell: bool = False,
     require_web_search: bool = False,
@@ -327,7 +327,7 @@ def build_worker(
             if require_shell:
                 if is_openai:
                     shell_kwargs = {
-                        "working_directory": working_directory,
+                        "working_dir": working_dir,
                         "config": ShellConfig(name="shell"),
                         "image": shell_image or "python:3.13",
                         "env": env,
@@ -397,13 +397,13 @@ def build_worker(
             if local_shell:
                 providers.append(
                     LocalShellToolkitBuilder(
-                        working_directory=working_directory,
+                        working_dir=working_dir,
                     )
                 )
 
             if shell:
                 shell_builder_kwargs = {
-                    "working_directory": working_directory,
+                    "working_dir": working_dir,
                     "image": shell_image,
                     "env": base_shell_env or None,
                 }
@@ -446,7 +446,7 @@ def build_worker(
             if require_local_shell:
                 thread_toolkit.tools.append(
                     LocalShellTool(
-                        working_directory=working_directory,
+                        working_dir=working_dir,
                         config=LocalShellConfig(name="local_shell"),
                     )
                 )
@@ -729,7 +729,7 @@ async def join(
         Optional[str],
         typer.Option(..., help="a description for the agent"),
     ] = None,
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
@@ -836,7 +836,7 @@ async def join(
             database_namespace=[database_namespace] if database_namespace else None,
             title=title,
             description=description,
-            working_directory=working_directory,
+            working_dir=working_dir,
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
@@ -1052,7 +1052,7 @@ async def service(
         Optional[str],
         typer.Option(..., help="a description for the agent"),
     ] = None,
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
@@ -1145,7 +1145,7 @@ async def service(
             database_namespace=[database_namespace] if database_namespace else None,
             title=title,
             description=description,
-            working_directory=working_directory,
+            working_dir=working_dir,
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
@@ -1351,7 +1351,7 @@ async def spec(
         Optional[str],
         typer.Option(..., help="a description for the agent"),
     ] = None,
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
@@ -1444,7 +1444,7 @@ async def spec(
             database_namespace=[database_namespace] if database_namespace else None,
             title=title,
             description=description,
-            working_directory=working_directory,
+            working_dir=working_dir,
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
@@ -1654,7 +1654,7 @@ async def deploy(
         Optional[str],
         typer.Option(..., help="a description for the agent"),
     ] = None,
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
@@ -1761,7 +1761,7 @@ async def deploy(
             database_namespace=[database_namespace] if database_namespace else None,
             title=title,
             description=description,
-            working_directory=working_directory,
+            working_dir=working_dir,
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,

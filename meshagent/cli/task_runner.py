@@ -233,7 +233,7 @@ def build_task_runner(
     room_rules_path: Optional[list[str]] = None,
     require_discovery: Optional[str] = None,
     require_document_authoring: Optional[str] = None,
-    working_directory: Optional[str] = None,
+    working_dir: Optional[str] = None,
     llm_participant: Optional[str] = None,
     output_schema_path: Optional[str] = None,
     output_schema_str: Optional[str] = None,
@@ -350,7 +350,7 @@ def build_task_runner(
             if require_shell:
                 if is_openai:
                     shell_kwargs = {
-                        "working_directory": working_directory,
+                        "working_dir": working_dir,
                         "config": ShellConfig(name="shell"),
                         "image": shell_image or "python:3.13",
                         "env": env,
@@ -462,7 +462,7 @@ def build_task_runner(
             if require_local_shell:
                 providers.append(
                     LocalShellTool(
-                        working_directory=working_directory,
+                        working_dir=working_dir,
                         config=LocalShellConfig(name="local_shell"),
                     )
                 )
@@ -574,13 +574,13 @@ def build_task_runner(
             if local_shell:
                 providers.append(
                     LocalShellToolkitBuilder(
-                        working_directory=working_directory,
+                        working_dir=working_dir,
                     )
                 )
 
             if shell:
                 shell_builder_kwargs = {
-                    "working_directory": working_directory,
+                    "working_dir": working_dir,
                     "env": base_shell_env or None,
                 }
                 if shell_tool_mounts is not None:
@@ -771,7 +771,7 @@ async def join(
         Optional[bool],
         typer.Option(..., help="Enable discovery of agents and tools"),
     ] = False,
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
@@ -919,7 +919,7 @@ async def join(
             room_rules_path=room_rules,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
-            working_directory=working_directory,
+            working_dir=working_dir,
             shell_image=shell_image,
             skill_dirs=skill_dir,
             delegate_shell_token=delegate_shell_token,
@@ -1105,7 +1105,7 @@ async def run(
         Optional[bool],
         typer.Option(..., help="Enable discovery of agents and tools"),
     ] = False,
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
@@ -1268,7 +1268,7 @@ async def run(
             room_rules_path=room_rules,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
-            working_directory=working_directory,
+            working_dir=working_dir,
             shell_image=shell_image,
             skill_dirs=skill_dir,
             delegate_shell_token=delegate_shell_token,
@@ -1474,7 +1474,7 @@ async def service(
         bool,
         typer.Option(..., help="Enable UUID generation tools"),
     ] = False,
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
@@ -1609,7 +1609,7 @@ async def service(
             require_time=require_time,
             require_uuid=require_uuid,
             room_rules_path=room_rules,
-            working_directory=working_directory,
+            working_dir=working_dir,
             shell_image=shell_image,
             skill_dirs=skill_dir,
             delegate_shell_token=delegate_shell_token,
@@ -1776,7 +1776,7 @@ async def spec(
         bool,
         typer.Option(..., help="Enable UUID generation tools"),
     ] = False,
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
@@ -1909,7 +1909,7 @@ async def spec(
             require_time=require_time,
             require_uuid=require_uuid,
             room_rules_path=room_rules,
-            working_directory=working_directory,
+            working_dir=working_dir,
             shell_image=shell_image,
             skill_dirs=skill_dir,
             delegate_shell_token=delegate_shell_token,
@@ -2080,7 +2080,7 @@ async def deploy(
         bool,
         typer.Option(..., help="Enable UUID generation tools"),
     ] = False,
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
@@ -2219,7 +2219,7 @@ async def deploy(
             require_time=require_time,
             require_uuid=require_uuid,
             room_rules_path=room_rules,
-            working_directory=working_directory,
+            working_dir=working_dir,
             shell_image=shell_image,
             skill_dirs=skill_dir,
             delegate_shell_token=delegate_shell_token,

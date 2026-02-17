@@ -219,7 +219,7 @@ def build_chatbot(
     room_rules_path: Optional[list[str]] = None,
     require_discovery: Optional[str] = None,
     require_document_authoring: Optional[str] = None,
-    working_directory: Optional[str] = None,
+    working_dir: Optional[str] = None,
     llm_participant: Optional[str] = None,
     database_namespace: Optional[list[str]] = None,
     always_reply: Optional[bool] = None,
@@ -338,7 +338,7 @@ def build_chatbot(
             if require_shell:
                 if is_openai:
                     shell_kwargs = {
-                        "working_directory": working_directory,
+                        "working_dir": working_dir,
                         "config": ShellConfig(name="shell"),
                         "image": shell_image or "python:3.13",
                         "env": env,
@@ -447,7 +447,7 @@ def build_chatbot(
             if require_local_shell:
                 providers.append(
                     LocalShellTool(
-                        working_directory=working_directory,
+                        working_dir=working_dir,
                         config=LocalShellConfig(name="local_shell"),
                     )
                 )
@@ -580,13 +580,13 @@ def build_chatbot(
             if local_shell:
                 providers.append(
                     LocalShellToolkitBuilder(
-                        working_directory=working_directory,
+                        working_dir=working_dir,
                     )
                 )
 
             if shell:
                 shell_builder_kwargs = {
-                    "working_directory": working_directory,
+                    "working_dir": working_dir,
                     "image": shell_image,
                     "env": base_shell_env or None,
                 }
@@ -820,7 +820,7 @@ async def join(
         Optional[bool],
         typer.Option(..., help="Enable discovery of agents and tools"),
     ] = False,
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
@@ -937,7 +937,7 @@ async def join(
             room_rules_path=room_rules,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
-            working_directory=working_directory,
+            working_dir=working_dir,
             llm_participant=llm_participant,
             always_reply=always_reply,
             database_namespace=database_namespace,
@@ -1155,7 +1155,7 @@ async def service(
             help="Enable UUID generation tools",
         ),
     ] = False,
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
@@ -1266,7 +1266,7 @@ async def service(
             require_time=require_time,
             require_uuid=require_uuid,
             room_rules_path=room_rules,
-            working_directory=working_directory,
+            working_dir=working_dir,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
             llm_participant=llm_participant,
@@ -1464,7 +1464,7 @@ async def spec(
             help="Enable UUID generation tools",
         ),
     ] = False,
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
@@ -1574,7 +1574,7 @@ async def spec(
             require_time=require_time,
             require_uuid=require_uuid,
             room_rules_path=room_rules,
-            working_directory=working_directory,
+            working_dir=working_dir,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
             llm_participant=llm_participant,
@@ -1783,7 +1783,7 @@ async def deploy(
             help="Enable UUID generation tools",
         ),
     ] = False,
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
@@ -1900,7 +1900,7 @@ async def deploy(
             require_time=require_time,
             require_uuid=require_uuid,
             room_rules_path=room_rules,
-            working_directory=working_directory,
+            working_dir=working_dir,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
             llm_participant=llm_participant,
@@ -1996,11 +1996,13 @@ async def chat_with(
     from meshagent.agents.chat import ChatBotClient
 
     try:
+        from textual import events
         from textual._context import active_app
         from textual.app import App, ComposeResult
         from textual.binding import Binding
-        from textual.containers import Horizontal, VerticalScroll
-        from textual.widgets import Static, TextArea
+        from textual.containers import Horizontal, Vertical, VerticalScroll
+        from textual.widgets import OptionList, Static, TextArea
+        from textual.widgets.option_list import Option
         from rich.align import Align
         from rich.console import Group
         from rich.console import RenderableType
@@ -2305,8 +2307,8 @@ async def chat_with(
         CSS = """
         Screen {
             layout: grid;
-            grid-size: 1 2;
-            grid-rows: 1fr auto;
+            grid-size: 1 3;
+            grid-rows: 1fr auto auto;
             padding: 0;
         }
         #messages-scroll {
@@ -2317,6 +2319,38 @@ async def chat_with(
         #messages {
             content-align: left bottom;
             width: 100%;
+        }
+        #approval-panel {
+            display: none;
+            background: #252525;
+            padding: 1 2;
+        }
+        #approval-header {
+            width: 100%;
+            color: white;
+        }
+        #approval-details {
+            width: 100%;
+            color: $text-muted;
+            margin: 0 0 1 0;
+        }
+        #approval-actions {
+            border: none;
+            height: auto;
+            max-height: 2;
+            padding: 0;
+            margin: 0;
+            background: #252525;
+        }
+        #approval-actions > .option-list--option {
+            background: #252525;
+            color: white;
+            padding: 0 1;
+        }
+        #approval-actions > .option-list--option-highlighted {
+            background: #3f3f3f;
+            color: white;
+            text-style: bold;
         }
         #input-row {
             margin: 0;
@@ -2364,6 +2398,8 @@ async def chat_with(
             Binding("enter", "submit_chat_input", "Send", priority=True),
             Binding("escape", "cancel_turn", "Cancel"),
             Binding("ctrl+l", "clear_thread", "Clear thread"),
+            Binding("left", "select_previous_approval", show=False),
+            Binding("right", "select_next_approval", show=False),
         ]
 
         def __init__(
@@ -2379,6 +2415,10 @@ async def chat_with(
             self._local_user_name = local_user_name
             self._messages_view: Static | None = None
             self._messages_scroll: VerticalScroll | None = None
+            self._approval_panel: Vertical | None = None
+            self._approval_header_view: Static | None = None
+            self._approval_details_view: Static | None = None
+            self._approval_actions: OptionList | None = None
             self._chat_input: TextArea | None = None
             self._chat_input_height = 1
             self._doc_watch_task: asyncio.Task | None = None
@@ -2398,10 +2438,21 @@ async def chat_with(
             self._spinner_frame = 0
             self._spinner_timer = None
             self._has_active_events = False
+            self._pending_approval_items: list[tuple[str, str, str]] = []
+            self._selected_pending_approval_index = 0
 
         def compose(self) -> ComposeResult:
             with VerticalScroll(id="messages-scroll"):
                 yield Static("", id="messages")
+            with Vertical(id="approval-panel"):
+                yield Static("", id="approval-header")
+                yield Static("", id="approval-details")
+                yield OptionList(
+                    Option("[A]pprove", id="approve"),
+                    Option("[D]eny", id="deny"),
+                    id="approval-actions",
+                    wrap=False,
+                )
             with Horizontal(id="input-row"):
                 yield Static(caret, id="input-prompt")
                 yield TextArea(
@@ -2414,9 +2465,14 @@ async def chat_with(
         async def on_mount(self) -> None:
             self._messages_view = self.query_one("#messages", Static)
             self._messages_scroll = self.query_one("#messages-scroll", VerticalScroll)
+            self._approval_panel = self.query_one("#approval-panel", Vertical)
+            self._approval_header_view = self.query_one("#approval-header", Static)
+            self._approval_details_view = self.query_one("#approval-details", Static)
+            self._approval_actions = self.query_one("#approval-actions", OptionList)
             self._chat_input = self.query_one("#chat-input", TextArea)
             self._chat_input.focus()
             self._resize_chat_input(self._chat_input)
+            self._render_approval_menu()
             self._bind_thread_document_events()
             self._spinner_timer = self.set_interval(0.12, self._on_spinner_tick)
             self._doc_watch_task = asyncio.create_task(self._watch_thread_document())
@@ -2436,6 +2492,55 @@ async def chat_with(
             self._stop_spinner_timer()
             await self._stop_doc_watch_loop()
             self.exit()
+
+        async def action_select_previous_approval(self) -> None:
+            count = len(self._pending_approval_items)
+            if count == 0:
+                return
+            self._selected_pending_approval_index = (
+                self._selected_pending_approval_index - 1
+            ) % count
+            self._render_approval_menu()
+
+        async def action_select_next_approval(self) -> None:
+            count = len(self._pending_approval_items)
+            if count == 0:
+                return
+            self._selected_pending_approval_index = (
+                self._selected_pending_approval_index + 1
+            ) % count
+            self._render_approval_menu()
+
+        async def action_approve_selected_approval(self) -> None:
+            await self._submit_selected_approval_decision(approve=True)
+
+        async def action_reject_selected_approval(self) -> None:
+            await self._submit_selected_approval_decision(approve=False)
+
+        async def on_key(self, event: events.Key) -> None:
+            selected = self._selected_pending_approval()
+            if selected is None:
+                return
+            if self._approval_actions is None or self.focused is not self._approval_actions:
+                return
+
+            key_character = event.character
+            if key_character is None:
+                return
+
+            normalized = key_character.lower()
+            if normalized == "a":
+                if self._approval_actions is not None:
+                    self._approval_actions.highlighted = 0
+                event.stop()
+                event.prevent_default()
+                await self._submit_selected_approval_decision(approve=True)
+            elif normalized == "d":
+                if self._approval_actions is not None:
+                    self._approval_actions.highlighted = 1
+                event.stop()
+                event.prevent_default()
+                await self._submit_selected_approval_decision(approve=False)
 
         def _stop_spinner_timer(self) -> None:
             if self._spinner_timer is not None:
@@ -2461,7 +2566,108 @@ async def chat_with(
             self._spinner_frame = (self._spinner_frame + 1) % count
             self._render_from_thread_document()
 
+        def _notify_user(self, message: str, *, severity: str | None = None) -> None:
+            notify = getattr(self, "notify", None)
+            if callable(notify):
+                try:
+                    if severity is None:
+                        notify(message)
+                    else:
+                        notify(message, severity=severity)
+                    return
+                except Exception:
+                    pass
+            logger.info(message)
+
+        def _selected_pending_approval(self) -> tuple[str, str, str] | None:
+            if len(self._pending_approval_items) == 0:
+                return None
+
+            index = max(
+                0,
+                min(
+                    self._selected_pending_approval_index,
+                    len(self._pending_approval_items) - 1,
+                ),
+            )
+            self._selected_pending_approval_index = index
+            return self._pending_approval_items[index]
+
+        async def _submit_selected_approval_decision(self, *, approve: bool) -> None:
+            selected = self._selected_pending_approval()
+            if selected is None:
+                self._notify_user("No pending approvals found.", severity="warning")
+                return
+
+            approval_id, _, _ = selected
+            try:
+                await self._chat_client.send_approval_decision(
+                    approval_id=approval_id,
+                    approve=approve,
+                )
+                if self._messages_scroll is not None:
+                    self._messages_scroll.scroll_end(animate=False)
+            except Exception as ex:
+                self._notify_user(f"Unable to submit approval decision: {ex}")
+
+        async def _submit_highlighted_approval_decision(self) -> None:
+            highlighted = 0
+            if self._approval_actions is not None and isinstance(
+                self._approval_actions.highlighted, int
+            ):
+                highlighted = self._approval_actions.highlighted
+            await self._submit_selected_approval_decision(approve=highlighted != 1)
+
+        def _render_approval_menu(self) -> None:
+            if (
+                self._approval_panel is None
+                or self._approval_header_view is None
+                or self._approval_details_view is None
+                or self._approval_actions is None
+            ):
+                return
+
+            selected = self._selected_pending_approval()
+            if selected is None:
+                self._approval_panel.styles.display = "none"
+                self._approval_header_view.update("")
+                self._approval_details_view.update("")
+                if self._chat_input is not None and self.focused is self._approval_actions:
+                    self._chat_input.focus()
+                return
+
+            approval_id, headline, details = selected
+            total = len(self._pending_approval_items)
+            current = self._selected_pending_approval_index + 1
+            label = headline.strip() if isinstance(headline, str) else ""
+            if label == "":
+                label = "Approval required"
+
+            header = Text("approval requested", style="bold yellow")
+            if total > 1:
+                header.append(f" ({current}/{total})", style="bold yellow")
+            self._approval_header_view.update(header)
+
+            details_view = Text()
+            details_view.append(label)
+            if details.strip() != "" and details.strip().casefold() != label.casefold():
+                details_view.append(f"\n{details.strip()}", style="dim")
+            details_view.append(f"\nid: {approval_id}", style="dim")
+            if total > 1:
+                details_view.append("  [←/→ switch request]", style="dim")
+            self._approval_details_view.update(details_view)
+
+            self._approval_panel.styles.display = "block"
+            if self._approval_actions.highlighted is None:
+                self._approval_actions.highlighted = 0
+            if self.focused is not self._approval_actions:
+                self._approval_actions.focus()
+
         async def action_submit_chat_input(self) -> None:
+            if self._approval_actions is not None and self.focused is self._approval_actions:
+                await self._submit_highlighted_approval_decision()
+                return
+
             if self._chat_input is None or self.focused is not self._chat_input:
                 return
 
@@ -2481,6 +2687,29 @@ async def chat_with(
                 return
             if user_input == "/cancel":
                 await self.action_cancel_turn()
+                return
+
+            if user_input.startswith("/approve") or user_input.startswith("/reject"):
+                approve = user_input.startswith("/approve")
+                parts = user_input.split(maxsplit=1)
+                approval_id = parts[1].strip() if len(parts) > 1 else ""
+
+                if approval_id == "":
+                    approval_id = self._latest_pending_approval_id() or ""
+
+                if approval_id == "":
+                    self._notify_user("No pending approvals found.", severity="warning")
+                    return
+
+                try:
+                    await self._chat_client.send_approval_decision(
+                        approval_id=approval_id,
+                        approve=approve,
+                    )
+                    if self._messages_scroll is not None:
+                        self._messages_scroll.scroll_end(animate=False)
+                except Exception as ex:
+                    self._notify_user(f"Unable to submit approval decision: {ex}")
                 return
 
             await self._chat_client.send(text=user_input, tools=build_tools())
@@ -2541,16 +2770,37 @@ async def chat_with(
 
             doc = getattr(self._chat_client, "_doc", None)
             if doc is None:
+                self._pending_approval_items = []
+                self._selected_pending_approval_index = 0
+                self._render_approval_menu()
                 self._messages_view.update("")
                 return
 
             message_nodes = doc.root.get_children_by_tag_name("messages")
             if len(message_nodes) == 0:
+                self._pending_approval_items = []
+                self._selected_pending_approval_index = 0
+                self._render_approval_menu()
                 self._messages_view.update("")
                 return
 
             items = message_nodes[0].get_children()
             self._has_active_events = self._thread_has_active_events(items)
+            selected_before = self._selected_pending_approval()
+            selected_id = selected_before[0] if selected_before is not None else None
+            self._pending_approval_items = self._collect_pending_approvals(items)
+            if len(self._pending_approval_items) == 0:
+                self._selected_pending_approval_index = 0
+            elif selected_id is not None:
+                for index, (approval_id, _, _) in enumerate(self._pending_approval_items):
+                    if approval_id == selected_id:
+                        self._selected_pending_approval_index = index
+                        break
+                else:
+                    self._selected_pending_approval_index = 0
+            else:
+                self._selected_pending_approval_index = 0
+            self._render_approval_menu()
             rendered_items: list[RenderableType] = []
             last_index = len(items) - 1
             for index, item in enumerate(items):
@@ -2577,6 +2827,71 @@ async def chat_with(
                 if self._is_active_event_state(state):
                     return True
             return False
+
+        def _collect_pending_approvals(self, items) -> list[tuple[str, str, str]]:
+            approvals: list[tuple[str, str, str]] = []
+            seen: set[str] = set()
+
+            for item in items:
+                if getattr(item, "tag_name", None) != "event":
+                    continue
+
+                kind = item.get_attribute("kind") or ""
+                if not isinstance(kind, str) or kind.strip().lower() != "approval":
+                    continue
+
+                state = item.get_attribute("state") or ""
+                if not isinstance(state, str) or not self._is_active_event_state(state):
+                    continue
+
+                approval_id = (
+                    item.get_attribute("item_id")
+                    or item.get_attribute("approval_id")
+                    or ""
+                )
+                if not isinstance(approval_id, str):
+                    continue
+                approval_id = approval_id.strip()
+                if approval_id == "" or approval_id in seen:
+                    continue
+
+                headline = (
+                    item.get_attribute("headline")
+                    or item.get_attribute("summary")
+                    or item.get_attribute("name")
+                    or "Approval required"
+                )
+                if not isinstance(headline, str):
+                    headline = "Approval required"
+                headline = headline.strip()
+                if headline == "":
+                    headline = "Approval required"
+
+                details = self._approval_details_text(item, headline=headline)
+                approvals.append((approval_id, headline, details))
+                seen.add(approval_id)
+
+            return approvals
+
+        def _approval_details_text(self, item, *, headline: str) -> str:
+            for attr_name in ("details", "summary", "data", "name"):
+                raw = item.get_attribute(attr_name) or ""
+                if not isinstance(raw, str):
+                    continue
+                for line in raw.splitlines():
+                    stripped = line.strip()
+                    if stripped == "":
+                        continue
+                    if stripped.casefold() == headline.casefold():
+                        continue
+                    return stripped
+            return headline
+
+        def _latest_pending_approval_id(self) -> str | None:
+            selected = self._selected_pending_approval()
+            if selected is None:
+                return None
+            return selected[0]
 
         def _render_thread_item(
             self,
@@ -2708,9 +3023,14 @@ async def chat_with(
         def _render_event_item(self, item) -> RenderableType:
             kind = item.get_attribute("kind") or "event"
             state = item.get_attribute("state") or "info"
+            normalized_kind = kind.strip().lower() if isinstance(kind, str) else "event"
             active = self._is_active_event_state(state)
             if active:
                 self._has_active_events = True
+            approval_id = item.get_attribute("item_id") or ""
+            if not isinstance(approval_id, str):
+                approval_id = ""
+            approval_id = approval_id.strip()
             headline = (
                 item.get_attribute("headline")
                 or item.get_attribute("summary")
@@ -2750,6 +3070,22 @@ async def chat_with(
 
             if summary != "" and summary.casefold() != headline.casefold():
                 table.add_row(Text("  "), Text(summary, style="dim"), Text("  "))
+
+            if normalized_kind == "approval" and approval_id != "":
+                table.add_row(
+                    Text("  "),
+                    Text(f"Approval ID: {approval_id}", style="bold cyan"),
+                    Text("  "),
+                )
+                if active:
+                    table.add_row(
+                        Text("  "),
+                        Text(
+                            f"/approve {approval_id} or /reject {approval_id}",
+                            style="bold yellow",
+                        ),
+                        Text("  "),
+                    )
 
             detail_lines = self._event_detail_lines(item)
             if len(detail_lines) > 0:
@@ -3237,7 +3573,7 @@ async def run(
         Optional[bool],
         typer.Option(..., help="Enable discovery of agents and tools"),
     ] = False,
-    working_directory: Annotated[
+    working_dir: Annotated[
         Optional[str],
         typer.Option(..., help="The default working directory for shell commands"),
     ] = None,
@@ -3382,7 +3718,7 @@ async def run(
                 room_rules_path=room_rules,
                 require_document_authoring=require_document_authoring,
                 require_discovery=require_discovery,
-                working_directory=working_directory,
+                working_dir=working_dir,
                 llm_participant=llm_participant,
                 always_reply=always_reply,
                 database_namespace=database_namespace,
