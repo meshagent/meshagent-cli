@@ -2521,7 +2521,10 @@ async def chat_with(
             selected = self._selected_pending_approval()
             if selected is None:
                 return
-            if self._approval_actions is None or self.focused is not self._approval_actions:
+            if (
+                self._approval_actions is None
+                or self.focused is not self._approval_actions
+            ):
                 return
 
             key_character = event.character
@@ -2632,7 +2635,10 @@ async def chat_with(
                 self._approval_panel.styles.display = "none"
                 self._approval_header_view.update("")
                 self._approval_details_view.update("")
-                if self._chat_input is not None and self.focused is self._approval_actions:
+                if (
+                    self._chat_input is not None
+                    and self.focused is self._approval_actions
+                ):
                     self._chat_input.focus()
                 return
 
@@ -2664,7 +2670,10 @@ async def chat_with(
                 self._approval_actions.focus()
 
         async def action_submit_chat_input(self) -> None:
-            if self._approval_actions is not None and self.focused is self._approval_actions:
+            if (
+                self._approval_actions is not None
+                and self.focused is self._approval_actions
+            ):
                 await self._submit_highlighted_approval_decision()
                 return
 
@@ -2792,7 +2801,9 @@ async def chat_with(
             if len(self._pending_approval_items) == 0:
                 self._selected_pending_approval_index = 0
             elif selected_id is not None:
-                for index, (approval_id, _, _) in enumerate(self._pending_approval_items):
+                for index, (approval_id, _, _) in enumerate(
+                    self._pending_approval_items
+                ):
                     if approval_id == selected_id:
                         self._selected_pending_approval_index = index
                         break
