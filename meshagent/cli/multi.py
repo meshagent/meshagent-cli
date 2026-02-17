@@ -123,6 +123,7 @@ def build_spec(
     *,
     command: Annotated[str, typer.Option("-c", help=subcommand_help)],
     service_name: Annotated[str, typer.Option("--service-name", help="service name")],
+    agent_name: str,
     service_description: Annotated[
         Optional[str], typer.Option("--service-description", help="service description")
     ] = None,
@@ -136,7 +137,7 @@ def build_spec(
             print(f"[red]{c} failed[/red]")
             raise typer.Exit(1)
 
-    specs = service_specs()
+    specs = service_specs(token_identity=agent_name)
     if len(specs) == 0:
         print("[red]found no services, specify at least one agent or tool to run[/red]")
         raise typer.Exit(1)
@@ -168,6 +169,10 @@ def build_spec(
 async def spec(
     command: Annotated[str, typer.Option("-c", help=subcommand_help)],
     service_name: Annotated[str, typer.Option("--service-name", help="service name")],
+    agent_name: Annotated[
+        str,
+        typer.Option("--agent-name", help="identity for injected MESHAGENT_TOKEN"),
+    ],
     service_description: Annotated[
         Optional[str], typer.Option("--service-description", help="service description")
     ] = None,
@@ -181,6 +186,7 @@ async def spec(
     spec = build_spec(
         command=command,
         service_name=service_name,
+        agent_name=agent_name,
         service_description=service_description,
         service_title=service_title,
     )
@@ -195,6 +201,10 @@ async def deploy(
     project_id: ProjectIdOption,
     command: Annotated[str, typer.Option("-c", help=subcommand_help)],
     service_name: Annotated[str, typer.Option("--service-name", help="service name")],
+    agent_name: Annotated[
+        str,
+        typer.Option("--agent-name", help="identity for injected MESHAGENT_TOKEN"),
+    ],
     service_description: Annotated[
         Optional[str], typer.Option("--service-description", help="service description")
     ] = None,
@@ -216,6 +226,7 @@ async def deploy(
         spec = build_spec(
             command=command,
             service_name=service_name,
+            agent_name=agent_name,
             service_description=service_description,
             service_title=service_title,
         )
