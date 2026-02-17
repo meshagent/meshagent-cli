@@ -1421,6 +1421,7 @@ async def join(
         ),
     ] = False,
 ):
+    """Join a room and run the configured webserver routes locally with optional hot reload."""
     room_name = resolve_room(room)
     if room_name is None:
         print("[red]--room is required (or set MESHAGENT_ROOM).[/red]")
@@ -1563,6 +1564,7 @@ async def service(
         Optional[str], typer.Option(help="HTTP path to mount the service at")
     ] = None,
 ):
+    """Run the webserver as a MeshAgent service in the current runtime."""
     service = get_service(host=cast(str, host), port=cast(int, port))
 
     service.agents.append(
@@ -1640,6 +1642,7 @@ async def spec(
         ),
     ] = None,
 ):
+    """Generate a service spec for deploying this webserver configuration."""
     service = get_service(host=cast(str, host), port=cast(int, port))
 
     service.agents.append(
@@ -1793,6 +1796,7 @@ async def deploy(
         ),
     ] = None,
 ):
+    """Deploy this webserver as a service, updating an existing service with the same name."""
     project_id = await resolve_project_id(project_id=project_id)
     room_name = resolve_room(room)
     if domain is not None:

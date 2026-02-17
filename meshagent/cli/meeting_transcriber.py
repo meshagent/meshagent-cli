@@ -18,7 +18,7 @@ from meshagent.api.services import ServiceHost
 app = async_typer.AsyncTyper(help="Join a meeting transcriber to a room")
 
 
-@app.async_command("join")
+@app.async_command("join", help="Join a room and run the meeting transcriber agent.")
 async def join(
     *,
     project_id: ProjectIdOption,

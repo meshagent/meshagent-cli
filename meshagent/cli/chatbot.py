@@ -541,7 +541,7 @@ def build_chatbot(
     return CustomChatbot
 
 
-@app.async_command("join")
+@app.async_command("join", help="Join a room and run a chatbot agent.")
 async def join(
     *,
     project_id: ProjectIdOption,
@@ -1197,7 +1197,7 @@ async def service(
         await run_services()
 
 
-@app.async_command("spec")
+@app.async_command("spec", help="Generate a service spec for deploying a chatbot.")
 async def spec(
     *,
     service_name: Annotated[str, typer.Option("--service-name", help="service name")],
@@ -1512,7 +1512,7 @@ async def spec(
     print(yaml.dump(spec.model_dump(mode="json", exclude_none=True), sort_keys=False))
 
 
-@app.async_command("deploy")
+@app.async_command("deploy", help="Deploy a chatbot service to a project or room.")
 async def deploy(
     *,
     service_name: Annotated[str, typer.Option("--service-name", help="service name")],
@@ -1965,7 +1965,7 @@ async def chat_with(
         await account_client.close()
 
 
-@app.async_command("run")
+@app.async_command("run", help="Join a room, run the chatbot, and wait for messages.")
 async def run(
     *,
     project_id: ProjectIdOption,
@@ -2331,7 +2331,9 @@ async def run(
         await account_client.close()
 
 
-@app.async_command("use")
+@app.async_command(
+    "use", help="Send a one-shot or interactive message to a running chatbot."
+)
 async def use(
     *,
     project_id: ProjectIdOption,

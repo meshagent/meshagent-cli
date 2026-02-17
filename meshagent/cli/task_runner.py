@@ -533,7 +533,7 @@ def build_task_runner(
     return CustomTaskRunner
 
 
-@app.async_command("join")
+@app.async_command("join", help="Join a room and run a task-runner agent.")
 async def join(
     *,
     project_id: ProjectIdOption,
@@ -877,7 +877,7 @@ async def join(
         await account_client.close()
 
 
-@app.async_command("run")
+@app.async_command("run", help="Join a room, run the task-runner, and wait for tasks.")
 async def run(
     *,
     project_id: ProjectIdOption,
@@ -1528,7 +1528,7 @@ async def service(
         await run_services()
 
 
-@app.async_command("spec")
+@app.async_command("spec", help="Generate a service spec for deploying a task-runner.")
 async def spec(
     *,
     service_name: Annotated[str, typer.Option("--service-name", help="service name")],
@@ -1835,7 +1835,7 @@ async def spec(
     print(yaml.dump(spec.model_dump(mode="json", exclude_none=True), sort_keys=False))
 
 
-@app.async_command("deploy")
+@app.async_command("deploy", help="Deploy a task-runner service to a project or room.")
 async def deploy(
     *,
     service_name: Annotated[str, typer.Option("--service-name", help="service name")],

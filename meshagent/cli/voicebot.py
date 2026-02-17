@@ -154,7 +154,7 @@ def build_voicebot(
     return CustomVoiceBot
 
 
-@app.async_command("join")
+@app.async_command("join", help="Join a room and run a voicebot agent.")
 async def join(
     *,
     project_id: ProjectIdOption,
@@ -372,7 +372,7 @@ async def service(
         await run_services()
 
 
-@app.async_command("spec")
+@app.async_command("spec", help="Generate a service spec for deploying a voicebot.")
 async def spec(
     *,
     service_name: Annotated[str, typer.Option("--service-name", help="service name")],
@@ -475,7 +475,7 @@ async def spec(
     print(yaml.dump(spec.model_dump(mode="json", exclude_none=True), sort_keys=False))
 
 
-@app.async_command("deploy")
+@app.async_command("deploy", help="Deploy a voicebot service to a project or room.")
 async def deploy(
     *,
     service_name: Annotated[str, typer.Option("--service-name", help="service name")],

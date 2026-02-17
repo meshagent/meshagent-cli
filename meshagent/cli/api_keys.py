@@ -16,7 +16,7 @@ import typer
 app = async_typer.AsyncTyper(help="Manage or activate api-keys for your project")
 
 
-@app.async_command("list")
+@app.async_command("list", help="List API keys for a project.")
 async def list(
     *,
     project_id: ProjectIdOption,
@@ -39,7 +39,7 @@ async def list(
     await client.close()
 
 
-@app.async_command("create")
+@app.async_command("create", help="Create a new API key for a project.")
 async def create(
     *,
     project_id: ProjectIdOption,
@@ -82,7 +82,10 @@ async def create(
         )
 
 
-@app.async_command("activate")
+@app.async_command(
+    "activate",
+    help="Set the default API key for a project in local CLI settings.",
+)
 async def activate(
     *,
     project_id: ProjectIdOption,
@@ -93,7 +96,7 @@ async def activate(
         await set_active_api_key(project_id=project_id, key=key)
 
 
-@app.async_command("delete")
+@app.async_command("delete", help="Delete an API key from a project.")
 async def delete(*, project_id: ProjectIdOption, id: str):
     project_id = await resolve_project_id(project_id=project_id)
 

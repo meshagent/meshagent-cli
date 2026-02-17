@@ -472,7 +472,10 @@ async def service_validate_template(
     print(f"[green]Service template is valid:[/] {template.metadata.name}")
 
 
-@app.async_command("run")
+@app.async_command(
+    "run",
+    help="Run a local command and register it as a temporary room service.",
+)
 async def service_run(
     *,
     project_id: ProjectIdOption,

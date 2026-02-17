@@ -709,7 +709,7 @@ def build_codex_worker(
     return CustomCodexWorker
 
 
-@chatbot_app.async_command("join")
+@chatbot_app.async_command("join", help="Join a room and run a Codex chatbot agent.")
 async def chatbot_join(
     *,
     project_id: ProjectIdOption,
@@ -917,7 +917,9 @@ async def chatbot_join(
         await account_client.close()
 
 
-@task_runner_app.async_command("join")
+@task_runner_app.async_command(
+    "join", help="Join a room and run a Codex task-runner agent."
+)
 async def task_runner_join(
     *,
     project_id: ProjectIdOption,
@@ -1307,7 +1309,9 @@ async def chatbot_service(
         await run_services()
 
 
-@chatbot_app.async_command("spec")
+@chatbot_app.async_command(
+    "spec", help="Generate a service spec for deploying a Codex chatbot."
+)
 async def chatbot_spec(
     *,
     service_name: Annotated[str, typer.Option("--service-name", help="Service name")],
@@ -1496,7 +1500,9 @@ async def chatbot_spec(
     print(yaml.dump(spec.model_dump(mode="json", exclude_none=True), sort_keys=False))
 
 
-@chatbot_app.async_command("deploy")
+@chatbot_app.async_command(
+    "deploy", help="Deploy a Codex chatbot service to a project or room."
+)
 async def chatbot_deploy(
     *,
     service_name: Annotated[str, typer.Option("--service-name", help="Service name")],
@@ -1702,7 +1708,7 @@ async def chatbot_deploy(
         print(f"[green]Deployed service:[/] {service_id}")
 
 
-@worker_app.async_command("join")
+@worker_app.async_command("join", help="Join a room and run a Codex worker agent.")
 async def worker_join(
     *,
     project_id: ProjectIdOption,
@@ -2117,7 +2123,9 @@ async def worker_service(
         await run_services()
 
 
-@worker_app.async_command("spec")
+@worker_app.async_command(
+    "spec", help="Generate a service spec for deploying a Codex worker."
+)
 async def worker_spec(
     *,
     service_name: Annotated[str, typer.Option("--service-name", help="Service name")],
@@ -2327,7 +2335,9 @@ async def worker_spec(
     print(yaml.dump(spec.model_dump(mode="json", exclude_none=True), sort_keys=False))
 
 
-@worker_app.async_command("deploy")
+@worker_app.async_command(
+    "deploy", help="Deploy a Codex worker service to a project or room."
+)
 async def worker_deploy(
     *,
     service_name: Annotated[str, typer.Option("--service-name", help="Service name")],
@@ -2554,7 +2564,9 @@ async def worker_deploy(
         print(f"[green]Deployed service:[/] {service_id}")
 
 
-@chatbot_app.async_command("run")
+@chatbot_app.async_command(
+    "run", help="Join a room, start a Codex chatbot, and wait for messages."
+)
 async def chatbot_run(
     *,
     project_id: ProjectIdOption,
@@ -2799,7 +2811,10 @@ async def chatbot_run(
         await account_client.close()
 
 
-@chatbot_app.async_command("use")
+@chatbot_app.async_command(
+    "use",
+    help="Send a one-shot or interactive message to a running Codex chatbot.",
+)
 async def chatbot_use(
     *,
     project_id: ProjectIdOption,
@@ -2845,7 +2860,9 @@ async def chatbot_use(
     )
 
 
-@task_runner_app.async_command("run")
+@task_runner_app.async_command(
+    "run", help="Join a room, start a Codex task-runner, and wait for tasks."
+)
 async def task_runner_run(
     *,
     project_id: ProjectIdOption,
@@ -3262,7 +3279,9 @@ async def task_runner_service(
         await run_services()
 
 
-@task_runner_app.async_command("spec")
+@task_runner_app.async_command(
+    "spec", help="Generate a service spec for deploying a Codex task-runner."
+)
 async def task_runner_spec(
     *,
     service_name: Annotated[str, typer.Option("--service-name", help="Service name")],
@@ -3461,7 +3480,9 @@ async def task_runner_spec(
     print(yaml.dump(spec.model_dump(mode="json", exclude_none=True), sort_keys=False))
 
 
-@task_runner_app.async_command("deploy")
+@task_runner_app.async_command(
+    "deploy", help="Deploy a Codex task-runner service to a project or room."
+)
 async def task_runner_deploy(
     *,
     service_name: Annotated[str, typer.Option("--service-name", help="Service name")],

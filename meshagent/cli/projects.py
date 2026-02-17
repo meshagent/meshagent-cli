@@ -12,7 +12,7 @@ from meshagent.cli.common_options import OutputFormatOption
 app = async_typer.AsyncTyper(help="Manage or activate your meshagent projects")
 
 
-@app.async_command("create")
+@app.async_command("create", help="Create a new MeshAgent project.")
 async def create(name: str):
     client = await get_client()
     try:
@@ -22,7 +22,7 @@ async def create(name: str):
         await client.close()
 
 
-@app.async_command("list")
+@app.async_command("list", help="List projects and mark the currently active one.")
 async def list(
     o: OutputFormatOption = "table",
 ):
@@ -40,7 +40,9 @@ async def list(
     await client.close()
 
 
-@app.async_command("activate")
+@app.async_command(
+    "activate", help="Set the active project for subsequent CLI commands."
+)
 async def activate(
     project_id: str | None = typer.Argument(None),
     interactive: bool = typer.Option(

@@ -579,7 +579,7 @@ async def merge(
         await account_client.close()
 
 
-@app.async_command("update")
+@app.async_command("update", help="Update rows in a room database table.")
 async def update(
     *,
     project_id: ProjectIdOption,
@@ -633,7 +633,7 @@ async def update(
         await account_client.close()
 
 
-@app.async_command("delete")
+@app.async_command("delete", help="Delete rows from a room database table.")
 async def delete(
     *,
     project_id: ProjectIdOption,

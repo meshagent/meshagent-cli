@@ -590,7 +590,7 @@ async def exec_container(
 # -------------------------
 
 
-@app.async_command("run")
+@app.async_command("run", help="Run a container inside a room.")
 async def run_container(
     *,
     project_id: ProjectIdOption,
@@ -599,6 +599,13 @@ async def run_container(
     command: Annotated[
         Optional[str],
         typer.Option(..., help="Command to execute in the container (quoted string)"),
+    ] = None,
+    working_dir: Annotated[
+        Optional[str],
+        typer.Option(
+            "--working-dir",
+            help="Working directory inside the container (must be an absolute path)",
+        ),
     ] = None,
     env: Annotated[List[str], typer.Option("--env", "-e", help="KEY=VALUE")] = [],
     port: Annotated[
@@ -647,6 +654,7 @@ async def run_container(
             name=container_name,
             image=image,
             command=command,
+            working_dir=working_dir,
             env=env_map,
             mount_path=mount_path,
             mount_subpath=mount_subpath,
@@ -671,7 +679,7 @@ images_app = async_typer.AsyncTyper(help="Image operations")
 app.add_typer(images_app, name="images")
 
 
-@images_app.async_command("list")
+@images_app.async_command("list", help="List container images available in a room.")
 async def images_list(
     *,
     project_id: ProjectIdOption,
@@ -689,7 +697,7 @@ async def images_list(
         await account_client.close()
 
 
-@images_app.async_command("delete")
+@images_app.async_command("delete", help="Delete a container image from a room.")
 async def images_delete(
     *,
     project_id: ProjectIdOption,

@@ -164,7 +164,9 @@ def build_spec(
     )
 
 
-@app.async_command("spec")
+@app.async_command(
+    "spec", help="Generate a combined service spec from multiple subcommands."
+)
 async def spec(
     command: Annotated[str, typer.Option("-c", help=subcommand_help)],
     service_name: Annotated[str, typer.Option("--service-name", help="service name")],
@@ -188,7 +190,9 @@ async def spec(
     print(yaml.dump(spec.model_dump(mode="json", exclude_none=True), sort_keys=False))
 
 
-@app.async_command("deploy")
+@app.async_command(
+    "deploy", help="Deploy a combined service from multiple subcommands."
+)
 async def deploy(
     project_id: ProjectIdOption,
     command: Annotated[str, typer.Option("-c", help=subcommand_help)],
@@ -303,7 +307,7 @@ def import_from_path(path: str, module_name: str | None = None):
     return module
 
 
-@app.async_command("join")
+@app.async_command("join", help="Run multiple join commands together in one process.")
 async def join(
     *,
     project_id: ProjectIdOption,
