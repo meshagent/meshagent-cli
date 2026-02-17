@@ -97,7 +97,7 @@ WEBSERVER_USAGE_TEXT = "\n\n".join(
 )
 WEBSERVER_APP_HELP = f"""Run an HTTP webserver connected to a MeshAgent room.
 
-The webserver mounts static folders and python handlers from a routes file.
+The webserver mounts static files/folders and python handlers from a routes file.
 Python handlers run with access to the active room and request objects.
 This lets you build web applications that take advantage of the MeshAgent
 room's full feature set.
@@ -265,9 +265,10 @@ def _normalize_methods(*, methods: list[str], source: str) -> list[str]:
 
 def _resolve_path(*, raw_path: str, base_dir: Path) -> Path:
     path = Path(raw_path).expanduser()
-    if not path.is_absolute():
-        path = base_dir / path
-    return path.resolve()
+    if path.is_absolute():
+        # Route sources are always workspace-relative for consistency with website copy mode.
+        return (Path.cwd() / path.as_posix().lstrip("/")).resolve()
+    return (base_dir / path).resolve()
 
 
 def _resolve_routes_config(
@@ -582,9 +583,11 @@ def _resolve_validated_routes(
         raise typer.BadParameter("No routes were defined")
 
     for route in static_routes:
-        if not route.source.exists() or not route.source.is_dir():
+        if not route.source.exists():
+            raise typer.BadParameter(f"File route path was not found: {route.source}")
+        if not route.source.is_dir() and not route.source.is_file():
             raise typer.BadParameter(
-                f"File route path must be a directory: {route.source}"
+                f"File route path must be a file or directory: {route.source}"
             )
 
     loaded_python_routes = _load_python_routes(python_routes)
@@ -669,7 +672,19 @@ def build_webserver(
             mounted: list[tuple[str, str]] = []
 
             for route in static_routes:
-                app.router.add_static(route.path, route.source, show_index=True)
+                if route.source.is_dir():
+                    app.router.add_static(route.path, route.source, show_index=True)
+                else:
+
+                    async def _static_file(
+                        _req: web.Request,
+                        _source: Path = route.source,
+                    ) -> web.StreamResponse:
+                        if not _source.exists() or not _source.is_file():
+                            raise web.HTTPNotFound()
+                        return web.FileResponse(path=_source)
+
+                    app.router.add_get(route.path, _static_file)
                 mounted.append((route.path, f"static:{route.source}"))
 
             for route in loaded_python_routes:
@@ -750,14 +765,6 @@ def _website_config_relative_path(*, routes_file: str) -> str:
 
 def _website_mount_path(*, website_subpath: str) -> str:
     return str(PurePosixPath("/").joinpath(website_subpath))
-
-
-def _website_config_mounted_path(*, routes_file: str, website_mount_path: str) -> str:
-    return str(
-        PurePosixPath(website_mount_path).joinpath(
-            _website_config_relative_path(routes_file=routes_file)
-        )
-    )
 
 
 def _attach_routes_file_mount(*, spec: ServiceSpec, routes_file: str) -> str:
@@ -872,6 +879,7 @@ def _collect_website_upload_files(
     routes_file: str,
     include_routes_config: bool,
     website_mount_path: str = DEFAULT_WEBSITE_MOUNT_PATH,
+    runtime_paths_relative_to_working_dir: bool = False,
 ) -> list[WebsiteUploadFile]:
     routes_path = _routes_file_path(routes_file)
     routes_root = routes_path.parent.resolve()
@@ -883,7 +891,6 @@ def _collect_website_upload_files(
 
     for index, route in enumerate(source_config.routes):
         source_prefix = f"-f/--routes-file {routes_path} routes[{index}]"
-        route_target = local_config.routes[index]
         runtime_target = runtime_config.routes[index]
 
         if route.python is not None:
@@ -892,9 +899,10 @@ def _collect_website_upload_files(
                 routes_root=routes_root,
                 source_label=f"{source_prefix}.python",
             )
-            route_target.python = str(local_source)
-            runtime_target.python = str(
-                PurePosixPath(website_mount_path).joinpath(relative_path)
+            runtime_target.python = (
+                relative_path
+                if runtime_paths_relative_to_working_dir
+                else str(PurePosixPath(website_mount_path).joinpath(relative_path))
             )
             files[relative_path] = WebsiteUploadFile(
                 local_source=local_source,
@@ -907,9 +915,10 @@ def _collect_website_upload_files(
                 routes_root=routes_root,
                 source_label=f"{source_prefix}.static",
             )
-            route_target.static = str(local_source)
-            runtime_target.static = str(
-                PurePosixPath(website_mount_path).joinpath(relative_path)
+            runtime_target.static = (
+                relative_path
+                if runtime_paths_relative_to_working_dir
+                else str(PurePosixPath(website_mount_path).joinpath(relative_path))
             )
             static_source_roots[str(local_source)] = relative_path
 
@@ -925,6 +934,13 @@ def _collect_website_upload_files(
                 f"Unable to resolve static route copy source for website deployment: {route.source}"
             )
         relative_dir = static_source_roots[source_key]
+        if route.source.is_file():
+            files[relative_dir] = WebsiteUploadFile(
+                local_source=route.source,
+                relative_path=relative_dir,
+            )
+            continue
+
         static_files = sorted(
             path for path in route.source.rglob("*") if path.is_file()
         )
@@ -995,6 +1011,7 @@ async def _sync_website_files_to_room_storage(
         routes_file=routes_file,
         include_routes_config=include_routes_config,
         website_mount_path=website_mount_path,
+        runtime_paths_relative_to_working_dir=True,
     )
     connection = await account_client.connect_room(
         project_id=project_id, room=room_name
@@ -1523,6 +1540,7 @@ async def spec(
             routes_file=routes_file,
             include_routes_config=True,
             website_mount_path=cast(str, website_mount_path),
+            runtime_paths_relative_to_working_dir=True,
         )
         WebServer = _spec_stub_webserver_class()
     service.add_path(identity=agent_name, path=path, cls=WebServer)
@@ -1535,10 +1553,10 @@ async def spec(
             website_subpath=cast(str, website_subpath),
             website_mount_path=cast(str, website_mount_path),
         )
-        mounted_routes_path = _website_config_mounted_path(
-            routes_file=routes_file,
-            website_mount_path=cast(str, website_mount_path),
-        )
+        if spec.container is None:
+            raise typer.BadParameter("Service spec is missing container configuration")
+        spec.container.working_dir = cast(str, website_mount_path)
+        mounted_routes_path = _website_config_relative_path(routes_file=routes_file)
     else:
         mounted_routes_path = _attach_routes_file_mount(
             spec=spec, routes_file=routes_file
@@ -1665,6 +1683,7 @@ async def deploy(
             routes_file=routes_file,
             include_routes_config=True,
             website_mount_path=cast(str, website_mount_path),
+            runtime_paths_relative_to_working_dir=True,
         )
         WebServer = _spec_stub_webserver_class()
     service.add_path(identity=agent_name, path=path, cls=WebServer)
@@ -1677,10 +1696,10 @@ async def deploy(
             website_subpath=cast(str, website_subpath),
             website_mount_path=cast(str, website_mount_path),
         )
-        mounted_routes_path = _website_config_mounted_path(
-            routes_file=routes_file,
-            website_mount_path=cast(str, website_mount_path),
-        )
+        if spec.container is None:
+            raise typer.BadParameter("Service spec is missing container configuration")
+        spec.container.working_dir = cast(str, website_mount_path)
+        mounted_routes_path = _website_config_relative_path(routes_file=routes_file)
     else:
         mounted_routes_path = _attach_routes_file_mount(
             spec=spec, routes_file=routes_file
