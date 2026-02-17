@@ -108,6 +108,78 @@ logger = logging.getLogger("taskrunner")
 
 app = async_typer.AsyncTyper(help="Join a taskrunner to a room")
 
+ShellCopyEnvOption = Annotated[
+    list[str],
+    typer.Option(
+        "--shell-copy-env",
+        help=(
+            "Copy local env vars into shell tool env. "
+            "Accepts comma-separated names and can be repeated."
+        ),
+    ),
+]
+
+ShellSetEnvOption = Annotated[
+    list[str],
+    typer.Option(
+        "--shell-set-env",
+        help=("Set env vars in shell tool env as NAME=VALUE. Can be repeated."),
+    ),
+]
+
+
+def _copy_shell_env_vars(*, copy_env: Optional[list[str]]) -> dict[str, str]:
+    if copy_env is None:
+        return {}
+
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in copy_env:
+        for split_item in item.split(","):
+            name = split_item.strip()
+            if name == "":
+                continue
+            if name in seen:
+                continue
+            seen.add(name)
+            names.append(name)
+
+    env: dict[str, str] = {}
+    for name in names:
+        value = os.getenv(name)
+        if value is None:
+            raise typer.BadParameter(f"--shell-copy-env variable is not set: {name}")
+        env[name] = value
+
+    return env
+
+
+def _set_shell_env_vars(*, set_env: Optional[list[str]]) -> dict[str, str]:
+    if set_env is None:
+        return {}
+
+    env: dict[str, str] = {}
+    for item in set_env:
+        value = item.strip()
+        if value == "":
+            continue
+
+        if "=" not in value:
+            raise typer.BadParameter(
+                f"--shell-set-env value must be NAME=VALUE, got: {item}"
+            )
+
+        name, assigned_value = value.split("=", 1)
+        name = name.strip()
+        if name == "":
+            raise typer.BadParameter(
+                f"--shell-set-env variable name cannot be empty: {item}"
+            )
+
+        env[name] = assigned_value
+
+    return env
+
 
 def read_task_runner_input(input_value: Optional[str]) -> str:
     if input_value is None:
@@ -171,6 +243,8 @@ def build_task_runner(
     shell_image: Optional[str] = None,
     skill_dirs: Optional[list[str]] = None,
     delegate_shell_token: Optional[bool] = None,
+    shell_copy_env: Optional[list[str]] = None,
+    shell_set_env: Optional[list[str]] = None,
     log_llm_requests: Optional[bool] = False,
 ):
     output_schema = None
@@ -219,6 +293,8 @@ def build_task_runner(
     is_claude_model = model.startswith("claude-")
     is_openai = not is_claude_model
     supports_openai_tools = llm_participant is None and not is_claude_model
+    base_shell_env = _copy_shell_env_vars(copy_env=shell_copy_env)
+    base_shell_env.update(_set_shell_env_vars(set_env=shell_set_env))
     if not supports_openai_tools:
         if image_generation or require_image_generation:
             print("image generation tool is only supported by openai models")
@@ -265,7 +341,7 @@ def build_task_runner(
         async def start(self, *, room: RoomClient):
             await super().start(room=room)
 
-            env = {}
+            env = dict(base_shell_env)
             if delegate_shell_token:
                 env["MESHAGENT_TOKEN"] = self.room.protocol.token
                 env["OPENAI_API_KEY"] = self.room.protocol.token
@@ -505,6 +581,7 @@ def build_task_runner(
             if shell:
                 shell_builder_kwargs = {
                     "working_directory": working_directory,
+                    "env": base_shell_env or None,
                 }
                 if shell_tool_mounts is not None:
                     shell_builder_kwargs["mounts"] = shell_tool_mounts
@@ -710,6 +787,8 @@ async def join(
         Optional[bool],
         typer.Option(..., help="Delegate the room token to shell tools"),
     ] = False,
+    shell_copy_env: ShellCopyEnvOption = [],
+    shell_set_env: ShellSetEnvOption = [],
     key: Annotated[
         str,
         typer.Option("--key", help="an api key to sign the token with"),
@@ -844,6 +923,8 @@ async def join(
             shell_image=shell_image,
             skill_dirs=skill_dir,
             delegate_shell_token=delegate_shell_token,
+            shell_copy_env=shell_copy_env,
+            shell_set_env=shell_set_env,
             llm_participant=llm_participant,
             output_schema_str=output_schema,
             output_schema_path=output_schema_path,
@@ -1040,6 +1121,8 @@ async def run(
         Optional[bool],
         typer.Option(..., help="Delegate the room token to shell tools"),
     ] = False,
+    shell_copy_env: ShellCopyEnvOption = [],
+    shell_set_env: ShellSetEnvOption = [],
     key: Annotated[
         str,
         typer.Option("--key", help="an api key to sign the token with"),
@@ -1189,6 +1272,8 @@ async def run(
             shell_image=shell_image,
             skill_dirs=skill_dir,
             delegate_shell_token=delegate_shell_token,
+            shell_copy_env=shell_copy_env,
+            shell_set_env=shell_set_env,
             llm_participant=llm_participant,
             output_schema_str=output_schema,
             output_schema_path=output_schema_path,
@@ -1405,6 +1490,8 @@ async def service(
         Optional[bool],
         typer.Option(..., help="Delegate the room token to shell tools"),
     ] = False,
+    shell_copy_env: ShellCopyEnvOption = [],
+    shell_set_env: ShellSetEnvOption = [],
     require_document_authoring: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable document authoring"),
@@ -1526,6 +1613,8 @@ async def service(
             shell_image=shell_image,
             skill_dirs=skill_dir,
             delegate_shell_token=delegate_shell_token,
+            shell_copy_env=shell_copy_env,
+            shell_set_env=shell_set_env,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
             llm_participant=llm_participant,
@@ -1703,6 +1792,8 @@ async def spec(
         Optional[bool],
         typer.Option(..., help="Delegate the room token to shell tools"),
     ] = False,
+    shell_copy_env: ShellCopyEnvOption = [],
+    shell_set_env: ShellSetEnvOption = [],
     require_document_authoring: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable document authoring"),
@@ -1822,6 +1913,8 @@ async def spec(
             shell_image=shell_image,
             skill_dirs=skill_dir,
             delegate_shell_token=delegate_shell_token,
+            shell_copy_env=shell_copy_env,
+            shell_set_env=shell_set_env,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
             llm_participant=llm_participant,
@@ -2003,6 +2096,8 @@ async def deploy(
         Optional[bool],
         typer.Option(..., help="Delegate the room token to shell tools"),
     ] = False,
+    shell_copy_env: ShellCopyEnvOption = [],
+    shell_set_env: ShellSetEnvOption = [],
     require_document_authoring: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable document authoring"),
@@ -2128,6 +2223,8 @@ async def deploy(
             shell_image=shell_image,
             skill_dirs=skill_dir,
             delegate_shell_token=delegate_shell_token,
+            shell_copy_env=shell_copy_env,
+            shell_set_env=shell_set_env,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
             llm_participant=llm_participant,

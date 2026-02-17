@@ -95,6 +95,78 @@ logger = logging.getLogger("worker_cli")
 
 app = async_typer.AsyncTyper(help="Join a worker agent to a room")
 
+ShellCopyEnvOption = Annotated[
+    list[str],
+    typer.Option(
+        "--shell-copy-env",
+        help=(
+            "Copy local env vars into shell tool env. "
+            "Accepts comma-separated names and can be repeated."
+        ),
+    ),
+]
+
+ShellSetEnvOption = Annotated[
+    list[str],
+    typer.Option(
+        "--shell-set-env",
+        help=("Set env vars in shell tool env as NAME=VALUE. Can be repeated."),
+    ),
+]
+
+
+def _copy_shell_env_vars(*, copy_env: Optional[list[str]]) -> dict[str, str]:
+    if copy_env is None:
+        return {}
+
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in copy_env:
+        for split_item in item.split(","):
+            name = split_item.strip()
+            if name == "":
+                continue
+            if name in seen:
+                continue
+            seen.add(name)
+            names.append(name)
+
+    env: dict[str, str] = {}
+    for name in names:
+        value = os.getenv(name)
+        if value is None:
+            raise typer.BadParameter(f"--shell-copy-env variable is not set: {name}")
+        env[name] = value
+
+    return env
+
+
+def _set_shell_env_vars(*, set_env: Optional[list[str]]) -> dict[str, str]:
+    if set_env is None:
+        return {}
+
+    env: dict[str, str] = {}
+    for item in set_env:
+        value = item.strip()
+        if value == "":
+            continue
+
+        if "=" not in value:
+            raise typer.BadParameter(
+                f"--shell-set-env value must be NAME=VALUE, got: {item}"
+            )
+
+        name, assigned_value = value.split("=", 1)
+        name = name.strip()
+        if name == "":
+            raise typer.BadParameter(
+                f"--shell-set-env variable name cannot be empty: {item}"
+            )
+
+        env[name] = assigned_value
+
+    return env
+
 
 def build_worker(
     *,
@@ -141,6 +213,8 @@ def build_worker(
     skill_dirs: Optional[list[str]] = None,
     shell_image: Optional[str] = None,
     delegate_shell_token: Optional[bool] = None,
+    shell_copy_env: Optional[list[str]] = None,
+    shell_set_env: Optional[list[str]] = None,
     log_llm_requests: Optional[bool] = None,
     prompt: Optional[str] = None,
 ):
@@ -173,6 +247,8 @@ def build_worker(
     is_claude_model = model.startswith("claude-")
     is_openai = not is_claude_model
     supports_openai_tools = not is_claude_model
+    base_shell_env = _copy_shell_env_vars(copy_env=shell_copy_env)
+    base_shell_env.update(_set_shell_env_vars(set_env=shell_set_env))
     if not supports_openai_tools:
         if image_generation or require_image_generation:
             print("image generation tool is only supported by openai models")
@@ -242,7 +318,7 @@ def build_worker(
             )
             await super().start(room=room)
 
-            env = {}
+            env = dict(base_shell_env)
             if delegate_shell_token:
                 env["MESHAGENT_TOKEN"] = self.room.protocol.token
                 env["OPENAI_API_KEY"] = self.room.protocol.token
@@ -329,6 +405,7 @@ def build_worker(
                 shell_builder_kwargs = {
                     "working_directory": working_directory,
                     "image": shell_image,
+                    "env": base_shell_env or None,
                 }
                 if shell_tool_mounts is not None:
                     shell_builder_kwargs["mounts"] = shell_tool_mounts
@@ -668,6 +745,8 @@ async def join(
         Optional[bool],
         typer.Option(..., help="Delegate the room token to shell tools"),
     ] = False,
+    shell_copy_env: ShellCopyEnvOption = [],
+    shell_set_env: ShellSetEnvOption = [],
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -761,6 +840,8 @@ async def join(
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
+            shell_copy_env=shell_copy_env,
+            shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
             prompt=prompt,
         )
@@ -987,6 +1068,8 @@ async def service(
         Optional[bool],
         typer.Option(..., help="Delegate the room token to shell tools"),
     ] = False,
+    shell_copy_env: ShellCopyEnvOption = [],
+    shell_set_env: ShellSetEnvOption = [],
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -1066,6 +1149,8 @@ async def service(
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
+            shell_copy_env=shell_copy_env,
+            shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
             prompt=prompt,
         ),
@@ -1282,6 +1367,8 @@ async def spec(
         Optional[bool],
         typer.Option(..., help="Delegate the room token to shell tools"),
     ] = False,
+    shell_copy_env: ShellCopyEnvOption = [],
+    shell_set_env: ShellSetEnvOption = [],
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -1361,6 +1448,8 @@ async def spec(
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
+            shell_copy_env=shell_copy_env,
+            shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
             prompt=prompt,
         ),
@@ -1588,6 +1677,8 @@ async def deploy(
         Optional[bool],
         typer.Option(..., help="Delegate the room token to shell tools"),
     ] = False,
+    shell_copy_env: ShellCopyEnvOption = [],
+    shell_set_env: ShellSetEnvOption = [],
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -1674,6 +1765,8 @@ async def deploy(
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
+            shell_copy_env=shell_copy_env,
+            shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
             prompt=prompt,
         ),

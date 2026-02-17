@@ -109,6 +109,78 @@ logger = logging.getLogger("chatbot")
 
 app = async_typer.AsyncTyper(help="Join a chatbot to a room")
 
+ShellCopyEnvOption = Annotated[
+    list[str],
+    typer.Option(
+        "--shell-copy-env",
+        help=(
+            "Copy local env vars into shell tool env. "
+            "Accepts comma-separated names and can be repeated."
+        ),
+    ),
+]
+
+ShellSetEnvOption = Annotated[
+    list[str],
+    typer.Option(
+        "--shell-set-env",
+        help=("Set env vars in shell tool env as NAME=VALUE. Can be repeated."),
+    ),
+]
+
+
+def _copy_shell_env_vars(*, copy_env: Optional[list[str]]) -> dict[str, str]:
+    if copy_env is None:
+        return {}
+
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in copy_env:
+        for split_item in item.split(","):
+            name = split_item.strip()
+            if name == "":
+                continue
+            if name in seen:
+                continue
+            seen.add(name)
+            names.append(name)
+
+    env: dict[str, str] = {}
+    for name in names:
+        value = os.getenv(name)
+        if value is None:
+            raise typer.BadParameter(f"--shell-copy-env variable is not set: {name}")
+        env[name] = value
+
+    return env
+
+
+def _set_shell_env_vars(*, set_env: Optional[list[str]]) -> dict[str, str]:
+    if set_env is None:
+        return {}
+
+    env: dict[str, str] = {}
+    for item in set_env:
+        value = item.strip()
+        if value == "":
+            continue
+
+        if "=" not in value:
+            raise typer.BadParameter(
+                f"--shell-set-env value must be NAME=VALUE, got: {item}"
+            )
+
+        name, assigned_value = value.split("=", 1)
+        name = name.strip()
+        if name == "":
+            raise typer.BadParameter(
+                f"--shell-set-env variable name cannot be empty: {item}"
+            )
+
+        env[name] = assigned_value
+
+    return env
+
 
 def build_chatbot(
     *,
@@ -155,6 +227,8 @@ def build_chatbot(
     shell_image: Optional[str] = None,
     log_llm_requests: Optional[bool] = None,
     delegate_shell_token: Optional[bool] = None,
+    shell_copy_env: Optional[list[str]] = None,
+    shell_set_env: Optional[list[str]] = None,
 ):
     from meshagent.agents.chat import ChatBot
 
@@ -189,6 +263,8 @@ def build_chatbot(
     is_claude_model = model.startswith("claude-")
     is_openai = not is_claude_model
     supports_openai_tools = llm_participant is None and not is_claude_model
+    base_shell_env = _copy_shell_env_vars(copy_env=shell_copy_env)
+    base_shell_env.update(_set_shell_env_vars(set_env=shell_set_env))
     if not supports_openai_tools:
         if image_generation or require_image_generation:
             print("[red]image generation tool is only supported by openai models[/red]")
@@ -252,7 +328,7 @@ def build_chatbot(
         async def start(self, *, room: RoomClient):
             await super().start(room=room)
 
-            env = {}
+            env = dict(base_shell_env)
 
             if delegate_shell_token:
                 env["MESHAGENT_TOKEN"] = self.room.protocol.token
@@ -512,6 +588,7 @@ def build_chatbot(
                 shell_builder_kwargs = {
                     "working_directory": working_directory,
                     "image": shell_image,
+                    "env": base_shell_env or None,
                 }
                 if shell_tool_mounts is not None:
                     shell_builder_kwargs["mounts"] = shell_tool_mounts
@@ -771,6 +848,8 @@ async def join(
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
+    shell_copy_env: ShellCopyEnvOption = [],
+    shell_set_env: ShellSetEnvOption = [],
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -865,6 +944,8 @@ async def join(
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
+            shell_copy_env=shell_copy_env,
+            shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
         )
 
@@ -1115,6 +1196,8 @@ async def service(
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
+    shell_copy_env: ShellCopyEnvOption = [],
+    shell_set_env: ShellSetEnvOption = [],
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -1191,6 +1274,8 @@ async def service(
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
+            shell_copy_env=shell_copy_env,
+            shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
         ),
     )
@@ -1420,6 +1505,8 @@ async def spec(
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
+    shell_copy_env: ShellCopyEnvOption = [],
+    shell_set_env: ShellSetEnvOption = [],
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -1495,6 +1582,8 @@ async def spec(
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
+            shell_copy_env=shell_copy_env,
+            shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
         ),
     )
@@ -1735,6 +1824,8 @@ async def deploy(
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
+    shell_copy_env: ShellCopyEnvOption = [],
+    shell_set_env: ShellSetEnvOption = [],
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -1817,6 +1908,8 @@ async def deploy(
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
+            shell_copy_env=shell_copy_env,
+            shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
         ),
     )
@@ -2391,6 +2484,8 @@ async def chat_with(
                 return
 
             await self._chat_client.send(text=user_input, tools=build_tools())
+            if self._messages_scroll is not None:
+                self._messages_scroll.scroll_end(animate=False)
 
         def on_text_area_changed(self, event: TextArea.Changed) -> None:
             if self._chat_input is None or event.text_area is not self._chat_input:
@@ -2454,10 +2549,16 @@ async def chat_with(
                 self._messages_view.update("")
                 return
 
-            self._has_active_events = False
+            items = message_nodes[0].get_children()
+            self._has_active_events = self._thread_has_active_events(items)
             rendered_items: list[RenderableType] = []
-            for item in message_nodes[0].get_children():
-                for renderable in self._render_thread_item(item):
+            last_index = len(items) - 1
+            for index, item in enumerate(items):
+                for renderable in self._render_thread_item(
+                    item,
+                    is_last_item=index == last_index,
+                    has_active_event=self._has_active_events,
+                ):
                     rendered_items.append(renderable)
 
             if len(rendered_items) == 0:
@@ -2468,10 +2569,28 @@ async def chat_with(
             if self._messages_scroll is not None:
                 self._messages_scroll.scroll_end(animate=False)
 
-        def _render_thread_item(self, item) -> list[RenderableType]:
+        def _thread_has_active_events(self, items) -> bool:
+            for item in items:
+                if getattr(item, "tag_name", None) != "event":
+                    continue
+                state = item.get_attribute("state") or "info"
+                if self._is_active_event_state(state):
+                    return True
+            return False
+
+        def _render_thread_item(
+            self,
+            item,
+            *,
+            is_last_item: bool,
+            has_active_event: bool,
+        ) -> list[RenderableType]:
             tag_name = getattr(item, "tag_name", None)
             if tag_name == "message":
-                return [self._render_message_item(item)]
+                render_markdown = not (has_active_event and is_last_item)
+                return [
+                    self._render_message_item(item, render_markdown=render_markdown)
+                ]
             if tag_name == "event":
                 return [self._render_event_item(item)]
             if tag_name == "reasoning":
@@ -2485,7 +2604,9 @@ async def chat_with(
                 return [self._render_ui_item(item)]
             return []
 
-        def _render_message_item(self, item) -> RenderableType:
+        def _render_message_item(
+            self, item, *, render_markdown: bool = True
+        ) -> RenderableType:
             author = item.get_attribute("author_name") or "unknown"
             text = item.get_attribute("text") or ""
             relative_time = self._relative_time_label(item.get_attribute("created_at"))
@@ -2518,7 +2639,13 @@ async def chat_with(
             add_message_row(Text(sender_prefix, style=header_style))
 
             markdown_text = text if text.strip() != "" else " "
-            add_message_row(Markdown(markdown_text), left_padding="  ")
+            if render_markdown:
+                add_message_row(Markdown(markdown_text), left_padding="  ")
+            else:
+                add_message_row(
+                    Text(markdown_text, no_wrap=False, overflow="fold"),
+                    left_padding="  ",
+                )
 
             for child in item.get_children():
                 if getattr(child, "tag_name", None) == "file":
@@ -3138,6 +3265,8 @@ async def run(
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
+    shell_copy_env: ShellCopyEnvOption = [],
+    shell_set_env: ShellSetEnvOption = [],
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -3260,6 +3389,8 @@ async def run(
                 skill_dirs=skill_dir,
                 shell_image=shell_image,
                 delegate_shell_token=delegate_shell_token,
+                shell_copy_env=shell_copy_env,
+                shell_set_env=shell_set_env,
                 log_llm_requests=log_llm_requests,
             )
 
