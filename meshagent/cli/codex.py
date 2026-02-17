@@ -68,6 +68,17 @@ DelegateShellTokenOption = Annotated[
     ),
 ]
 
+CopyEnvOption = Annotated[
+    list[str],
+    typer.Option(
+        "--copy-env",
+        help=(
+            "Copy local env vars into codex app-server env. "
+            "Accepts comma-separated names and can be repeated."
+        ),
+    ),
+]
+
 
 def _room_openai_base_url(*, room_name: str) -> str:
     room_url = websocket_room_url(room_name=room_name)
@@ -135,6 +146,32 @@ def _delegate_shell_token_env(*, jwt: Optional[str]) -> Optional[dict[str, str]]
         "OPENAI_API_KEY": normalized,
         "ANTHROPIC_API_KEY": normalized,
     }
+
+
+def _copy_env_vars(*, copy_env: Optional[list[str]]) -> dict[str, str]:
+    if copy_env is None:
+        return {}
+
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in copy_env:
+        for split_item in item.split(","):
+            name = split_item.strip()
+            if name == "":
+                continue
+            if name in seen:
+                continue
+            seen.add(name)
+            names.append(name)
+
+    env: dict[str, str] = {}
+    for name in names:
+        value = os.getenv(name)
+        if value is None:
+            raise typer.BadParameter(f"--copy-env variable is not set: {name}")
+        env[name] = value
+
+    return env
 
 
 def _read_task_runner_input(input_value: Optional[str]) -> str:
@@ -329,6 +366,7 @@ def _resolve_codex_runtime(
     room_name: Optional[str] = None,
     jwt: Optional[str] = None,
     delegate_shell_token: bool = False,
+    copy_env: Optional[list[str]] = None,
 ) -> tuple[Optional[str], Optional[str], Optional[dict[str, str]]]:
     if command is not None and ws_url is not None:
         print(
@@ -338,16 +376,20 @@ def _resolve_codex_runtime(
     if ws_url is not None:
         return None, ws_url, None
 
-    app_server_env = (
-        _delegate_shell_token_env(jwt=jwt) if delegate_shell_token else None
-    )
+    app_server_env = _copy_env_vars(copy_env=copy_env)
+    if delegate_shell_token:
+        delegate_env = _delegate_shell_token_env(jwt=jwt)
+        if delegate_env is not None:
+            app_server_env.update(delegate_env)
+
+    resolved_app_server_env = app_server_env or None
     if room_name is not None and command is None:
         if codex_image is not None:
             command = _default_codex_container_command()
         else:
             command = _default_codex_command(room_name=room_name)
 
-    return command, None, app_server_env
+    return command, None, resolved_app_server_env
 
 
 def build_codex_chatbot(
@@ -851,6 +893,7 @@ async def chatbot_join(
         ),
     ] = False,
     delegate_shell_token: DelegateShellTokenOption = False,
+    copy_env: CopyEnvOption = [],
     key: Annotated[
         Optional[str], typer.Option("--key", help="An api key to sign the token with")
     ] = None,
@@ -904,6 +947,7 @@ async def chatbot_join(
             room_name=room_name,
             jwt=jwt,
             delegate_shell_token=delegate_shell_token,
+            copy_env=copy_env,
         )
 
         CustomCodexChatBot = build_codex_chatbot(
@@ -1072,6 +1116,7 @@ async def task_runner_join(
         ),
     ] = False,
     delegate_shell_token: DelegateShellTokenOption = False,
+    copy_env: CopyEnvOption = [],
     key: Annotated[
         Optional[str], typer.Option("--key", help="An api key to sign the token with")
     ] = None,
@@ -1125,6 +1170,7 @@ async def task_runner_join(
             room_name=room_name,
             jwt=jwt,
             delegate_shell_token=delegate_shell_token,
+            copy_env=copy_env,
         )
 
         CustomCodexTaskRunner = build_codex_task_runner(
@@ -1277,6 +1323,7 @@ async def chatbot_service(
         ),
     ] = False,
     delegate_shell_token: DelegateShellTokenOption = False,
+    copy_env: CopyEnvOption = [],
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -1304,6 +1351,7 @@ async def chatbot_service(
         ws_url=ws_url,
         codex_image=codex_image,
         delegate_shell_token=delegate_shell_token,
+        copy_env=copy_env,
     )
     service = get_service(host=host, port=port)
     if path is None:
@@ -1459,6 +1507,7 @@ async def chatbot_spec(
         ),
     ] = False,
     delegate_shell_token: DelegateShellTokenOption = False,
+    copy_env: CopyEnvOption = [],
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -1488,6 +1537,7 @@ async def chatbot_spec(
         ws_url=ws_url,
         codex_image=codex_image,
         delegate_shell_token=delegate_shell_token,
+        copy_env=copy_env,
     )
     service = get_service(host=host, port=port)
     if path is None:
@@ -1657,6 +1707,7 @@ async def chatbot_deploy(
         ),
     ] = False,
     delegate_shell_token: DelegateShellTokenOption = False,
+    copy_env: CopyEnvOption = [],
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -1688,6 +1739,7 @@ async def chatbot_deploy(
         ws_url=ws_url,
         codex_image=codex_image,
         delegate_shell_token=delegate_shell_token,
+        copy_env=copy_env,
     )
     service = get_service(host=host, port=port)
     if path is None:
@@ -1877,6 +1929,7 @@ async def worker_join(
         ),
     ] = False,
     delegate_shell_token: DelegateShellTokenOption = False,
+    copy_env: CopyEnvOption = [],
     key: Annotated[
         Optional[str], typer.Option("--key", help="An api key to sign the token with")
     ] = None,
@@ -1930,6 +1983,7 @@ async def worker_join(
             room_name=room_name,
             jwt=jwt,
             delegate_shell_token=delegate_shell_token,
+            copy_env=copy_env,
         )
 
         CustomCodexWorker = build_codex_worker(
@@ -2096,6 +2150,7 @@ async def worker_service(
         ),
     ] = False,
     delegate_shell_token: DelegateShellTokenOption = False,
+    copy_env: CopyEnvOption = [],
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -2123,6 +2178,7 @@ async def worker_service(
         ws_url=ws_url,
         codex_image=codex_image,
         delegate_shell_token=delegate_shell_token,
+        copy_env=copy_env,
     )
     service = get_service(host=host, port=port)
     if path is None:
@@ -2292,6 +2348,7 @@ async def worker_spec(
         ),
     ] = False,
     delegate_shell_token: DelegateShellTokenOption = False,
+    copy_env: CopyEnvOption = [],
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -2321,6 +2378,7 @@ async def worker_spec(
         ws_url=ws_url,
         codex_image=codex_image,
         delegate_shell_token=delegate_shell_token,
+        copy_env=copy_env,
     )
     service = get_service(host=host, port=port)
     if path is None:
@@ -2511,6 +2569,7 @@ async def worker_deploy(
         ),
     ] = False,
     delegate_shell_token: DelegateShellTokenOption = False,
+    copy_env: CopyEnvOption = [],
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -2542,6 +2601,7 @@ async def worker_deploy(
         ws_url=ws_url,
         codex_image=codex_image,
         delegate_shell_token=delegate_shell_token,
+        copy_env=copy_env,
     )
     service = get_service(host=host, port=port)
     if path is None:
@@ -2732,6 +2792,7 @@ async def chatbot_run(
         ),
     ] = False,
     delegate_shell_token: DelegateShellTokenOption = False,
+    copy_env: CopyEnvOption = [],
     key: Annotated[
         Optional[str], typer.Option("--key", help="An api key to sign the token with")
     ] = None,
@@ -2807,6 +2868,7 @@ async def chatbot_run(
             room_name=room_name,
             jwt=jwt,
             delegate_shell_token=delegate_shell_token,
+            copy_env=copy_env,
         )
 
         CustomCodexChatBot = build_codex_chatbot(
@@ -3037,6 +3099,7 @@ async def task_runner_run(
         ),
     ] = False,
     delegate_shell_token: DelegateShellTokenOption = False,
+    copy_env: CopyEnvOption = [],
     key: Annotated[
         Optional[str], typer.Option("--key", help="An api key to sign the token with")
     ] = None,
@@ -3100,6 +3163,7 @@ async def task_runner_run(
             room_name=room_name,
             jwt=jwt,
             delegate_shell_token=delegate_shell_token,
+            copy_env=copy_env,
         )
 
         CustomCodexTaskRunner = build_codex_task_runner(
@@ -3273,6 +3337,7 @@ async def task_runner_service(
         ),
     ] = False,
     delegate_shell_token: DelegateShellTokenOption = False,
+    copy_env: CopyEnvOption = [],
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -3300,6 +3365,7 @@ async def task_runner_service(
         ws_url=ws_url,
         codex_image=codex_image,
         delegate_shell_token=delegate_shell_token,
+        copy_env=copy_env,
     )
     service = get_service(host=host, port=port)
     if path is None:
@@ -3458,6 +3524,7 @@ async def task_runner_spec(
         ),
     ] = False,
     delegate_shell_token: DelegateShellTokenOption = False,
+    copy_env: CopyEnvOption = [],
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -3487,6 +3554,7 @@ async def task_runner_spec(
         ws_url=ws_url,
         codex_image=codex_image,
         delegate_shell_token=delegate_shell_token,
+        copy_env=copy_env,
     )
     service = get_service(host=host, port=port)
     if path is None:
@@ -3666,6 +3734,7 @@ async def task_runner_deploy(
         ),
     ] = False,
     delegate_shell_token: DelegateShellTokenOption = False,
+    copy_env: CopyEnvOption = [],
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -3697,6 +3766,7 @@ async def task_runner_deploy(
         ws_url=ws_url,
         codex_image=codex_image,
         delegate_shell_token=delegate_shell_token,
+        copy_env=copy_env,
     )
     service = get_service(host=host, port=port)
     if path is None:
