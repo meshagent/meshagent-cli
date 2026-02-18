@@ -33,9 +33,11 @@ from meshagent.api.specs.service import (
     AgentSpec,
     ANNOTATION_AGENT_TYPE,
     ContainerMountSpec,
+    EnvironmentVariable,
     PortSpec,
     RoomStorageMountSpec,
     ServiceSpec,
+    TokenValue,
 )
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
@@ -1157,6 +1159,46 @@ def _attach_website_storage_mount(
     ]
 
 
+def _ensure_website_llm_token_environment(
+    *,
+    spec: ServiceSpec,
+    website_identity: str,
+) -> None:
+    if spec.container is None:
+        raise typer.BadParameter("Service spec is missing container configuration")
+
+    identity = website_identity.strip()
+    if identity == "":
+        raise typer.BadParameter("agent name must be a non-empty string")
+
+    environment = list(spec.container.environment or [])
+    default_scope = ApiScope.agent_default()
+
+    for env_name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+        token_value = TokenValue(
+            identity=identity,
+            api=default_scope,
+            role="agent",
+        )
+        for index, env_var in enumerate(environment):
+            if env_var.name != env_name:
+                continue
+            environment[index] = EnvironmentVariable(
+                name=env_name,
+                token=token_value,
+            )
+            break
+        else:
+            environment.append(
+                EnvironmentVariable(
+                    name=env_name,
+                    token=token_value,
+                )
+            )
+
+    spec.container.environment = environment
+
+
 @app.async_command("check")
 async def check(
     *,
@@ -1600,6 +1642,7 @@ async def spec(
             ),
         ]
     )
+    _ensure_website_llm_token_environment(spec=spec, website_identity=agent_name)
 
     print(yaml.dump(spec.model_dump(mode="json", exclude_none=True), sort_keys=False))
 
@@ -1741,6 +1784,7 @@ async def deploy(
             ),
         ]
     )
+    _ensure_website_llm_token_environment(spec=spec, website_identity=agent_name)
 
     client = await get_client()
     try:
