@@ -2,7 +2,7 @@ import typer
 import json
 import os
 from rich import print
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 from meshagent.tools import (
     Toolkit,
     WebFetchTool,
@@ -108,6 +108,8 @@ logger = logging.getLogger("taskrunner")
 
 app = async_typer.AsyncTyper(help="Join a taskrunner to a room")
 
+ThreadingMode = Literal["auto", "manual", "none"]
+
 ShellCopyEnvOption = Annotated[
     list[str],
     typer.Option(
@@ -143,6 +145,33 @@ WorkingDirectoryAliasOption = Annotated[
         "--working-directory",
         help="Alias for --working-dir",
         hidden=True,
+    ),
+]
+
+ThreadingModeOption = Annotated[
+    ThreadingMode,
+    typer.Option(
+        "--threading-mode",
+        help=(
+            "Threading mode: none (no persistence), manual (input path), "
+            "or auto (LLM-selected thread path)"
+        ),
+    ),
+]
+
+ThreadDirOption = Annotated[
+    str,
+    typer.Option(
+        "--thread-dir",
+        help="Thread directory for auto mode; thread path is <thread_dir>/<name>.thread",
+    ),
+]
+
+ThreadNameRuleOption = Annotated[
+    list[str],
+    typer.Option(
+        "--thread-name-rule",
+        help="Rule for generating auto thread names (repeatable)",
     ),
 ]
 
@@ -250,7 +279,9 @@ def build_task_runner(
     storage_tool_mounts: Optional[list[StorageToolMount]] = None,
     shell_tool_mounts: Optional[ContainerMountSpec] = None,
     allow_model_selection: bool = True,
-    allow_thread_selection: bool = False,
+    threading_mode: ThreadingMode = "none",
+    thread_dir: str = ".threads",
+    thread_name_rules: Optional[list[str]] = None,
     require_image_generation: Optional[str] = None,
     require_local_shell: Optional[str] = None,
     require_shell: Optional[bool] = None,
@@ -369,7 +400,9 @@ def build_task_runner(
                 title=title,
                 description=description,
                 allow_model_selection=allow_model_selection,
-                input_path=allow_thread_selection,
+                threading_mode=threading_mode,
+                thread_dir=thread_dir,
+                thread_name_rules=thread_name_rules,
             )
             self.shell_tool = None
 
@@ -853,12 +886,9 @@ async def join(
     allow_model_selection: Annotated[
         Optional[bool], typer.Option(..., help="a description for the task runner")
     ] = True,
-    allow_thread_selection: Annotated[
-        Optional[bool],
-        typer.Option(
-            ..., help="allow selecting a thread via input path for task context"
-        ),
-    ] = False,
+    threading_mode: ThreadingModeOption = "none",
+    thread_dir: ThreadDirOption = ".threads",
+    thread_name_rule: ThreadNameRuleOption = [],
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -922,7 +952,9 @@ async def join(
             title=title,
             description=description,
             allow_model_selection=allow_model_selection,
-            allow_thread_selection=allow_thread_selection,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
+            thread_name_rules=thread_name_rule if len(thread_name_rule) > 0 else None,
             log_llm_requests=log_llm_requests,
             model=model,
             local_shell=local_shell,
@@ -1192,12 +1224,9 @@ async def run(
     allow_model_selection: Annotated[
         Optional[bool], typer.Option(..., help="a description for the task runner")
     ] = True,
-    allow_thread_selection: Annotated[
-        Optional[bool],
-        typer.Option(
-            ..., help="allow selecting a thread via input path for task context"
-        ),
-    ] = False,
+    threading_mode: ThreadingModeOption = "none",
+    thread_dir: ThreadDirOption = ".threads",
+    thread_name_rule: ThreadNameRuleOption = [],
     input: Annotated[
         Optional[str],
         typer.Option(..., help="json input for the task runner, or '-' for stdin"),
@@ -1275,7 +1304,9 @@ async def run(
             title=title,
             description=description,
             allow_model_selection=allow_model_selection,
-            allow_thread_selection=allow_thread_selection,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
+            thread_name_rules=thread_name_rule if len(thread_name_rule) > 0 else None,
             log_llm_requests=log_llm_requests,
             model=model,
             local_shell=local_shell,
@@ -1573,12 +1604,9 @@ async def service(
     allow_model_selection: Annotated[
         Optional[bool], typer.Option(..., help="a description for the task runner")
     ] = True,
-    allow_thread_selection: Annotated[
-        Optional[bool],
-        typer.Option(
-            ..., help="allow selecting a thread via input path for task context"
-        ),
-    ] = False,
+    threading_mode: ThreadingModeOption = "none",
+    thread_dir: ThreadDirOption = ".threads",
+    thread_name_rule: ThreadNameRuleOption = [],
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -1623,7 +1651,9 @@ async def service(
             title=title,
             description=description,
             allow_model_selection=allow_model_selection,
-            allow_thread_selection=allow_thread_selection,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
+            thread_name_rules=thread_name_rule if len(thread_name_rule) > 0 else None,
             log_llm_requests=log_llm_requests,
             rule=rule,
             toolkit=toolkit,
@@ -1877,12 +1907,9 @@ async def spec(
     allow_model_selection: Annotated[
         Optional[bool], typer.Option(..., help="a description for the task runner")
     ] = True,
-    allow_thread_selection: Annotated[
-        Optional[bool],
-        typer.Option(
-            ..., help="allow selecting a thread via input path for task context"
-        ),
-    ] = False,
+    threading_mode: ThreadingModeOption = "none",
+    thread_dir: ThreadDirOption = ".threads",
+    thread_name_rule: ThreadNameRuleOption = [],
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
@@ -1925,7 +1952,9 @@ async def spec(
             title=title,
             description=description,
             allow_model_selection=allow_model_selection,
-            allow_thread_selection=allow_thread_selection,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
+            thread_name_rules=thread_name_rule if len(thread_name_rule) > 0 else None,
             log_llm_requests=log_llm_requests,
             rule=rule,
             toolkit=toolkit,
@@ -2183,12 +2212,9 @@ async def deploy(
     allow_model_selection: Annotated[
         Optional[bool], typer.Option(..., help="a description for the task runner")
     ] = True,
-    allow_thread_selection: Annotated[
-        Optional[bool],
-        typer.Option(
-            ..., help="allow selecting a thread via input path for task context"
-        ),
-    ] = False,
+    threading_mode: ThreadingModeOption = "none",
+    thread_dir: ThreadDirOption = ".threads",
+    thread_name_rule: ThreadNameRuleOption = [],
     project_id: ProjectIdOption,
     room: Annotated[
         Optional[str],
@@ -2237,7 +2263,9 @@ async def deploy(
             title=title,
             description=description,
             allow_model_selection=allow_model_selection,
-            allow_thread_selection=allow_thread_selection,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
+            thread_name_rules=thread_name_rule if len(thread_name_rule) > 0 else None,
             log_llm_requests=log_llm_requests,
             rule=rule,
             toolkit=toolkit,

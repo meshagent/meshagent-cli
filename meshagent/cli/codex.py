@@ -87,6 +87,35 @@ SetEnvOption = Annotated[
     ),
 ]
 
+ThreadingMode = Literal["auto", "manual", "none"]
+
+ThreadingModeOption = Annotated[
+    ThreadingMode,
+    typer.Option(
+        "--threading-mode",
+        help=(
+            "Threading mode: none (no persistence), manual (input path), "
+            "or auto (LLM-selected thread path)"
+        ),
+    ),
+]
+
+ThreadDirOption = Annotated[
+    str,
+    typer.Option(
+        "--thread-dir",
+        help="Thread directory for auto mode; thread path is <thread_dir>/<name>.thread",
+    ),
+]
+
+ThreadNameRuleOption = Annotated[
+    list[str],
+    typer.Option(
+        "--thread-name-rule",
+        help="Rule for generating auto thread names (repeatable)",
+    ),
+]
+
 
 def _room_openai_base_url(*, room_name: str) -> str:
     room_url = websocket_room_url(room_name=room_name)
@@ -574,6 +603,9 @@ def build_codex_task_runner(
     title: Optional[str],
     description: Optional[str],
     supports_tools: bool,
+    threading_mode: ThreadingMode = "none",
+    thread_dir: str = ".threads",
+    thread_name_rules: Optional[list[str]] = None,
     rule: list[str],
     toolkit: list[str],
     schema: list[str],
@@ -610,11 +642,26 @@ def build_codex_task_runner(
 
     class CustomCodexTaskRunner(CodexTaskRunner):
         def __init__(self):
+            thread_name_adapter = None
+            if threading_mode == "auto":
+                try:
+                    from meshagent.openai import OpenAIResponsesAdapter
+                except ImportError as exc:
+                    raise typer.BadParameter(
+                        "meshagent-openai is required for codex auto thread naming."
+                    ) from exc
+
+                thread_name_adapter = OpenAIResponsesAdapter(model=model)
+
             super().__init__(
                 title=title,
                 description=description,
                 requires=requirements,
                 supports_tools=supports_tools,
+                threading_mode=threading_mode,
+                thread_dir=thread_dir,
+                thread_name_rules=thread_name_rules,
+                llm_adapter=thread_name_adapter,
                 rules=rule if len(rule) > 0 else None,
                 client_rules=client_rules if len(client_rules) > 0 else None,
                 skill_dirs=skill_dirs if len(skill_dirs or []) > 0 else None,
@@ -1095,6 +1142,9 @@ async def task_runner_join(
     supports_tools: Annotated[
         bool, typer.Option(..., help="Whether the task runner supports tools")
     ] = True,
+    threading_mode: ThreadingModeOption = "none",
+    thread_dir: ThreadDirOption = ".threads",
+    thread_name_rule: ThreadNameRuleOption = [],
     command: Annotated[
         Optional[str], typer.Option(..., help="Command used to launch codex app-server")
     ] = None,
@@ -1214,6 +1264,9 @@ async def task_runner_join(
             title=title,
             description=description,
             supports_tools=supports_tools,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
+            thread_name_rules=thread_name_rule if len(thread_name_rule) > 0 else None,
             model=model,
             rule=rule,
             toolkit=require_toolkit + toolkit,
@@ -3096,6 +3149,9 @@ async def task_runner_run(
     supports_tools: Annotated[
         bool, typer.Option(..., help="Whether the task runner supports tools")
     ] = True,
+    threading_mode: ThreadingModeOption = "none",
+    thread_dir: ThreadDirOption = ".threads",
+    thread_name_rule: ThreadNameRuleOption = [],
     command: Annotated[
         Optional[str], typer.Option(..., help="Command used to launch codex app-server")
     ] = None,
@@ -3225,6 +3281,9 @@ async def task_runner_run(
             title=title,
             description=description,
             supports_tools=supports_tools,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
+            thread_name_rules=thread_name_rule if len(thread_name_rule) > 0 else None,
             model=model,
             rule=rule,
             toolkit=require_toolkit + toolkit,
@@ -3299,6 +3358,9 @@ async def task_runner_service(
     supports_tools: Annotated[
         bool, typer.Option(..., help="Whether the task runner supports tools")
     ] = True,
+    threading_mode: ThreadingModeOption = "none",
+    thread_dir: ThreadDirOption = ".threads",
+    thread_name_rule: ThreadNameRuleOption = [],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
     room_rules: Annotated[
         List[str],
@@ -3442,6 +3504,9 @@ async def task_runner_service(
             title=title,
             description=description,
             supports_tools=supports_tools,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
+            thread_name_rules=thread_name_rule if len(thread_name_rule) > 0 else None,
             model=model,
             rule=rule,
             toolkit=require_toolkit + toolkit,
@@ -3488,6 +3553,9 @@ async def task_runner_spec(
     supports_tools: Annotated[
         bool, typer.Option(..., help="Whether the task runner supports tools")
     ] = True,
+    threading_mode: ThreadingModeOption = "none",
+    thread_dir: ThreadDirOption = ".threads",
+    thread_name_rule: ThreadNameRuleOption = [],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
     room_rules: Annotated[
         List[str],
@@ -3633,6 +3701,9 @@ async def task_runner_spec(
             title=title,
             description=description,
             supports_tools=supports_tools,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
+            thread_name_rules=thread_name_rule if len(thread_name_rule) > 0 else None,
             model=model,
             rule=rule,
             toolkit=require_toolkit + toolkit,
@@ -3700,6 +3771,9 @@ async def task_runner_deploy(
     supports_tools: Annotated[
         bool, typer.Option(..., help="Whether the task runner supports tools")
     ] = True,
+    threading_mode: ThreadingModeOption = "none",
+    thread_dir: ThreadDirOption = ".threads",
+    thread_name_rule: ThreadNameRuleOption = [],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="A system rule")] = [],
     room_rules: Annotated[
         List[str],
@@ -3847,6 +3921,9 @@ async def task_runner_deploy(
             title=title,
             description=description,
             supports_tools=supports_tools,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
+            thread_name_rules=thread_name_rule if len(thread_name_rule) > 0 else None,
             model=model,
             rule=rule,
             toolkit=require_toolkit + toolkit,
