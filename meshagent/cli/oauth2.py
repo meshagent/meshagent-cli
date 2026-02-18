@@ -56,7 +56,7 @@ def _write_bytes(*, output_path: str, data: bytes) -> None:
     Path(output_path).expanduser().resolve().write_bytes(data)
 
 
-@app.async_command("oauth")
+@app.async_command("oauth", help="Request an OAuth token from another participant.")
 async def oauth2(
     *,
     project_id: ProjectIdOption,
@@ -121,7 +121,7 @@ async def oauth2(
         await account_client.close()
 
 
-@app.async_command("request")
+@app.async_command("request", help="Request a secret from another participant.")
 async def secret_request(
     *,
     project_id: ProjectIdOption,
@@ -183,7 +183,7 @@ async def secret_request(
         await account_client.close()
 
 
-@app.async_command("get")
+@app.async_command("get", help="Fetch a stored secret by ID.")
 async def secret_get(
     *,
     project_id: ProjectIdOption,
@@ -238,7 +238,7 @@ async def secret_get(
         await account_client.close()
 
 
-@app.async_command("set")
+@app.async_command("set", help="Store a secret by ID.")
 async def secret_set(
     *,
     project_id: ProjectIdOption,
@@ -319,7 +319,7 @@ async def secret_set(
         await account_client.close()
 
 
-@app.async_command("list")
+@app.async_command("list", help="List secrets in the room.")
 async def list(
     *,
     project_id: ProjectIdOption,
@@ -354,7 +354,7 @@ async def list(
         await account_client.close()
 
 
-@app.async_command("delete")
+@app.async_command("delete", help="Delete a secret by ID.")
 async def delete(
     *,
     project_id: ProjectIdOption,

@@ -17,7 +17,7 @@ from meshagent.cli.helper import get_client
 app = async_typer.AsyncTyper(help="Use queues in a room")
 
 
-@app.async_command("send")
+@app.async_command("send", help="Send a JSON message to a room queue.")
 async def send(
     *,
     project_id: ProjectIdOption,
@@ -57,7 +57,7 @@ async def send(
         await account_client.close()
 
 
-@app.async_command("receive")
+@app.async_command("receive", help="Receive a message from a room queue.")
 async def receive(
     *,
     project_id: ProjectIdOption,

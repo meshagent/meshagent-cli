@@ -372,7 +372,7 @@ async def _with_client(
 # -------------------------
 
 
-@app.async_command("ps")
+@app.async_command("ps", help="List containers in a room.")
 async def list_containers(
     *,
     project_id: ProjectIdOption,
@@ -412,7 +412,7 @@ async def list_containers(
         await account_client.close()
 
 
-@app.async_command("stop")
+@app.async_command("stop", help="Stop a running container in a room.")
 async def stop_container(
     *,
     project_id: ProjectIdOption,
@@ -431,7 +431,7 @@ async def stop_container(
         await account_client.close()
 
 
-@app.async_command("logs")
+@app.async_command("logs", help="Print container logs from a room.")
 async def container_logs(
     *,
     project_id: ProjectIdOption,
@@ -453,7 +453,7 @@ async def container_logs(
         await account_client.close()
 
 
-@app.async_command("exec")
+@app.async_command("exec", help="Execute a command inside a running container.")
 async def exec_container(
     *,
     project_id: ProjectIdOption,
@@ -716,7 +716,7 @@ async def images_delete(
         await account_client.close()
 
 
-@images_app.async_command("pull")
+@images_app.async_command("pull", help="Pull a container image into a room.")
 async def images_pull(
     *,
     project_id: ProjectIdOption,

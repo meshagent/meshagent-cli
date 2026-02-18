@@ -52,7 +52,7 @@ def split_glob_subpath(subpath: str):
         return (subpath, None)
 
 
-@app.async_command("exists")
+@app.async_command("exists", help="Check whether a path exists in room storage.")
 async def storage_exists_command(
     *,
     project_id: ProjectIdOption,
@@ -86,7 +86,7 @@ async def storage_exists_command(
         await account_client.close()
 
 
-@app.async_command("cp")
+@app.async_command("cp", help="Copy files between local paths and room storage.")
 async def storage_cp_command(
     *,
     project_id: ProjectIdOption,
@@ -317,7 +317,7 @@ async def storage_cp_command(
             await account_client.close()
 
 
-@app.async_command("show")
+@app.async_command("show", help="Print file contents from local disk or room storage.")
 async def storage_show_command(
     *,
     project_id: ProjectIdOption,
@@ -390,7 +390,9 @@ async def storage_show_command(
             await account_client.close()
 
 
-@app.async_command("rm")
+@app.async_command(
+    "rm", help="Remove files or directories from local disk or room storage."
+)
 async def storage_rm_command(
     *,
     project_id: ProjectIdOption,
@@ -592,7 +594,7 @@ async def storage_rm_command(
             await account_client.close()
 
 
-@app.async_command("ls")
+@app.async_command("ls", help="List files and directories locally or in room storage.")
 async def storage_ls_command(
     *,
     project_id: ProjectIdOption,

@@ -80,7 +80,7 @@ NamespaceOption = Annotated[
 # ---------------------------
 
 
-@app.async_command("tables")
+@app.async_command("tables", help="List database tables in a room.")
 async def list_tables(
     *,
     project_id: ProjectIdOption,
@@ -115,7 +115,7 @@ async def list_tables(
         await account_client.close()
 
 
-@app.async_command("inspect")
+@app.async_command("inspect", help="Inspect a table schema in a room database.")
 async def inspect(
     *,
     project_id: ProjectIdOption,
@@ -160,7 +160,9 @@ async def inspect(
         await account_client.close()
 
 
-@app.async_command("install")
+@app.async_command(
+    "install", help="Install required tables from a requirements JSON file."
+)
 async def install_requirements(
     *,
     project_id: ProjectIdOption,
@@ -200,7 +202,9 @@ async def install_requirements(
         await account_client.close()
 
 
-@app.async_command("create")
+@app.async_command(
+    "create", help="Create a room database table with optional schema and seed data."
+)
 async def create_table(
     *,
     project_id: ProjectIdOption,
@@ -319,7 +323,7 @@ async def create_table(
         await account_client.close()
 
 
-@app.async_command("drop")
+@app.async_command("drop", help="Drop a room database table.")
 async def drop_table(
     *,
     project_id: ProjectIdOption,
@@ -356,7 +360,7 @@ async def drop_table(
         await account_client.close()
 
 
-@app.async_command("add-columns")
+@app.async_command("add-columns", help="Add columns to a room database table.")
 async def add_columns(
     *,
     project_id: ProjectIdOption,
@@ -441,7 +445,7 @@ async def add_columns(
         await account_client.close()
 
 
-@app.async_command("drop-columns")
+@app.async_command("drop-columns", help="Drop columns from a room database table.")
 async def drop_columns(
     *,
     project_id: ProjectIdOption,
@@ -479,7 +483,7 @@ async def drop_columns(
         await account_client.close()
 
 
-@app.async_command("insert")
+@app.async_command("insert", help="Insert records into a room database table.")
 async def insert(
     *,
     project_id: ProjectIdOption,
@@ -529,7 +533,7 @@ async def insert(
         await account_client.close()
 
 
-@app.async_command("merge")
+@app.async_command("merge", help="Upsert records into a room database table.")
 async def merge(
     *,
     project_id: ProjectIdOption,
@@ -668,7 +672,7 @@ async def delete(
         await account_client.close()
 
 
-@app.async_command("search")
+@app.async_command("search", help="Search rows in a room database table.")
 async def search(
     *,
     project_id: ProjectIdOption,
@@ -742,7 +746,7 @@ async def search(
         await account_client.close()
 
 
-@app.async_command("optimize")
+@app.async_command("optimize", help="Optimize a room database table.")
 async def optimize(
     *,
     project_id: ProjectIdOption,
@@ -774,7 +778,7 @@ async def optimize(
         await account_client.close()
 
 
-@app.async_command("versions")
+@app.async_command("versions", help="List versions for a room database table.")
 async def list_versions(
     *,
     project_id: ProjectIdOption,
@@ -812,7 +816,9 @@ async def list_versions(
         await account_client.close()
 
 
-@app.async_command("checkout")
+@app.async_command(
+    "checkout", help="Check out a room database table at a specific version."
+)
 async def checkout(
     *,
     project_id: ProjectIdOption,
@@ -847,7 +853,9 @@ async def checkout(
         await account_client.close()
 
 
-@app.async_command("restore")
+@app.async_command(
+    "restore", help="Restore a room database table to a specific version."
+)
 async def restore(
     *,
     project_id: ProjectIdOption,
@@ -882,7 +890,7 @@ async def restore(
         await account_client.close()
 
 
-@app.async_command("indexes")
+@app.async_command("indexes", help="List indexes on a room database table.")
 async def list_indexes(
     *,
     project_id: ProjectIdOption,
@@ -920,7 +928,7 @@ async def list_indexes(
         await account_client.close()
 
 
-@app.async_command("index-create")
+@app.async_command("index-create", help="Create an index on a room database table.")
 async def create_index(
     *,
     project_id: ProjectIdOption,
@@ -986,7 +994,7 @@ async def create_index(
         await account_client.close()
 
 
-@app.async_command("index-drop")
+@app.async_command("index-drop", help="Drop an index from a room database table.")
 async def drop_index(
     *,
     project_id: ProjectIdOption,

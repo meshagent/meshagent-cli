@@ -9,8 +9,9 @@ from meshagent.cli.helper import (
 )
 from meshagent.api import RoomClient, WebSocketClientProtocol
 from meshagent.api.helpers import websocket_room_url
-from meshagent.api.room_server_client import ServicesClient
+from meshagent.api.room_server_client import ServicesClient, ListServicesResult
 from meshagent.api.specs.service import ServiceSpec
+from datetime import datetime
 
 
 app = async_typer.AsyncTyper(help="Manage services inside a room")
@@ -39,25 +40,65 @@ async def room_services_list_command(
         ) as client:
             print("[bold green]Fetching services...[/bold green]")
             services_client = ServicesClient(room=client)
-            services: list[ServiceSpec] = await services_client.list()
+            result: ListServicesResult = await services_client.list_with_state()
+            services: list[ServiceSpec] = result.services
+
+            def format_unix_timestamp(value: float | None) -> str | None:
+                if value is None:
+                    return None
+                return datetime.fromtimestamp(value).isoformat()
+
+            rows = []
+            for svc in services:
+                state = result.service_states.get(svc.id or "")
+                rows.append(
+                    {
+                        "id": svc.id,
+                        "name": svc.metadata.name,
+                        "image": svc.container.image
+                        if svc.container is not None
+                        else None,
+                        "state": state.state if state is not None else None,
+                        "container_id": state.container_id
+                        if state is not None
+                        else None,
+                        "restart_scheduled_at": format_unix_timestamp(
+                            state.restart_scheduled_at if state is not None else None
+                        ),
+                        "started_at": format_unix_timestamp(
+                            state.started_at if state is not None else None
+                        ),
+                        "restart_count": (
+                            state.restart_count if state is not None else None
+                        ),
+                        "last_exit_code": (
+                            state.last_exit_code if state is not None else None
+                        ),
+                    }
+                )
 
             if output == "json":
-                print({"services": [svc.model_dump(mode="json") for svc in services]})
+                print(
+                    {
+                        "services": [svc.model_dump(mode="json") for svc in services],
+                        "service_states": {
+                            sid: state.model_dump(mode="json")
+                            for sid, state in result.service_states.items()
+                        },
+                    }
+                )
             else:
                 print_json_table(
-                    [
-                        {
-                            "id": svc.id,
-                            "name": svc.metadata.name,
-                            "image": svc.container.image
-                            if svc.container is not None
-                            else None,
-                        }
-                        for svc in services
-                    ],
+                    rows,
                     "id",
                     "name",
                     "image",
+                    "state",
+                    "container_id",
+                    "started_at",
+                    "restart_scheduled_at",
+                    "restart_count",
+                    "last_exit_code",
                 )
     finally:
         await account_client.close()
