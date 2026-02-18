@@ -12,6 +12,8 @@ from meshagent.api.helpers import websocket_room_url
 from meshagent.api.room_server_client import ServicesClient, ListServicesResult
 from meshagent.api.specs.service import ServiceSpec
 from datetime import datetime
+from typing import Annotated, Optional
+import typer
 
 
 app = async_typer.AsyncTyper(help="Manage services inside a room")
@@ -100,5 +102,67 @@ async def room_services_list_command(
                     "restart_count",
                     "last_exit_code",
                 )
+    finally:
+        await account_client.close()
+
+
+@app.async_command(
+    "restart",
+    help="Restart a running room service by stopping its current container.",
+)
+async def room_services_restart_command(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    service_id: Annotated[
+        Optional[str], typer.Option("--id", help="Service ID to restart")
+    ] = None,
+    name: Annotated[
+        Optional[str], typer.Option("--name", help="Service name to restart")
+    ] = None,
+):
+    if (service_id is None and name is None) or (service_id and name):
+        raise typer.BadParameter("Provide exactly one of --id or --name")
+
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        room = resolve_room(room)
+
+        connection = await account_client.connect_room(project_id=project_id, room=room)
+
+        print("[bold green]Connecting to room...[/bold green]")
+        async with RoomClient(
+            protocol=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room),
+                token=connection.jwt,
+            )
+        ) as client:
+            services_client = ServicesClient(room=client)
+            result: ListServicesResult = await services_client.list_with_state()
+            services: list[ServiceSpec] = result.services
+
+            service: ServiceSpec | None = None
+            if service_id is not None:
+                service = next((svc for svc in services if svc.id == service_id), None)
+            elif name is not None:
+                service = next(
+                    (svc for svc in services if svc.metadata.name == name),
+                    None,
+                )
+
+            if service is None:
+                target = service_id if service_id is not None else name
+                print(f"[red]Service not found:[/] {target}")
+                raise typer.Exit(code=1)
+
+            if service.id is None:
+                print("[red]Service does not have an id and cannot be restarted.[/red]")
+                raise typer.Exit(code=1)
+
+            await services_client.restart(service_id=service.id)
+            print(
+                f"[green]Restart requested:[/] {service.metadata.name} ({service.id})"
+            )
     finally:
         await account_client.close()
