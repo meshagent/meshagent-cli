@@ -41,6 +41,7 @@ def build_voicebot(
     rules_file: Optional[list[str]] = None,
     toolkits: list[str],
     schemas: list[str],
+    voice: Optional[str] = None,
     auto_greet_message: Optional[str] = None,
     auto_greet_prompt: Optional[str] = None,
     room_rules_paths: list[str],
@@ -74,6 +75,7 @@ def build_voicebot(
     class CustomVoiceBot(VoiceBot):
         def __init__(self):
             super().__init__(
+                voice=voice if voice is not None else "echo",
                 auto_greet_message=auto_greet_message,
                 auto_greet_prompt=auto_greet_prompt,
                 requires=requirements,
@@ -203,6 +205,10 @@ async def join(
         Optional[str],
         typer.Option(help="Prompt to generate an auto-greet message"),
     ] = None,
+    voice: Annotated[
+        Optional[str],
+        typer.Option("--voice", help="OpenAI Realtime voice preset to use"),
+    ] = None,
     key: Annotated[
         str,
         typer.Option("--key", help="an api key to sign the token with"),
@@ -253,6 +259,7 @@ async def join(
             rules_file=rules_file,
             toolkits=require_toolkit + toolkit,
             schemas=require_schema + schema,
+            voice=voice,
             auto_greet_message=auto_greet_message,
             auto_greet_prompt=auto_greet_prompt,
             room_rules_paths=room_rules,
@@ -325,6 +332,10 @@ async def service(
         Optional[str],
         typer.Option(help="Prompt to generate an auto-greet message"),
     ] = None,
+    voice: Annotated[
+        Optional[str],
+        typer.Option("--voice", help="OpenAI Realtime voice preset to use"),
+    ] = None,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -348,6 +359,7 @@ async def service(
         rules_file=rules_file,
         toolkits=require_toolkit + toolkit,
         schemas=require_schema + schema,
+        voice=voice,
         auto_greet_message=auto_greet_message,
         auto_greet_prompt=auto_greet_prompt,
         room_rules_paths=room_rules,
@@ -418,6 +430,10 @@ async def spec(
         Optional[str],
         typer.Option(help="Prompt to generate an auto-greet message"),
     ] = None,
+    voice: Annotated[
+        Optional[str],
+        typer.Option("--voice", help="OpenAI Realtime voice preset to use"),
+    ] = None,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -441,6 +457,7 @@ async def spec(
         rules_file=rules_file,
         toolkits=require_toolkit + toolkit,
         schemas=require_schema + schema,
+        voice=voice,
         auto_greet_message=auto_greet_message,
         auto_greet_prompt=auto_greet_prompt,
         room_rules_paths=room_rules,
@@ -521,6 +538,10 @@ async def deploy(
         Optional[str],
         typer.Option(help="Prompt to generate an auto-greet message"),
     ] = None,
+    voice: Annotated[
+        Optional[str],
+        typer.Option("--voice", help="OpenAI Realtime voice preset to use"),
+    ] = None,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -551,6 +572,7 @@ async def deploy(
         rules_file=rules_file,
         toolkits=require_toolkit + toolkit,
         schemas=require_schema + schema,
+        voice=voice,
         auto_greet_message=auto_greet_message,
         auto_greet_prompt=auto_greet_prompt,
         room_rules_paths=room_rules,
