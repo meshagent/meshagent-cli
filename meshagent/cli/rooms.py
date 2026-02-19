@@ -45,6 +45,29 @@ def _maybe_parse_json(label: str, s: Optional[str]):
         raise RoomException(f"Invalid {label} JSON: {e}") from e
 
 
+def _maybe_parse_string_dict_json(
+    label: str, s: Optional[str]
+) -> Optional[dict[str, str]]:
+    if s is None:
+        return None
+    try:
+        parsed = json.loads(s)
+    except json.JSONDecodeError as e:
+        raise RoomException(f"Invalid {label} JSON: {e}") from e
+
+    if not isinstance(parsed, dict):
+        raise RoomException(f"Invalid {label} JSON: expected an object")
+
+    output: dict[str, str] = {}
+    for k, v in parsed.items():
+        if not isinstance(k, str):
+            raise RoomException(f"Invalid {label} JSON: all keys must be strings")
+        if not isinstance(v, str):
+            raise RoomException(f"Invalid {label} JSON: all values must be strings")
+        output[k] = v
+    return output
+
+
 # ---------------------------
 # Commands
 # ---------------------------
@@ -61,6 +84,13 @@ async def room_create_command(
     metadata: Annotated[
         Optional[str], typer.Option(help="Optional JSON object for room metadata")
     ] = None,
+    annotations: Annotated[
+        Optional[str],
+        typer.Option(
+            "--annotations",
+            help='Optional JSON object for room annotations, e.g. {"meshagent.storage.class":"ephemeral"}',
+        ),
+    ] = None,
 ):
     """
     Create a room in the project.
@@ -70,6 +100,7 @@ async def room_create_command(
         project_id = await resolve_project_id(project_id=project_id)
 
         meta_obj = _maybe_parse_json("metadata", metadata)
+        annotations_obj = _maybe_parse_string_dict_json("annotations", annotations)
 
         print(f"[bold green]Creating room {name}[/bold green]")
         room = await account_client.create_room(
@@ -77,11 +108,18 @@ async def room_create_command(
             name=name,
             if_not_exists=if_not_exists,
             metadata=meta_obj,
+            annotations=annotations_obj,
         )
 
         print(
             json.dumps(
-                {"id": room.id, "name": room.name, "metadata": room.metadata}, indent=2
+                {
+                    "id": room.id,
+                    "name": room.name,
+                    "metadata": room.metadata,
+                    "annotations": room.annotations,
+                },
+                indent=2,
             )
         )
 
@@ -127,6 +165,13 @@ async def room_update_command(
     id: Annotated[Optional[str], typer.Option(help="Room ID (preferred)")] = None,
     name: Optional[str] = None,
     new_name: Annotated[str, typer.Option(..., help="New room name")],
+    annotations: Annotated[
+        Optional[str],
+        typer.Option(
+            "--annotations",
+            help='Optional JSON object for room annotations, e.g. {"meshagent.storage.class":"ephemeral"}',
+        ),
+    ] = None,
 ):
     """
     Update a room's name (ID is preferred; name will be resolved to ID if needed).
@@ -138,12 +183,16 @@ async def room_update_command(
         rid = await _resolve_room_id_or_fail(
             account_client, project_id=project_id, room_id=id, room_name=room_name
         )
+        annotations_obj = _maybe_parse_string_dict_json("annotations", annotations)
 
         print(
             f"[bold green]Updating room id={rid} -> name='{new_name}'...[/bold green]"
         )
         await account_client.update_room(
-            project_id=project_id, room_id=rid, name=new_name
+            project_id=project_id,
+            room_id=rid,
+            name=new_name,
+            annotations=annotations_obj,
         )
         print("[bold cyan]Room updated.[/bold cyan]")
     except RoomException as ex:
@@ -179,7 +228,15 @@ async def room_list_command(
             offset=offset,
             order_by=order_by,
         )
-        output = [{"id": r.id, "name": r.name, "metadata": r.metadata} for r in rooms]
+        output = [
+            {
+                "id": r.id,
+                "name": r.name,
+                "metadata": r.metadata,
+                "annotations": r.annotations,
+            }
+            for r in rooms
+        ]
         print(json.dumps(output, indent=2))
     except RoomException as ex:
         print(f"[red]{ex}[/red]")
@@ -205,7 +262,15 @@ async def room_get_command(
         print(f"[bold green]Fetching room '{room_name}'...[/bold green]")
         r = await account_client.get_room(project_id=project_id, name=room_name)
         print(
-            json.dumps({"id": r.id, "name": r.name, "metadata": r.metadata}, indent=2)
+            json.dumps(
+                {
+                    "id": r.id,
+                    "name": r.name,
+                    "metadata": r.metadata,
+                    "annotations": r.annotations,
+                },
+                indent=2,
+            )
         )
     except RoomException as ex:
         print(f"[red]{ex}[/red]")
