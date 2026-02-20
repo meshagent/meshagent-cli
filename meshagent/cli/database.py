@@ -21,6 +21,15 @@ from meshagent.api import RoomException  # or wherever you defined it
 
 app = async_typer.AsyncTyper(help="Manage database tables in a room")
 
+COLUMN_DEFINITIONS_HELP = (
+    "Comma-separated column definitions. Example: "
+    '"names vector(20) null, tags list(text), meta struct(owner text, score float)". '
+    f"Allowed types: {', '.join(ALLOWED_DATA_TYPES)}. "
+    "Vector syntax: vector(size[, element_type]). "
+    "List syntax: list(element_type). "
+    "Struct syntax: struct(field_name type[, ...])."
+)
+
 
 # ---------------------------
 # Helpers
@@ -219,12 +228,7 @@ async def create_table(
         typer.Option(
             "--columns",
             "-c",
-            help=(
-                "Comma-separated column definitions. Example: "
-                '"names vector(20) null, test text not null, age int". '
-                f"Allowed types: {', '.join(ALLOWED_DATA_TYPES)}. "
-                "Vector syntax: vector(size[, element_type])."
-            ),
+            help=COLUMN_DEFINITIONS_HELP,
         ),
     ] = None,
     schema_json: Annotated[
@@ -248,10 +252,12 @@ async def create_table(
       {"id":{"type":"int"}, "body":{"type":"text"}, "embedding":{"type":"vector","size":1536,"element_type":{"type":"float"}}}
 
     Column definitions via --columns/-c use SQL-like syntax:
-      names vector(20) null, test text not null, age int
+      names vector(20) null, tags list(text), meta struct(owner text, score float)
 
-    Allowed types: int, bool, date, timestamp, float, text, binary, vector.
+    Allowed types: int, bool, date, timestamp, float, text, binary, vector, list, struct.
     Vector syntax: vector(size[, element_type]).
+    List syntax: list(element_type).
+    Struct syntax: struct(field_name type[, ...]).
     """
     account_client = await get_client()
     try:
@@ -372,17 +378,20 @@ async def add_columns(
         typer.Option(
             "--columns",
             "-c",
-            help=(
-                "Comma-separated column definitions. Example: "
-                '"names vector(20) null, test text not null, age int". '
-                f"Allowed types: {', '.join(ALLOWED_DATA_TYPES)}. "
-                "Vector syntax: vector(size[, element_type])."
-            ),
+            help=COLUMN_DEFINITIONS_HELP,
         ),
     ] = None,
     columns_json: Annotated[
         Optional[str],
-        typer.Option("--columns-json", help="JSON object of new columns"),
+        typer.Option(
+            "--columns-json",
+            help=(
+                "JSON object of new columns. Supports DataType JSON including "
+                "list/struct (e.g. "
+                '\'{"meta":{"type":"struct","fields":{"owner":{"type":"text"}}}}\''
+                ")."
+            ),
+        ),
     ] = None,
 ):
     """
@@ -391,10 +400,12 @@ async def add_columns(
       - or server default SQL expr strings: {"col":"'default'"}
 
     Column definitions via --columns/-c use SQL-like syntax:
-      names vector(20) null, test text not null, age int
+      names vector(20) null, tags list(text), meta struct(owner text, score float)
 
-    Allowed types: int, bool, date, timestamp, float, text, binary, vector.
+    Allowed types: int, bool, date, timestamp, float, text, binary, vector, list, struct.
     Vector syntax: vector(size[, element_type]).
+    List syntax: list(element_type).
+    Struct syntax: struct(field_name type[, ...]).
     """
     account_client = await get_client()
     try:

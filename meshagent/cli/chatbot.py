@@ -577,19 +577,17 @@ def build_chatbot(
             )
 
             if require_computer_use:
+                from meshagent.agents.thread_adapter import ThreadAdapter
                 from meshagent.computers.agent import ComputerToolkit
 
-                def render_screen(image_bytes: bytes):
-                    for participant in thread_context.participants:
-                        self.room.messaging.send_message_nowait(
-                            to=participant,
-                            type="computer_screen",
-                            message={},
-                            attachment=image_bytes,
-                        )
+                thread_adapter = self._open_threads.get(thread_context.path)
+                if not isinstance(thread_adapter, ThreadAdapter):
+                    thread_adapter = None
 
                 computer_toolkit = ComputerToolkit(
-                    room=self.room, render_screen=render_screen
+                    room=self.room,
+                    thread_path=thread_context.path,
+                    thread_adapter=thread_adapter,
                 )
 
                 tk.append(computer_toolkit)
@@ -3158,8 +3156,6 @@ async def chat_with(
 
         def _event_detail_lines(self, item) -> list[str]:
             details = item.get_attribute("details") or ""
-            if not isinstance(details, str) or details.strip() == "":
-                details = item.get_attribute("data") or ""
             if not isinstance(details, str) or details.strip() == "":
                 return []
             return details.splitlines()

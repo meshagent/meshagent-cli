@@ -8,6 +8,7 @@ from meshagent.cli import developer
 from meshagent.cli import oauth2
 from meshagent.cli import containers
 from meshagent.cli import room_services
+from meshagent.cli import memory
 
 from meshagent.cli import sync
 
@@ -22,6 +23,7 @@ app.add_typer(storage.app, name="storage", help="Manage storage for a room")
 app.add_typer(room_services.app, name="services", help="Manage services in a room")
 app.add_typer(developer.app, name="developer", help="Developer utilities for a room")
 app.add_typer(database.app, name="database", help="Manage database tables in a room")
+app.add_typer(memory.app, name="memory", help="Manage memories in a room")
 app.add_typer(
     containers.app, name="container", help="Manage containers and images in a room"
 )
