@@ -295,6 +295,7 @@ def build_task_runner(
     require_read_only_storage: Optional[str] = None,
     require_time: bool = True,
     require_uuid: bool = False,
+    require_computer_use: bool = False,
     rules_file: Optional[list[str]] = None,
     room_rules_path: Optional[list[str]] = None,
     require_discovery: Optional[str] = None,
@@ -371,6 +372,9 @@ def build_task_runner(
         if apply_patch or require_apply_patch:
             print("apply patch tool is only supported by openai models")
             raise typer.Exit(1)
+        if require_computer_use:
+            print("computer use tool is currently only supported by openai models")
+            raise typer.Exit(1)
 
     BaseClass = LLMTaskRunner
     if llm_participant:
@@ -378,14 +382,24 @@ def build_task_runner(
             participant_name=llm_participant,
         )
     else:
-        if model.startswith("claude-"):
-            llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
-                model=model, log_requests=log_llm_requests
+        if require_computer_use:
+            llm_adapter = OpenAIResponsesAdapter(
+                model=model,
+                response_options={
+                    "reasoning": {"summary": "concise"},
+                    "truncation": "auto",
+                },
+                log_requests=log_llm_requests,
             )
         else:
-            llm_adapter = OpenAIResponsesAdapter(
-                model=model, log_requests=log_llm_requests
-            )
+            if model.startswith("claude-"):
+                llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
+                    model=model, log_requests=log_llm_requests
+                )
+            else:
+                llm_adapter = OpenAIResponsesAdapter(
+                    model=model, log_requests=log_llm_requests
+                )
 
     class CustomTaskRunner(BaseClass):
         def __init__(self):
@@ -621,7 +635,7 @@ def build_task_runner(
                 providers.extend(DiscoveryToolkit().tools)
 
             tk = await super().get_context_toolkits(context=context)
-            return [
+            toolkits_out = [
                 *(
                     [Toolkit(name="tools", tools=providers)]
                     if len(providers) > 0
@@ -629,6 +643,13 @@ def build_task_runner(
                 ),
                 *tk,
             ]
+            if require_computer_use:
+                from meshagent.computers.agent import ComputerToolkit
+
+                toolkits_out.insert(
+                    0, ComputerToolkit(room=self.room, render_screen=None)
+                )
+            return toolkits_out
 
         def get_toolkit_builders(self):
             providers = []
@@ -831,6 +852,13 @@ async def join(
         bool,
         typer.Option(..., help="Enable UUID generation tools"),
     ] = False,
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+        ),
+    ] = False,
     require_document_authoring: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable MeshDocument authoring"),
@@ -922,7 +950,7 @@ async def join(
                 name=agent_name,
             )
 
-            token.add_api_grant(ApiScope.agent_default())
+            token.add_api_grant(ApiScope.agent_default(tunnels=require_computer_use))
 
             token.add_role_grant(role=role)
             token.add_room_grant(room)
@@ -985,6 +1013,7 @@ async def join(
             require_read_only_storage=require_read_only_storage,
             require_time=require_time,
             require_uuid=require_uuid,
+            require_computer_use=require_computer_use,
             room_rules_path=room_rules,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
@@ -1166,6 +1195,13 @@ async def run(
         bool,
         typer.Option(..., help="Enable UUID generation tools"),
     ] = False,
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+        ),
+    ] = False,
     require_document_authoring: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable MeshDocument authoring"),
@@ -1275,7 +1311,7 @@ async def run(
                 name=agent_name,
             )
 
-            token.add_api_grant(ApiScope.agent_default())
+            token.add_api_grant(ApiScope.agent_default(tunnels=require_computer_use))
 
             token.add_role_grant(role=role)
             token.add_room_grant(room)
@@ -1335,6 +1371,7 @@ async def run(
             require_read_only_storage=require_read_only_storage,
             require_time=require_time,
             require_uuid=require_uuid,
+            require_computer_use=require_computer_use,
             room_rules_path=room_rules,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
@@ -1544,6 +1581,13 @@ async def service(
         bool,
         typer.Option(..., help="Enable UUID generation tools"),
     ] = False,
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+        ),
+    ] = False,
     working_dir: WorkingDirOption = None,
     working_directory: WorkingDirectoryAliasOption = None,
     skill_dir: Annotated[
@@ -1679,6 +1723,7 @@ async def service(
             require_read_only_storage=require_read_only_storage,
             require_time=require_time,
             require_uuid=require_uuid,
+            require_computer_use=require_computer_use,
             room_rules_path=room_rules,
             working_dir=working_dir,
             shell_image=shell_image,
@@ -1847,6 +1892,13 @@ async def spec(
         bool,
         typer.Option(..., help="Enable UUID generation tools"),
     ] = False,
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+        ),
+    ] = False,
     working_dir: WorkingDirOption = None,
     working_directory: WorkingDirectoryAliasOption = None,
     skill_dir: Annotated[
@@ -1980,6 +2032,7 @@ async def spec(
             require_read_only_storage=require_read_only_storage,
             require_time=require_time,
             require_uuid=require_uuid,
+            require_computer_use=require_computer_use,
             room_rules_path=room_rules,
             working_dir=working_dir,
             shell_image=shell_image,
@@ -2152,6 +2205,13 @@ async def deploy(
         bool,
         typer.Option(..., help="Enable UUID generation tools"),
     ] = False,
+    require_computer_use: Annotated[
+        Optional[bool],
+        typer.Option(
+            ...,
+            help="Enable computer use (requires computer-use-preview model)",
+        ),
+    ] = False,
     working_dir: WorkingDirOption = None,
     working_directory: WorkingDirectoryAliasOption = None,
     skill_dir: Annotated[
@@ -2291,6 +2351,7 @@ async def deploy(
             require_read_only_storage=require_read_only_storage,
             require_time=require_time,
             require_uuid=require_uuid,
+            require_computer_use=require_computer_use,
             room_rules_path=room_rules,
             working_dir=working_dir,
             shell_image=shell_image,

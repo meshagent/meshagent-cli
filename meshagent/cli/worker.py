@@ -753,7 +753,6 @@ async def join(
         typer.Option(
             ...,
             help="Enable computer use (requires computer-use-preview model)",
-            hidden=True,
         ),
     ] = False,
     title: Annotated[
@@ -1078,7 +1077,6 @@ async def service(
         typer.Option(
             ...,
             help="Enable computer use (requires computer-use-preview model)",
-            hidden=True,
         ),
     ] = False,
     title: Annotated[
@@ -1379,7 +1377,6 @@ async def spec(
         typer.Option(
             ...,
             help="Enable computer use (requires computer-use-preview model)",
-            hidden=True,
         ),
     ] = False,
     title: Annotated[
@@ -1684,7 +1681,6 @@ async def deploy(
         typer.Option(
             ...,
             help="Enable computer use (requires computer-use-preview model)",
-            hidden=True,
         ),
     ] = False,
     title: Annotated[
