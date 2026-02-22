@@ -17,13 +17,13 @@ from meshagent.api import (
 )
 from meshagent.api.helpers import websocket_room_url
 from meshagent.api.messaging import (
-    Chunk,
-    EmptyChunk,
-    ErrorChunk,
-    FileChunk,
-    JsonChunk,
-    TextChunk,
-    _ControlChunk,
+    Content,
+    EmptyContent,
+    ErrorContent,
+    FileContent,
+    JsonContent,
+    TextContent,
+    _ControlContent,
 )
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
@@ -33,18 +33,18 @@ from meshagent.tools import RemoteToolkit, StreamTool, ToolContext
 app = async_typer.AsyncTyper(help="Hidden test tools")
 
 
-def _describe_chunk(chunk: Chunk) -> str:
-    if isinstance(chunk, TextChunk):
+def _describe_chunk(chunk: Content) -> str:
+    if isinstance(chunk, TextContent):
         return f"text: {chunk.text}"
-    if isinstance(chunk, JsonChunk):
+    if isinstance(chunk, JsonContent):
         return f"json: {json.dumps(chunk.json, ensure_ascii=False)}"
-    if isinstance(chunk, FileChunk):
+    if isinstance(chunk, FileContent):
         return f"file: {chunk.name} ({chunk.mime_type}, {len(chunk.data)} bytes)"
-    if isinstance(chunk, EmptyChunk):
+    if isinstance(chunk, EmptyContent):
         return "empty"
-    if isinstance(chunk, ErrorChunk):
+    if isinstance(chunk, ErrorContent):
         return f"error: {chunk.text}"
-    if isinstance(chunk, _ControlChunk):
+    if isinstance(chunk, _ControlContent):
         return f"control: {chunk.method}"
     return str(chunk)
 
@@ -114,12 +114,12 @@ class _StreamToolController:
         return selected_session_id, snapshots
 
     async def open_stream(
-        self, *, request_stream: AsyncIterable[Chunk], caller_label: str
-    ) -> AsyncIterable[Chunk]:
+        self, *, request_stream: AsyncIterable[Content], caller_label: str
+    ) -> AsyncIterable[Content]:
         async with self._lock:
             session_id = f"call-{self._next_session_number}"
             self._next_session_number += 1
-            output_queue: asyncio.Queue[Optional[Chunk]] = asyncio.Queue()
+            output_queue: asyncio.Queue[Optional[Content]] = asyncio.Queue()
             self._sessions[session_id] = _StreamSession(
                 session_id=session_id,
                 caller_label=caller_label,
@@ -147,7 +147,7 @@ class _StreamToolController:
 
         consume_task = asyncio.create_task(consume_request_stream())
 
-        async def output_stream() -> AsyncIterator[Chunk]:
+        async def output_stream() -> AsyncIterator[Content]:
             try:
                 while True:
                     next_chunk = await output_queue.get()
@@ -173,17 +173,17 @@ class _StreamToolController:
 
         return output_stream()
 
-    def _parse_output_line(self, line: str) -> Chunk:
+    def _parse_output_line(self, line: str) -> Content:
         trimmed = line.strip()
         if trimmed.startswith("json:"):
             raw_json = trimmed[len("json:") :].strip()
             parsed = json.loads(raw_json)
             if isinstance(parsed, dict):
-                return JsonChunk(json=parsed)
+                return JsonContent(json=parsed)
             raise RoomException("json: lines must decode to a JSON object")
         if trimmed.startswith("text:"):
-            return TextChunk(text=trimmed[len("text:") :].lstrip())
-        return TextChunk(text=line)
+            return TextContent(text=trimmed[len("text:") :].lstrip())
+        return TextContent(text=line)
 
     async def send_line(self, line: str) -> None:
         async with self._lock:
@@ -267,7 +267,7 @@ class _StreamToolController:
 class _StreamSession:
     session_id: str
     caller_label: str
-    output_queue: asyncio.Queue[Optional[Chunk]]
+    output_queue: asyncio.Queue[Optional[Content]]
     request_closed: bool = False
 
 
@@ -298,8 +298,8 @@ class _TestStreamTool(StreamTool):
         self,
         *,
         context: ToolContext,
-        request_stream: AsyncIterable[Chunk],
-    ) -> Chunk | AsyncIterable[Chunk]:
+        request_stream: AsyncIterable[Content],
+    ) -> Content | AsyncIterable[Content]:
         caller_name = context.caller.get_attribute("name")
         if isinstance(caller_name, str) and caller_name.strip() != "":
             caller_label = caller_name
