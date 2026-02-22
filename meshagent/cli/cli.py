@@ -30,6 +30,7 @@ from meshagent.cli import room
 from meshagent.cli import port
 from meshagent.cli import webserver
 from meshagent.cli import codex
+from meshagent.cli import test
 from meshagent.cli.version import __version__
 from meshagent.cli.helper import get_active_api_key
 from meshagent.otel import otel_config
@@ -67,6 +68,8 @@ app.add_typer(meeting_transcriber.app, name="meeting-transcriber")
 app.add_typer(port.app, name="port")
 app.add_typer(webserver.app, name="webserver")
 app.add_typer(codex.app, name="codex")
+if not os.getenv("MESHAGENT_CLI_BUILD"):
+    app.add_typer(test.app, name="test", hidden=True)
 
 app.add_typer(multi.app, name="multi")
 app.add_typer(voicebot.app, name="voicebot")

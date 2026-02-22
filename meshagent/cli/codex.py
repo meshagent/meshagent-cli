@@ -23,7 +23,7 @@ from meshagent.api import (
     WebSocketClientProtocol,
 )
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
-from meshagent.api.messaging import JsonResponse, TextResponse
+from meshagent.api.messaging import JsonChunk, TextChunk
 from meshagent.api.specs.service import (
     AgentSpec,
     ANNOTATION_AGENT_TYPE,
@@ -3335,9 +3335,9 @@ async def task_runner_run(
                     attachment=None,
                 )
 
-            if isinstance(result, JsonResponse):
+            if isinstance(result, JsonChunk):
                 print(result.json)
-            elif isinstance(result, TextResponse):
+            elif isinstance(result, TextChunk):
                 print(result.text)
             else:
                 print(result)

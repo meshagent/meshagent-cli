@@ -75,7 +75,7 @@ from meshagent.openai.tools.responses_adapter import (
     ImageGenerationTool,
 )
 
-from meshagent.api.messaging import JsonResponse, TextResponse
+from meshagent.api.messaging import JsonChunk, TextChunk
 
 
 from meshagent.cli.host import get_service, run_services, get_deferred, service_specs
@@ -1427,9 +1427,9 @@ async def run(
                             attachment=None,
                         )
 
-                    if isinstance(result, JsonResponse):
+                    if isinstance(result, JsonChunk):
                         print(result.json)
-                    elif isinstance(result, TextResponse):
+                    elif isinstance(result, TextChunk):
                         print(result.text)
                     else:
                         print(result)

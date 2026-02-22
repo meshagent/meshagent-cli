@@ -11,11 +11,22 @@ from meshagent.api import (
     WebSocketClientProtocol,
     RoomException,
 )
+from meshagent.api.messaging import Chunk, FileChunk
 from meshagent.cli.helper import resolve_project_id
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client, resolve_room
 
 app = async_typer.AsyncTyper(help="Interact with agents and toolkits in a room")
+
+
+def _chunk_to_output(chunk: Chunk) -> dict:
+    payload = chunk.to_json()
+    if isinstance(chunk, FileChunk):
+        payload = {
+            **payload,
+            "size_bytes": len(chunk.data),
+        }
+    return payload
 
 
 @app.async_command("invoke-tool", help="Invoke a specific tool from a toolkit")
@@ -95,8 +106,12 @@ async def invoke_tool(
                 on_behalf_of_id=on_behalf_of_id,
                 caller_context=parsed_context,
             )
-            # The response is presumably a dictionary or similar
-            print(response.to_json())
+            if not isinstance(response, Chunk):
+                print("[bold green]Tool response stream opened[/bold green]")
+                async for chunk in response:
+                    print(json.dumps(_chunk_to_output(chunk), indent=2, default=str))
+            else:
+                print(json.dumps(_chunk_to_output(response), indent=2, default=str))
     except RoomException as e:
         print(e)
     finally:
