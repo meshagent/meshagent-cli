@@ -131,13 +131,17 @@ class _StreamToolController:
             self._notify_state_changed()
 
         await self.log(f"[session:{session_id}] opened (caller={caller_label})")
+        request_stream_error: Exception | None = None
 
         async def consume_request_stream() -> None:
+            nonlocal request_stream_error
             try:
                 async for incoming in request_stream:
                     await self.log(f"[in:{session_id}] {_describe_chunk(incoming)}")
             except Exception as ex:
+                request_stream_error = ex
                 await self.log(f"[in:{session_id}] error: {ex}")
+                output_queue.put_nowait(None)
             finally:
                 async with self._lock:
                     session = self._sessions.get(session_id, None)
@@ -153,6 +157,8 @@ class _StreamToolController:
                 while True:
                     next_chunk = await output_queue.get()
                     if next_chunk is None:
+                        if request_stream_error is not None:
+                            raise request_stream_error
                         await self.log(f"[out:{session_id}] EOF")
                         return
                     await self.log(f"[out:{session_id}] {_describe_chunk(next_chunk)}")
@@ -289,9 +295,14 @@ class _TestStreamTool(ContentTool):
                 "Streaming test tool. Declares streamed text/json input and streamed text/json output."
             ),
             input_schema={
-                "type": "object",
-                "properties": {},
-                "additionalProperties": False,
+                "oneOf": [
+                    {
+                        "type": "string",
+                    },
+                    {
+                        "type": "object",
+                    },
+                ],
             },
             input_spec=ToolContentSpec(
                 types=["text", "json"],
