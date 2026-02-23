@@ -13,6 +13,7 @@ from meshagent.api import (
     ParticipantToken,
     RoomClient,
     RoomException,
+    ToolContentSpec,
     WebSocketClientProtocol,
 )
 from meshagent.api.helpers import websocket_room_url
@@ -28,7 +29,7 @@ from meshagent.api.messaging import (
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.cli.helper import resolve_key, resolve_project_id, resolve_room
-from meshagent.tools import RemoteToolkit, StreamTool, ToolContext
+from meshagent.tools import RemoteToolkit, ContentTool, ToolContext
 
 app = async_typer.AsyncTyper(help="Hidden test tools")
 
@@ -278,28 +279,38 @@ class _StreamSessionSnapshot:
     request_closed: bool
 
 
-class _TestStreamTool(StreamTool):
+class _TestStreamTool(ContentTool):
     def __init__(self, *, controller: _StreamToolController, name: str):
         self._controller = controller
         super().__init__(
             name=name,
             title=name,
             description=(
-                "Streaming test tool. Requires request-stream input and emits streamed output."
+                "Streaming test tool. Declares streamed text/json input and streamed text/json output."
             ),
             input_schema={
                 "type": "object",
                 "properties": {},
                 "additionalProperties": False,
             },
+            input_spec=ToolContentSpec(
+                types=["text", "json"],
+                stream=True,
+            ),
+            output_spec=ToolContentSpec(
+                types=["text", "json"],
+                stream=True,
+            ),
         )
 
     async def execute(
         self,
         *,
         context: ToolContext,
-        request_stream: AsyncIterable[Content],
+        input: AsyncIterable[Content] | Content,
     ) -> Content | AsyncIterable[Content]:
+        if not isinstance(input, AsyncIterable):
+            raise RoomException(f"tool '{self.name}' requires streamed input")
         caller_name = context.caller.get_attribute("name")
         if isinstance(caller_name, str) and caller_name.strip() != "":
             caller_label = caller_name
@@ -307,7 +318,7 @@ class _TestStreamTool(StreamTool):
             caller_label = context.caller.id
 
         return await self._controller.open_stream(
-            request_stream=request_stream,
+            request_stream=input,
             caller_label=caller_label,
         )
 
