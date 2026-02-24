@@ -591,7 +591,7 @@ def build_codex_chatbot(
                 participants=participants,
                 event_handler=event_handler,
             )
-            await init_context_from_spec(context.chat)
+            await init_context_from_spec(context.session)
             return context
 
     return CustomCodexChatBot
