@@ -14,7 +14,7 @@ from meshagent.api.specs.service import (
     RoomStorageMountSpec,
     ServiceSpec,
 )
-from meshagent.agents.context import AgentChatContext
+from meshagent.agents.context import AgentSessionContext
 from meshagent.api.client import Meshagent, RoomConnectionInfo
 from meshagent.tools.storage import (
     StorageToolLocalMount,
@@ -170,7 +170,7 @@ async def resolve_project_id(project_id: Optional[str] = None):
     return project_id
 
 
-async def init_context_from_spec(context: AgentChatContext) -> None:
+async def init_context_from_spec(context: AgentSessionContext) -> None:
     path = os.getenv("MESHAGENT_SPEC_PATH")
 
     if path is None:

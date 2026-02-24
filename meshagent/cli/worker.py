@@ -58,7 +58,7 @@ from meshagent.anthropic import (
 
 # Your Worker base (the one you pasted) + adapters
 from meshagent.agents.worker import Worker  # adjust import
-from meshagent.agents.adapter import LLMAdapter, ToolResponseAdapter  # adjust import
+from meshagent.agents.adapter import LLMAdapter  # adjust import
 
 from meshagent.openai.tools.responses_adapter import (
     WebSearchToolkitBuilder,
@@ -213,7 +213,6 @@ def build_worker(
     queue: str,
     title: Optional[str] = None,
     description: Optional[str] = None,
-    tool_adapter: Optional[ToolResponseAdapter] = None,
     toolkits: Optional[list[Toolkit]] = None,
     rules_file: Optional[list[str]] = None,
     room_rules_paths: list[str] | None = None,
@@ -323,7 +322,6 @@ def build_worker(
         def __init__(self):
             super().__init__(
                 llm_adapter=llm_adapter,
-                tool_adapter=tool_adapter,
                 requires=requirements,
                 toolkits=toolkits,
                 queue=queue,
@@ -339,10 +337,10 @@ def build_worker(
         def get_prompt_for_message(self, *, message: dict) -> str:
             return prompt or super().get_prompt_for_message(message=message)
 
-        async def init_chat_context(self):
+        async def init_session(self):
             from meshagent.cli.helper import init_context_from_spec
 
-            context = await super().init_chat_context()
+            context = await super().init_session()
             await init_context_from_spec(context)
 
             return context

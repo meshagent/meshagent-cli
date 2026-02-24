@@ -324,10 +324,10 @@ def build_mailbot(
             )
             self.shell_tool = None
 
-        async def init_chat_context(self):
+        async def init_session(self):
             from meshagent.cli.helper import init_context_from_spec
 
-            context = await super().init_chat_context()
+            context = await super().init_session()
             await init_context_from_spec(context)
 
             return context
