@@ -1677,7 +1677,7 @@ async def deploy(
     spec.metadata.description = service_description
     spec.container.image = "meshagent/cli:default"
     spec.container.command = shlex.join(
-        ["meshagent", "mailbot", *cleanup_args(sys.argv[:2])]
+        ["meshagent", "mailbot", "service", *cleanup_args(sys.argv[2:])]
     )
 
     client = await get_client()
