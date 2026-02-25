@@ -8,6 +8,7 @@ from meshagent.api.helpers import websocket_room_url
 from typing import Annotated, Optional
 
 import typer
+from rich import print
 
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import ProjectIdOption
@@ -16,6 +17,41 @@ from meshagent.cli.helper import get_client, resolve_project_id
 from meshagent.api.port_forward import port_forward
 
 app = async_typer.AsyncTyper(help="Port forwarding into room containers")
+
+
+def _parse_port_mapping(value: str) -> tuple[int, int]:
+    raw = value.strip()
+    if raw == "":
+        raise typer.BadParameter("--port cannot be empty")
+
+    parts = [part.strip() for part in raw.split(":")]
+    if len(parts) != 2:
+        raise typer.BadParameter("Expected --port in LOCAL:REMOTE format")
+
+    local_raw, remote_raw = parts
+    if local_raw == "" or remote_raw == "":
+        raise typer.BadParameter("Expected --port in LOCAL:REMOTE format")
+
+    try:
+        local_port = int(local_raw)
+    except ValueError as exc:
+        raise typer.BadParameter(
+            f"LOCAL port must be an integer, got: {local_raw}"
+        ) from exc
+
+    try:
+        remote_port = int(remote_raw)
+    except ValueError as exc:
+        raise typer.BadParameter(
+            f"REMOTE port must be an integer, got: {remote_raw}"
+        ) from exc
+
+    if not (0 <= local_port <= 65535):
+        raise typer.BadParameter("LOCAL port must be between 0 and 65535")
+    if not (1 <= remote_port <= 65535):
+        raise typer.BadParameter("REMOTE port must be between 1 and 65535")
+
+    return local_port, remote_port
 
 
 @app.async_command("forward", help="Forward a container port to localhost")
@@ -59,11 +95,10 @@ async def forward(
 
     client = await get_client()
     try:
+        local_port, remote_port = _parse_port_mapping(port)
         project_id = await resolve_project_id(project_id)
 
         connection = await client.connect_room(project_id=project_id, room=room)
-
-        ports = port.split(":")
 
         if name is not None:
             async with RoomClient(
@@ -86,8 +121,8 @@ async def forward(
             raise typer.Exit(1)
 
         handler = await port_forward(
-            listen_port=int(ports[0]),
-            port=int(ports[1]),
+            listen_port=local_port,
+            port=remote_port,
             container_id=container_id,
             token=connection.jwt,
         )
@@ -95,6 +130,9 @@ async def forward(
         await asyncio.sleep(10000)
 
         await handler.close()
+    except typer.BadParameter as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
 
     finally:
         await client.close()
