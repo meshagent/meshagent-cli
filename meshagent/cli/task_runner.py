@@ -1289,7 +1289,7 @@ async def run(
         working_dir=working_dir,
         working_directory=working_directory,
     )
-    if not verbose:
+    if not verbose and not log_llm_requests:
         root = logging.getLogger()
         root.setLevel(logging.ERROR)
 
