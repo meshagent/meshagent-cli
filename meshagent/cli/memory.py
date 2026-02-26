@@ -13,6 +13,7 @@ from meshagent.api.helpers import websocket_room_url
 from meshagent.api.room_server_client import (
     MemoryEntityRecord,
     MemoryIngestStrategy,
+    MemoryRelationshipSelector,
     MemoryRelationshipRecord,
 )
 from meshagent.cli import async_typer
@@ -715,6 +716,83 @@ async def recall(
                 namespace=_ns(namespace),
                 limit=limit,
                 include_relationships=include_relationships,
+            )
+            print(_json_dumps(result.model_dump(mode="json"), pretty=pretty))
+    except (RoomException, typer.BadParameter, ValidationError) as ex:
+        print(ex)
+        raise typer.Exit(1)
+
+
+@app.async_command(
+    "delete-entities", help="Delete entities (and related edges) from memory."
+)
+async def delete_entities(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    name: Annotated[str, typer.Option(..., "--name", "-m", help="Memory name")],
+    entity_id: Annotated[
+        List[str],
+        typer.Option(
+            ...,
+            "--entity-id",
+            "-e",
+            help="Entity ID to delete (repeatable)",
+        ),
+    ],
+    namespace: NamespaceOption = None,
+    pretty: Annotated[
+        bool, typer.Option("--pretty/--no-pretty", help="Pretty-print JSON")
+    ] = True,
+):
+    try:
+        async with _connected_room_client(project_id=project_id, room=room) as client:
+            result = await client.memory.delete_entities(
+                name=name,
+                entity_ids=list(entity_id),
+                namespace=_ns(namespace),
+            )
+            print(_json_dumps(result.model_dump(mode="json"), pretty=pretty))
+    except (RoomException, typer.BadParameter, ValidationError) as ex:
+        print(ex)
+        raise typer.Exit(1)
+
+
+@app.async_command(
+    "delete-relationships", help="Delete relationship edges from memory."
+)
+async def delete_relationships(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    name: Annotated[str, typer.Option(..., "--name", "-m", help="Memory name")],
+    records_json: Annotated[
+        Optional[str],
+        typer.Option(
+            "--records-json",
+            help="JSON array of MemoryRelationshipSelector objects",
+        ),
+    ] = None,
+    records_file: Annotated[
+        Optional[str],
+        typer.Option(
+            "--records-file",
+            help="Path to JSON file with relationship selectors",
+        ),
+    ] = None,
+    namespace: NamespaceOption = None,
+    pretty: Annotated[
+        bool, typer.Option("--pretty/--no-pretty", help="Pretty-print JSON")
+    ] = True,
+):
+    try:
+        rows = _load_records(records_json=records_json, records_file=records_file)
+        selectors = [MemoryRelationshipSelector.model_validate(row) for row in rows]
+        async with _connected_room_client(project_id=project_id, room=room) as client:
+            result = await client.memory.delete_relationships(
+                name=name,
+                relationships=selectors,
+                namespace=_ns(namespace),
             )
             print(_json_dumps(result.model_dump(mode="json"), pretty=pretty))
     except (RoomException, typer.BadParameter, ValidationError) as ex:
