@@ -8,6 +8,7 @@ from meshagent.tools import (
     WebFetchTool,
     WebFetchToolkitBuilder,
     ContainerShellTool,
+    MemoriesToolkit,
 )
 from meshagent.tools.storage import (
     StorageToolMount,
@@ -38,6 +39,7 @@ from meshagent.cli.helper import (
     cleanup_args,
     get_client,
     parse_shell_tool_mounts,
+    parse_memory_selector,
     parse_storage_tool_mounts,
     resolve_key,
     resolve_project_id,
@@ -295,6 +297,8 @@ def build_task_runner(
     require_read_only_storage: Optional[str] = None,
     require_time: bool = True,
     require_uuid: bool = False,
+    use_memory: Optional[str] = None,
+    memory_model: Optional[str] = None,
     require_computer_use: bool = False,
     rules_file: Optional[list[str]] = None,
     room_rules_path: Optional[list[str]] = None,
@@ -362,6 +366,10 @@ def build_task_runner(
     supports_openai_tools = llm_participant is None and not is_claude_model
     base_shell_env = _copy_shell_env_vars(copy_env=shell_copy_env)
     base_shell_env.update(_set_shell_env_vars(set_env=shell_set_env))
+    memory_selection: Optional[tuple[str, Optional[list[str]]]] = None
+    if use_memory is not None:
+        memory_selection = parse_memory_selector(use_memory)
+
     if not supports_openai_tools:
         if image_generation or require_image_generation:
             print("image generation tool is only supported by openai models")
@@ -602,6 +610,16 @@ def build_task_runner(
 
             if require_uuid:
                 providers.extend((UUIDToolkit()).tools)
+
+            if memory_selection is not None:
+                memory_name, memory_namespace = memory_selection
+                providers.extend(
+                    MemoriesToolkit(
+                        memory_name=memory_name,
+                        namespace=memory_namespace,
+                        llm_model=memory_model,
+                    ).tools
+                )
 
             if len(require_table_write) > 0:
                 providers.extend(
@@ -852,6 +870,20 @@ async def join(
         bool,
         typer.Option(..., help="Enable UUID generation tools"),
     ] = False,
+    use_memory: Annotated[
+        Optional[str],
+        typer.Option(
+            "--use-memory",
+            help="Use memories toolkit for <name> or <namespace>/<name>",
+        ),
+    ] = None,
+    memory_model: Annotated[
+        Optional[str],
+        typer.Option(
+            "--memory-model",
+            help="Model name for memory LLM ingestion",
+        ),
+    ] = None,
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
@@ -1013,6 +1045,8 @@ async def join(
             require_read_only_storage=require_read_only_storage,
             require_time=require_time,
             require_uuid=require_uuid,
+            use_memory=use_memory,
+            memory_model=memory_model,
             require_computer_use=require_computer_use,
             room_rules_path=room_rules,
             require_document_authoring=require_document_authoring,
@@ -1195,6 +1229,20 @@ async def run(
         bool,
         typer.Option(..., help="Enable UUID generation tools"),
     ] = False,
+    use_memory: Annotated[
+        Optional[str],
+        typer.Option(
+            "--use-memory",
+            help="Use memories toolkit for <name> or <namespace>/<name>",
+        ),
+    ] = None,
+    memory_model: Annotated[
+        Optional[str],
+        typer.Option(
+            "--memory-model",
+            help="Model name for memory LLM ingestion",
+        ),
+    ] = None,
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
@@ -1371,6 +1419,8 @@ async def run(
             require_read_only_storage=require_read_only_storage,
             require_time=require_time,
             require_uuid=require_uuid,
+            use_memory=use_memory,
+            memory_model=memory_model,
             require_computer_use=require_computer_use,
             room_rules_path=room_rules,
             require_document_authoring=require_document_authoring,
@@ -1581,6 +1631,20 @@ async def service(
         bool,
         typer.Option(..., help="Enable UUID generation tools"),
     ] = False,
+    use_memory: Annotated[
+        Optional[str],
+        typer.Option(
+            "--use-memory",
+            help="Use memories toolkit for <name> or <namespace>/<name>",
+        ),
+    ] = None,
+    memory_model: Annotated[
+        Optional[str],
+        typer.Option(
+            "--memory-model",
+            help="Model name for memory LLM ingestion",
+        ),
+    ] = None,
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
@@ -1723,6 +1787,8 @@ async def service(
             require_read_only_storage=require_read_only_storage,
             require_time=require_time,
             require_uuid=require_uuid,
+            use_memory=use_memory,
+            memory_model=memory_model,
             require_computer_use=require_computer_use,
             room_rules_path=room_rules,
             working_dir=working_dir,
@@ -1892,6 +1958,20 @@ async def spec(
         bool,
         typer.Option(..., help="Enable UUID generation tools"),
     ] = False,
+    use_memory: Annotated[
+        Optional[str],
+        typer.Option(
+            "--use-memory",
+            help="Use memories toolkit for <name> or <namespace>/<name>",
+        ),
+    ] = None,
+    memory_model: Annotated[
+        Optional[str],
+        typer.Option(
+            "--memory-model",
+            help="Model name for memory LLM ingestion",
+        ),
+    ] = None,
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
@@ -2032,6 +2112,8 @@ async def spec(
             require_read_only_storage=require_read_only_storage,
             require_time=require_time,
             require_uuid=require_uuid,
+            use_memory=use_memory,
+            memory_model=memory_model,
             require_computer_use=require_computer_use,
             room_rules_path=room_rules,
             working_dir=working_dir,
@@ -2205,6 +2287,20 @@ async def deploy(
         bool,
         typer.Option(..., help="Enable UUID generation tools"),
     ] = False,
+    use_memory: Annotated[
+        Optional[str],
+        typer.Option(
+            "--use-memory",
+            help="Use memories toolkit for <name> or <namespace>/<name>",
+        ),
+    ] = None,
+    memory_model: Annotated[
+        Optional[str],
+        typer.Option(
+            "--memory-model",
+            help="Model name for memory LLM ingestion",
+        ),
+    ] = None,
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
@@ -2351,6 +2447,8 @@ async def deploy(
             require_read_only_storage=require_read_only_storage,
             require_time=require_time,
             require_uuid=require_uuid,
+            use_memory=use_memory,
+            memory_model=memory_model,
             require_computer_use=require_computer_use,
             room_rules_path=room_rules,
             working_dir=working_dir,

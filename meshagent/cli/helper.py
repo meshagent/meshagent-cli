@@ -213,6 +213,22 @@ async def resolve_key(project_id: str | None, key: str | None):
     return key
 
 
+def parse_memory_selector(value: str) -> tuple[str, Optional[list[str]]]:
+    cleaned = value.strip()
+    if cleaned == "":
+        raise typer.BadParameter("--use-memory cannot be empty")
+
+    segments = [segment.strip() for segment in cleaned.split("/")]
+    if any(segment == "" for segment in segments):
+        raise typer.BadParameter(
+            "--use-memory must be '<name>' or '<namespace>/<name>' with no empty segments"
+        )
+
+    memory_name = segments[-1]
+    namespace = segments[:-1]
+    return memory_name, namespace or None
+
+
 def _split_mount_value(
     value: str, option_name: str, default_read_only: bool
 ) -> tuple[str, str, bool]:

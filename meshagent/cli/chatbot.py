@@ -7,6 +7,7 @@ from meshagent.tools import (
     WebFetchTool,
     WebFetchToolkitBuilder,
     ContainerShellTool,
+    MemoriesToolkit,
 )
 from meshagent.tools.storage import (
     StorageToolMount,
@@ -40,6 +41,7 @@ from meshagent.cli.helper import (
     cleanup_args,
     get_client,
     parse_shell_tool_mounts,
+    parse_memory_selector,
     parse_storage_tool_mounts,
     resolve_key,
     resolve_project_id,
@@ -250,6 +252,8 @@ def build_chatbot(
     require_read_only_storage: Optional[str] = None,
     require_time: bool = True,
     require_uuid: bool = False,
+    use_memory: Optional[str] = None,
+    memory_model: Optional[str] = None,
     rules_file: Optional[list[str]] = None,
     room_rules_path: Optional[list[str]] = None,
     require_discovery: Optional[str] = None,
@@ -315,6 +319,10 @@ def build_chatbot(
                 "[red]computer use tool is currently only supported by openai models[/red]"
             )
             raise typer.Exit(1)
+
+    memory_selection: Optional[tuple[str, Optional[list[str]]]] = None
+    if use_memory is not None:
+        memory_selection = parse_memory_selector(use_memory)
 
     BaseClass = ChatBot
     decision_model = None
@@ -538,6 +546,16 @@ def build_chatbot(
 
             if require_uuid:
                 providers.extend((UUIDToolkit()).tools)
+
+            if memory_selection is not None:
+                memory_name, memory_namespace = memory_selection
+                providers.extend(
+                    MemoriesToolkit(
+                        memory_name=memory_name,
+                        namespace=memory_namespace,
+                        llm_model=memory_model,
+                    ).tools
+                )
 
             if len(require_table_write) > 0:
                 providers.extend(
@@ -845,6 +863,20 @@ async def join(
             help="Enable UUID generation tools",
         ),
     ] = False,
+    use_memory: Annotated[
+        Optional[str],
+        typer.Option(
+            "--use-memory",
+            help="Use memories toolkit for <name> or <namespace>/<name>",
+        ),
+    ] = None,
+    memory_model: Annotated[
+        Optional[str],
+        typer.Option(
+            "--memory-model",
+            help="Model name for memory LLM ingestion",
+        ),
+    ] = None,
     require_document_authoring: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable MeshDocument authoring"),
@@ -968,6 +1000,8 @@ async def join(
             require_read_only_storage=require_read_only_storage,
             require_time=require_time,
             require_uuid=require_uuid,
+            use_memory=use_memory,
+            memory_model=memory_model,
             room_rules_path=room_rules,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
@@ -1189,6 +1223,20 @@ async def service(
             help="Enable UUID generation tools",
         ),
     ] = False,
+    use_memory: Annotated[
+        Optional[str],
+        typer.Option(
+            "--use-memory",
+            help="Use memories toolkit for <name> or <namespace>/<name>",
+        ),
+    ] = None,
+    memory_model: Annotated[
+        Optional[str],
+        typer.Option(
+            "--memory-model",
+            help="Model name for memory LLM ingestion",
+        ),
+    ] = None,
     working_dir: WorkingDirOption = None,
     working_directory: WorkingDirectoryAliasOption = None,
     require_document_authoring: Annotated[
@@ -1301,6 +1349,8 @@ async def service(
             require_read_only_storage=require_read_only_storage,
             require_time=require_time,
             require_uuid=require_uuid,
+            use_memory=use_memory,
+            memory_model=memory_model,
             room_rules_path=room_rules,
             working_dir=working_dir,
             require_document_authoring=require_document_authoring,
@@ -1500,6 +1550,20 @@ async def spec(
             help="Enable UUID generation tools",
         ),
     ] = False,
+    use_memory: Annotated[
+        Optional[str],
+        typer.Option(
+            "--use-memory",
+            help="Use memories toolkit for <name> or <namespace>/<name>",
+        ),
+    ] = None,
+    memory_model: Annotated[
+        Optional[str],
+        typer.Option(
+            "--memory-model",
+            help="Model name for memory LLM ingestion",
+        ),
+    ] = None,
     working_dir: WorkingDirOption = None,
     working_directory: WorkingDirectoryAliasOption = None,
     require_document_authoring: Annotated[
@@ -1611,6 +1675,8 @@ async def spec(
             require_read_only_storage=require_read_only_storage,
             require_time=require_time,
             require_uuid=require_uuid,
+            use_memory=use_memory,
+            memory_model=memory_model,
             room_rules_path=room_rules,
             working_dir=working_dir,
             require_document_authoring=require_document_authoring,
@@ -1821,6 +1887,20 @@ async def deploy(
             help="Enable UUID generation tools",
         ),
     ] = False,
+    use_memory: Annotated[
+        Optional[str],
+        typer.Option(
+            "--use-memory",
+            help="Use memories toolkit for <name> or <namespace>/<name>",
+        ),
+    ] = None,
+    memory_model: Annotated[
+        Optional[str],
+        typer.Option(
+            "--memory-model",
+            help="Model name for memory LLM ingestion",
+        ),
+    ] = None,
     working_dir: WorkingDirOption = None,
     working_directory: WorkingDirectoryAliasOption = None,
     require_document_authoring: Annotated[
@@ -1939,6 +2019,8 @@ async def deploy(
             require_read_only_storage=require_read_only_storage,
             require_time=require_time,
             require_uuid=require_uuid,
+            use_memory=use_memory,
+            memory_model=memory_model,
             room_rules_path=room_rules,
             working_dir=working_dir,
             require_document_authoring=require_document_authoring,
@@ -2834,7 +2916,11 @@ async def chat_with(
                 return
 
             items = message_nodes[0].get_children()
-            self._has_active_events = self._thread_has_active_events(items)
+            has_active_event_nodes = self._thread_has_active_event_nodes(items)
+            thread_status_text = self._active_thread_status_text()
+            self._has_active_events = (
+                has_active_event_nodes or thread_status_text is not None
+            )
             selected_before = self._selected_pending_approval()
             selected_id = selected_before[0] if selected_before is not None else None
             self._pending_approval_items = self._collect_pending_approvals(items)
@@ -2862,6 +2948,11 @@ async def chat_with(
                 ):
                     rendered_items.append(renderable)
 
+            if thread_status_text is not None and not has_active_event_nodes:
+                rendered_items.append(
+                    self._render_thread_status_item(thread_status_text)
+                )
+
             if len(rendered_items) == 0:
                 self._messages_view.update("")
             else:
@@ -2870,7 +2961,7 @@ async def chat_with(
             if self._messages_scroll is not None:
                 self._messages_scroll.scroll_end(animate=False)
 
-        def _thread_has_active_events(self, items) -> bool:
+        def _thread_has_active_event_nodes(self, items) -> bool:
             for item in items:
                 if getattr(item, "tag_name", None) != "event":
                     continue
@@ -2878,6 +2969,37 @@ async def chat_with(
                 if self._is_active_event_state(state):
                     return True
             return False
+
+        def _active_thread_status_text(self) -> str | None:
+            participant = self._chat_client._participant
+            if participant is None:
+                return None
+
+            status_attr = f"thread.status.text.{self._chat_client.thread_path}"
+            status = participant.get_attribute(status_attr)
+            if not isinstance(status, str):
+                return None
+
+            normalized = status.strip()
+            if normalized == "":
+                return None
+
+            return normalized
+
+        def _render_thread_status_item(self, status_text: str) -> RenderableType:
+            table = Table.grid(expand=True, padding=(0, 0))
+            table.add_column(width=2, no_wrap=True)
+            table.add_column(ratio=1)
+            table.add_column(width=2, no_wrap=True)
+
+            table.add_row(Text("  "), Text(" "), Text("  "))
+            table.add_row(
+                Text("  "),
+                Text(f"{self._event_spinner()} {status_text}", style="bold magenta"),
+                Text("  "),
+            )
+            table.add_row(Text("  "), Text(" "), Text("  "))
+            return table
 
         def _collect_pending_approvals(self, items) -> list[tuple[str, str, str]]:
             approvals: list[tuple[str, str, str]] = []
@@ -3614,6 +3736,20 @@ async def run(
             help="Enable UUID generation tools",
         ),
     ] = False,
+    use_memory: Annotated[
+        Optional[str],
+        typer.Option(
+            "--use-memory",
+            help="Use memories toolkit for <name> or <namespace>/<name>",
+        ),
+    ] = None,
+    memory_model: Annotated[
+        Optional[str],
+        typer.Option(
+            "--memory-model",
+            help="Model name for memory LLM ingestion",
+        ),
+    ] = None,
     require_document_authoring: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable MeshDocument authoring"),
@@ -3766,6 +3902,8 @@ async def run(
                 require_read_only_storage=require_read_only_storage,
                 require_time=require_time,
                 require_uuid=require_uuid,
+                use_memory=use_memory,
+                memory_model=memory_model,
                 room_rules_path=room_rules,
                 require_document_authoring=require_document_authoring,
                 require_discovery=require_discovery,

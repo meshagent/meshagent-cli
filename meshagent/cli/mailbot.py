@@ -9,13 +9,14 @@ from meshagent.cli.common_options import (
     ProjectIdOption,
     RoomOption,
 )
-from meshagent.tools import Toolkit, WebFetchTool, ContainerShellTool
+from meshagent.tools import Toolkit, WebFetchTool, ContainerShellTool, MemoriesToolkit
 from meshagent.api import RoomClient, WebSocketClientProtocol, ApiScope
 from meshagent.api.helpers import websocket_room_url
 from meshagent.cli.helper import (
     cleanup_args,
     get_client,
     parse_shell_tool_mounts,
+    parse_memory_selector,
     parse_storage_tool_mounts,
     resolve_key,
     resolve_project_id,
@@ -212,6 +213,8 @@ def build_mailbot(
     shell_tool_mounts: Optional[ContainerMountSpec] = None,
     require_time: bool = True,
     require_uuid: bool = False,
+    use_memory: Optional[str] = None,
+    memory_model: Optional[str] = None,
     require_table_read: bool,
     require_table_write: bool,
     require_computer_use: bool,
@@ -257,6 +260,10 @@ def build_mailbot(
     supports_openai_tools = llm_participant is None and not is_claude_model
     base_shell_env = _copy_shell_env_vars(copy_env=shell_copy_env)
     base_shell_env.update(_set_shell_env_vars(set_env=shell_set_env))
+    memory_selection: Optional[tuple[str, Optional[list[str]]]] = None
+    if use_memory is not None:
+        memory_selection = parse_memory_selector(use_memory)
+
     if not supports_openai_tools:
         if image_generation:
             print("image generation tool is only supported by openai models")
@@ -506,6 +513,16 @@ def build_mailbot(
             if require_uuid:
                 thread_toolkit.tools.extend(UUIDToolkit().tools)
 
+            if memory_selection is not None:
+                memory_name, memory_namespace = memory_selection
+                thread_toolkit.tools.extend(
+                    MemoriesToolkit(
+                        memory_name=memory_name,
+                        namespace=memory_namespace,
+                        llm_model=memory_model,
+                    ).tools
+                )
+
             if require_computer_use:
                 from meshagent.computers.agent import ComputerToolkit
 
@@ -670,6 +687,20 @@ async def join(
             help="Enable UUID generation tools",
         ),
     ] = False,
+    use_memory: Annotated[
+        Optional[str],
+        typer.Option(
+            "--use-memory",
+            help="Use memories toolkit for <name> or <namespace>/<name>",
+        ),
+    ] = None,
+    memory_model: Annotated[
+        Optional[str],
+        typer.Option(
+            "--memory-model",
+            help="Model name for memory LLM ingestion",
+        ),
+    ] = None,
     database_namespace: Annotated[
         Optional[str],
         typer.Option(..., help="Use a specific database namespace"),
@@ -792,6 +823,8 @@ async def join(
             shell_tool_mounts=shell_tool_mounts,
             require_time=require_time,
             require_uuid=require_uuid,
+            use_memory=use_memory,
+            memory_model=memory_model,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
@@ -978,6 +1011,20 @@ async def service(
             help="Enable UUID generation tools",
         ),
     ] = False,
+    use_memory: Annotated[
+        Optional[str],
+        typer.Option(
+            "--use-memory",
+            help="Use memories toolkit for <name> or <namespace>/<name>",
+        ),
+    ] = None,
+    memory_model: Annotated[
+        Optional[str],
+        typer.Option(
+            "--memory-model",
+            help="Model name for memory LLM ingestion",
+        ),
+    ] = None,
     database_namespace: Annotated[
         Optional[str],
         typer.Option(..., help="Use a specific database namespace"),
@@ -1081,6 +1128,8 @@ async def service(
             shell_tool_mounts=shell_tool_mounts,
             require_time=require_time,
             require_uuid=require_uuid,
+            use_memory=use_memory,
+            memory_model=memory_model,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
@@ -1254,6 +1303,20 @@ async def spec(
             help="Enable UUID generation tools",
         ),
     ] = False,
+    use_memory: Annotated[
+        Optional[str],
+        typer.Option(
+            "--use-memory",
+            help="Use memories toolkit for <name> or <namespace>/<name>",
+        ),
+    ] = None,
+    memory_model: Annotated[
+        Optional[str],
+        typer.Option(
+            "--memory-model",
+            help="Model name for memory LLM ingestion",
+        ),
+    ] = None,
     database_namespace: Annotated[
         Optional[str],
         typer.Option(..., help="Use a specific database namespace"),
@@ -1357,6 +1420,8 @@ async def spec(
             shell_tool_mounts=shell_tool_mounts,
             require_time=require_time,
             require_uuid=require_uuid,
+            use_memory=use_memory,
+            memory_model=memory_model,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
@@ -1541,6 +1606,20 @@ async def deploy(
             help="Enable UUID generation tools",
         ),
     ] = False,
+    use_memory: Annotated[
+        Optional[str],
+        typer.Option(
+            "--use-memory",
+            help="Use memories toolkit for <name> or <namespace>/<name>",
+        ),
+    ] = None,
+    memory_model: Annotated[
+        Optional[str],
+        typer.Option(
+            "--memory-model",
+            help="Model name for memory LLM ingestion",
+        ),
+    ] = None,
     database_namespace: Annotated[
         Optional[str],
         typer.Option(..., help="Use a specific database namespace"),
@@ -1651,6 +1730,8 @@ async def deploy(
             shell_tool_mounts=shell_tool_mounts,
             require_time=require_time,
             require_uuid=require_uuid,
+            use_memory=use_memory,
+            memory_model=memory_model,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
