@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -18,6 +19,11 @@ from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.cli.helper import get_client, resolve_project_id, resolve_room
 
 app = async_typer.AsyncTyper(help="Inspect and update mesh documents in a room")
+import_app = async_typer.AsyncTyper(help="Import external exports into room documents")
+app.add_typer(import_app, name="import")
+
+_THREAD_FILENAME_RE = re.compile(r"[^a-zA-Z0-9._-]+")
+_THREAD_FILENAME_WHITESPACE_RE = re.compile(r"\s+")
 
 
 def _parse_json_arg(json_str: Optional[str], *, name: str) -> Any:
@@ -36,6 +42,47 @@ def _load_json_file(path: Optional[Path], *, name: str) -> Any:
         return json.loads(path.read_text())
     except Exception as exc:
         raise typer.BadParameter(f"Unable to read {name} from {path}: {exc}") from exc
+
+
+def _resolve_local_file(path: Path, *, name: str) -> Path:
+    resolved = path.expanduser().resolve()
+    if not resolved.exists():
+        raise typer.BadParameter(f"{name} file does not exist: {resolved}")
+    if not resolved.is_file():
+        raise typer.BadParameter(f"{name} path must be a file: {resolved}")
+    return resolved
+
+
+def _thread_path_for_conversation(
+    *,
+    thread_dir: str,
+    conversation_name: str,
+    conversation_id: str,
+    occurrence: int = 1,
+) -> str:
+    normalized_dir = thread_dir.strip().rstrip("/")
+    if normalized_dir == "":
+        raise typer.BadParameter("--thread-dir must not be empty")
+    if occurrence < 1:
+        raise typer.BadParameter("occurrence must be >= 1")
+
+    normalized_name = _THREAD_FILENAME_RE.sub(" ", conversation_name.strip())
+    normalized_name = _THREAD_FILENAME_WHITESPACE_RE.sub(" ", normalized_name).strip(
+        " ."
+    )
+
+    if normalized_name == "":
+        normalized_name = _THREAD_FILENAME_RE.sub(" ", conversation_id.strip())
+        normalized_name = _THREAD_FILENAME_WHITESPACE_RE.sub(
+            " ", normalized_name
+        ).strip(" .")
+
+    if normalized_name == "":
+        raise typer.BadParameter("conversation id was empty")
+
+    if occurrence == 1:
+        return f"{normalized_dir}/{normalized_name}.thread"
+    return f"{normalized_dir}/{normalized_name} {occurrence}.thread"
 
 
 def _decode_pointer(path: str) -> list[str]:
@@ -430,3 +477,150 @@ async def sync_update(
     finally:
         await client.__aexit__(None, None, None)
         await account_client.close()
+
+
+@import_app.async_command(
+    "threads",
+    help="Import Anthropic Claude GDPR conversations into room thread documents.",
+)
+async def sync_import_threads(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    file: Path = typer.Option(
+        ...,
+        "--file",
+        "-f",
+        help="Path to Claude GDPR conversations.json",
+    ),
+    thread_dir: str = typer.Option(
+        ".threads/anthropic",
+        "--thread-dir",
+        help="Directory where imported .thread files will be stored",
+    ),
+    overwrite: bool = typer.Option(
+        False,
+        "--overwrite",
+        help="Overwrite existing imported thread files",
+    ),
+    limit: Optional[int] = typer.Option(
+        None,
+        "--limit",
+        min=1,
+        help="Maximum number of conversations to import",
+    ),
+    user_name: str = typer.Option(
+        "human",
+        "--user-name",
+        "--human-name",
+        help="Author name used for user/human messages",
+    ),
+    assistant_name: str = typer.Option(
+        "assistant",
+        "--assistant-name",
+        help="Author name used for assistant messages",
+    ),
+    include_empty_messages: bool = typer.Option(
+        False,
+        "--include-empty-messages",
+        help="Include messages that normalize to empty text",
+    ),
+):
+    try:
+        try:
+            from meshagent.agents import thread_schema
+            from meshagent.anthropic import AnthropicThreadAdapter
+        except Exception as exc:
+            print(
+                "[red]This command requires meshagent-agents and meshagent-anthropic to be installed.[/red]"
+            )
+            raise typer.Exit(1) from exc
+
+        source_file = _resolve_local_file(file, name="Conversations")
+        payload = _load_json_file(source_file, name="conversations")
+        if not isinstance(payload, list):
+            raise typer.BadParameter(
+                f"Conversations export must be a JSON array: {source_file}"
+            )
+
+        adapter = AnthropicThreadAdapter(
+            human_author_name=user_name,
+            assistant_author_name=assistant_name,
+            include_empty_messages=include_empty_messages,
+        )
+
+        account_client, client = await _connect_room(project_id, room)
+        imported = 0
+        skipped_existing = 0
+        skipped_invalid = 0
+        processed = 0
+        path_occurrence_by_base = dict[str, int]()
+
+        try:
+            for index, raw_conversation in enumerate(payload):
+                if limit is not None and processed >= limit:
+                    break
+                processed += 1
+
+                if not isinstance(raw_conversation, dict):
+                    skipped_invalid += 1
+                    print(
+                        f"[yellow]Skipping conversations[{index}] because it is not an object.[/yellow]"
+                    )
+                    continue
+
+                try:
+                    conversation = adapter.conversation_from_export(
+                        raw_conversation=raw_conversation
+                    )
+                except ValueError as exc:
+                    skipped_invalid += 1
+                    print(
+                        f"[yellow]Skipping conversations[{index}] due to invalid structure: {exc}[/yellow]"
+                    )
+                    continue
+
+                base_thread_path = _thread_path_for_conversation(
+                    thread_dir=thread_dir,
+                    conversation_name=conversation.name,
+                    conversation_id=conversation.conversation_id,
+                )
+                occurrence = path_occurrence_by_base.get(base_thread_path, 0) + 1
+                path_occurrence_by_base[base_thread_path] = occurrence
+                thread_path = _thread_path_for_conversation(
+                    thread_dir=thread_dir,
+                    conversation_name=conversation.name,
+                    conversation_id=conversation.conversation_id,
+                    occurrence=occurrence,
+                )
+
+                if await client.storage.exists(path=thread_path):
+                    if not overwrite:
+                        skipped_existing += 1
+                        continue
+                    await client.storage.delete(thread_path)
+
+                thread_json = adapter.to_thread_json(conversation=conversation)
+                await client.sync.open(
+                    path=thread_path,
+                    create=True,
+                    initial_json=thread_json,
+                    schema=thread_schema,
+                )
+                await client.sync.close(path=thread_path)
+                imported += 1
+        finally:
+            await client.__aexit__(None, None, None)
+            await account_client.close()
+
+        print(
+            (
+                "[green]Imported[/green] "
+                f"{imported} thread(s); "
+                f"skipped existing: {skipped_existing}; "
+                f"skipped invalid: {skipped_invalid}."
+            )
+        )
+    except (RoomException, typer.BadParameter) as exc:
+        print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)

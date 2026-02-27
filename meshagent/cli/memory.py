@@ -1,6 +1,10 @@
+import asyncio
 import base64
 import json as _json
 import mimetypes
+import pathlib
+import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import Annotated, Any, AsyncIterator, List, Optional
 
@@ -142,6 +146,405 @@ def _load_records(
     if obj is None:
         raise typer.BadParameter("Provide --records-json or --records-file")
     return _parse_record_list(obj, name="records")
+
+
+_DEFAULT_FALKOR_IMAGE = "falkordb/falkordb:latest"
+_FALKOR_RDB_CONTAINER_PATH = "/var/lib/falkordb/data/dump.rdb"
+_GRAPH_KEY_TYPE = "graphdata"
+_DEFAULT_GRAPH_NAME = "default_db"
+
+
+class _MemoryImportError(RuntimeError):
+    pass
+
+
+def _resolve_rdb_file_path(path: pathlib.Path) -> pathlib.Path:
+    resolved = path.expanduser().resolve()
+    if not resolved.exists():
+        raise typer.BadParameter(f"RDB file does not exist: {resolved}")
+    if not resolved.is_file():
+        raise typer.BadParameter(f"RDB file must be a file path: {resolved}")
+    return resolved
+
+
+async def _run_local_command(command: list[str]) -> tuple[int, str, str]:
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as ex:
+        missing_binary = command[0] if len(command) > 0 else "<empty command>"
+        raise _MemoryImportError(
+            f"Required command is not installed: {missing_binary}"
+        ) from ex
+
+    stdout_bytes, stderr_bytes = await process.communicate()
+    stdout = stdout_bytes.decode("utf-8", errors="replace")
+    stderr = stderr_bytes.decode("utf-8", errors="replace")
+    return process.returncode, stdout, stderr
+
+
+async def _run_local_command_checked(command: list[str], *, context: str) -> str:
+    returncode, stdout, stderr = await _run_local_command(command)
+    if returncode != 0:
+        detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
+        raise _MemoryImportError(f"Unable to {context}: {detail}")
+    return stdout
+
+
+async def _wait_for_falkor_ready(
+    *, container_name: str, timeout_seconds: float
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        returncode, stdout, _stderr = await _run_local_command(
+            ["docker", "exec", container_name, "redis-cli", "PING"]
+        )
+        if returncode == 0 and "PONG" in stdout:
+            return
+        await asyncio.sleep(0.5)
+
+    _returncode, logs_stdout, logs_stderr = await _run_local_command(
+        ["docker", "logs", "--tail", "40", container_name]
+    )
+    details = logs_stdout.strip() or logs_stderr.strip()
+    if details:
+        raise _MemoryImportError(
+            "Timed out waiting for FalkorDB to become ready. "
+            f"Latest container logs:\n{details}"
+        )
+    raise _MemoryImportError("Timed out waiting for FalkorDB to become ready.")
+
+
+@asynccontextmanager
+async def _running_falkor_container(
+    *, rdb_file: pathlib.Path, docker_image: str, startup_timeout_seconds: float
+) -> AsyncIterator[str]:
+    container_name = f"meshagent-memory-import-{uuid.uuid4().hex[:12]}"
+    mount_spec = f"{rdb_file}:{_FALKOR_RDB_CONTAINER_PATH}:ro"
+    await _run_local_command_checked(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-d",
+            "--name",
+            container_name,
+            "-v",
+            mount_spec,
+            docker_image,
+        ],
+        context="start temporary FalkorDB container",
+    )
+    try:
+        await _wait_for_falkor_ready(
+            container_name=container_name,
+            timeout_seconds=startup_timeout_seconds,
+        )
+        yield container_name
+    finally:
+        await _run_local_command(["docker", "rm", "-f", container_name])
+
+
+async def _list_graph_names(*, container_name: str) -> list[str]:
+    keys_output = await _run_local_command_checked(
+        ["docker", "exec", container_name, "redis-cli", "--raw", "--scan"],
+        context="scan keys from FalkorDB",
+    )
+    keys = sorted({line.strip() for line in keys_output.splitlines() if line.strip()})
+
+    graph_names: list[str] = []
+    for key in keys:
+        key_type = (
+            await _run_local_command_checked(
+                ["docker", "exec", container_name, "redis-cli", "--raw", "TYPE", key],
+                context=f"inspect Redis key type for '{key}'",
+            )
+        ).strip()
+        if key_type == _GRAPH_KEY_TYPE:
+            graph_names.append(key)
+    return graph_names
+
+
+def _select_graph_name(
+    *, graph_names: list[str], requested_graph_name: Optional[str]
+) -> str:
+    if requested_graph_name is not None:
+        if requested_graph_name not in graph_names:
+            available = ", ".join(graph_names) if graph_names else "<none>"
+            raise _MemoryImportError(
+                f"Graph '{requested_graph_name}' was not found. "
+                f"Available graphs: {available}"
+            )
+        return requested_graph_name
+
+    if len(graph_names) == 0:
+        raise _MemoryImportError(
+            "No FalkorDB graph keys were found in the provided dump.rdb file."
+        )
+    if len(graph_names) == 1:
+        return graph_names[0]
+
+    non_default_graphs = [
+        graph_name for graph_name in graph_names if graph_name != _DEFAULT_GRAPH_NAME
+    ]
+    if len(non_default_graphs) == 1:
+        return non_default_graphs[0]
+
+    available = ", ".join(graph_names)
+    raise _MemoryImportError(
+        f"Multiple FalkorDB graphs were found ({available}). "
+        "Pass --graph-name to choose one."
+    )
+
+
+def _parse_graph_query_response(payload: Any) -> list[list[Any]]:
+    if not isinstance(payload, list) or len(payload) < 2:
+        raise _MemoryImportError(
+            "Unexpected GRAPH.QUERY response format from redis-cli"
+        )
+
+    columns = payload[0]
+    rows = payload[1]
+    if not isinstance(columns, list):
+        raise _MemoryImportError("Unexpected GRAPH.QUERY column payload")
+    if not isinstance(rows, list):
+        raise _MemoryImportError("Unexpected GRAPH.QUERY row payload")
+    for row in rows:
+        if not isinstance(row, list):
+            raise _MemoryImportError("Unexpected GRAPH.QUERY row item payload")
+    return rows
+
+
+async def _query_graph_rows(
+    *, container_name: str, graph_name: str, statement: str
+) -> list[list[Any]]:
+    query_output = await _run_local_command_checked(
+        [
+            "docker",
+            "exec",
+            container_name,
+            "redis-cli",
+            "--json",
+            "GRAPH.QUERY",
+            graph_name,
+            statement,
+        ],
+        context=f"query graph '{graph_name}'",
+    )
+    try:
+        payload = _json.loads(query_output)
+    except _json.JSONDecodeError as ex:
+        raise _MemoryImportError(
+            "Unable to parse GRAPH.QUERY JSON output from redis-cli"
+        ) from ex
+    return _parse_graph_query_response(payload)
+
+
+def _coerce_optional_string(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text if text else None
+
+
+def _coerce_required_string(value: Any, *, field_name: str) -> str:
+    text = _coerce_optional_string(value)
+    if text is None:
+        raise _MemoryImportError(f"Missing required value for {field_name}")
+    return text
+
+
+def _coerce_optional_float(value: Any, *, field_name: str) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise _MemoryImportError(
+            f"Invalid boolean value for {field_name}; expected a number."
+        )
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    text = _coerce_optional_string(value)
+    if text is None:
+        return None
+    try:
+        return float(text)
+    except ValueError as ex:
+        raise _MemoryImportError(
+            f"Invalid numeric value for {field_name}: {value}"
+        ) from ex
+
+
+def _entity_record_from_row(row: list[Any]) -> MemoryEntityRecord:
+    if len(row) != 7:
+        raise _MemoryImportError(
+            f"Unexpected entity row width {len(row)} (expected 7 columns)"
+        )
+    return MemoryEntityRecord(
+        entity_id=_coerce_required_string(row[0], field_name="entity_id"),
+        name=_coerce_required_string(row[1], field_name="name"),
+        entity_type=_coerce_optional_string(row[2]),
+        context=_coerce_optional_string(row[3]),
+        confidence=_coerce_optional_float(row[4], field_name="confidence"),
+        created_at=_coerce_optional_string(row[5]),
+        valid_at=_coerce_optional_string(row[6]),
+    )
+
+
+def _relationship_record_from_row(row: list[Any]) -> MemoryRelationshipRecord:
+    if len(row) != 11:
+        raise _MemoryImportError(
+            f"Unexpected relationship row width {len(row)} (expected 11 columns)"
+        )
+
+    relationship_type = _coerce_optional_string(row[2]) or "RELATED_TO"
+    return MemoryRelationshipRecord(
+        source_entity_id=_coerce_required_string(row[0], field_name="source_entity_id"),
+        target_entity_id=_coerce_required_string(row[1], field_name="target_entity_id"),
+        relationship_type=relationship_type,
+        description=_coerce_optional_string(row[3]),
+        confidence=_coerce_optional_float(row[4], field_name="confidence"),
+        created_at=_coerce_optional_string(row[5]),
+        valid_at=_coerce_optional_string(row[6]),
+        expired_at=_coerce_optional_string(row[7]),
+        invalid_at=_coerce_optional_string(row[8]),
+        source_entity_name=_coerce_optional_string(row[9]),
+        target_entity_name=_coerce_optional_string(row[10]),
+    )
+
+
+def _entity_batch_statement(*, skip: int, limit: int) -> str:
+    return (
+        "MATCH (n) "
+        "RETURN "
+        "coalesce(n.uuid, tostring(id(n))), "
+        "coalesce(n.name, n.title, coalesce(n.uuid, tostring(id(n)))), "
+        "CASE "
+        "WHEN size(labels(n)) = 0 THEN '' "
+        "WHEN labels(n)[0] = 'Entity' AND size(labels(n)) > 1 THEN labels(n)[1] "
+        "ELSE labels(n)[0] "
+        "END, "
+        "coalesce(n.context, n.summary, n.content, ''), "
+        "n.confidence, "
+        "n.created_at, "
+        "n.valid_at "
+        "ORDER BY id(n) "
+        f"SKIP {skip} LIMIT {limit}"
+    )
+
+
+def _relationship_batch_statement(*, skip: int, limit: int) -> str:
+    return (
+        "MATCH (a)-[r]->(b) "
+        "RETURN "
+        "coalesce(a.uuid, tostring(id(a))), "
+        "coalesce(b.uuid, tostring(id(b))), "
+        "coalesce(r.name, type(r), 'RELATED_TO'), "
+        "coalesce(r.fact, r.description, r.context, ''), "
+        "r.confidence, "
+        "r.created_at, "
+        "r.valid_at, "
+        "r.expired_at, "
+        "r.invalid_at, "
+        "coalesce(a.name, coalesce(a.uuid, tostring(id(a)))), "
+        "coalesce(b.name, coalesce(b.uuid, tostring(id(b)))) "
+        "ORDER BY id(r) "
+        f"SKIP {skip} LIMIT {limit}"
+    )
+
+
+async def _import_entities_from_graph(
+    *,
+    client: RoomClient,
+    memory_name: str,
+    namespace: Optional[list[str]],
+    graph_name: str,
+    container_name: str,
+    batch_size: int,
+    merge: bool,
+) -> int:
+    imported = 0
+    skip = 0
+    while True:
+        rows = await _query_graph_rows(
+            container_name=container_name,
+            graph_name=graph_name,
+            statement=_entity_batch_statement(skip=skip, limit=batch_size),
+        )
+        if len(rows) == 0:
+            break
+
+        records = [_entity_record_from_row(row) for row in rows]
+        await client.memory.upsert_nodes(
+            name=memory_name,
+            records=records,
+            merge=merge,
+            namespace=namespace,
+        )
+        imported += len(records)
+        skip += len(rows)
+        if len(rows) < batch_size:
+            break
+    return imported
+
+
+async def _import_relationships_from_graph(
+    *,
+    client: RoomClient,
+    memory_name: str,
+    namespace: Optional[list[str]],
+    graph_name: str,
+    container_name: str,
+    batch_size: int,
+    merge: bool,
+) -> int:
+    imported = 0
+    skip = 0
+    while True:
+        rows = await _query_graph_rows(
+            container_name=container_name,
+            graph_name=graph_name,
+            statement=_relationship_batch_statement(skip=skip, limit=batch_size),
+        )
+        if len(rows) == 0:
+            break
+
+        records = [_relationship_record_from_row(row) for row in rows]
+        await client.memory.upsert_relationships(
+            name=memory_name,
+            records=records,
+            merge=merge,
+            namespace=namespace,
+        )
+        imported += len(records)
+        skip += len(rows)
+        if len(rows) < batch_size:
+            break
+    return imported
+
+
+async def _ensure_memory_exists(
+    *,
+    client: RoomClient,
+    memory_name: str,
+    namespace: Optional[list[str]],
+    create_if_missing: bool,
+) -> bool:
+    memories = await client.memory.list(namespace=namespace)
+    if memory_name in memories:
+        return False
+    if not create_if_missing:
+        namespace_text = "/".join(namespace) if namespace else "<root>"
+        raise _MemoryImportError(
+            f"Memory '{memory_name}' does not exist in namespace '{namespace_text}'. "
+            "Use --create-memory to create it automatically."
+        )
+
+    await client.memory.create(name=memory_name, namespace=namespace, overwrite=False)
+    return True
 
 
 @asynccontextmanager
@@ -401,6 +804,126 @@ async def upsert_relationships(
                 f"[bold green]Upserted[/bold green] {len(records)} relationship record(s)"
             )
     except (RoomException, typer.BadParameter, ValidationError) as ex:
+        print(ex)
+        raise typer.Exit(1)
+
+
+@app.async_command(
+    "import",
+    help="Import entities and relationships from a FalkorDB dump.rdb file.",
+)
+async def import_falkordb_memory(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    name: Annotated[str, typer.Option(..., "--name", "-m", help="Memory name")],
+    rdb_file: Annotated[
+        pathlib.Path,
+        typer.Option(
+            ...,
+            "--rdb-file",
+            "-f",
+            help="Path to FalkorDB dump.rdb file",
+        ),
+    ],
+    graph_name: Annotated[
+        Optional[str],
+        typer.Option(
+            "--graph-name",
+            help="FalkorDB graph key name. Auto-detected when unambiguous.",
+        ),
+    ] = None,
+    namespace: NamespaceOption = None,
+    merge: Annotated[
+        bool,
+        typer.Option("--merge/--no-merge", help="Merge with existing records"),
+    ] = True,
+    batch_size: Annotated[
+        int,
+        typer.Option(
+            "--batch-size",
+            min=1,
+            help="Rows per GRAPH.QUERY batch while importing",
+        ),
+    ] = 250,
+    docker_image: Annotated[
+        str,
+        typer.Option(
+            "--docker-image",
+            help="Docker image to use for temporary FalkorDB container",
+        ),
+    ] = _DEFAULT_FALKOR_IMAGE,
+    startup_timeout_seconds: Annotated[
+        float,
+        typer.Option(
+            "--startup-timeout-seconds",
+            min=1.0,
+            help="Max seconds to wait for FalkorDB startup",
+        ),
+    ] = 30.0,
+    create_memory: Annotated[
+        bool,
+        typer.Option(
+            "--create-memory/--no-create-memory",
+            help="Create the target memory when missing",
+        ),
+    ] = True,
+):
+    try:
+        resolved_rdb_file = _resolve_rdb_file_path(rdb_file)
+        namespace_value = _ns(namespace)
+        async with _connected_room_client(project_id=project_id, room=room) as client:
+            created = await _ensure_memory_exists(
+                client=client,
+                memory_name=name,
+                namespace=namespace_value,
+                create_if_missing=create_memory,
+            )
+            if created:
+                print(f"[bold green]Created memory:[/bold green] {name}")
+
+            print(f"[dim]Starting FalkorDB import from[/dim] {resolved_rdb_file}")
+            async with _running_falkor_container(
+                rdb_file=resolved_rdb_file,
+                docker_image=docker_image,
+                startup_timeout_seconds=startup_timeout_seconds,
+            ) as container_name:
+                graph_names = await _list_graph_names(container_name=container_name)
+                selected_graph_name = _select_graph_name(
+                    graph_names=graph_names,
+                    requested_graph_name=graph_name,
+                )
+                print(f"[dim]Using FalkorDB graph:[/dim] {selected_graph_name}")
+
+                entities_imported = await _import_entities_from_graph(
+                    client=client,
+                    memory_name=name,
+                    namespace=namespace_value,
+                    graph_name=selected_graph_name,
+                    container_name=container_name,
+                    batch_size=batch_size,
+                    merge=merge,
+                )
+                relationships_imported = await _import_relationships_from_graph(
+                    client=client,
+                    memory_name=name,
+                    namespace=namespace_value,
+                    graph_name=selected_graph_name,
+                    container_name=container_name,
+                    batch_size=batch_size,
+                    merge=merge,
+                )
+
+                print(
+                    "[bold green]Import complete:[/bold green] "
+                    f"{entities_imported} entities, {relationships_imported} relationships"
+                )
+    except (
+        RoomException,
+        typer.BadParameter,
+        ValidationError,
+        _MemoryImportError,
+    ) as ex:
         print(ex)
         raise typer.Exit(1)
 
