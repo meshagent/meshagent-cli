@@ -1,6 +1,6 @@
 import typer
 from rich import print
-from typing import Annotated, Optional, List
+from typing import Annotated, Optional, List, Literal
 from meshagent.tools import (
     Toolkit,
     ToolkitConfig,
@@ -111,6 +111,8 @@ logger = logging.getLogger("chatbot")
 
 app = async_typer.AsyncTyper(help="Join a chatbot to a room")
 
+ThreadingMode = Literal["none", "default-new"]
+
 ShellCopyEnvOption = Annotated[
     list[str],
     typer.Option(
@@ -146,6 +148,28 @@ WorkingDirectoryAliasOption = Annotated[
         "--working-directory",
         help="Alias for --working-dir",
         hidden=True,
+    ),
+]
+
+ThreadingModeOption = Annotated[
+    ThreadingMode,
+    typer.Option(
+        "--threading-mode",
+        help=(
+            "Threading mode for chat UIs. "
+            "Use 'default-new' to show a new-thread composer before loading a thread."
+        ),
+    ),
+]
+
+ThreadDirOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--thread-dir",
+        help=(
+            "Thread directory for chat thread files. "
+            "Defaults to .threads/<agent-name> when not provided."
+        ),
     ),
 ]
 
@@ -262,7 +286,9 @@ def build_chatbot(
     llm_participant: Optional[str] = None,
     database_namespace: Optional[list[str]] = None,
     always_reply: Optional[bool] = None,
+    thread_dir: Optional[str] = None,
     skill_dirs: Optional[list[str]] = None,
+    threading_mode: ThreadingMode = "none",
     shell_image: Optional[str] = None,
     log_llm_requests: Optional[bool] = None,
     delegate_shell_token: Optional[bool] = None,
@@ -355,6 +381,10 @@ def build_chatbot(
 
     class CustomChatbot(BaseClass):
         def __init__(self):
+            resolved_threading_mode: Optional[str] = None
+            if threading_mode != "none":
+                resolved_threading_mode = threading_mode
+
             super().__init__(
                 llm_adapter=llm_adapter,
                 requires=requirements,
@@ -362,7 +392,9 @@ def build_chatbot(
                 rules=rule if len(rule) > 0 else None,
                 client_rules=client_rules,
                 always_reply=always_reply,
+                thread_dir=thread_dir,
                 skill_dirs=skill_dirs,
+                threading_mode=resolved_threading_mode,
                 decision_model=decision_model,
             )
 
@@ -899,6 +931,8 @@ async def join(
         Optional[bool],
         typer.Option(..., help="Always reply"),
     ] = None,
+    threading_mode: ThreadingModeOption = "none",
+    thread_dir: ThreadDirOption = None,
     skill_dir: Annotated[
         list[str],
         typer.Option(..., help="an agent skills directory"),
@@ -1008,6 +1042,8 @@ async def join(
             working_dir=working_dir,
             llm_participant=llm_participant,
             always_reply=always_reply,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
             database_namespace=database_namespace,
             skill_dirs=skill_dir,
             shell_image=shell_image,
@@ -1264,6 +1300,8 @@ async def service(
         Optional[bool],
         typer.Option(..., help="Always reply"),
     ] = None,
+    threading_mode: ThreadingModeOption = "none",
+    thread_dir: ThreadDirOption = None,
     skill_dir: Annotated[
         list[str],
         typer.Option(..., help="an agent skills directory"),
@@ -1357,6 +1395,8 @@ async def service(
             require_discovery=require_discovery,
             llm_participant=llm_participant,
             always_reply=always_reply,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
@@ -1591,6 +1631,8 @@ async def spec(
         Optional[bool],
         typer.Option(..., help="Always reply"),
     ] = None,
+    threading_mode: ThreadingModeOption = "none",
+    thread_dir: ThreadDirOption = None,
     skill_dir: Annotated[
         list[str],
         typer.Option(..., help="an agent skills directory"),
@@ -1683,6 +1725,8 @@ async def spec(
             require_discovery=require_discovery,
             llm_participant=llm_participant,
             always_reply=always_reply,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
@@ -1928,6 +1972,8 @@ async def deploy(
         Optional[bool],
         typer.Option(..., help="Always reply"),
     ] = None,
+    threading_mode: ThreadingModeOption = "none",
+    thread_dir: ThreadDirOption = None,
     skill_dir: Annotated[
         list[str],
         typer.Option(..., help="an agent skills directory"),
@@ -2027,6 +2073,8 @@ async def deploy(
             require_discovery=require_discovery,
             llm_participant=llm_participant,
             always_reply=always_reply,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
@@ -3772,6 +3820,8 @@ async def run(
         Optional[bool],
         typer.Option(..., help="Always reply"),
     ] = None,
+    threading_mode: ThreadingModeOption = "none",
+    thread_dir: ThreadDirOption = None,
     skill_dir: Annotated[
         list[str],
         typer.Option(..., help="an agent skills directory"),
@@ -3910,6 +3960,8 @@ async def run(
                 working_dir=working_dir,
                 llm_participant=llm_participant,
                 always_reply=always_reply,
+                threading_mode=threading_mode,
+                thread_dir=thread_dir,
                 database_namespace=database_namespace,
                 skill_dirs=skill_dir,
                 shell_image=shell_image,

@@ -108,6 +108,30 @@ ThreadDirOption = Annotated[
     ),
 ]
 
+ChatbotThreadingMode = Literal["none", "default-new"]
+
+ChatbotThreadingModeOption = Annotated[
+    ChatbotThreadingMode,
+    typer.Option(
+        "--threading-mode",
+        help=(
+            "Threading mode for chat UIs. "
+            "Use 'default-new' to show a new-thread composer before loading a thread."
+        ),
+    ),
+]
+
+ChatbotThreadDirOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--thread-dir",
+        help=(
+            "Thread directory for chat thread files. "
+            "Defaults to .threads/<agent-name> when not provided."
+        ),
+    ),
+]
+
 ThreadNameRuleOption = Annotated[
     list[str],
     typer.Option(
@@ -462,6 +486,8 @@ def build_codex_chatbot(
     rule: list[str],
     toolkit: list[str],
     schema: list[str],
+    threading_mode: ChatbotThreadingMode = "none",
+    thread_dir: Optional[str] = None,
     rules_file: Optional[list[str]] = None,
     room_rules_path: Optional[list[str]] = None,
     skill_dirs: Optional[list[str]] = None,
@@ -495,12 +521,18 @@ def build_codex_chatbot(
 
     class CustomCodexChatBot(CodexChatBot):
         def __init__(self):
+            resolved_threading_mode: Optional[str] = None
+            if threading_mode != "none":
+                resolved_threading_mode = threading_mode
+
             super().__init__(
                 title=title,
                 description=description,
                 requires=requirements,
                 rules=rule if len(rule) > 0 else None,
                 client_rules=client_rules if len(client_rules) > 0 else None,
+                thread_dir=thread_dir,
+                threading_mode=resolved_threading_mode,
                 skill_dirs=skill_dirs if len(skill_dirs or []) > 0 else None,
                 model=model,
                 command=command,
@@ -917,6 +949,8 @@ async def chatbot_join(
     model: Annotated[
         str, typer.Option(..., help="Codex model to use")
     ] = "gpt-5.2-codex",
+    threading_mode: ChatbotThreadingModeOption = "none",
+    thread_dir: ChatbotThreadDirOption = None,
     command: Annotated[
         Optional[str], typer.Option(..., help="Command used to launch codex app-server")
     ] = None,
@@ -1034,6 +1068,8 @@ async def chatbot_join(
 
         CustomCodexChatBot = build_codex_chatbot(
             model=model,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
             rule=rule,
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
@@ -1357,6 +1393,8 @@ async def chatbot_service(
     model: Annotated[
         str, typer.Option(..., help="Codex model to use")
     ] = "gpt-5.2-codex",
+    threading_mode: ChatbotThreadingModeOption = "none",
+    thread_dir: ChatbotThreadDirOption = None,
     command: Annotated[
         Optional[str], typer.Option(..., help="Command used to launch codex app-server")
     ] = None,
@@ -1464,6 +1502,8 @@ async def chatbot_service(
             model=model,
             title=title,
             description=description,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
             rule=rule,
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
@@ -1543,6 +1583,8 @@ async def chatbot_spec(
     model: Annotated[
         str, typer.Option(..., help="Codex model to use")
     ] = "gpt-5.2-codex",
+    threading_mode: ChatbotThreadingModeOption = "none",
+    thread_dir: ChatbotThreadDirOption = None,
     command: Annotated[
         Optional[str], typer.Option(..., help="Command used to launch codex app-server")
     ] = None,
@@ -1651,6 +1693,8 @@ async def chatbot_spec(
             model=model,
             title=title,
             description=description,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
             rule=rule,
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
@@ -1745,6 +1789,8 @@ async def chatbot_deploy(
     model: Annotated[
         str, typer.Option(..., help="Codex model to use")
     ] = "gpt-5.2-codex",
+    threading_mode: ChatbotThreadingModeOption = "none",
+    thread_dir: ChatbotThreadDirOption = None,
     command: Annotated[
         Optional[str], typer.Option(..., help="Command used to launch codex app-server")
     ] = None,
@@ -1855,6 +1901,8 @@ async def chatbot_deploy(
             model=model,
             title=title,
             description=description,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
             rule=rule,
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
@@ -2840,6 +2888,8 @@ async def chatbot_run(
     model: Annotated[
         str, typer.Option(..., help="Codex model to use")
     ] = "gpt-5.2-codex",
+    threading_mode: ChatbotThreadingModeOption = "none",
+    thread_dir: ChatbotThreadDirOption = None,
     command: Annotated[
         Optional[str], typer.Option(..., help="Command used to launch codex app-server")
     ] = None,
@@ -2981,6 +3031,8 @@ async def chatbot_run(
             model=model,
             title=title,
             description=description,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
             rule=rule,
             toolkit=require_toolkit + toolkit,
             schema=require_schema + schema,
