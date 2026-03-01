@@ -132,6 +132,36 @@ ChatbotThreadDirOption = Annotated[
     ),
 ]
 
+
+def _normalized_thread_dir(*, thread_dir: Optional[str]) -> Optional[str]:
+    if thread_dir is None:
+        return None
+
+    normalized = thread_dir.strip().rstrip("/")
+    if normalized == "":
+        return None
+
+    return normalized
+
+
+def _chatbot_agent_annotations(
+    *,
+    threading_mode: ChatbotThreadingMode,
+    thread_dir: Optional[str],
+) -> dict[str, str]:
+    annotations: dict[str, str] = {ANNOTATION_AGENT_TYPE: "ChatBot"}
+    if threading_mode != "none":
+        annotations["meshagent.chatbot.threading"] = threading_mode
+
+    normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
+    if normalized_thread_dir is not None:
+        annotations["meshagent.chatbot.thread-list"] = (
+            f"{normalized_thread_dir}/index.threadl"
+        )
+
+    return annotations
+
+
 ThreadNameRuleOption = Annotated[
     list[str],
     typer.Option(
@@ -1492,7 +1522,13 @@ async def chatbot_service(
             path = f"/agent{i}"
 
     service.agents.append(
-        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+        AgentSpec(
+            name=agent_name,
+            annotations=_chatbot_agent_annotations(
+                threading_mode=threading_mode,
+                thread_dir=thread_dir,
+            ),
+        )
     )
 
     service.add_path(
@@ -1684,7 +1720,13 @@ async def chatbot_spec(
             path = f"/agent{i}"
 
     service.agents.append(
-        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+        AgentSpec(
+            name=agent_name,
+            annotations=_chatbot_agent_annotations(
+                threading_mode=threading_mode,
+                thread_dir=thread_dir,
+            ),
+        )
     )
     service.add_path(
         identity=agent_name,
@@ -1892,7 +1934,13 @@ async def chatbot_deploy(
             path = f"/agent{i}"
 
     service.agents.append(
-        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "ChatBot"})
+        AgentSpec(
+            name=agent_name,
+            annotations=_chatbot_agent_annotations(
+                threading_mode=threading_mode,
+                thread_dir=thread_dir,
+            ),
+        )
     )
     service.add_path(
         identity=agent_name,
