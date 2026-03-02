@@ -381,6 +381,7 @@ def _build_external_mcp_service_spec(
         metadata=ServiceMetadata(
             name=service_name,
             description=f"External MCP service at {mcp_url}",
+            annotations={ANNOTATION_SERVICE_ID: mcp_url},
         ),
         external=ExternalServiceSpec(url=external_url),
         ports=[
@@ -612,56 +613,21 @@ async def service_spec(
             help="Output format. 'service' emits Service YAML. 'template' emits ServiceTemplate YAML.",
         ),
     ] = "service",
-):
-    """Render a service or template YAML spec without creating a service."""
-    model = await _load_spec_output(file=file, url=url, mcp=mcp, format=format)
-    print(_dump_model_yaml(model), end="")
-
-
-@app.async_command("service-id")
-async def service_add_service_id(
-    *,
-    file: Annotated[
-        Optional[str],
-        typer.Option("--file", "-f", help="File path to a service definition"),
-    ] = None,
-    url: Annotated[
-        Optional[str],
-        typer.Option("--url", help="URL to a service definition"),
-    ] = None,
-    mcp: Annotated[
-        Optional[str],
-        typer.Option(
-            "--mcp",
-            help=(
-                "MCP server URL. Auto-discovers metadata and generates a spec before adding meshagent.service.id."
-            ),
-        ),
-    ] = None,
     service_id: Annotated[
         Optional[str],
         typer.Option(
             "--service-id",
             help=(
-                "Value for meshagent.service.id. Defaults to metadata.name when omitted."
+                "Optional override for meshagent.service.id in metadata annotations."
             ),
         ),
     ] = None,
-    format: Annotated[
-        _SpecFormat,
-        typer.Option(
-            "--format",
-            help="Output format. 'service' emits Service YAML. 'template' emits ServiceTemplate YAML.",
-        ),
-    ] = "service",
 ):
-    """Render YAML with meshagent.service.id annotation applied."""
+    """Render a service or template YAML spec without creating a service."""
     model = await _load_spec_output(file=file, url=url, mcp=mcp, format=format)
-    effective_service_id = service_id or model.metadata.name
-    model_with_id = _apply_service_id_annotation(
-        model=model, service_id=effective_service_id
-    )
-    print(_dump_model_yaml(model_with_id), end="")
+    if service_id is not None:
+        model = _apply_service_id_annotation(model=model, service_id=service_id)
+    print(_dump_model_yaml(model), end="")
 
 
 @app.async_command("create")
@@ -689,12 +655,23 @@ async def service_create(
     room: Annotated[
         Optional[str], typer.Option("--room", help="Room name")
     ] = os.getenv("MESHAGENT_ROOM"),
+    service_id: Annotated[
+        Optional[str],
+        typer.Option(
+            "--service-id",
+            help=(
+                "Optional override for meshagent.service.id in metadata annotations."
+            ),
+        ),
+    ] = None,
 ):
     """Create a service attached to the project."""
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
         spec = await _load_service_spec(file=file, url=url, mcp=mcp)
+        if service_id is not None:
+            spec = _apply_service_id_annotation(model=spec, service_id=service_id)
 
         if spec.id is not None:
             print("[red]id cannot be set when creating a service[/red]")
@@ -753,12 +730,23 @@ async def service_update(
     room: Annotated[
         Optional[str], typer.Option("--room", help="Room name")
     ] = os.getenv("MESHAGENT_ROOM"),
+    service_id: Annotated[
+        Optional[str],
+        typer.Option(
+            "--service-id",
+            help=(
+                "Optional override for meshagent.service.id in metadata annotations."
+            ),
+        ),
+    ] = None,
 ):
     """Create a service attached to the project."""
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
         spec = await _load_service_spec(file=file, url=url, mcp=mcp)
+        if service_id is not None:
+            spec = _apply_service_id_annotation(model=spec, service_id=service_id)
         if spec.id is not None:
             id = spec.id
 

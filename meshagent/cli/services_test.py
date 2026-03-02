@@ -87,6 +87,10 @@ def test_build_external_mcp_service_spec_uses_external_base_and_endpoint_path() 
         spec.ports[0].endpoints[0].mcp.oauth.token_endpoint
         == "https://auth.example.com/token"
     )
+    assert (
+        spec.metadata.annotations[services.ANNOTATION_SERVICE_ID]
+        == "https://mcp.example.com/v1/mcp"
+    )
 
 
 @pytest.mark.asyncio
@@ -129,6 +133,10 @@ async def test_load_service_spec_mcp_without_oauth_builds_public_service(
     assert spec.ports is not None
     assert spec.ports[0].endpoints[0].mcp is not None
     assert spec.ports[0].endpoints[0].mcp.oauth is None
+    assert (
+        spec.metadata.annotations[services.ANNOTATION_SERVICE_ID]
+        == "https://mcp.example.com/v1/mcp"
+    )
 
 
 @pytest.mark.asyncio
@@ -159,6 +167,10 @@ async def test_load_service_spec_mcp_builds_external_service(
     assert spec.ports[0].endpoints[0].mcp.oauth.authorization_endpoint is None
     assert spec.ports[0].endpoints[0].mcp.oauth.token_endpoint is None
     assert spec.ports[0].endpoints[0].mcp.oauth.no_pkce is False
+    assert (
+        spec.metadata.annotations[services.ANNOTATION_SERVICE_ID]
+        == "https://mcp.example.com/v1/mcp"
+    )
 
 
 def test_fetch_json_url_sets_user_agent_header(monkeypatch: pytest.MonkeyPatch) -> None:
