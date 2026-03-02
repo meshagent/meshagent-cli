@@ -3,15 +3,35 @@
 # ---------------------------------------------------------------------------
 import typer
 from rich import print
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 from meshagent.cli.common_options import ProjectIdOption
 from aiohttp import ClientResponseError
 import pathlib
-from urllib.parse import urlparse
-from urllib.request import urlopen
+import json
+import re
+from dataclasses import dataclass
+from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.request import Request, urlopen
+import yaml
 from meshagent.cli import async_typer
 from meshagent.api.services import well_known_service_path
-from meshagent.api.specs.service import ServiceSpec, ServiceTemplateSpec
+from meshagent.api.oauth import OAuthClientConfig
+from meshagent.api.specs.service import (
+    ANNOTATION_SERVICE_ID,
+    AgentTemplateSpec,
+    ContainerTemplateSpec,
+    ExternalServiceSpec,
+    ExternalServiceTemplateSpec,
+    MCPEndpointSpec,
+    EndpointSpec,
+    PortSpec,
+    ServiceMetadata,
+    ServiceSpec,
+    ServiceTemplateContainerMountSpec,
+    ServiceTemplateMetadata,
+    ServiceTemplateSpec,
+    TemplateEnvironmentVariable,
+)
 from meshagent.api.keys import parse_api_key
 
 import asyncio
@@ -49,6 +69,17 @@ app = async_typer.AsyncTyper(help="Manage services for your project")
 
 class ServiceTemplateValues(RootModel[dict[str, str]]):
     pass
+
+
+@dataclass(slots=True)
+class _DiscoveredOAuthEndpoints:
+    authorization_endpoint: str
+    token_endpoint: str
+    registration_endpoint: Optional[str]
+    no_pkce: Optional[bool]
+
+
+_SpecFormat = Literal["service", "template"]
 
 
 def _load_template_values(
@@ -122,6 +153,517 @@ def _load_yaml_text(*, file: Optional[str], url: Optional[str], name: str) -> st
         raise typer.BadParameter(f"Unable to read {name} from {file}: {exc}")
 
 
+def _ensure_single_source(
+    *, file: Optional[str], url: Optional[str], mcp: Optional[str], name: str
+) -> None:
+    provided = [file is not None, url is not None, mcp is not None]
+    if sum(provided) != 1:
+        raise typer.BadParameter(
+            f"Provide exactly one of --file, --url, or --mcp for {name}"
+        )
+
+
+def _normalize_http_url(value: str) -> str:
+    trimmed = value.strip()
+    if trimmed == "":
+        raise typer.BadParameter("MCP server URL cannot be empty")
+
+    parsed = urlparse(trimmed)
+    if parsed.scheme == "":
+        parsed = urlparse(f"https://{trimmed}")
+
+    if parsed.scheme not in ("http", "https"):
+        raise typer.BadParameter("MCP server URL must use http:// or https://")
+    if parsed.netloc == "":
+        raise typer.BadParameter("MCP server URL must include a hostname")
+    if parsed.query != "" or parsed.fragment != "":
+        raise typer.BadParameter(
+            "MCP server URL must not include query parameters or a fragment"
+        )
+
+    path = parsed.path or ""
+    if path != "/" and path.endswith("/"):
+        path = path.rstrip("/")
+
+    return urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
+
+
+def _oauth_discovery_urls(*, server_url: str) -> list[str]:
+    parsed = urlparse(server_url)
+    path = parsed.path or ""
+    stripped_path = path.rstrip("/")
+    if stripped_path == "":
+        stripped_path = ""
+
+    candidates = [
+        urlunparse(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                f"/.well-known/oauth-authorization-server{stripped_path}",
+                "",
+                "",
+                "",
+            )
+        ),
+        urlunparse(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                f"/.well-known/openid-configuration{stripped_path}",
+                "",
+                "",
+                "",
+            )
+        ),
+        urlunparse(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                "/.well-known/oauth-authorization-server",
+                "",
+                "",
+                "",
+            )
+        ),
+        urlunparse(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                "/.well-known/openid-configuration",
+                "",
+                "",
+                "",
+            )
+        ),
+    ]
+
+    ordered: list[str] = []
+    for candidate in candidates:
+        if candidate not in ordered:
+            ordered.append(candidate)
+    return ordered
+
+
+def _normalize_discovered_endpoint(
+    *, metadata_url: str, value: object
+) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    endpoint = value.strip()
+    if endpoint == "":
+        return None
+    return urljoin(metadata_url, endpoint)
+
+
+def _fetch_json_url(url: str) -> dict[str, object]:
+    request = Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "meshagent-cli/0.28",
+        },
+    )
+    with urlopen(request, timeout=10) as resp:
+        charset = resp.headers.get_content_charset() or "utf-8"
+        payload = json.loads(resp.read().decode(charset))
+
+    if not isinstance(payload, dict):
+        raise ValueError("metadata payload is not an object")
+    return payload
+
+
+async def _discover_oauth_endpoints_for_mcp(
+    *, server_url: str
+) -> Optional[_DiscoveredOAuthEndpoints]:
+    for metadata_url in _oauth_discovery_urls(server_url=server_url):
+        try:
+            payload = await asyncio.to_thread(_fetch_json_url, metadata_url)
+        except Exception:
+            continue
+
+        authorization_endpoint = _normalize_discovered_endpoint(
+            metadata_url=metadata_url,
+            value=payload.get("authorization_endpoint"),
+        )
+        token_endpoint = _normalize_discovered_endpoint(
+            metadata_url=metadata_url,
+            value=payload.get("token_endpoint"),
+        )
+        registration_endpoint = _normalize_discovered_endpoint(
+            metadata_url=metadata_url,
+            value=payload.get("registration_endpoint"),
+        )
+
+        if authorization_endpoint is None or token_endpoint is None:
+            continue
+
+        no_pkce: Optional[bool] = None
+        methods = payload.get("code_challenge_methods_supported")
+        if isinstance(methods, list):
+            normalized_methods = {
+                method.strip().upper()
+                for method in methods
+                if isinstance(method, str) and method.strip() != ""
+            }
+            if len(normalized_methods) > 0:
+                no_pkce = not (
+                    "S256" in normalized_methods or "PLAIN" in normalized_methods
+                )
+
+        return _DiscoveredOAuthEndpoints(
+            authorization_endpoint=authorization_endpoint,
+            token_endpoint=token_endpoint,
+            registration_endpoint=registration_endpoint,
+            no_pkce=no_pkce,
+        )
+
+    return None
+
+
+def _slugify_name(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    if slug == "":
+        return "mcp-service"
+    if not slug[0].isalpha():
+        return f"mcp-{slug}"
+    return slug
+
+
+def _default_mcp_service_name(*, server_url: str) -> str:
+    parsed = urlparse(server_url)
+    host = parsed.hostname or "mcp-service"
+    if host.startswith("www."):
+        host = host[4:]
+
+    host_parts = [part for part in host.split(".") if part != ""]
+    host_token = host_parts[0] if len(host_parts) > 0 else "mcp"
+    if host_token == "mcp" and len(host_parts) > 1:
+        host_token = host_parts[1]
+
+    segments = [segment for segment in parsed.path.split("/") if segment != ""]
+    path_token: Optional[str] = None
+    if len(segments) > 0:
+        last = segments[-1]
+        if last.lower() == "mcp" and len(segments) > 1:
+            path_token = segments[-2]
+        elif last.lower() != "mcp":
+            path_token = last
+
+    if path_token is None or path_token.lower() == host_token.lower():
+        return _slugify_name(host_token)
+    return _slugify_name(f"{host_token}-{path_token}")
+
+
+def _build_external_mcp_service_spec(
+    *,
+    mcp_url: str,
+    oauth: Optional[OAuthClientConfig],
+) -> ServiceSpec:
+    parsed = urlparse(mcp_url)
+    endpoint_path = parsed.path or "/"
+    if endpoint_path != "/" and endpoint_path.endswith("/"):
+        endpoint_path = endpoint_path.rstrip("/")
+
+    external_url = urlunparse((parsed.scheme, parsed.netloc, "", "", "", ""))
+    if parsed.port is not None:
+        port_num = parsed.port
+    elif parsed.scheme == "http":
+        port_num = 80
+    else:
+        port_num = 443
+
+    service_name = _default_mcp_service_name(server_url=mcp_url)
+
+    return ServiceSpec(
+        kind="Service",
+        version="v1",
+        metadata=ServiceMetadata(
+            name=service_name,
+            description=f"External MCP service at {mcp_url}",
+        ),
+        external=ExternalServiceSpec(url=external_url),
+        ports=[
+            PortSpec(
+                num=port_num,
+                type="http",
+                endpoints=[
+                    EndpointSpec(
+                        path=endpoint_path,
+                        mcp=MCPEndpointSpec(
+                            label=service_name,
+                            description=f"MCP tools exposed by {mcp_url}",
+                            oauth=oauth,
+                        ),
+                    )
+                ],
+            )
+        ],
+    )
+
+
+async def _load_service_spec(
+    *, file: Optional[str], url: Optional[str], mcp: Optional[str]
+) -> ServiceSpec:
+    _ensure_single_source(file=file, url=url, mcp=mcp, name="service definition")
+    if mcp is None:
+        spec_bytes = _load_yaml_bytes(file=file, url=url, name="service definition")
+        return parse_yaml_raw_as(ServiceSpec, spec_bytes)
+
+    normalized_mcp_url = _normalize_http_url(mcp)
+    discovered = await _discover_oauth_endpoints_for_mcp(server_url=normalized_mcp_url)
+    if discovered is None:
+        # Server does not advertise OAuth metadata; treat as an unauthenticated MCP.
+        return _build_external_mcp_service_spec(
+            mcp_url=normalized_mcp_url,
+            oauth=None,
+        )
+
+    registration_endpoint = discovered.registration_endpoint
+
+    if (
+        not isinstance(registration_endpoint, str)
+        or registration_endpoint.strip() == ""
+    ):
+        raise typer.BadParameter(
+            "The MCP server does not support OAuth dynamic client registration "
+            "(missing registration_endpoint in discovered metadata)."
+        )
+
+    return _build_external_mcp_service_spec(
+        mcp_url=normalized_mcp_url,
+        # Keep oauth present but empty so room-side resolution can discover
+        # provider metadata and perform dynamic client registration at runtime.
+        oauth=OAuthClientConfig(
+            no_pkce=discovered.no_pkce if discovered.no_pkce is not None else False
+        ),
+    )
+
+
+def _service_spec_to_template_spec(spec: ServiceSpec) -> ServiceTemplateSpec:
+    if spec.external is not None and spec.external.url is None:
+        raise typer.BadParameter(
+            "Cannot convert a service spec with external.url unset into template format."
+        )
+
+    container_template: Optional[ContainerTemplateSpec] = None
+    if spec.container is not None:
+        template_env: Optional[list[TemplateEnvironmentVariable]] = None
+        if spec.container.environment is not None:
+            template_env = [
+                TemplateEnvironmentVariable(
+                    name=env.name,
+                    value=env.value,
+                    token=env.token,
+                    secret=env.secret,
+                )
+                for env in spec.container.environment
+            ]
+
+        template_storage: Optional[ServiceTemplateContainerMountSpec] = None
+        if spec.container.storage is not None:
+            template_storage = ServiceTemplateContainerMountSpec(
+                room=spec.container.storage.room,
+                project=spec.container.storage.project,
+                images=spec.container.storage.images,
+                files=spec.container.storage.files,
+            )
+
+        container_template = ContainerTemplateSpec(
+            environment=template_env,
+            image=spec.container.image,
+            command=spec.container.command,
+            working_dir=spec.container.working_dir,
+            storage=template_storage,
+            on_demand=spec.container.on_demand,
+            writable_root_fs=spec.container.writable_root_fs,
+            private=spec.container.private,
+        )
+
+    return ServiceTemplateSpec(
+        version=spec.version,
+        kind="ServiceTemplate",
+        metadata=ServiceTemplateMetadata(
+            name=spec.metadata.name,
+            description=spec.metadata.description,
+            repo=spec.metadata.repo,
+            icon=spec.metadata.icon,
+            annotations=spec.metadata.annotations,
+        ),
+        agents=[
+            AgentTemplateSpec(
+                name=agent.name,
+                description=agent.description,
+                annotations=agent.annotations,
+            )
+            for agent in spec.agents
+        ]
+        if spec.agents is not None
+        else None,
+        ports=spec.ports,
+        container=container_template,
+        external=ExternalServiceTemplateSpec(url=spec.external.url)
+        if spec.external is not None
+        else None,
+    )
+
+
+def _apply_service_id_annotation(
+    *, model: ServiceSpec | ServiceTemplateSpec, service_id: str
+) -> ServiceSpec | ServiceTemplateSpec:
+    normalized_id = service_id.strip()
+    if normalized_id == "":
+        raise typer.BadParameter("--service-id cannot be empty")
+
+    if isinstance(model, ServiceSpec):
+        annotations = dict(model.metadata.annotations or {})
+        annotations[ANNOTATION_SERVICE_ID] = normalized_id
+        return model.model_copy(
+            update={
+                "metadata": model.metadata.model_copy(
+                    update={"annotations": annotations}
+                )
+            }
+        )
+
+    annotations = dict(model.metadata.annotations or {})
+    annotations[ANNOTATION_SERVICE_ID] = normalized_id
+    return model.model_copy(
+        update={
+            "metadata": model.metadata.model_copy(update={"annotations": annotations})
+        }
+    )
+
+
+def _dump_model_yaml(model: ServiceSpec | ServiceTemplateSpec) -> str:
+    return yaml.safe_dump(
+        model.model_dump(mode="json", exclude_none=True),
+        sort_keys=False,
+        allow_unicode=False,
+    )
+
+
+def _load_input_as_service_spec(
+    *, file: Optional[str], url: Optional[str]
+) -> ServiceSpec:
+    spec_bytes = _load_yaml_bytes(file=file, url=url, name="service definition")
+    try:
+        return parse_yaml_raw_as(ServiceSpec, spec_bytes)
+    except Exception:
+        template_text = _load_yaml_text(file=file, url=url, name="service template")
+        template = parse_yaml_raw_as(ServiceTemplateSpec, template_text)
+        return template.to_service_spec()
+
+
+def _load_input_as_template_spec(
+    *, file: Optional[str], url: Optional[str]
+) -> ServiceTemplateSpec:
+    template_text = _load_yaml_text(file=file, url=url, name="service template")
+    try:
+        return parse_yaml_raw_as(ServiceTemplateSpec, template_text)
+    except Exception:
+        service = parse_yaml_raw_as(ServiceSpec, template_text.encode("utf-8"))
+        return _service_spec_to_template_spec(service)
+
+
+async def _load_spec_output(
+    *,
+    file: Optional[str],
+    url: Optional[str],
+    mcp: Optional[str],
+    format: _SpecFormat,
+) -> ServiceSpec | ServiceTemplateSpec:
+    _ensure_single_source(file=file, url=url, mcp=mcp, name="service definition")
+
+    if mcp is not None:
+        service_spec = await _load_service_spec(file=None, url=None, mcp=mcp)
+    else:
+        service_spec = _load_input_as_service_spec(file=file, url=url)
+
+    if format == "service":
+        return service_spec
+    return _service_spec_to_template_spec(service_spec)
+
+
+@app.async_command("spec")
+async def service_spec(
+    *,
+    file: Annotated[
+        Optional[str],
+        typer.Option("--file", "-f", help="File path to a service definition"),
+    ] = None,
+    url: Annotated[
+        Optional[str],
+        typer.Option("--url", help="URL to a service definition"),
+    ] = None,
+    mcp: Annotated[
+        Optional[str],
+        typer.Option(
+            "--mcp",
+            help=(
+                "MCP server URL. Auto-discovers metadata and generates a service spec without creating it."
+            ),
+        ),
+    ] = None,
+    format: Annotated[
+        _SpecFormat,
+        typer.Option(
+            "--format",
+            help="Output format. 'service' emits Service YAML. 'template' emits ServiceTemplate YAML.",
+        ),
+    ] = "service",
+):
+    """Render a service or template YAML spec without creating a service."""
+    model = await _load_spec_output(file=file, url=url, mcp=mcp, format=format)
+    print(_dump_model_yaml(model), end="")
+
+
+@app.async_command("service-id")
+async def service_add_service_id(
+    *,
+    file: Annotated[
+        Optional[str],
+        typer.Option("--file", "-f", help="File path to a service definition"),
+    ] = None,
+    url: Annotated[
+        Optional[str],
+        typer.Option("--url", help="URL to a service definition"),
+    ] = None,
+    mcp: Annotated[
+        Optional[str],
+        typer.Option(
+            "--mcp",
+            help=(
+                "MCP server URL. Auto-discovers metadata and generates a spec before adding meshagent.service.id."
+            ),
+        ),
+    ] = None,
+    service_id: Annotated[
+        Optional[str],
+        typer.Option(
+            "--service-id",
+            help=(
+                "Value for meshagent.service.id. Defaults to metadata.name when omitted."
+            ),
+        ),
+    ] = None,
+    format: Annotated[
+        _SpecFormat,
+        typer.Option(
+            "--format",
+            help="Output format. 'service' emits Service YAML. 'template' emits ServiceTemplate YAML.",
+        ),
+    ] = "service",
+):
+    """Render YAML with meshagent.service.id annotation applied."""
+    model = await _load_spec_output(file=file, url=url, mcp=mcp, format=format)
+    effective_service_id = service_id or model.metadata.name
+    model_with_id = _apply_service_id_annotation(
+        model=model, service_id=effective_service_id
+    )
+    print(_dump_model_yaml(model_with_id), end="")
+
+
 @app.async_command("create")
 async def service_create(
     *,
@@ -134,6 +676,16 @@ async def service_create(
         Optional[str],
         typer.Option("--url", help="URL to a service definition"),
     ] = None,
+    mcp: Annotated[
+        Optional[str],
+        typer.Option(
+            "--mcp",
+            help=(
+                "MCP server URL. Auto-discovers OAuth metadata and creates an external MCP service "
+                "configured for dynamic client registration."
+            ),
+        ),
+    ] = None,
     room: Annotated[
         Optional[str], typer.Option("--room", help="Room name")
     ] = os.getenv("MESHAGENT_ROOM"),
@@ -142,9 +694,7 @@ async def service_create(
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
-
-        spec_bytes = _load_yaml_bytes(file=file, url=url, name="service definition")
-        spec = parse_yaml_raw_as(ServiceSpec, spec_bytes)
+        spec = await _load_service_spec(file=file, url=url, mcp=mcp)
 
         if spec.id is not None:
             print("[red]id cannot be set when creating a service[/red]")
@@ -184,6 +734,16 @@ async def service_update(
         Optional[str],
         typer.Option("--url", help="URL to a service definition"),
     ] = None,
+    mcp: Annotated[
+        Optional[str],
+        typer.Option(
+            "--mcp",
+            help=(
+                "MCP server URL. Auto-discovers OAuth metadata and builds an external MCP service "
+                "configured for dynamic client registration."
+            ),
+        ),
+    ] = None,
     create: Annotated[
         Optional[bool],
         typer.Option(
@@ -198,9 +758,7 @@ async def service_update(
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
-
-        spec_bytes = _load_yaml_bytes(file=file, url=url, name="service definition")
-        spec = parse_yaml_raw_as(ServiceSpec, spec_bytes)
+        spec = await _load_service_spec(file=file, url=url, mcp=mcp)
         if spec.id is not None:
             id = spec.id
 
