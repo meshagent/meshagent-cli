@@ -14,6 +14,7 @@ from meshagent.api import RoomClient, WebSocketClientProtocol, ApiScope
 from meshagent.api.helpers import websocket_room_url
 from meshagent.cli.helper import (
     cleanup_args,
+    cleanup_args_strip_options,
     get_client,
     parse_shell_tool_mounts,
     parse_memory_selector,
@@ -1154,7 +1155,9 @@ async def service(
 @app.async_command("spec", help="Generate a service spec for deploying a mailbot.")
 async def spec(
     *,
-    service_name: Annotated[str, typer.Option("--service-name", help="service name")],
+    service_name: Annotated[
+        Optional[str], typer.Option("--service-name", help="service name")
+    ] = None,
     service_description: Annotated[
         Optional[str], typer.Option("--service-description", help="service description")
     ] = None,
@@ -1213,15 +1216,6 @@ async def spec(
         Optional[bool],
         typer.Option(..., help="Enable apply patch tool calling"),
     ] = False,
-    host: Annotated[
-        Optional[str], typer.Option(help="Host to bind the service on")
-    ] = None,
-    port: Annotated[
-        Optional[int], typer.Option(help="Port to bind the service on")
-    ] = None,
-    path: Annotated[
-        Optional[str], typer.Option(help="HTTP path to mount the service at")
-    ] = None,
     queue: Annotated[
         Optional[str], typer.Option(..., help="the name of the mail queue")
     ] = None,
@@ -1367,11 +1361,12 @@ async def spec(
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
 ):
+    resolved_service_name = service_name if service_name is not None else agent_name
     working_dir = _resolve_working_dir_option(
         working_dir=working_dir,
         working_directory=working_directory,
     )
-    service = get_service(host=host, port=port)
+    service = get_service(host=None, port=None)
     storage_tool_mounts = parse_storage_tool_mounts(
         local_paths=storage_tool_local_path,
         room_paths=storage_tool_room_path,
@@ -1381,12 +1376,11 @@ async def spec(
         project_paths=shell_tool_project_path,
         image_paths=shell_image_mount,
     )
-    if path is None:
-        path = "/agent"
-        i = 0
-        while service.has_path(path):
-            i += 1
-            path = f"/agent{i}"
+    path = "/agent"
+    i = 0
+    while service.has_path(path):
+        i += 1
+        path = f"/agent{i}"
 
     service.agents.append(
         AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "MailBot"})
@@ -1439,16 +1433,25 @@ async def spec(
         ),
     )
 
-    spec = service_specs()[0]
+    spec = service_specs(token_identity=agent_name)[0]
+    spec.ports = []
     spec.metadata.annotations = {
-        "meshagent.service.id": service_name,
+        "meshagent.service.id": resolved_service_name,
     }
 
-    spec.metadata.name = service_name
+    spec.metadata.name = resolved_service_name
     spec.metadata.description = service_description
     spec.container.image = "meshagent/cli:default"
     spec.container.command = shlex.join(
-        ["meshagent", "mailbot", "service", *cleanup_args(sys.argv[2:])]
+        [
+            "meshagent",
+            "mailbot",
+            "join",
+            *cleanup_args_strip_options(
+                cleanup_args(sys.argv[2:]),
+                ["--host", "--path"],
+            ),
+        ]
     )
 
     print(yaml.dump(spec.model_dump(mode="json", exclude_none=True), sort_keys=False))
@@ -1457,7 +1460,9 @@ async def spec(
 @app.async_command("deploy", help="Deploy a mailbot service to a project or room.")
 async def deploy(
     *,
-    service_name: Annotated[str, typer.Option("--service-name", help="service name")],
+    service_name: Annotated[
+        Optional[str], typer.Option("--service-name", help="service name")
+    ] = None,
     service_description: Annotated[
         Optional[str], typer.Option("--service-description", help="service description")
     ] = None,
@@ -1516,15 +1521,6 @@ async def deploy(
         Optional[bool],
         typer.Option(..., help="Enable apply patch tool calling"),
     ] = False,
-    host: Annotated[
-        Optional[str], typer.Option(help="Host to bind the service on")
-    ] = None,
-    port: Annotated[
-        Optional[int], typer.Option(help="Port to bind the service on")
-    ] = None,
-    path: Annotated[
-        Optional[str], typer.Option(help="HTTP path to mount the service at")
-    ] = None,
     queue: Annotated[
         Optional[str], typer.Option(..., help="the name of the mail queue")
     ] = None,
@@ -1675,13 +1671,14 @@ async def deploy(
         typer.Option("--room", help="The name of a room to create the service for"),
     ] = os.getenv("MESHAGENT_ROOM"),
 ):
+    resolved_service_name = service_name if service_name is not None else agent_name
     working_dir = _resolve_working_dir_option(
         working_dir=working_dir,
         working_directory=working_directory,
     )
     project_id = await resolve_project_id(project_id=project_id)
 
-    service = get_service(host=host, port=port)
+    service = get_service(host=None, port=None)
     storage_tool_mounts = parse_storage_tool_mounts(
         local_paths=storage_tool_local_path,
         room_paths=storage_tool_room_path,
@@ -1691,12 +1688,11 @@ async def deploy(
         project_paths=shell_tool_project_path,
         image_paths=shell_image_mount,
     )
-    if path is None:
-        path = "/agent"
-        i = 0
-        while service.has_path(path):
-            i += 1
-            path = f"/agent{i}"
+    path = "/agent"
+    i = 0
+    while service.has_path(path):
+        i += 1
+        path = f"/agent{i}"
 
     service.agents.append(
         AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "MailBot"})
@@ -1749,16 +1745,25 @@ async def deploy(
         ),
     )
 
-    spec = service_specs()[0]
+    spec = service_specs(token_identity=agent_name)[0]
+    spec.ports = []
     spec.metadata.annotations = {
-        "meshagent.service.id": service_name,
+        "meshagent.service.id": resolved_service_name,
     }
 
-    spec.metadata.name = service_name
+    spec.metadata.name = resolved_service_name
     spec.metadata.description = service_description
     spec.container.image = "meshagent/cli:default"
     spec.container.command = shlex.join(
-        ["meshagent", "mailbot", "service", *cleanup_args(sys.argv[2:])]
+        [
+            "meshagent",
+            "mailbot",
+            "join",
+            *cleanup_args_strip_options(
+                cleanup_args(sys.argv[2:]),
+                ["--host", "--path"],
+            ),
+        ]
     )
 
     client = await get_client()

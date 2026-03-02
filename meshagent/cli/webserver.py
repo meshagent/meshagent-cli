@@ -872,10 +872,32 @@ def _replace_routes_file_arg(*, args: list[str], mounted_routes_path: str) -> li
     i = 0
     while i < len(args):
         arg = args[i]
+        if arg == "--web-host":
+            out.extend(["--host", args[i + 1]])
+            i += 2
+            continue
+        if arg.startswith("--web-host="):
+            out.append("--host=" + arg.split("=", 1)[1])
+            i += 1
+            continue
+        if arg == "--web-port":
+            out.extend(["--port", args[i + 1]])
+            i += 2
+            continue
+        if arg.startswith("--web-port="):
+            out.append("--port=" + arg.split("=", 1)[1])
+            i += 1
+            continue
         if arg == "--website-path":
             i += 2
             continue
         if arg.startswith("--website-path="):
+            i += 1
+            continue
+        if arg == "--path":
+            i += 2
+            continue
+        if arg.startswith("--path="):
             i += 1
             continue
         if arg == "--domain":
@@ -1196,6 +1218,44 @@ def _ensure_website_llm_token_environment(
                 )
             )
 
+    spec.container.environment = environment
+
+
+def _ensure_webserver_token_environment(
+    *,
+    spec: ServiceSpec,
+    website_identity: str,
+) -> None:
+    if spec.container is None:
+        raise typer.BadParameter("Service spec is missing container configuration")
+
+    identity = website_identity.strip()
+    if identity == "":
+        raise typer.BadParameter("agent name must be a non-empty string")
+
+    environment = list(spec.container.environment or [])
+    token_value = TokenValue(
+        identity=identity,
+        api=ApiScope.agent_default(),
+        role="agent",
+    )
+
+    for index, env_var in enumerate(environment):
+        if env_var.name != "MESHAGENT_TOKEN":
+            continue
+        environment[index] = EnvironmentVariable(
+            name="MESHAGENT_TOKEN",
+            token=token_value,
+        )
+        spec.container.environment = environment
+        return
+
+    environment.append(
+        EnvironmentVariable(
+            name="MESHAGENT_TOKEN",
+            token=token_value,
+        )
+    )
     spec.container.environment = environment
 
 
@@ -1531,7 +1591,9 @@ async def join(
 @app.async_command("spec")
 async def spec(
     *,
-    service_name: Annotated[str, typer.Option("--service-name", help="service name")],
+    service_name: Annotated[
+        Optional[str], typer.Option("--service-name", help="service name")
+    ] = None,
     service_description: Annotated[
         Optional[str], typer.Option("--service-description", help="service description")
     ] = None,
@@ -1557,15 +1619,6 @@ async def spec(
     web_port: Annotated[
         int, typer.Option(help="Port to bind the webserver")
     ] = DEFAULT_BIND_PORT,
-    host: Annotated[
-        Optional[str], typer.Option(help="Host to bind the service on")
-    ] = None,
-    port: Annotated[
-        Optional[int], typer.Option(help="Port to bind the service on")
-    ] = None,
-    path: Annotated[
-        Optional[str], typer.Option(help="HTTP path to mount the service at")
-    ] = None,
     website_path: Annotated[
         str,
         typer.Option(
@@ -1575,19 +1628,7 @@ async def spec(
     ],
 ):
     """Generate a service spec for deploying this webserver configuration."""
-    service = get_service(host=cast(str, host), port=cast(int, port))
-
-    service.agents.append(
-        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "WebServer"})
-    )
-
-    if path is None:
-        path = "/agent"
-        i = 0
-        while service.has_path(path):
-            i += 1
-            path = f"/agent{i}"
-
+    resolved_service_name = service_name if service_name is not None else agent_name
     web_host_override = _cli_override_or_none(value=web_host, option_name="web_host")
     web_port_override = _cli_override_or_none(value=web_port, option_name="web_port")
 
@@ -1604,6 +1645,17 @@ async def spec(
         host_override=web_host_override,
         port_override=web_port_override,
     )
+    service = get_service(host=DEFAULT_SERVICE_BIND_HOST, port=resolved_web_port)
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "WebServer"})
+    )
+
+    path = "/agent"
+    i = 0
+    while service.has_path(path):
+        i += 1
+        path = f"/agent{i}"
+
     _collect_website_upload_files(
         routes_file=routes_file,
         include_routes_config=True,
@@ -1626,9 +1678,9 @@ async def spec(
     spec.container.working_dir = website_mount_path
     mounted_routes_path = _website_config_relative_path(routes_file=routes_file)
     spec.metadata.annotations = {
-        "meshagent.service.id": service_name,
+        "meshagent.service.id": resolved_service_name,
     }
-    spec.metadata.name = service_name
+    spec.metadata.name = resolved_service_name
     spec.metadata.description = service_description
     spec.container.image = "meshagent/cli:default"
     spec.container.command = shlex.join(
@@ -1642,6 +1694,7 @@ async def spec(
             ),
         ]
     )
+    _ensure_webserver_token_environment(spec=spec, website_identity=agent_name)
     _ensure_website_llm_token_environment(spec=spec, website_identity=agent_name)
 
     print(yaml.dump(spec.model_dump(mode="json", exclude_none=True), sort_keys=False))
@@ -1650,7 +1703,9 @@ async def spec(
 @app.async_command("deploy")
 async def deploy(
     *,
-    service_name: Annotated[str, typer.Option("--service-name", help="service name")],
+    service_name: Annotated[
+        Optional[str], typer.Option("--service-name", help="service name")
+    ] = None,
     service_description: Annotated[
         Optional[str], typer.Option("--service-description", help="service description")
     ] = None,
@@ -1676,15 +1731,6 @@ async def deploy(
     web_port: Annotated[
         int, typer.Option(help="Port to bind the webserver")
     ] = DEFAULT_BIND_PORT,
-    host: Annotated[
-        Optional[str], typer.Option(help="Host to bind the service on")
-    ] = None,
-    port: Annotated[
-        Optional[int], typer.Option(help="Port to bind the service on")
-    ] = None,
-    path: Annotated[
-        Optional[str], typer.Option(help="HTTP path to mount the service at")
-    ] = None,
     project_id: ProjectIdOption,
     room: Annotated[
         Optional[str],
@@ -1706,6 +1752,7 @@ async def deploy(
     ],
 ):
     """Deploy this webserver as a service, updating an existing service with the same name."""
+    resolved_service_name = service_name if service_name is not None else agent_name
     project_id = await resolve_project_id(project_id=project_id)
     room_name = resolve_room(room)
     if domain is not None:
@@ -1716,19 +1763,6 @@ async def deploy(
             raise typer.BadParameter(
                 "--domain requires --room (or MESHAGENT_ROOM) so the route can target a specific room"
             )
-
-    service = get_service(host=cast(str, host), port=cast(int, port))
-
-    service.agents.append(
-        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "WebServer"})
-    )
-
-    if path is None:
-        path = "/agent"
-        i = 0
-        while service.has_path(path):
-            i += 1
-            path = f"/agent{i}"
 
     web_host_override = _cli_override_or_none(value=web_host, option_name="web_host")
     web_port_override = _cli_override_or_none(value=web_port, option_name="web_port")
@@ -1746,6 +1780,17 @@ async def deploy(
         host_override=web_host_override,
         port_override=web_port_override,
     )
+    service = get_service(host=DEFAULT_SERVICE_BIND_HOST, port=resolved_web_port)
+    service.agents.append(
+        AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "WebServer"})
+    )
+
+    path = "/agent"
+    i = 0
+    while service.has_path(path):
+        i += 1
+        path = f"/agent{i}"
+
     _collect_website_upload_files(
         routes_file=routes_file,
         include_routes_config=True,
@@ -1768,9 +1813,9 @@ async def deploy(
     spec.container.working_dir = website_mount_path
     mounted_routes_path = _website_config_relative_path(routes_file=routes_file)
     spec.metadata.annotations = {
-        "meshagent.service.id": service_name,
+        "meshagent.service.id": resolved_service_name,
     }
-    spec.metadata.name = service_name
+    spec.metadata.name = resolved_service_name
     spec.metadata.description = service_description
     spec.container.image = "meshagent/cli:default"
     spec.container.command = shlex.join(
@@ -1784,6 +1829,7 @@ async def deploy(
             ),
         ]
     )
+    _ensure_webserver_token_environment(spec=spec, website_identity=agent_name)
     _ensure_website_llm_token_environment(spec=spec, website_identity=agent_name)
 
     client = await get_client()

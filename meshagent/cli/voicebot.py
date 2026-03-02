@@ -13,6 +13,7 @@ from meshagent.cli.helper import (
     resolve_room,
     resolve_key,
     cleanup_args,
+    cleanup_args_strip_options,
 )
 from typing import List
 from meshagent.api import RequiredToolkit, RequiredSchema
@@ -387,7 +388,9 @@ async def service(
 @app.async_command("spec", help="Generate a service spec for deploying a voicebot.")
 async def spec(
     *,
-    service_name: Annotated[str, typer.Option("--service-name", help="service name")],
+    service_name: Annotated[
+        Optional[str], typer.Option("--service-name", help="service name")
+    ] = None,
     service_description: Annotated[
         Optional[str], typer.Option("--service-description", help="service description")
     ] = None,
@@ -434,15 +437,6 @@ async def spec(
         Optional[str],
         typer.Option("--voice", help="OpenAI Realtime voice preset to use"),
     ] = None,
-    host: Annotated[
-        Optional[str], typer.Option(help="Host to bind the service on")
-    ] = None,
-    port: Annotated[
-        Optional[int], typer.Option(help="Port to bind the service on")
-    ] = None,
-    path: Annotated[
-        Optional[str], typer.Option(help="HTTP path to mount the service at")
-    ] = None,
     room_rules: Annotated[
         List[str],
         typer.Option(
@@ -452,6 +446,7 @@ async def spec(
         ),
     ] = [],
 ):
+    resolved_service_name = service_name if service_name is not None else agent_name
     CustomVoiceBot = build_voicebot(
         rules=rule,
         rules_file=rules_file,
@@ -463,30 +458,38 @@ async def spec(
         room_rules_paths=room_rules,
     )
 
-    service = get_service(host=host, port=port)
+    service = get_service(host=None, port=None)
 
     service.agents.append(
         AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "VoiceBot"})
     )
 
-    if path is None:
-        path = "/agent"
-        i = 0
-        while service.has_path(path):
-            i += 1
-            path = f"/agent{i}"
+    path = "/agent"
+    i = 0
+    while service.has_path(path):
+        i += 1
+        path = f"/agent{i}"
 
     service.add_path(identity=agent_name, path=path, cls=CustomVoiceBot)
 
-    spec = service_specs()[0]
+    spec = service_specs(token_identity=agent_name)[0]
+    spec.ports = []
     spec.metadata.annotations = {
-        "meshagent.service.id": service_name,
+        "meshagent.service.id": resolved_service_name,
     }
-    spec.metadata.name = service_name
+    spec.metadata.name = resolved_service_name
     spec.metadata.description = service_description
     spec.container.image = "meshagent/cli:default"
     spec.container.command = shlex.join(
-        ["meshagent", "voicebot", "service", *cleanup_args(sys.argv[2:])]
+        [
+            "meshagent",
+            "voicebot",
+            "join",
+            *cleanup_args_strip_options(
+                cleanup_args(sys.argv[2:]),
+                ["--host", "--path"],
+            ),
+        ]
     )
 
     print(yaml.dump(spec.model_dump(mode="json", exclude_none=True), sort_keys=False))
@@ -495,7 +498,9 @@ async def spec(
 @app.async_command("deploy", help="Deploy a voicebot service to a project or room.")
 async def deploy(
     *,
-    service_name: Annotated[str, typer.Option("--service-name", help="service name")],
+    service_name: Annotated[
+        Optional[str], typer.Option("--service-name", help="service name")
+    ] = None,
     service_description: Annotated[
         Optional[str], typer.Option("--service-description", help="service description")
     ] = None,
@@ -541,15 +546,6 @@ async def deploy(
     voice: Annotated[
         Optional[str],
         typer.Option("--voice", help="OpenAI Realtime voice preset to use"),
-    ] = None,
-    host: Annotated[
-        Optional[str], typer.Option(help="Host to bind the service on")
-    ] = None,
-    port: Annotated[
-        Optional[int], typer.Option(help="Port to bind the service on")
-    ] = None,
-    path: Annotated[
-        Optional[str], typer.Option(help="HTTP path to mount the service at")
     ] = None,
     room_rules: Annotated[
         List[str],
@@ -565,6 +561,7 @@ async def deploy(
         typer.Option("--room", help="The name of a room to create the service for"),
     ] = os.getenv("MESHAGENT_ROOM"),
 ):
+    resolved_service_name = service_name if service_name is not None else agent_name
     project_id = await resolve_project_id(project_id=project_id)
 
     CustomVoiceBot = build_voicebot(
@@ -578,30 +575,38 @@ async def deploy(
         room_rules_paths=room_rules,
     )
 
-    service = get_service(host=host, port=port)
+    service = get_service(host=None, port=None)
 
     service.agents.append(
         AgentSpec(name=agent_name, annotations={ANNOTATION_AGENT_TYPE: "VoiceBot"})
     )
 
-    if path is None:
-        path = "/agent"
-        i = 0
-        while service.has_path(path):
-            i += 1
-            path = f"/agent{i}"
+    path = "/agent"
+    i = 0
+    while service.has_path(path):
+        i += 1
+        path = f"/agent{i}"
 
     service.add_path(identity=agent_name, path=path, cls=CustomVoiceBot)
 
-    spec = service_specs()[0]
+    spec = service_specs(token_identity=agent_name)[0]
+    spec.ports = []
     spec.metadata.annotations = {
-        "meshagent.service.id": service_name,
+        "meshagent.service.id": resolved_service_name,
     }
-    spec.metadata.name = service_name
+    spec.metadata.name = resolved_service_name
     spec.metadata.description = service_description
     spec.container.image = "meshagent/cli:default"
     spec.container.command = shlex.join(
-        ["meshagent", "voicebot", "service", *cleanup_args(sys.argv[2:])]
+        [
+            "meshagent",
+            "voicebot",
+            "join",
+            *cleanup_args_strip_options(
+                cleanup_args(sys.argv[2:]),
+                ["--host", "--path"],
+            ),
+        ]
     )
 
     client = await get_client()

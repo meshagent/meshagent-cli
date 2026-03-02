@@ -424,3 +424,20 @@ def cleanup_args(args: list[str]):
             out.append(args[i])
         i += 1
     return out
+
+
+def cleanup_args_strip_options(args: list[str], options: list[str]) -> list[str]:
+    option_set = set(options)
+    out: list[str] = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in option_set:
+            i += 2
+            continue
+        if any(arg.startswith(f"{option}=") for option in option_set):
+            i += 1
+            continue
+        out.append(arg)
+        i += 1
+    return out
