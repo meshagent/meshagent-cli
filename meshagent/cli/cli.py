@@ -22,6 +22,7 @@ from meshagent.cli import voicebot
 from meshagent.cli import mailbot
 from meshagent.cli import worker
 from meshagent.cli import task_runner
+from meshagent.cli import scheduled_tasks
 from meshagent.cli import cli_secrets
 from meshagent.cli import helpers
 from meshagent.cli import meeting_transcriber
@@ -64,6 +65,7 @@ app.add_typer(helpers.app, name="helpers")
 app.add_typer(rooms.app, name="rooms")
 app.add_typer(mailboxes.app, name="mailbox")
 app.add_typer(routes.app, name="route")
+app.add_typer(scheduled_tasks.app, name="scheduled-task")
 app.add_typer(meeting_transcriber.app, name="meeting-transcriber")
 app.add_typer(port.app, name="port")
 app.add_typer(webserver.app, name="webserver")
