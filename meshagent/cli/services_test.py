@@ -140,6 +140,34 @@ async def test_load_service_spec_mcp_without_oauth_builds_public_service(
 
 
 @pytest.mark.asyncio
+async def test_load_service_spec_mcp_deepwiki_without_oauth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fake_discovery(*, server_url: str):
+        assert server_url == "https://mcp.deepwiki.com/mcp"
+        return None
+
+    monkeypatch.setattr(services, "_discover_oauth_endpoints_for_mcp", _fake_discovery)
+
+    spec = await services._load_service_spec(
+        file=None, url=None, mcp="https://mcp.deepwiki.com/mcp"
+    )
+
+    assert spec.kind == "Service"
+    assert spec.metadata.name == "deepwiki"
+    assert spec.external is not None
+    assert spec.external.url == "https://mcp.deepwiki.com"
+    assert spec.ports is not None
+    assert spec.ports[0].endpoints[0].path == "/mcp"
+    assert spec.ports[0].endpoints[0].mcp is not None
+    assert spec.ports[0].endpoints[0].mcp.oauth is None
+    assert (
+        spec.metadata.annotations[services.ANNOTATION_SERVICE_ID]
+        == "https://mcp.deepwiki.com/mcp"
+    )
+
+
+@pytest.mark.asyncio
 async def test_load_service_spec_mcp_builds_external_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -170,6 +198,43 @@ async def test_load_service_spec_mcp_builds_external_service(
     assert (
         spec.metadata.annotations[services.ANNOTATION_SERVICE_ID]
         == "https://mcp.example.com/v1/mcp"
+    )
+
+
+@pytest.mark.asyncio
+async def test_load_service_spec_mcp_notion_with_dynamic_registration_adds_oauth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fake_discovery(*, server_url: str):
+        assert server_url == "https://mcp.notion.com/mcp"
+        return services._DiscoveredOAuthEndpoints(
+            authorization_endpoint="https://api.notion.com/v1/oauth/authorize",
+            token_endpoint="https://api.notion.com/v1/oauth/token",
+            registration_endpoint="https://api.notion.com/v1/oauth/register",
+            no_pkce=False,
+        )
+
+    monkeypatch.setattr(services, "_discover_oauth_endpoints_for_mcp", _fake_discovery)
+
+    spec = await services._load_service_spec(
+        file=None, url=None, mcp="https://mcp.notion.com/mcp"
+    )
+
+    assert spec.kind == "Service"
+    assert spec.metadata.name == "notion"
+    assert spec.external is not None
+    assert spec.external.url == "https://mcp.notion.com"
+    assert spec.ports is not None
+    assert spec.ports[0].endpoints[0].path == "/mcp"
+    assert spec.ports[0].endpoints[0].mcp is not None
+    assert spec.ports[0].endpoints[0].mcp.oauth is not None
+    assert spec.ports[0].endpoints[0].mcp.oauth.client_id is None
+    assert spec.ports[0].endpoints[0].mcp.oauth.authorization_endpoint is None
+    assert spec.ports[0].endpoints[0].mcp.oauth.token_endpoint is None
+    assert spec.ports[0].endpoints[0].mcp.oauth.no_pkce is False
+    assert (
+        spec.metadata.annotations[services.ANNOTATION_SERVICE_ID]
+        == "https://mcp.notion.com/mcp"
     )
 
 
