@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import copy
+from datetime import datetime, timezone
 import json
-import re
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -21,9 +22,6 @@ from meshagent.cli.helper import get_client, resolve_project_id, resolve_room
 app = async_typer.AsyncTyper(help="Inspect and update mesh documents in a room")
 import_app = async_typer.AsyncTyper(help="Import external exports into room documents")
 app.add_typer(import_app, name="import")
-
-_THREAD_FILENAME_RE = re.compile(r"[^a-zA-Z0-9._-]+")
-_THREAD_FILENAME_WHITESPACE_RE = re.compile(r"\s+")
 
 
 def _parse_json_arg(json_str: Optional[str], *, name: str) -> Any:
@@ -53,10 +51,20 @@ def _resolve_local_file(path: Path, *, name: str) -> Path:
     return resolved
 
 
+def _conversation_guid_for_thread_name(*, conversation_id: str) -> str:
+    normalized_id = conversation_id.strip()
+    if normalized_id == "":
+        raise typer.BadParameter("conversation id was empty")
+    try:
+        return str(uuid.UUID(normalized_id))
+    except ValueError:
+        # Produce a stable GUID for non-UUID source ids.
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, normalized_id))
+
+
 def _thread_path_for_conversation(
     *,
     thread_dir: str,
-    conversation_name: str,
     conversation_id: str,
     occurrence: int = 1,
 ) -> str:
@@ -65,24 +73,59 @@ def _thread_path_for_conversation(
         raise typer.BadParameter("--thread-dir must not be empty")
     if occurrence < 1:
         raise typer.BadParameter("occurrence must be >= 1")
-
-    normalized_name = _THREAD_FILENAME_RE.sub(" ", conversation_name.strip())
-    normalized_name = _THREAD_FILENAME_WHITESPACE_RE.sub(" ", normalized_name).strip(
-        " ."
+    normalized_name = _conversation_guid_for_thread_name(
+        conversation_id=conversation_id
     )
-
-    if normalized_name == "":
-        normalized_name = _THREAD_FILENAME_RE.sub(" ", conversation_id.strip())
-        normalized_name = _THREAD_FILENAME_WHITESPACE_RE.sub(
-            " ", normalized_name
-        ).strip(" .")
-
-    if normalized_name == "":
-        raise typer.BadParameter("conversation id was empty")
 
     if occurrence == 1:
         return f"{normalized_dir}/{normalized_name}.thread"
     return f"{normalized_dir}/{normalized_name} {occurrence}.thread"
+
+
+def _thread_list_path_for_thread_dir(*, thread_dir: str) -> str:
+    normalized_dir = thread_dir.strip().rstrip("/")
+    if normalized_dir == "":
+        raise typer.BadParameter("--thread-dir must not be empty")
+    return f"{normalized_dir}/index.threadl"
+
+
+def _thread_list_entry_by_path(
+    *, path: str, entries: list[Element]
+) -> Optional[Element]:
+    for entry in entries:
+        if entry.tag_name != "thread":
+            continue
+        if entry.get_attribute("path") == path:
+            return entry
+    return None
+
+
+def _upsert_thread_list_entry(
+    *,
+    thread_list_root: Element,
+    path: str,
+    name: str,
+    created_at: str,
+    modified_at: str,
+) -> None:
+    entries = thread_list_root.get_children()
+    existing = _thread_list_entry_by_path(path=path, entries=entries)
+    if existing is None:
+        thread_list_root.append_child(
+            tag_name="thread",
+            attributes={
+                "name": name,
+                "path": path,
+                "created_at": created_at,
+                "modified_at": modified_at,
+            },
+        )
+        return
+
+    existing.set_attribute("name", name)
+    existing.set_attribute("path", path)
+    existing.set_attribute("created_at", created_at)
+    existing.set_attribute("modified_at", modified_at)
 
 
 def _decode_pointer(path: str) -> list[str]:
@@ -528,7 +571,7 @@ async def sync_import_threads(
 ):
     try:
         try:
-            from meshagent.agents import thread_schema
+            from meshagent.agents import thread_list_schema, thread_schema
             from meshagent.anthropic import AnthropicThreadAdapter
         except Exception as exc:
             print(
@@ -554,9 +597,15 @@ async def sync_import_threads(
         skipped_existing = 0
         skipped_invalid = 0
         processed = 0
+        thread_list_path = _thread_list_path_for_thread_dir(thread_dir=thread_dir)
+        thread_list_doc = None
         path_occurrence_by_base = dict[str, int]()
 
         try:
+            thread_list_doc = await client.sync.open(
+                path=thread_list_path,
+                schema=thread_list_schema,
+            )
             for index, raw_conversation in enumerate(payload):
                 if limit is not None and processed >= limit:
                     break
@@ -580,16 +629,17 @@ async def sync_import_threads(
                     )
                     continue
 
+                thread_guid = _conversation_guid_for_thread_name(
+                    conversation_id=conversation.conversation_id
+                )
                 base_thread_path = _thread_path_for_conversation(
                     thread_dir=thread_dir,
-                    conversation_name=conversation.name,
                     conversation_id=conversation.conversation_id,
                 )
                 occurrence = path_occurrence_by_base.get(base_thread_path, 0) + 1
                 path_occurrence_by_base[base_thread_path] = occurrence
                 thread_path = _thread_path_for_conversation(
                     thread_dir=thread_dir,
-                    conversation_name=conversation.name,
                     conversation_id=conversation.conversation_id,
                     occurrence=occurrence,
                 )
@@ -601,15 +651,34 @@ async def sync_import_threads(
                     await client.storage.delete(thread_path)
 
                 thread_json = adapter.to_thread_json(conversation=conversation)
-                await client.sync.open(
+                thread = thread_json.get("thread")
+                if isinstance(thread, dict):
+                    thread["name"] = thread_guid
+                await client.sync.create(
                     path=thread_path,
-                    create=True,
-                    initial_json=thread_json,
+                    json=thread_json,
                     schema=thread_schema,
                 )
-                await client.sync.close(path=thread_path)
+                now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                source_created_at = conversation.created_at.strip()
+                source_modified_at = conversation.updated_at.strip()
+                created_at = source_created_at if source_created_at != "" else now
+                modified_at = (
+                    source_modified_at if source_modified_at != "" else created_at
+                )
+                source_name = conversation.name.strip()
+                list_name = source_name if source_name != "" else thread_guid
+                _upsert_thread_list_entry(
+                    thread_list_root=thread_list_doc.root,
+                    path=thread_path,
+                    name=list_name,
+                    created_at=created_at,
+                    modified_at=modified_at,
+                )
                 imported += 1
         finally:
+            if thread_list_doc is not None:
+                await client.sync.close(path=thread_list_path)
             await client.__aexit__(None, None, None)
             await account_client.close()
 
