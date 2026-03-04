@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import random
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Literal, Sequence
 
@@ -41,6 +42,11 @@ from textual._context import active_app
 from textual.binding import Binding
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
+
+from .setup_splash_frames import (
+    SETUP_SPLASH_FRAME_INTERVAL_SECONDS,
+    SETUP_SPLASH_FRAMES,
+)
 
 LOGIN_LAUNCH_OPTION_ID = "__login_launch__"
 LOGIN_EXIT_OPTION_ID = "__login_exit__"
@@ -168,6 +174,8 @@ class SetupWizardApp(App[None]):
     _SHIMMER_BAND_RADIUS = 8
     _SHIMMER_STEP = 3
     _SHIMMER_INTERVAL_SECONDS = 0.016
+    _DISSOLVE_STEPS = 28
+    _DISSOLVE_INTERVAL_SECONDS = 0.022
     _FADE_STEPS = 44
     _FADE_INTERVAL_SECONDS = 0.02
     _AUTH_URL_PREFIX = "Waiting for auth redirect on "
@@ -276,13 +284,13 @@ class SetupWizardApp(App[None]):
         self._help_view: Static | None = None
         self._error_view: Static | None = None
 
-        self._logo_max_width = max(len(line) for line in MESHAGENT_SETUP_LOGO_LINES)
-        self._shimmer_offset = -self._SHIMMER_BAND_RADIUS
+        self._logo_frame_index = 0
 
         self._status_queue: asyncio.Queue[str] = asyncio.Queue()
         self._status_consumer_task: asyncio.Task[None] | None = None
         self._login_task: asyncio.Task[None] | None = None
         self._login_watch_task: asyncio.Task[None] | None = None
+        self._logo_dissolve_task: asyncio.Task[None] | None = None
 
         self.result = SetupWizardResult(status="canceled", message="Setup canceled.")
 
@@ -309,6 +317,8 @@ class SetupWizardApp(App[None]):
         self._error_view = self.query_one("#setup-error", Static)
 
         self._render_logo()
+        if len(SETUP_SPLASH_FRAMES) > 0:
+            self._logo_frame_index = 1 % len(SETUP_SPLASH_FRAMES)
         self._hide_options()
         self._hide_input()
         self._hide_status()
@@ -320,10 +330,19 @@ class SetupWizardApp(App[None]):
             help_text="Press Esc or Ctrl+C to cancel.",
         )
         self._show_login_choice()
+        self._logo_dissolve_task = asyncio.create_task(self._run_logo_dissolve_in())
         self._status_consumer_task = asyncio.create_task(self._consume_status_updates())
 
     async def on_unmount(self) -> None:
         current_task = asyncio.current_task()
+
+        if (
+            self._logo_dissolve_task is not None
+            and self._logo_dissolve_task is not current_task
+            and not self._logo_dissolve_task.done()
+        ):
+            self._logo_dissolve_task.cancel()
+        self._logo_dissolve_task = None
 
         if (
             self._status_consumer_task is not None
@@ -424,9 +443,10 @@ class SetupWizardApp(App[None]):
         self._hide_status()
         self._hide_url()
         self._set_text(
-            title="Sign In",
+            title="Sign in to MeshAgent",
             message="Authenticate with your MeshAgent account to continue setup.",
             help_text="Choose an option. Esc or Ctrl+C cancels.",
+            centered=True,
         )
         self._set_options(
             options=[
@@ -624,6 +644,7 @@ class SetupWizardApp(App[None]):
 
     async def _finish_success(self) -> None:
         self._mode = "done"
+        await self._stop_logo_dissolve()
         self._clear_error()
         self._hide_options()
         self._hide_input()
@@ -678,22 +699,55 @@ class SetupWizardApp(App[None]):
             return
 
     async def _run_logo_fade(self) -> None:
-        for tick in range(1, self._FADE_STEPS + 1):
-            normalized = min(max(float(tick) / float(self._FADE_STEPS), 0.0), 1.0)
-            ease = (
-                3.0 * normalized * normalized
-                - 2.0 * normalized * normalized * normalized
-            )
-            self._render_logo(fade_factor=1.0 - ease)
-            await asyncio.sleep(self._FADE_INTERVAL_SECONDS)
+        await asyncio.sleep(0.25)
 
-    def _set_text(self, *, title: str, message: str, help_text: str) -> None:
+    async def _run_logo_dissolve_in(self) -> None:
+        if len(SETUP_SPLASH_FRAMES) == 0:
+            return
+
+        try:
+            while True:
+                self._render_logo()
+                self._logo_frame_index = (self._logo_frame_index + 1) % len(
+                    SETUP_SPLASH_FRAMES
+                )
+                await asyncio.sleep(SETUP_SPLASH_FRAME_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            return
+
+    async def _stop_logo_dissolve(self) -> None:
+        current_task = asyncio.current_task()
+        if (
+            self._logo_dissolve_task is None
+            or self._logo_dissolve_task is current_task
+            or self._logo_dissolve_task.done()
+        ):
+            return
+        self._logo_dissolve_task.cancel()
+        try:
+            await self._logo_dissolve_task
+        except asyncio.CancelledError:
+            pass
+        self._logo_dissolve_task = None
+        self._render_logo()
+
+    def _set_text(
+        self, *, title: str, message: str, help_text: str, centered: bool = False
+    ) -> None:
+        self._set_header_alignment(centered=centered)
         if self._title_view is not None:
             self._title_view.update(title)
         if self._message_view is not None:
             self._message_view.update(message)
         if self._help_view is not None:
             self._help_view.update(help_text)
+
+    def _set_header_alignment(self, *, centered: bool) -> None:
+        horizontal_alignment = "center" if centered else "left"
+        if self._title_view is not None:
+            self._title_view.styles.content_align = (horizontal_alignment, "middle")
+        if self._message_view is not None:
+            self._message_view.styles.content_align = (horizontal_alignment, "middle")
 
     def _set_options(self, *, options: Sequence[Option]) -> None:
         if self._options_view is None:
@@ -783,29 +837,51 @@ class SetupWizardApp(App[None]):
             return status[2:].strip()
         return status
 
-    def _render_logo(self, *, fade_factor: float = 1.0) -> None:
+    def _render_logo(
+        self, *, fade_factor: float = 1.0, dissolve_progress: float | None = None
+    ) -> None:
+        del fade_factor
+        del dissolve_progress
+
         if self._logo_view is None:
             return
 
-        text = Text()
-        total_lines = len(MESHAGENT_SETUP_LOGO_LINES)
+        if len(SETUP_SPLASH_FRAMES) == 0:
+            self._logo_view.update("")
+            return
+
+        frame = SETUP_SPLASH_FRAMES[self._logo_frame_index]
+        self._logo_view.update(Text.from_ansi(frame))
+
+    def _build_logo_reveal_order(self) -> tuple[dict[tuple[int, int], int], int]:
+        glyph_positions: list[tuple[int, int]] = []
         for row_index, line in enumerate(MESHAGENT_SETUP_LOGO_LINES):
             for column_index, char in enumerate(line):
-                if char == " ":
-                    text.append(char)
-                    continue
-                text.append(
-                    char,
-                    style=self._style_for_glyph(
-                        row=row_index,
-                        column=column_index,
-                        fade_factor=fade_factor,
-                    ),
-                )
-            if row_index < total_lines - 1:
-                text.append("\n")
+                if char != " ":
+                    glyph_positions.append((row_index, column_index))
 
-        self._logo_view.update(text)
+        randomizer = random.Random(0x4D455348)
+        randomizer.shuffle(glyph_positions)
+
+        rank_by_position: dict[tuple[int, int], int] = {}
+        for rank, position in enumerate(glyph_positions, start=1):
+            rank_by_position[position] = rank
+
+        return rank_by_position, len(glyph_positions)
+
+    def _is_logo_glyph_revealed(
+        self, *, row: int, column: int, progress: float
+    ) -> bool:
+        if progress <= 0.0:
+            return False
+        if progress >= 1.0 or self._logo_reveal_total == 0:
+            return True
+
+        reveal_count = max(1, int(progress * float(self._logo_reveal_total)))
+        rank = self._logo_reveal_rank_by_position.get((row, column))
+        if rank is None:
+            return False
+        return rank <= reveal_count
 
     def _style_for_glyph(self, *, row: int, column: int, fade_factor: float) -> str:
         base_red, base_green, base_blue = self._base_logo_rgb(row=row, column=column)
