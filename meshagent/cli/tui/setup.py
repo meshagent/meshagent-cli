@@ -39,13 +39,15 @@ _suppress_textual_debug_features()
 
 from textual.app import App, ComposeResult
 from textual._context import active_app
+from textual import events
 from textual.binding import Binding
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from .setup_splash_frames import (
-    SETUP_SPLASH_FRAME_INTERVAL_SECONDS,
-    SETUP_SPLASH_FRAMES,
+    SETUP_SPLASH_VARIANTS,
+    SetupSplashVariant,
+    load_setup_splash_frames,
 )
 
 LOGIN_LAUNCH_OPTION_ID = "__login_launch__"
@@ -179,6 +181,10 @@ class SetupWizardApp(App[None]):
     _FADE_STEPS = 44
     _FADE_INTERVAL_SECONDS = 0.02
     _AUTH_URL_PREFIX = "Waiting for auth redirect on "
+    _LOGO_HORIZONTAL_PADDING_COLUMNS = 4
+    _LOGO_RESERVED_LOGIN_ROWS = 14
+    _LOGO_MIN_DECENT_ROWS = 18
+    _LOGO_MIN_DECENT_COLUMNS = 48
 
     CSS = """
     Screen {
@@ -190,7 +196,6 @@ class SetupWizardApp(App[None]):
     #setup-logo {
         width: 100%;
         content-align: center middle;
-        min-height: 35;
         margin: 0 0 1 0;
     }
     #setup-title {
@@ -284,6 +289,9 @@ class SetupWizardApp(App[None]):
         self._help_view: Static | None = None
         self._error_view: Static | None = None
 
+        self._logo_variant: SetupSplashVariant | None = None
+        self._logo_frames: tuple[str, ...] = ()
+        self._logo_frame_interval_seconds = 0.1
         self._logo_frame_index = 0
 
         self._status_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -316,9 +324,7 @@ class SetupWizardApp(App[None]):
         self._help_view = self.query_one("#setup-help", Static)
         self._error_view = self.query_one("#setup-error", Static)
 
-        self._render_logo()
-        if len(SETUP_SPLASH_FRAMES) > 0:
-            self._logo_frame_index = 1 % len(SETUP_SPLASH_FRAMES)
+        self._update_logo_variant_for_viewport()
         self._hide_options()
         self._hide_input()
         self._hide_status()
@@ -332,6 +338,10 @@ class SetupWizardApp(App[None]):
         self._show_login_choice()
         self._logo_dissolve_task = asyncio.create_task(self._run_logo_dissolve_in())
         self._status_consumer_task = asyncio.create_task(self._consume_status_updates())
+
+    def on_resize(self, event: events.Resize) -> None:
+        del event
+        self._update_logo_variant_for_viewport()
 
     async def on_unmount(self) -> None:
         current_task = asyncio.current_task()
@@ -702,16 +712,20 @@ class SetupWizardApp(App[None]):
         await asyncio.sleep(0.25)
 
     async def _run_logo_dissolve_in(self) -> None:
-        if len(SETUP_SPLASH_FRAMES) == 0:
-            return
-
         try:
             while True:
+                if (
+                    self._logo_view is None
+                    or not self._logo_view.display
+                    or len(self._logo_frames) == 0
+                ):
+                    await asyncio.sleep(0.1)
+                    continue
                 self._render_logo()
                 self._logo_frame_index = (self._logo_frame_index + 1) % len(
-                    SETUP_SPLASH_FRAMES
+                    self._logo_frames
                 )
-                await asyncio.sleep(SETUP_SPLASH_FRAME_INTERVAL_SECONDS)
+                await asyncio.sleep(self._logo_frame_interval_seconds)
         except asyncio.CancelledError:
             return
 
@@ -855,12 +869,69 @@ class SetupWizardApp(App[None]):
         if self._logo_view is None:
             return
 
-        if len(SETUP_SPLASH_FRAMES) == 0:
+        if len(self._logo_frames) == 0:
             self._logo_view.update("")
             return
 
-        frame = SETUP_SPLASH_FRAMES[self._logo_frame_index]
+        frame = self._logo_frames[self._logo_frame_index]
         self._logo_view.update(Text.from_ansi(frame))
+
+    def _update_logo_variant_for_viewport(self) -> None:
+        if self._logo_view is None:
+            return
+
+        selected_variant = self._select_logo_variant_for_viewport(
+            viewport_width=self.size.width,
+            viewport_height=self.size.height,
+        )
+        if selected_variant is None:
+            self._logo_variant = None
+            self._logo_frames = ()
+            self._logo_frame_index = 0
+            self._logo_view.display = False
+            self._logo_view.update("")
+            return
+
+        if (
+            self._logo_variant is None
+            or self._logo_variant.name != selected_variant.name
+        ):
+            self._logo_frames = load_setup_splash_frames(selected_variant.name)
+            self._logo_variant = selected_variant
+            self._logo_frame_interval_seconds = selected_variant.frame_interval_seconds
+            self._logo_frame_index = 0
+        elif len(self._logo_frames) > 0:
+            self._logo_frame_index %= len(self._logo_frames)
+
+        if len(self._logo_frames) == 0:
+            self._logo_variant = None
+            self._logo_view.display = False
+            self._logo_view.update("")
+            return
+
+        self._logo_view.display = True
+        self._logo_view.styles.height = selected_variant.rows
+        self._render_logo()
+
+    def _select_logo_variant_for_viewport(
+        self, *, viewport_width: int, viewport_height: int
+    ) -> SetupSplashVariant | None:
+        available_logo_columns = viewport_width - self._LOGO_HORIZONTAL_PADDING_COLUMNS
+        available_logo_rows = viewport_height - self._LOGO_RESERVED_LOGIN_ROWS
+
+        if (
+            available_logo_columns < self._LOGO_MIN_DECENT_COLUMNS
+            or available_logo_rows < self._LOGO_MIN_DECENT_ROWS
+        ):
+            return None
+
+        for variant in SETUP_SPLASH_VARIANTS:
+            if (
+                variant.columns <= available_logo_columns
+                and variant.rows <= available_logo_rows
+            ):
+                return variant
+        return None
 
     def _build_logo_reveal_order(self) -> tuple[dict[tuple[int, int], int], int]:
         glyph_positions: list[tuple[int, int]] = []
