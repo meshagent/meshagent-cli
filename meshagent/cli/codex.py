@@ -88,6 +88,7 @@ SetEnvOption = Annotated[
 ]
 
 ThreadingMode = Literal["auto", "manual", "none"]
+InitialMessageMode = Literal["summary", "code", "none"]
 
 ThreadingModeOption = Annotated[
     ThreadingMode,
@@ -105,6 +106,33 @@ ThreadDirOption = Annotated[
     typer.Option(
         "--thread-dir",
         help="Thread directory for auto mode; thread path is <thread_dir>/<name>.thread",
+    ),
+]
+
+InitialMessageOption = Annotated[
+    InitialMessageMode,
+    typer.Option(
+        "--initial-message",
+        help=(
+            "Initial thread message mode: summary (LLM summary), "
+            "code (markdown code block), or none"
+        ),
+    ),
+]
+
+InitialMessageFromOption = Annotated[
+    str,
+    typer.Option(
+        "--initial-message-from",
+        help="Author name used for the initial thread message",
+    ),
+]
+
+DecisionModelOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--decision-model",
+        help="Model used for summary decisions and payload summarization",
     ),
 ]
 
@@ -829,6 +857,9 @@ def build_codex_worker(
     app_server_env: Optional[dict[str, str]] = None,
     toolkit_name: Optional[str] = None,
     verbose: bool = False,
+    initial_message: InitialMessageMode = "code",
+    initial_message_from: str = "worker",
+    decision_model: Optional[str] = None,
 ):
     try:
         from meshagent.codex import CodexWorker
@@ -847,6 +878,41 @@ def build_codex_worker(
         rule=rule,
         rules_file=rules_file,
     )
+
+    resolved_decision_model = (
+        decision_model.strip()
+        if isinstance(decision_model, str) and decision_model.strip() != ""
+        else None
+    )
+    decision_llm_adapter = None
+    if initial_message == "summary":
+        if resolved_decision_model is not None and resolved_decision_model.startswith(
+            "claude-"
+        ):
+            try:
+                from meshagent.anthropic import AnthropicOpenAIResponsesStreamAdapter
+            except ImportError as exc:
+                raise typer.BadParameter(
+                    "meshagent-anthropic is required for --decision-model claude-*"
+                ) from exc
+
+            decision_llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
+                model=resolved_decision_model
+            )
+        else:
+            try:
+                from meshagent.openai import OpenAIResponsesAdapter
+            except ImportError as exc:
+                raise typer.BadParameter(
+                    "meshagent-openai is required for worker payload summarization"
+                ) from exc
+
+            if resolved_decision_model is None:
+                decision_llm_adapter = OpenAIResponsesAdapter()
+            else:
+                decision_llm_adapter = OpenAIResponsesAdapter(
+                    model=resolved_decision_model
+                )
 
     class CustomCodexWorker(CodexWorker):
         def __init__(self):
@@ -869,6 +935,10 @@ def build_codex_worker(
                 sandbox_policy=sandbox_policy,
                 app_server_env=app_server_env,
                 verbose=verbose,
+                initial_message_mode=initial_message,
+                initial_message_from=initial_message_from,
+                decision_model=resolved_decision_model,
+                decision_llm_adapter=decision_llm_adapter,
             )
 
         async def start(self, *, room: RoomClient):
@@ -2024,6 +2094,9 @@ async def worker_join(
     prompt: Annotated[
         Optional[str], typer.Option(..., help="Override prompt used for each message")
     ] = None,
+    initial_message: InitialMessageOption = "code",
+    initial_message_from: InitialMessageFromOption = "worker",
+    decision_model: DecisionModelOption = None,
     toolkit_name: Annotated[
         Optional[str],
         typer.Option(..., help="Optional toolkit name to expose worker operations"),
@@ -2203,6 +2276,9 @@ async def worker_join(
             app_server_env=app_server_env,
             toolkit_name=toolkit_name,
             verbose=verbose,
+            initial_message=initial_message,
+            initial_message_from=initial_message_from,
+            decision_model=decision_model,
         )
         bot = CustomCodexWorker()
 
@@ -2247,6 +2323,9 @@ async def worker_service(
     prompt: Annotated[
         Optional[str], typer.Option(..., help="Override prompt used for each message")
     ] = None,
+    initial_message: InitialMessageOption = "code",
+    initial_message_from: InitialMessageFromOption = "worker",
+    decision_model: DecisionModelOption = None,
     toolkit_name: Annotated[
         Optional[str],
         typer.Option(..., help="Optional toolkit name to expose worker operations"),
@@ -2413,6 +2492,9 @@ async def worker_service(
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
             verbose=verbose,
+            initial_message=initial_message,
+            initial_message_from=initial_message_from,
+            decision_model=decision_model,
         ),
     )
 
@@ -2447,6 +2529,9 @@ async def worker_spec(
     prompt: Annotated[
         Optional[str], typer.Option(..., help="Override prompt used for each message")
     ] = None,
+    initial_message: InitialMessageOption = "code",
+    initial_message_from: InitialMessageFromOption = "worker",
+    decision_model: DecisionModelOption = None,
     toolkit_name: Annotated[
         Optional[str],
         typer.Option(..., help="Optional toolkit name to expose worker operations"),
@@ -2615,6 +2700,9 @@ async def worker_spec(
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
             verbose=verbose,
+            initial_message=initial_message,
+            initial_message_from=initial_message_from,
+            decision_model=decision_model,
         ),
     )
 
@@ -2670,6 +2758,9 @@ async def worker_deploy(
     prompt: Annotated[
         Optional[str], typer.Option(..., help="Override prompt used for each message")
     ] = None,
+    initial_message: InitialMessageOption = "code",
+    initial_message_from: InitialMessageFromOption = "worker",
+    decision_model: DecisionModelOption = None,
     toolkit_name: Annotated[
         Optional[str],
         typer.Option(..., help="Optional toolkit name to expose worker operations"),
@@ -2840,6 +2931,9 @@ async def worker_deploy(
             sandbox_policy=sandbox_policy,
             app_server_env=app_server_env,
             verbose=verbose,
+            initial_message=initial_message,
+            initial_message_from=initial_message_from,
+            decision_model=decision_model,
         ),
     )
 

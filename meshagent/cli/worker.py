@@ -137,6 +137,7 @@ WorkingDirectoryAliasOption = Annotated[
 ]
 
 ThreadingMode = Literal["auto", "manual", "none"]
+InitialMessageMode = Literal["summary", "code", "none"]
 
 ThreadingModeOption = Annotated[
     ThreadingMode,
@@ -154,6 +155,33 @@ ThreadDirOption = Annotated[
     typer.Option(
         "--thread-dir",
         help="Thread directory for auto mode; thread path is <thread_dir>/<name>.thread",
+    ),
+]
+
+InitialMessageOption = Annotated[
+    InitialMessageMode,
+    typer.Option(
+        "--initial-message",
+        help=(
+            "Initial thread message mode: summary (LLM summary), "
+            "code (markdown code block), or none"
+        ),
+    ),
+]
+
+InitialMessageFromOption = Annotated[
+    str,
+    typer.Option(
+        "--initial-message-from",
+        help="Author name used for the initial thread message",
+    ),
+]
+
+DecisionModelOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--decision-model",
+        help="Model used for summary decisions and payload summarization",
     ),
 ]
 
@@ -279,6 +307,9 @@ def build_worker(
     prompt: Optional[str] = None,
     threading_mode: ThreadingMode = "none",
     thread_dir: str = ".threads",
+    initial_message: InitialMessageMode = "code",
+    initial_message_from: str = "worker",
+    decision_model: Optional[str] = None,
 ):
     """
     Returns a Worker subclass
@@ -350,6 +381,30 @@ def build_worker(
                 log_requests=log_llm_requests,
             )
 
+    resolved_decision_model = (
+        decision_model.strip()
+        if isinstance(decision_model, str) and decision_model.strip() != ""
+        else None
+    )
+    decision_llm_adapter: Optional[LLMAdapter] = None
+    if initial_message == "summary":
+        if resolved_decision_model is not None and resolved_decision_model.startswith(
+            "claude-"
+        ):
+            decision_llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
+                model=resolved_decision_model,
+                log_requests=log_llm_requests,
+            )
+        elif resolved_decision_model is not None:
+            decision_llm_adapter = OpenAIResponsesAdapter(
+                model=resolved_decision_model,
+                log_requests=log_llm_requests,
+            )
+        else:
+            decision_llm_adapter = OpenAIResponsesAdapter(
+                log_requests=log_llm_requests,
+            )
+
     class CustomWorker(WorkerBase):
         def __init__(self):
             super().__init__(
@@ -364,6 +419,10 @@ def build_worker(
                 skill_dirs=skill_dirs,
                 threading_mode=threading_mode,
                 thread_dir=thread_dir,
+                initial_message_mode=initial_message,
+                initial_message_from=initial_message_from,
+                decision_model=resolved_decision_model,
+                decision_llm_adapter=decision_llm_adapter,
             )
             self._room_rules_paths = room_rules_paths or []
             self.shell_tool = None
@@ -664,6 +723,9 @@ async def join(
     ] = "gpt-5.2",
     threading_mode: ThreadingModeOption = "none",
     thread_dir: ThreadDirOption = ".threads",
+    initial_message: InitialMessageOption = "code",
+    initial_message_from: InitialMessageFromOption = "worker",
+    decision_model: DecisionModelOption = None,
     require_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
@@ -942,6 +1004,9 @@ async def join(
             prompt=prompt,
             threading_mode=threading_mode,
             thread_dir=thread_dir,
+            initial_message=initial_message,
+            initial_message_from=initial_message_from,
+            decision_model=decision_model,
         )
 
         worker = CustomWorker()
@@ -1003,6 +1068,9 @@ async def service(
     ] = "gpt-5.2",
     threading_mode: ThreadingModeOption = "none",
     thread_dir: ThreadDirOption = ".threads",
+    initial_message: InitialMessageOption = "code",
+    initial_message_from: InitialMessageFromOption = "worker",
+    decision_model: DecisionModelOption = None,
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -1272,6 +1340,9 @@ async def service(
             prompt=prompt,
             threading_mode=threading_mode,
             thread_dir=thread_dir,
+            initial_message=initial_message,
+            initial_message_from=initial_message_from,
+            decision_model=decision_model,
         ),
     )
 
@@ -1325,6 +1396,9 @@ async def spec(
     ] = "gpt-5.2",
     threading_mode: ThreadingModeOption = "none",
     thread_dir: ThreadDirOption = ".threads",
+    initial_message: InitialMessageOption = "code",
+    initial_message_from: InitialMessageFromOption = "worker",
+    decision_model: DecisionModelOption = None,
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -1585,6 +1659,9 @@ async def spec(
             prompt=prompt,
             threading_mode=threading_mode,
             thread_dir=thread_dir,
+            initial_message=initial_message,
+            initial_message_from=initial_message_from,
+            decision_model=decision_model,
         ),
     )
 
@@ -1658,6 +1735,9 @@ async def deploy(
     ] = "gpt-5.2",
     threading_mode: ThreadingModeOption = "none",
     thread_dir: ThreadDirOption = ".threads",
+    initial_message: InitialMessageOption = "code",
+    initial_message_from: InitialMessageFromOption = "worker",
+    decision_model: DecisionModelOption = None,
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -1925,6 +2005,9 @@ async def deploy(
             prompt=prompt,
             threading_mode=threading_mode,
             thread_dir=thread_dir,
+            initial_message=initial_message,
+            initial_message_from=initial_message_from,
+            decision_model=decision_model,
         ),
     )
 
