@@ -749,11 +749,20 @@ class SetupWizardApp(App[None]):
         if self._message_view is not None:
             self._message_view.styles.content_align = (horizontal_alignment, "middle")
 
+    @staticmethod
+    def _first_enabled_option_index(options: Sequence[Option]) -> int | None:
+        for index, option in enumerate(options):
+            if not option.disabled:
+                return index
+        return None
+
     def _set_options(self, *, options: Sequence[Option]) -> None:
         if self._options_view is None:
             return
+        option_list = list(options)
         self._options_view.clear_options()
-        self._options_view.add_options(list(options))
+        self._options_view.add_options(option_list)
+        self._options_view.highlighted = self._first_enabled_option_index(option_list)
         self._options_view.display = True
         self._options_view.focus()
 
