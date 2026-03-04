@@ -1,4 +1,3 @@
-import typer
 import asyncio
 
 from meshagent.cli import async_typer
@@ -6,6 +5,7 @@ from meshagent.cli import async_typer
 from meshagent.cli import multi
 
 from meshagent.cli import auth
+from meshagent.cli import auth_async
 from meshagent.cli import api_keys
 from meshagent.cli import projects
 from meshagent.cli import sessions
@@ -33,10 +33,8 @@ from meshagent.cli import webserver
 from meshagent.cli import codex
 from meshagent.cli import test
 from meshagent.cli.version import __version__
-from meshagent.cli.helper import get_active_api_key
+from meshagent.cli.helper import get_active_api_key, get_active_project, get_client
 from meshagent.otel import otel_config
-
-from art import tprint
 
 import logging
 
@@ -49,6 +47,10 @@ otel_config(service_name="meshagent-cli")
 # Turn down OpenAI logs, they are a bit noisy
 logging.getLogger("openai").setLevel(logging.ERROR)
 logging.getLogger("httpx").setLevel(logging.ERROR)
+logging.getLogger("textual").setLevel(logging.WARNING)
+logging.getLogger("textual.events").setLevel(logging.WARNING)
+logging.getLogger("textual.message_pump").setLevel(logging.WARNING)
+logging.getLogger("textual.screen").setLevel(logging.WARNING)
 
 app = async_typer.AsyncTyper(no_args_is_help=True, name="meshagent")
 app.add_typer(call.app, name="call")
@@ -164,28 +166,95 @@ def setup_command():
     """Perform initial login and project/api key activation."""
 
     async def runner():
-        print("\n", flush=True)
-        tprint("MeshAgent", "tarty10")
-        print("\n", flush=True)
-        await auth.login()
-        print("Activate a project...")
-        project_id = await projects.activate(None, interactive=True)
-        if project_id is None:
-            print("You have choosen to not activate a project. Exiting.")
-        if (
-            project_id is not None
-            and await get_active_api_key(project_id=project_id) is None
-        ):
-            if typer.confirm(
-                "You do not have an active api key for this project. Would you like to create and activate a new api key?",
-                default=True,
+        from meshagent.cli.tui.setup import (
+            SetupProject,
+            run_setup_wizard_tui,
+        )
+
+        async def list_setup_projects() -> list[SetupProject]:
+            client = await get_client()
+            try:
+                response = await client.list_projects()
+            finally:
+                await client.close()
+
+            if not isinstance(response, dict):
+                return []
+
+            project_rows = response.get("projects", [])
+            if not isinstance(project_rows, list):
+                return []
+
+            setup_projects: list[SetupProject] = []
+            for row in project_rows:
+                if not isinstance(row, dict):
+                    continue
+                project_id = row.get("id")
+                if not isinstance(project_id, str) or project_id.strip() == "":
+                    continue
+                project_name = row.get("name")
+                resolved_name = (
+                    project_name
+                    if isinstance(project_name, str) and project_name.strip() != ""
+                    else project_id
+                )
+                setup_projects.append(SetupProject(id=project_id, name=resolved_name))
+
+            return setup_projects
+
+        async def create_project_from_name(project_name: str) -> str:
+            client = await get_client()
+            try:
+                created = await client.create_project(project_name)
+            finally:
+                await client.close()
+
+            created_project_id = (
+                created.get("id") if isinstance(created, dict) else None
+            )
+            if (
+                not isinstance(created_project_id, str)
+                or created_project_id.strip() == ""
             ):
-                name = typer.prompt(
-                    "Enter a name for your API Key (must be a unique name):"
-                )
-                await api_keys.create(
-                    project_id=None, activate=True, silent=True, name=name
-                )
+                raise RuntimeError("Project creation did not return a valid id.")
+            return created_project_id
+
+        async def activate_project(project_id: str) -> str:
+            activated_project_id = await projects.activate(
+                project_id, interactive=False
+            )
+            if activated_project_id is None:
+                raise RuntimeError("Unable to activate selected project.")
+            return activated_project_id
+
+        async def has_active_api_key(project_id: str) -> bool:
+            return await get_active_api_key(project_id=project_id) is not None
+
+        async def create_and_activate_api_key(
+            project_id: str, api_key_name: str
+        ) -> None:
+            await api_keys.create(
+                project_id=project_id,
+                activate=True,
+                silent=True,
+                name=api_key_name,
+            )
+
+        result = await run_setup_wizard_tui(
+            login_operation=lambda status_handler: auth_async.login(
+                status_handler=status_handler,
+                print_status=False,
+            ),
+            list_projects_operation=list_setup_projects,
+            create_project_operation=create_project_from_name,
+            activate_project_operation=activate_project,
+            has_active_api_key_operation=has_active_api_key,
+            create_api_key_operation=create_and_activate_api_key,
+            active_project_id=await get_active_project(),
+        )
+
+        if result.status != "completed" and result.message is not None:
+            print(result.message)
 
     _run_async(runner())
 

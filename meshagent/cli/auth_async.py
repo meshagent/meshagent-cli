@@ -3,10 +3,12 @@ import json
 import time
 import base64
 import hashlib
+import inspect
 import secrets
 import webbrowser
 import asyncio
 from pathlib import Path
+from typing import Awaitable, Callable, Optional
 from urllib.parse import urlencode
 from aiohttp import web, ClientSession
 
@@ -216,7 +218,29 @@ async def _refresh_tokens(tokens: dict) -> dict:
 # -----------------------------------------------------------------------------
 
 
-async def login():
+LoginStatusHandler = Callable[[str], Awaitable[None] | None]
+
+
+async def _emit_login_status(
+    *,
+    message: str,
+    status_handler: Optional[LoginStatusHandler],
+    print_status: bool,
+) -> None:
+    if status_handler is not None:
+        maybe_awaitable = status_handler(message)
+        if inspect.isawaitable(maybe_awaitable):
+            await maybe_awaitable
+
+    if print_status:
+        print(message)
+
+
+async def login(
+    *,
+    status_handler: Optional[LoginStatusHandler] = None,
+    print_status: bool = True,
+):
     """
     Launches the system browser for OAuth 2.0 Authorization Code + PKCE.
     Persists tokens to ~/.meshagent/session.json
@@ -241,15 +265,27 @@ async def login():
 
     # Kick user to browser without blocking the loop
     await asyncio.to_thread(webbrowser.open, auth_url)
-    print(f"Waiting for auth redirect on {auth_url}…")
+    await _emit_login_status(
+        message=f"Waiting for auth redirect on {auth_url}…",
+        status_handler=status_handler,
+        print_status=print_status,
+    )
 
     # Await the auth code, then exchange for tokens
     auth_code = await _wait_for_code(state)
-    print("Got code, exchanging…")
+    await _emit_login_status(
+        message="Got code, exchanging…",
+        status_handler=status_handler,
+        print_status=print_status,
+    )
 
     tokens = await _exchange_code_for_tokens(auth_code, code_verifier)
     _save(tokens)
-    print("✅ Logged in (tokens cached).")
+    await _emit_login_status(
+        message="✅ Logged in (tokens cached).",
+        status_handler=status_handler,
+        print_status=print_status,
+    )
 
 
 async def session():

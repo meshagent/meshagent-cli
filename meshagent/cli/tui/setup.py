@@ -1,0 +1,912 @@
+# ruff: noqa: E402
+
+from __future__ import annotations
+
+import asyncio
+import os
+from dataclasses import dataclass
+from typing import Awaitable, Callable, Literal, Sequence
+
+from rich.text import Text
+
+
+def _suppress_textual_debug_features() -> None:
+    raw_features = os.environ.get("TEXTUAL")
+    if raw_features is None:
+        return
+
+    parsed_features = [
+        value.strip() for value in raw_features.split(",") if value.strip() != ""
+    ]
+    if len(parsed_features) == 0:
+        return
+
+    filtered_features = [
+        value for value in parsed_features if value.lower() not in ("debug", "devtools")
+    ]
+    if len(filtered_features) == len(parsed_features):
+        return
+
+    if len(filtered_features) == 0:
+        os.environ.pop("TEXTUAL", None)
+        return
+
+    os.environ["TEXTUAL"] = ",".join(filtered_features)
+
+
+_suppress_textual_debug_features()
+
+from textual.app import App, ComposeResult
+from textual._context import active_app
+from textual.binding import Binding
+from textual.widgets import Input, OptionList, Static
+from textual.widgets.option_list import Option
+
+LOGIN_LAUNCH_OPTION_ID = "__login_launch__"
+LOGIN_EXIT_OPTION_ID = "__login_exit__"
+PROJECT_CREATE_OPTION_ID = "__project_create__"
+PROJECT_EXIT_OPTION_ID = "__project_exit__"
+API_KEY_CREATE_OPTION_ID = "__api_key_create__"
+API_KEY_SKIP_OPTION_ID = "__api_key_skip__"
+ERROR_EXIT_OPTION_ID = "__error_exit__"
+
+MESHAGENT_SETUP_LOGO_LINES: tuple[str, ...] = (
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    '                  -"l1LCy2555222333333yyyyyyfffwwwwCCJ#Tuo!c|_                  ',
+    "               `cfG@NR0QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQN8g1=               ",
+    "              cV@HHBWMRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR0QQQHw,             ",
+    "             eA&k&DNMRRMRMMMMMRRRRMMMRRRRRRRRRRRRRRRRRRRRRRRRRRR0QO|            ",
+    "            rZPXYKNRMMMMMMMMMMMRR00000000000QQQ00QQQQ00RRRRRRRRRRRQE`           ",
+    "            3Pgg&DRMMMMMMMMMMR0MKkXVhhVVhhhgggggggVgb&H0Q0RRRRRRRRRM\           ",
+    "           `qGPPUWRMMMMMMMMRR$61lxcrsrrrrrrllcccxx%%%l{emDQRRRRRRRR0x           ",
+    '           `SbGG8WRMMMMMMMMB6r^>vi))))>>>>>>><<<\))|"++==%VQRRRRRRRRx           ',
+    '           .qbGZ&WRMMMMMNNDyi;%<||)))))|||||||""<^\',==^;;,;40RRMMMMR%           ',
+    "           .qbZZ&WMNMMNNWDbr/<\=+++/+=+++++++=)ppj: ^=,,,,`[QMMMMMRR%           ",
+    "           .qYZZ&BMNNNNWD@4);)+;;;^;|v+-:^;;;'?@Y5+ /^''''`}0MMMMMMR%           ",
+    "           .SkZZ&BMNNNWBHU4);)^:,,')4VT, /,::-}WU2^ |;____.I0MMMMMMR%           ",
+    "           .qkbb&BMNNNWBKU4),);_''`*HAS)_),___^n#%^+\"_____ I0MMMMMMRv           ",
+    "            qkbbABMNNWWDK8gv,>,___.{D$4<'|'___-`'=/,------ I0MMMMMMMv           ",
+    "            qOYY&BNNNWWDK8E),>,---.sB@4>:|'--_`;\^`__----- ?0MMMMMMMi           ",
+    "            qOYYADNNWWBDKUE),<:-_-.{WKE),\"'--.vd4w+ ,_---- !0MMMMMMMi           ",
+    "            qAkkADMNNWWDHUd\,<:---.sW@4<,|'-- aD&Ei =,`--- !0MMMMMMM)           ",
+    "            qAkkADNNNWWDH$Pc`^'``` !NKGr:,`.  JW$Oo'--...  w0MMMMMMN)           ",
+    '            qAOOADMNNWWBH$OS]<"++)[AWK&V7lvv*yHBK8b3!l%%{ehNMMMMMMMN)           ',
+    "            6&OOODMNNNWWDH$AkZGbAKRNBDKU8&UHN0NWDK$U&AA$BR0MMMMMMMRW)           ",
+    "     .  ... 7&YYkKMNNNNWWBDDHDBWNNNWWWWWWWWNNNNWWWBBDBBWWNNMMMMMMM0b-           ",
+    "   . .......;6bGb8NNNNNNNWWWWWWNNNNNNNNNNNNNNMNNNNNWNNNNNNMMMMNMM0Dl ....       ",
+    "  .......```.^TEgZ$WMNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNMMNNNNMNMMR00bx .........   ",
+    " ......````-_--vupEAHNMMNNNNNNNNNNNNNNNNNMMMMMMMMMRRRRRRRR00QRHEt;.--````...... ",
+    "  .....```````` .;v1y4ADMR0000000000RRRMMMNWWBDHKK@$U&&OkbXqJ!<'-':'___-```.... ",
+    " ....````--------`. `:\"%]Lw5F52ywJTnLzoet1]!I}*srllx%%v)>\"+;;^^^;,:''__--``....",
+    "....``--__'':,,;^^=++////\"|))\\\<\\<>>>>>>)))))))>>><\\))|\"/++=^;,,:''__--``....",
+    " ....```--__''::,;^^=++//\"\"|||))))))\\\)))))))))|||\"\"//+++=^;;,,,:''___--``.....",
+    " ......```--___'':::,,;;^^^^^======++++++++++=+++===^^;;;,,,,:'''____-````......",
+    "    ......````---____'''''::,,,,,,,,,,,,,,,,,,,,,,::::'''''_____---````.......  ",
+    "      ........```````-`--________''''''''''''_________------```````.........    ",
+)
+
+MESHAGENT_SETUP_LOGO_COLOR_HEX_LINES: tuple[str, ...] = (
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#393939#434243#505050#5e5d5e#69696a#727172#767576#777777#777777#777777#767676#767676#757575#757475#747474#747474#737272#727272#727272#717171#717171#717171#707070#707070#706f6f#6f6f6f#6f6f6f#6e6e6e#6e6d6d#6d6c6c#6c6c6c#6c6c6c#6a6a6a#696969#686868#666566#636363#5f5f5f#575757#4b4b4b#414141#3a3a3a#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#414141#6f6f6f#a9a9aa#d0d0d3#e9e7ea#f4f3f6#f9f9fb#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#ffffff#fdfbfd#eae9ea#c6c4c6#8a8a8a#505050#383838#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#414141#919193#d1d1d6#d9d9dc#d9d9de#e1dfe2#e7e7e9#efeff1#f1f1f3#f1f1f3#f1f1f3#f1eff3#f1eff3#f1eff3#f1eff3#f1f1f3#f1f1f3#f1f1f3#f1f1f4#f1f1f3#f1eff3#f1eff3#f1f1f3#f1f1f3#f1f1f3#f1f1f3#f1f1f3#f1f1f3#f3f1f4#f1f1f4#f1f1f3#f3f3f4#f3f3f4#f3f3f4#f3f3f4#f4f3f4#f4f3f6#f4f3f6#f4f4f6#f4f4f6#f4f4f6#f4f4f6#f4f4f6#f3f3f6#f3f3f4#f4f4f6#f6f6f8#fbf9fd#ffffff#ffffff#d9d9d9#6b6b6b#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#535354#bcbcc0#c0c0c4#b5b5b9#c3c1c6#dcdcdf#eae9ec#efeff1#f1eff3#f1eff3#efeff3#f1eff3#efeff1#efeef1#efeff1#efeff3#efeff3#f1eff3#f1eff3#f1f1f3#f1eff3#efeff3#efeff3#efeff3#f1eff3#f1eff3#f1eff3#f1eff3#f1f1f3#f3f1f4#f3f1f4#f3f1f4#f3f1f4#f3f1f4#f3f1f4#f3f1f4#f1f1f3#f3f1f4#f3f3f4#f4f3f4#f4f4f6#f4f4f6#f4f3f6#f4f4f6#f4f4f6#f4f4f6#f4f4f6#f4f4f6#f4f3f4#f3f3f4#f3f3f4#f8f8f9#ffffff#b8b8b8#3a3a3a#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#434343#aaaaae#a3a3a7#a2a2a4#b1b1b4#d6d6d9#ececee#f1f1f3#efeff1#efeff1#efeff3#efeff3#f1eff1#efeff1#efeff3#efeff3#efeff1#efeef1#efeff1#f1eff3#f3f3f6#f6f6f8#f9f8fb#f9f8fb#f8f8f9#f6f6f9#f6f6f9#f6f6f9#f8f8fb#f9f9fb#f9f8fb#f9f9fb#fbf9fd#fbf9fd#fbf9fd#f9f9fd#f9f9fd#fbfbfd#fbfbff#fbfbff#fbfbfd#f9f9fb#f6f6f8#f4f3f6#f3f3f4#f4f3f4#f4f3f6#f4f3f6#f4f3f6#f3f3f4#f3f3f4#f3f1f4#f1f1f4#f1f1f3#ffffff#9c9c9d#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#737375#a5a5a9#9e9da0#9d9d9f#c1c1c4#dfdfe2#f3f3f4#efeff1#efeff3#efeff3#efeff1#efeef1#efeef1#efeef1#efeff1#efeff1#efeff1#f3f3f4#f8f8f9#efeff3#d4d4d7#b6b6b9#9f9ea0#929293#908f90#8f8f90#909091#909091#8f8f90#8f8f90#8e8e8f#8d8c8d#8b8b8c#8b8a8b#8c8b8c#8b8a8b#8b8b8b#8b8b8b#919192#9e9e9f#adadae#c1c1c3#dadadc#f6f6f8#ffffff#f8f6f9#f3f3f4#f3f3f4#f3f3f4#f3f3f4#f3f1f4#f1f1f3#f1f1f3#f1f1f3#f3f3f4#eeeeef#3b3b3b#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#848486#a9a9ac#a3a3a5#a4a4a7#c7c6ca#e7e7e9#f1eff3#efeff1#efeef1#efeef1#efeff1#efeef1#eeeef1#eeeef1#efeef1#f1eff3#f4f4f6#cbcbcd#808081#4f4f4f#424242#404040#414141#434343#444444#434343#434343#434343#434343#434343#434343#424242#424141#414141#414141#414141#404040#404040#3f3f3f#3f3f3f#3f3f3f#424141#464545#555555#838283#dcdcde#ffffff#f3f1f4#f3f1f4#f1f1f3#f1f1f3#f1f1f3#f1f1f3#f1eff3#f1eff3#f6f4f8#404040#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#878688#aeadb1#a8a8aa#a8a8aa#c4c4c7#e6e6e7#f1eff3#efeff1#efeff1#eeeef1#eeeef1#eeeeef#eeecef#eeeeef#efeef1#e1e1e4#808082#434343#383838#3c3c3c#3e3e3e#3d3d3d#3d3d3d#3c3d3c#3d3d3d#3d3d3c#3c3c3c#3c3c3c#3c3c3c#3c3c3c#3c3c3c#3c3c3c#3c3c3c#3c3c3c#3c3c3c#3b3b3b#3b3b3b#3b3a3a#3a3a3a#3a3a3a#393939#393939#383838#383838#383838#3f3f3f#929293#fbfbfd#f1f1f3#f1f1f3#f1eff3#f1f1f3#f1f1f3#f1eff3#f1eff3#f4f3f6#404040#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#868688#b0b0b2#a9a9ad#aaaaad#c1c0c4#e4e4e6#f1eff3#efeef1#eeeef1#eeeef1#eeeeef#eeecef#eceaee#eae9ec#dfdfe2#717173#3d3d3d#383838#3f3f3f#3b3b3b#3a3a3a#3a3a3a#3a3a3a#3a3a3a#3a3a3a#3a3a3a#3a3a3a#3a3a3a#3a3a3a#3a3a3a#3a3a3a#3a3a3a#3a3a3a#3a3a3a#3a3939#393939#3b3b3c#383838#373737#373737#383838#383838#383838#383838#383838#373737#383737#989798#fbf9fb#f1eff3#f1eff3#efeff1#efeef1#efeef1#efeff1#f3f3f4#3f3f3f#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#868688#b0b0b4#aaa9ac#acaaae#c1c1c4#e4e4e6#efeef1#ececef#eeecef#eeecef#eceaee#eae9ec#e6e6e7#dfdee1#b0aeb1#434343#393939#3c3c3c#3b3b3b#383838#383838#393938#393939#393939#383838#383838#383838#393938#393939#383838#383838#383838#383838#383838#3d3d3d#7d7d80#7d7d7f#5b5b5c#373737#373737#383838#383838#373737#373737#373737#373737#373737#4d4d4e#fdfdff#efeff1#efeff1#efeff1#efeef1#efeef1#f1f1f3#f3f3f4#3f3f3f#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#868587#b2b1b5#aaa9ad#aaa9ad#c1c1c4#e2e2e4#eeecef#eceaee#eaeaee#eaeaec#e9e9ec#e6e6e9#dfdfe2#d0d0d3#979698#3d3d3d#383838#3d3d3d#393939#383838#383838#383838#383838#383838#3a3a3a#3e3e3e#383838#373737#373737#383838#383838#383838#383838#373737#494949#d0d0d3#b1b1b4#787879#393939#373737#393939#383838#373737#373737#373737#373737#373737#484848#f8f8fb#efeff1#efeff1#efeff1#efeef1#eeeeef#efeff1#f1f1f4#3f3f3f#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#88878a#b5b5b8#acacb0#acacae#c0c0c4#e2e2e4#eeeeef#eceaee#eae9ec#e9e7ea#e7e7ea#e2e2e6#d9d9dc#c7c7ca#979799#3d3d3d#383838#3d3d3d#383838#373737#373737#373737#373737#3d3d3d#969698#919092#636364#373737#373737#393939#373737#373737#373737#373737#474747#e4e4e7#cacacd#757577#383838#373737#3a3a3a#383838#373737#373737#373737#373737#373737#484848#f8f8fb#efeff1#efeff1#efeff1#efeef1#eeeef1#efeff1#f1f1f4#3f3f3f#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#868688#b6b6b9#aeadb1#aeadb1#c0c0c3#e2e2e4#eeeeef#eceaee#eae9ec#e9e9ea#e6e6e9#e1dfe2#d6d4d9#c7c6c8#989799#3d3d3d#373737#3d3d3c#383838#373737#373737#373737#373737#464646#dad9dc#bdbcbf#88888b#3a3a3a#373737#3a3a3a#373737#373737#373737#373737#383838#606061#656566#3f3f3f#383838#393939#3a3939#373737#373737#373737#373737#373737#373737#494849#f9f8fb#efeff1#efeff1#efeef1#efeef1#eeeeef#efeff1#f1eff3#3e3e3e#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#848385#b6b6b9#b0aeb2#aeaeb1#bfbfc1#e1e1e4#eeecef#eaeaec#eae9ec#e7e7ea#e4e4e6#dfdee1#d4d3d6#c6c4c7#9d9c9e#3e3e3e#373737#3c3c3c#373737#373737#373737#373737#373737#444444#dfdfe2#cbcbce#969798#3c3c3c#373737#3a3a3a#373737#373737#373737#373737#373737#373737#373737#383838#393939#373737#373737#373737#373737#373737#373737#373737#373737#494949#f8f8fb#eeeef1#efeff1#efeef1#eeeeef#efeef1#efeff1#efeef1#3e3e3e#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#858486#b9b9bc#b1b0b4#b1b0b4#c0c0c3#e2e1e2#ececee#e9e9ec#e9e7ea#e6e6e9#e4e2e6#dfdee1#d4d4d7#c6c6c8#99999c#3d3d3d#373737#3c3c3c#373737#373737#373737#373737#373737#444444#e2e2e6#d1d1d4#98989a#3c3c3c#373737#3a3a3a#373737#373737#373737#373737#373737#383838#3b3b3b#383838#373737#373737#373737#373737#373737#373737#373737#373737#373737#4a4a4a#f9f9fd#efeef1#efeff1#efeef1#eeeeef#eeeeef#efeff1#efeff1#3e3e3e#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#848385#bababd#b2b2b5#b4b2b6#bdbdc0#dfdfe1#ececee#eae9ec#e7e7ea#e6e6e9#e2e2e6#dedcdf#d6d4d9#c7c7ca#99989c#3d3d3d#373737#3c3c3c#373737#373737#373737#373737#373737#444444#e4e4e7#d3d1d4#9a9a9d#3c3d3d#373737#393939#373737#373737#373737#373737#3e3e3e#939295#969597#6d6d6f#383838#373737#373737#373737#373737#373737#373737#373737#373737#4b4b4b#f9f9fb#eeeeef#efeff1#efeef1#eeeeef#eeecef#efeff1#eeecef#3d3d3d#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#848485#bdbcc0#b5b5b8#b5b5b8#bcbcc0#dfdee1#eeecef#eaeaec#e9e9ea#e7e6e9#e4e2e6#dfdee1#d7d7da#c8c7ca#959397#3b3b3b#373737#3b3b3b#373737#373737#373737#373737#373737#444444#e6e4e7#d1d1d4#98989a#3b3c3c#373737#3a3a3a#373737#373737#373737#373737#535353#dcdcdf#c0c0c3#9a9a9d#3d3d3e#373737#383838#373737#373737#373737#373737#373737#373737#4b4b4b#f9f9fd#eeeeef#efeeef#efeeef#eeeeef#eeeeef#efeff1#eeecef#3d3d3d#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#848385#bfbdc1#b6b6b9#b6b6b9#bcbcbf#dedcdf#ececee#eaeaee#e9e7ea#e7e6e9#e4e4e6#dfdfe2#d7d7da#cbcacd#a3a3a5#414141#373737#383838#373737#373737#373737#373737#373737#4b4b4b#e9e9ec#d3d3d6#a9a9ac#434344#373737#373737#373737#373737#373737#373737#666667#e7e6e9#ceced1#b8b8ba#565657#373737#373737#373737#373737#373737#373737#373737#373737#6c6b6c#f8f8fb#eeecef#efeef1#efeeef#eeeeef#eeecef#efeef1#ececee#3d3d3d#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#858586#bfbfc3#b9b8bc#b8b8ba#bcbcbf#dedcdf#eeecef#eaeaec#e9e9ea#e7e6ea#e6e6e7#e2e1e4#dad9de#cdcdd0#bab9bc#87878a#4d4d4d#3c3b3c#393939#383838#383838#3a3a3a#4f4e4f#bcbcbf#e4e4e7#d4d3d6#c0c0c3#929293#585758#414141#3e3e3e#3f3e3f#464646#707071#d9d9dc#e2e1e4#d6d4d7#c6c4c7#adadb0#727173#4c4c4c#424242#3f3f3f#3f3f3f#444444#545455#8e8d8e#ececef#efeef1#eeeeef#eeeeef#eeeeef#eeeeef#eeecef#efeef1#ececef#3d3d3d#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#7f7e80#c0c0c3#b9b8bc#b8b8ba#bab9bd#dededf#eeeeef#eaeaee#eae9ec#e9e7ea#e7e6e9#e4e4e6#dfdfe2#d9d7dc#cdcbd0#bfbdc0#b6b6b8#acacae#a7a7a9#adacae#bcbabd#d6d4d7#f1f1f4#eceaee#e2e1e4#dcdcdf#d4d3d6#cac8cb#c4c4c7#c3c1c4#c8c8cb#d9d9dc#ececef#f6f4f8#eae9ea#e4e2e6#dcdcdf#d4d3d6#cbcbce#c7c7ca#c1c0c3#bcbcbf#bfbfc1#cdcdd0#e2e1e4#f3f3f6#f8f6f9#efeef1#eeeeef#eeeeef#eeeeef#eeeeef#eeeeef#eeeeef#f1eff3#e7e6e9#3b3a3a#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#585859#c0c0c3#b2b2b5#b4b2b6#b5b4b8#d6d6d7#efeef1#ececee#eceaee#eae9ec#e9e7ea#e7e6e9#e6e4e7#e2e2e6#dfdfe2#dedcdf#dadade#dcdcdf#e1e1e4#e4e4e7#e9e9ec#eceaee#e9e9ec#e7e7ea#e6e6e9#e4e4e7#e4e2e6#e4e2e6#e4e4e6#e6e6e7#e7e7e9#eae9ec#eceaee#eaeaec#eae9ec#e7e7e9#e6e6e7#e4e2e6#e1dfe2#e1dfe2#dfdfe2#e1e1e2#e2e2e6#e6e4e7#e7e7ea#eae9ec#ececee#eeecef#eeeeef#eeecef#eeecef#eeeeef#eeeeef#eeecef#f9f9fd#aeadb0#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#7f7e80#aeaeb1#a7a7a9#adadb0#c4c4c6#e9e9ea#ececef#eaeaee#eaeaee#eaeaec#e9e9ea#e9e9ea#e7e7ea#e6e6e9#e6e6e9#e6e6e7#e6e6e7#e7e7ea#e9e9ec#eaeaee#eaeaee#eaeaec#eaeaec#eaeaec#eae9ec#eae9ec#eae9ec#e9e9ec#eae9ec#eaeaec#eceaee#ececee#eeecef#eceaee#eae9ec#e9e9ea#e9e9ea#e9e7ea#e7e7ea#e9e9ea#e9e9ec#eae9ec#eaeaec#eaeaec#eceaee#eeecef#eeeeef#eeeeef#eeecef#ececee#eeecef#eeeeef#f8f8fb#dededf#424242#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#383838#646465#99999d#9e9ea0#acacae#cbcbcd#e6e6e7#eeeeef#ececee#eaeaee#eaeaec#eaeaec#eceaee#eaeaee#eaeaec#eaeaec#eaeaee#eaeaee#eaeaee#ececee#ececee#eceaee#eceaee#eceaee#eceaee#eaeaec#eaeaec#eaeaee#ececee#ececef#ececee#ececee#ececee#ececee#eceaee#eceaee#eceaee#eaeaee#eceaee#eeecef#eeeeef#ececee#ececee#ececee#ececee#eeecef#ececef#eeecef#eeeeef#f1eff3#f8f6f9#f8f6f9#aeaeb1#404041#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#3e3e3e#5e5f60#7d7d80#9c9a9e#bfbfc1#dadade#eceaee#efeff3#eeeeef#ececee#eceaee#eaeaee#eaeaee#eaeaee#eaeaee#eaeaee#eaeaec#eceaee#ececee#ececef#ececee#ececef#ececef#ececee#ececee#ececef#eeecef#eeeeef#eeeeef#eeeef1#eeeef1#efeef1#efeff1#efeff3#efeff3#f1f1f3#f1f1f3#f3f1f4#f3f1f4#f3f3f4#f3f3f4#f3f3f6#f4f4f8#f8f6f9#f9f8fb#fbf9fd#f4f4f6#d9d9dc#9a9a9d#525252#383838#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#383838#3e3e3f#505051#717072#969697#bdbcbf#dcdcde#eeecef#f3f3f6#f6f4f8#f6f6f9#f6f6f8#f6f6f9#f8f6f9#f8f6f9#f6f6f9#f6f6f9#f6f6f8#f6f4f8#f4f4f6#f3f3f6#f3f1f4#efeff1#efeef1#eeecef#eaeaec#e7e7e9#e6e4e7#e2e1e4#dedcdf#d9d9da#d6d6d7#d3d1d4#d0d0d1#cbcbcd#c7c6c8#c3c3c6#c0bfc1#bababd#b5b4b6#adadae#9f9ea0#868687#686869#4c4c4c#3b3b3b#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#393939#3f3f40#4d4d4d#5d5d5e#6b6b6c#777678#7b7b7c#78787a#757577#717172#6d6d6e#686869#646465#616162#5d5d5d#59595a#575757#545455#525252#4f4f4f#4d4d4d#4b4b4b#484949#474748#464546#444444#434344#424243#414142#404041#3f3f40#3f3f3f#3e3e3e#3d3d3d#3c3c3c#3b3b3b#39393a#383838#383838#383838#383838#383838#383838#383838#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#383838#383838#383838#383838#383838#393939#393939#393939#393939#393939#39393a#3a3a3a#3a3a3a#3a3a3b#3b3b3b#3b3b3b#3b3b3c#3b3b3c#3b3b3c#3b3b3c#3c3c3c#3c3c3c#3c3c3d#3c3c3d#3c3c3c#3c3c3d#3c3c3d#3d3d3d#3d3d3d#3d3d3d#3d3d3d#3d3d3d#3d3d3d#3d3d3d#3c3c3d#3c3c3c#3c3c3c#3b3b3c#3b3b3b#3b3b3b#3a3a3b#3a3a3a#3a3a3a#393939#393939#393939#383839#383838#383838#383738#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#383838#383838#383838#383838#383838#393939#393939#393939#39393a#39393a#3a3a3a#3a3a3a#3a3a3a#3a3a3a#3a3a3a#3a3a3b#3a3a3b#3a3a3b#3a3a3b#3b3b3b#3b3a3b#3b3b3b#3a3a3b#3a3a3a#3a3a3b#3a3a3b#3a3a3b#3a3a3b#3a3a3a#3a3a3a#3a3a3a#3a3a3a#3a3a3a#3a3a3a#39393a#393939#393939#393939#393939#383839#383838#383838#383838#383838#383838#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373738#383838#383838#383838#383838#383838#383838#383838#383838#383838#383838#383838#383838#383838#383839#383839#393839#383839#383838#383838#383838#383838#383838#383838#383838#383838#383838#383838#383838#383838#383838#383838#383838#383838#373738#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+    "#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737#373737",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SetupProject:
+    id: str
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
+class SetupWizardResult:
+    status: Literal["completed", "canceled", "error"]
+    message: str | None = None
+    project_id: str | None = None
+
+
+LoginStatusHandler = Callable[[str], Awaitable[None] | None]
+LoginOperation = Callable[[LoginStatusHandler], Awaitable[None]]
+ListProjectsOperation = Callable[[], Awaitable[Sequence[SetupProject]]]
+CreateProjectOperation = Callable[[str], Awaitable[str]]
+ActivateProjectOperation = Callable[[str], Awaitable[str]]
+HasActiveApiKeyOperation = Callable[[str], Awaitable[bool]]
+CreateApiKeyOperation = Callable[[str, str], Awaitable[None]]
+
+SetupMode = Literal[
+    "intro",
+    "login_choice",
+    "login_progress",
+    "projects",
+    "project_name",
+    "api_key_choice",
+    "api_key_name",
+    "busy",
+    "error",
+    "done",
+]
+
+
+class SetupWizardApp(App[None]):
+    _SHIMMER_BAND_RADIUS = 8
+    _SHIMMER_STEP = 3
+    _SHIMMER_INTERVAL_SECONDS = 0.016
+    _FADE_STEPS = 44
+    _FADE_INTERVAL_SECONDS = 0.02
+    _AUTH_URL_PREFIX = "Waiting for auth redirect on "
+
+    CSS = """
+    Screen {
+        layout: vertical;
+        align: left top;
+        padding: 1 2;
+        background: #050911;
+    }
+    #setup-logo {
+        width: 100%;
+        content-align: center middle;
+        min-height: 35;
+        margin: 0 0 1 0;
+    }
+    #setup-title {
+        width: 100%;
+        content-align: left middle;
+        color: #f4f7ff;
+        text-style: bold;
+        margin: 0 0 1 0;
+    }
+    #setup-message {
+        width: 100%;
+        content-align: left middle;
+        color: #cad6f4;
+        margin: 0 0 1 0;
+    }
+    #setup-options {
+        width: 100%;
+        height: 1fr;
+        border: round #7ca9ff;
+        background: #0a1120;
+    }
+    #setup-input {
+        width: 100%;
+        border: round #7ca9ff;
+        background: #0a1120;
+        margin: 0 0 1 0;
+    }
+    #setup-status {
+        width: 100%;
+        min-height: 5;
+        color: #cad6f4;
+    }
+    #setup-url {
+        width: 100%;
+        content-align: left middle;
+        color: #8ac0ff;
+        margin: 1 0 0 0;
+    }
+    #setup-help {
+        width: 100%;
+        content-align: left middle;
+        color: #95a7ce;
+        margin: 1 0 0 0;
+    }
+    #setup-error {
+        width: 100%;
+        content-align: left middle;
+        color: #ff99aa;
+        margin: 1 0 0 0;
+    }
+    """
+
+    BINDINGS = [
+        Binding("ctrl+c", "cancel_setup", "Cancel", priority=True),
+        Binding("escape", "cancel_setup", "Cancel", priority=True),
+    ]
+
+    def __init__(
+        self,
+        *,
+        login_operation: LoginOperation,
+        list_projects_operation: ListProjectsOperation,
+        create_project_operation: CreateProjectOperation,
+        activate_project_operation: ActivateProjectOperation,
+        has_active_api_key_operation: HasActiveApiKeyOperation,
+        create_api_key_operation: CreateApiKeyOperation,
+        active_project_id: str | None = None,
+    ) -> None:
+        super().__init__()
+        self._login_operation = login_operation
+        self._list_projects_operation = list_projects_operation
+        self._create_project_operation = create_project_operation
+        self._activate_project_operation = activate_project_operation
+        self._has_active_api_key_operation = has_active_api_key_operation
+        self._create_api_key_operation = create_api_key_operation
+        self._active_project_id = active_project_id
+
+        self._mode: SetupMode = "intro"
+        self._projects: list[SetupProject] = []
+        self._selected_project_id: str | None = None
+        self._status_lines: list[str] = []
+        self._auth_url: str | None = None
+
+        self._logo_view: Static | None = None
+        self._title_view: Static | None = None
+        self._message_view: Static | None = None
+        self._options_view: OptionList | None = None
+        self._input_view: Input | None = None
+        self._status_view: Static | None = None
+        self._url_view: Static | None = None
+        self._help_view: Static | None = None
+        self._error_view: Static | None = None
+
+        self._logo_max_width = max(len(line) for line in MESHAGENT_SETUP_LOGO_LINES)
+        self._shimmer_offset = -self._SHIMMER_BAND_RADIUS
+
+        self._status_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._status_consumer_task: asyncio.Task[None] | None = None
+        self._login_task: asyncio.Task[None] | None = None
+        self._login_watch_task: asyncio.Task[None] | None = None
+
+        self.result = SetupWizardResult(status="canceled", message="Setup canceled.")
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="setup-logo")
+        yield Static("MeshAgent Setup", id="setup-title")
+        yield Static("", id="setup-message")
+        yield OptionList(id="setup-options", wrap=False)
+        yield Input(id="setup-input", placeholder="")
+        yield Static("", id="setup-status")
+        yield Static("", id="setup-url")
+        yield Static("", id="setup-help")
+        yield Static("", id="setup-error")
+
+    async def on_mount(self) -> None:
+        self._logo_view = self.query_one("#setup-logo", Static)
+        self._title_view = self.query_one("#setup-title", Static)
+        self._message_view = self.query_one("#setup-message", Static)
+        self._options_view = self.query_one("#setup-options", OptionList)
+        self._input_view = self.query_one("#setup-input", Input)
+        self._status_view = self.query_one("#setup-status", Static)
+        self._url_view = self.query_one("#setup-url", Static)
+        self._help_view = self.query_one("#setup-help", Static)
+        self._error_view = self.query_one("#setup-error", Static)
+
+        self._render_logo()
+        self._hide_options()
+        self._hide_input()
+        self._hide_status()
+        self._hide_url()
+        self._clear_error()
+        self._set_text(
+            title="MeshAgent Setup",
+            message="Loading...",
+            help_text="Press Esc or Ctrl+C to cancel.",
+        )
+        self._show_login_choice()
+        self._status_consumer_task = asyncio.create_task(self._consume_status_updates())
+
+    async def on_unmount(self) -> None:
+        current_task = asyncio.current_task()
+
+        if (
+            self._status_consumer_task is not None
+            and self._status_consumer_task is not current_task
+            and not self._status_consumer_task.done()
+        ):
+            self._status_consumer_task.cancel()
+        self._status_consumer_task = None
+
+        if (
+            self._login_watch_task is not None
+            and self._login_watch_task is not current_task
+            and not self._login_watch_task.done()
+        ):
+            self._login_watch_task.cancel()
+        self._login_watch_task = None
+
+        if (
+            self._login_task is not None
+            and self._login_task is not current_task
+            and not self._login_task.done()
+        ):
+            self._login_task.cancel()
+        self._login_task = None
+
+    async def action_cancel_setup(self) -> None:
+        if self._mode == "done":
+            return
+
+        self.result = SetupWizardResult(status="canceled", message="Setup canceled.")
+        if self._login_task is not None and not self._login_task.done():
+            self._login_task.cancel()
+        self.exit()
+
+    async def on_option_list_option_selected(
+        self, event: OptionList.OptionSelected
+    ) -> None:
+        selected_id = event.option.id
+        if not isinstance(selected_id, str):
+            return
+
+        if self._mode == "login_choice":
+            if selected_id == LOGIN_LAUNCH_OPTION_ID:
+                await self._start_login()
+                return
+            if selected_id == LOGIN_EXIT_OPTION_ID:
+                self.result = SetupWizardResult(
+                    status="canceled", message="Login canceled. Exiting."
+                )
+                self.exit()
+                return
+
+        if self._mode == "projects":
+            if selected_id == PROJECT_CREATE_OPTION_ID:
+                self._set_mode_project_name()
+                return
+            if selected_id == PROJECT_EXIT_OPTION_ID:
+                self.result = SetupWizardResult(
+                    status="canceled",
+                    message="You chose to not activate a project. Exiting.",
+                )
+                self.exit()
+                return
+            await self._activate_project(selected_id)
+            return
+
+        if self._mode == "api_key_choice":
+            if selected_id == API_KEY_SKIP_OPTION_ID:
+                await self._finish_success()
+                return
+            if selected_id == API_KEY_CREATE_OPTION_ID:
+                self._set_mode_api_key_name()
+                return
+
+        if self._mode == "error" and selected_id == ERROR_EXIT_OPTION_ID:
+            self.exit()
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        entered_value = event.value.strip()
+        if entered_value == "":
+            self._set_error_text("Value cannot be empty.")
+            return
+
+        if self._mode == "project_name":
+            await self._create_project(entered_value)
+            return
+
+        if self._mode == "api_key_name":
+            if self._selected_project_id is None:
+                await self._set_error_mode("No project was selected. Exiting.")
+                return
+            await self._create_api_key(self._selected_project_id, entered_value)
+
+    def _show_login_choice(self) -> None:
+        self._mode = "login_choice"
+        self._clear_error()
+        self._hide_input()
+        self._hide_status()
+        self._hide_url()
+        self._set_text(
+            title="Sign In",
+            message="Authenticate with your MeshAgent account to continue setup.",
+            help_text="Choose an option. Esc or Ctrl+C cancels.",
+        )
+        self._set_options(
+            options=[
+                Option("Launch browser to sign in", id=LOGIN_LAUNCH_OPTION_ID),
+                Option("Exit setup", id=LOGIN_EXIT_OPTION_ID),
+            ]
+        )
+
+    async def _start_login(self) -> None:
+        if self._login_task is not None and not self._login_task.done():
+            return
+
+        self._mode = "login_progress"
+        self._clear_error()
+        self._hide_options()
+        self._hide_input()
+        self._show_status()
+        self._show_url(default_text="Auth URL will appear here after browser launch.")
+        self._set_text(
+            title="Authenticating",
+            message="Complete sign-in in your browser.",
+            help_text="Press Esc or Ctrl+C to cancel.",
+        )
+        self._append_status("Preparing browser sign-in flow...")
+
+        self._login_task = asyncio.create_task(
+            self._login_operation(self._emit_login_status)
+        )
+        self._login_watch_task = asyncio.create_task(self._watch_login_completion())
+
+    async def _watch_login_completion(self) -> None:
+        if self._login_task is None:
+            return
+        try:
+            await self._login_task
+        except asyncio.CancelledError:
+            return
+        except Exception as ex:
+            await self._set_error_mode(f"Login failed: {ex}")
+            return
+
+        await self._load_projects()
+
+    async def _load_projects(self) -> None:
+        self._set_busy(
+            title="Loading Projects",
+            message="Fetching projects from your account...",
+            help_text="Please wait.",
+        )
+        try:
+            projects = list(await self._list_projects_operation())
+        except Exception as ex:
+            await self._set_error_mode(f"Unable to load projects: {ex}")
+            return
+
+        self._projects = projects
+        self._show_project_selection()
+
+    def _show_project_selection(self) -> None:
+        self._mode = "projects"
+        self._clear_error()
+        self._hide_input()
+        self._hide_status()
+        self._hide_url()
+
+        options: list[Option] = []
+        if len(self._projects) == 0:
+            options.append(Option("No projects available yet.", disabled=True))
+        else:
+            for project in self._projects:
+                label = f"{project.name} ({project.id})"
+                if (
+                    self._active_project_id is not None
+                    and project.id == self._active_project_id
+                ):
+                    label = f"{label} [active]"
+                options.append(Option(label, id=project.id))
+
+        options.append(Option("Create a new project", id=PROJECT_CREATE_OPTION_ID))
+        options.append(Option("Exit setup", id=PROJECT_EXIT_OPTION_ID))
+
+        message = "Choose a project to activate for CLI commands."
+        if len(self._projects) == 0:
+            message = "No projects found yet. Choose Create to continue."
+
+        self._set_text(
+            title="Activate a Project",
+            message=message,
+            help_text="Use Up/Down and Enter.",
+        )
+        self._set_options(options=options)
+
+    def _set_mode_project_name(self) -> None:
+        self._mode = "project_name"
+        self._clear_error()
+        self._hide_options()
+        self._hide_status()
+        self._hide_url()
+        self._set_text(
+            title="Create a Project",
+            message="Enter a name for your new project.",
+            help_text="Press Enter to continue.",
+        )
+        self._show_input(placeholder="my-project")
+
+    async def _create_project(self, project_name: str) -> None:
+        self._set_busy(
+            title="Creating Project",
+            message=f"Creating project '{project_name}'...",
+            help_text="Please wait.",
+        )
+        try:
+            project_id = await self._create_project_operation(project_name)
+        except Exception as ex:
+            await self._set_error_mode(f"Unable to create a project: {ex}")
+            return
+
+        await self._activate_project(project_id)
+
+    async def _activate_project(self, project_id: str) -> None:
+        self._set_busy(
+            title="Activating Project",
+            message=f"Activating project {project_id}...",
+            help_text="Please wait.",
+        )
+        try:
+            activated_project_id = await self._activate_project_operation(project_id)
+        except Exception as ex:
+            await self._set_error_mode(f"Unable to activate selected project: {ex}")
+            return
+
+        self._selected_project_id = activated_project_id
+
+        try:
+            has_active_key = await self._has_active_api_key_operation(
+                activated_project_id
+            )
+        except Exception as ex:
+            await self._set_error_mode(f"Unable to check active API key: {ex}")
+            return
+
+        if has_active_key:
+            await self._finish_success()
+            return
+
+        self._show_api_key_choice(activated_project_id)
+
+    def _show_api_key_choice(self, project_id: str) -> None:
+        self._mode = "api_key_choice"
+        self._clear_error()
+        self._hide_input()
+        self._hide_status()
+        self._hide_url()
+        self._set_text(
+            title="API Key Setup",
+            message=(
+                f"Project {project_id} has no active API key. "
+                "Create and activate one now?"
+            ),
+            help_text="Use Up/Down and Enter.",
+        )
+        self._set_options(
+            options=[
+                Option("Create and activate API key", id=API_KEY_CREATE_OPTION_ID),
+                Option("Skip for now", id=API_KEY_SKIP_OPTION_ID),
+            ]
+        )
+
+    def _set_mode_api_key_name(self) -> None:
+        self._mode = "api_key_name"
+        self._clear_error()
+        self._hide_options()
+        self._hide_status()
+        self._hide_url()
+        self._set_text(
+            title="API Key Name",
+            message="Enter a unique name for the new API key.",
+            help_text="Press Enter to continue.",
+        )
+        self._show_input(placeholder="my-api-key")
+
+    async def _create_api_key(self, project_id: str, api_key_name: str) -> None:
+        self._set_busy(
+            title="Creating API Key",
+            message=f"Creating API key '{api_key_name}'...",
+            help_text="Please wait.",
+        )
+        try:
+            await self._create_api_key_operation(project_id, api_key_name)
+        except Exception as ex:
+            await self._set_error_mode(f"Unable to create API key: {ex}")
+            return
+
+        await self._finish_success()
+
+    async def _finish_success(self) -> None:
+        self._mode = "done"
+        self._clear_error()
+        self._hide_options()
+        self._hide_input()
+        self._hide_status()
+        self._hide_url()
+        self._set_text(
+            title="Setup Complete",
+            message="Project activated and setup finished.",
+            help_text="",
+        )
+
+        self.result = SetupWizardResult(
+            status="completed",
+            project_id=self._selected_project_id,
+        )
+
+        await self._run_logo_fade()
+        self.exit()
+
+    async def _set_error_mode(self, message: str) -> None:
+        self._mode = "error"
+        self.result = SetupWizardResult(status="error", message=message)
+        self._hide_input()
+        self._hide_status()
+        self._hide_url()
+        self._set_text(
+            title="Setup Failed",
+            message="An error occurred while running setup.",
+            help_text="Press Enter on Exit setup to close.",
+        )
+        self._set_error_text(message)
+        self._set_options(options=[Option("Exit setup", id=ERROR_EXIT_OPTION_ID)])
+
+    async def _emit_login_status(self, message: str) -> None:
+        await self._status_queue.put(message)
+
+    async def _consume_status_updates(self) -> None:
+        try:
+            while True:
+                status = await self._status_queue.get()
+                auth_url = self._extract_auth_url(status)
+                if auth_url is not None:
+                    self._auth_url = auth_url
+                    if self._url_view is not None and self._url_view.display:
+                        self._url_view.update(f"Auth URL: {auth_url}")
+                    self._append_status(
+                        "Browser launched. Complete sign-in in your browser."
+                    )
+                else:
+                    self._append_status(self._normalize_status_line(status))
+        except asyncio.CancelledError:
+            return
+
+    async def _run_logo_fade(self) -> None:
+        for tick in range(1, self._FADE_STEPS + 1):
+            normalized = min(max(float(tick) / float(self._FADE_STEPS), 0.0), 1.0)
+            ease = (
+                3.0 * normalized * normalized
+                - 2.0 * normalized * normalized * normalized
+            )
+            self._render_logo(fade_factor=1.0 - ease)
+            await asyncio.sleep(self._FADE_INTERVAL_SECONDS)
+
+    def _set_text(self, *, title: str, message: str, help_text: str) -> None:
+        if self._title_view is not None:
+            self._title_view.update(title)
+        if self._message_view is not None:
+            self._message_view.update(message)
+        if self._help_view is not None:
+            self._help_view.update(help_text)
+
+    def _set_options(self, *, options: Sequence[Option]) -> None:
+        if self._options_view is None:
+            return
+        self._options_view.clear_options()
+        self._options_view.add_options(list(options))
+        self._options_view.display = True
+        self._options_view.focus()
+
+    def _hide_options(self) -> None:
+        if self._options_view is not None:
+            self._options_view.display = False
+
+    def _show_input(self, *, placeholder: str) -> None:
+        if self._input_view is None:
+            return
+        self._input_view.value = ""
+        self._input_view.placeholder = placeholder
+        self._input_view.display = True
+        self._input_view.focus()
+
+    def _hide_input(self) -> None:
+        if self._input_view is not None:
+            self._input_view.display = False
+
+    def _show_status(self) -> None:
+        if self._status_view is not None:
+            self._status_view.display = True
+            self._status_view.update("\n".join(self._status_lines[-6:]))
+
+    def _hide_status(self) -> None:
+        if self._status_view is not None:
+            self._status_view.display = False
+
+    def _show_url(self, *, default_text: str) -> None:
+        if self._url_view is None:
+            return
+        if self._auth_url is not None:
+            self._url_view.update(f"Auth URL: {self._auth_url}")
+        else:
+            self._url_view.update(default_text)
+        self._url_view.display = True
+
+    def _hide_url(self) -> None:
+        if self._url_view is not None:
+            self._url_view.display = False
+
+    def _set_busy(self, *, title: str, message: str, help_text: str) -> None:
+        self._mode = "busy"
+        self._clear_error()
+        self._hide_options()
+        self._hide_input()
+        self._hide_url()
+        self._show_status()
+        self._set_text(title=title, message=message, help_text=help_text)
+
+    def _append_status(self, message: str) -> None:
+        self._status_lines.append(message)
+        if self._status_view is not None and self._status_view.display:
+            self._status_view.update("\n".join(self._status_lines[-6:]))
+
+    def _set_error_text(self, message: str) -> None:
+        if self._error_view is not None:
+            self._error_view.display = True
+            self._error_view.update(message)
+
+    def _clear_error(self) -> None:
+        if self._error_view is not None:
+            self._error_view.display = False
+            self._error_view.update("")
+
+    def _extract_auth_url(self, status: str) -> str | None:
+        if not status.startswith(self._AUTH_URL_PREFIX):
+            return None
+
+        auth_url = status[len(self._AUTH_URL_PREFIX) :].strip()
+        if auth_url.endswith("..."):
+            auth_url = auth_url[:-3].strip()
+        if auth_url.endswith("…"):
+            auth_url = auth_url[:-1].strip()
+        if auth_url == "":
+            return None
+        return auth_url
+
+    def _normalize_status_line(self, status: str) -> str:
+        if status.startswith("✅ "):
+            return status[2:].strip()
+        return status
+
+    def _render_logo(self, *, fade_factor: float = 1.0) -> None:
+        if self._logo_view is None:
+            return
+
+        text = Text()
+        total_lines = len(MESHAGENT_SETUP_LOGO_LINES)
+        for row_index, line in enumerate(MESHAGENT_SETUP_LOGO_LINES):
+            for column_index, char in enumerate(line):
+                if char == " ":
+                    text.append(char)
+                    continue
+                text.append(
+                    char,
+                    style=self._style_for_glyph(
+                        row=row_index,
+                        column=column_index,
+                        fade_factor=fade_factor,
+                    ),
+                )
+            if row_index < total_lines - 1:
+                text.append("\n")
+
+        self._logo_view.update(text)
+
+    def _style_for_glyph(self, *, row: int, column: int, fade_factor: float) -> str:
+        base_red, base_green, base_blue = self._base_logo_rgb(row=row, column=column)
+        if self._mode == "intro":
+            shimmer_center = self._shimmer_offset - (row // 3)
+            distance = abs(column - shimmer_center)
+            if distance <= 1:
+                highlight_red, highlight_green, highlight_blue = (230, 247, 255)
+                highlight_mix = 0.8
+            elif distance <= 3:
+                highlight_red, highlight_green, highlight_blue = (191, 233, 255)
+                highlight_mix = 0.6
+            elif distance <= 6:
+                highlight_red, highlight_green, highlight_blue = (219, 240, 255)
+                highlight_mix = 0.35
+            else:
+                highlight_red, highlight_green, highlight_blue = (
+                    base_red,
+                    base_green,
+                    base_blue,
+                )
+                highlight_mix = 0.0
+        else:
+            highlight_red, highlight_green, highlight_blue = (
+                base_red,
+                base_green,
+                base_blue,
+            )
+            highlight_mix = 0.0
+            distance = 99
+
+        target_red = int(base_red + (highlight_red - base_red) * highlight_mix)
+        target_green = int(base_green + (highlight_green - base_green) * highlight_mix)
+        target_blue = int(base_blue + (highlight_blue - base_blue) * highlight_mix)
+
+        background_red, background_green, background_blue = (8, 10, 14)
+        blended_red = int(background_red + (target_red - background_red) * fade_factor)
+        blended_green = int(
+            background_green + (target_green - background_green) * fade_factor
+        )
+        blended_blue = int(
+            background_blue + (target_blue - background_blue) * fade_factor
+        )
+        color = f"#{blended_red:02x}{blended_green:02x}{blended_blue:02x}"
+
+        if distance <= 3:
+            return f"bold {color}"
+        return color
+
+    def _base_logo_rgb(self, *, row: int, column: int) -> tuple[int, int, int]:
+        if row < 0 or row >= len(MESHAGENT_SETUP_LOGO_COLOR_HEX_LINES):
+            return (248, 250, 255)
+
+        row_colors = MESHAGENT_SETUP_LOGO_COLOR_HEX_LINES[row]
+        start = column * 7
+        end = start + 7
+        if start < 0 or end > len(row_colors):
+            return (248, 250, 255)
+
+        color = row_colors[start:end]
+        if len(color) != 7 or not color.startswith("#"):
+            return (248, 250, 255)
+
+        return (
+            int(color[1:3], 16),
+            int(color[3:5], 16),
+            int(color[5:7], 16),
+        )
+
+
+async def _run_app(app: App[None]) -> None:
+    app_token = active_app.set(app)
+    try:
+        await app.run_async()
+    finally:
+        active_app.reset(app_token)
+
+
+async def run_setup_wizard_tui(
+    *,
+    login_operation: LoginOperation,
+    list_projects_operation: ListProjectsOperation,
+    create_project_operation: CreateProjectOperation,
+    activate_project_operation: ActivateProjectOperation,
+    has_active_api_key_operation: HasActiveApiKeyOperation,
+    create_api_key_operation: CreateApiKeyOperation,
+    active_project_id: str | None,
+) -> SetupWizardResult:
+    app = SetupWizardApp(
+        login_operation=login_operation,
+        list_projects_operation=list_projects_operation,
+        create_project_operation=create_project_operation,
+        activate_project_operation=activate_project_operation,
+        has_active_api_key_operation=has_active_api_key_operation,
+        create_api_key_operation=create_api_key_operation,
+        active_project_id=active_project_id,
+    )
+
+    try:
+        await _run_app(app)
+    except KeyboardInterrupt:
+        return SetupWizardResult(status="canceled", message="Setup canceled.")
+
+    return app.result

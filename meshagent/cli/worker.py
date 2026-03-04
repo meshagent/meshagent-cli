@@ -1,6 +1,6 @@
 import typer
 from rich import print
-from typing import Annotated, Optional, List, Type
+from typing import Annotated, Optional, List, Type, Literal
 from pathlib import Path
 import logging
 import os
@@ -136,6 +136,27 @@ WorkingDirectoryAliasOption = Annotated[
     ),
 ]
 
+ThreadingMode = Literal["auto", "manual", "none"]
+
+ThreadingModeOption = Annotated[
+    ThreadingMode,
+    typer.Option(
+        "--threading-mode",
+        help=(
+            "Threading mode: none (no persistence), manual (input path), "
+            "or auto (LLM-selected thread path)"
+        ),
+    ),
+]
+
+ThreadDirOption = Annotated[
+    str,
+    typer.Option(
+        "--thread-dir",
+        help="Thread directory for auto mode; thread path is <thread_dir>/<name>.thread",
+    ),
+]
+
 
 def _copy_shell_env_vars(*, copy_env: Optional[list[str]]) -> dict[str, str]:
     if copy_env is None:
@@ -256,6 +277,8 @@ def build_worker(
     shell_set_env: Optional[list[str]] = None,
     log_llm_requests: Optional[bool] = None,
     prompt: Optional[str] = None,
+    threading_mode: ThreadingMode = "none",
+    thread_dir: str = ".threads",
 ):
     """
     Returns a Worker subclass
@@ -339,6 +362,8 @@ def build_worker(
                 rules=rule if len(rule) > 0 else None,
                 toolkit_name=toolkit_name,
                 skill_dirs=skill_dirs,
+                threading_mode=threading_mode,
+                thread_dir=thread_dir,
             )
             self._room_rules_paths = room_rules_paths or []
             self.shell_tool = None
@@ -637,6 +662,8 @@ async def join(
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use")
     ] = "gpt-5.2",
+    threading_mode: ThreadingModeOption = "none",
+    thread_dir: ThreadDirOption = ".threads",
     require_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
@@ -913,6 +940,8 @@ async def join(
             shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
             prompt=prompt,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
         )
 
         worker = CustomWorker()
@@ -972,6 +1001,8 @@ async def service(
         str,
         typer.Option(..., help="Name of the LLM model to use"),
     ] = "gpt-5.2",
+    threading_mode: ThreadingModeOption = "none",
+    thread_dir: ThreadDirOption = ".threads",
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -1239,6 +1270,8 @@ async def service(
             shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
             prompt=prompt,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
         ),
     )
 
@@ -1290,6 +1323,8 @@ async def spec(
         str,
         typer.Option(..., help="Name of the LLM model to use"),
     ] = "gpt-5.2",
+    threading_mode: ThreadingModeOption = "none",
+    thread_dir: ThreadDirOption = ".threads",
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -1548,6 +1583,8 @@ async def spec(
             shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
             prompt=prompt,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
         ),
     )
 
@@ -1619,6 +1656,8 @@ async def deploy(
         str,
         typer.Option(..., help="Name of the LLM model to use"),
     ] = "gpt-5.2",
+    threading_mode: ThreadingModeOption = "none",
+    thread_dir: ThreadDirOption = ".threads",
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -1884,6 +1923,8 @@ async def deploy(
             shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
             prompt=prompt,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
         ),
     )
 
