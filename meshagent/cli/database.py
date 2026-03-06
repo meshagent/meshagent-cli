@@ -154,13 +154,20 @@ async def inspect(
             )
 
             if json:
-                # schema values are DataType objects; they expose to_json()
-                out = {k: v.to_json() for k, v in schema.items()}
+                out = {
+                    k: v.model_dump(mode="json", exclude_none=True)
+                    for k, v in schema.items()
+                }
                 print(_json.dumps(out, indent=2))
             else:
                 print(f"[bold]{table}[/bold]")
                 for k, v in schema.items():
-                    print(f"  [cyan]{k}[/cyan]: {v.to_json()}")
+                    print(
+                        "  [cyan]"
+                        f"{k}"
+                        "[/cyan]: "
+                        f"{v.model_dump(mode='json', exclude_none=True)}"
+                    )
 
     except RoomException as e:
         print(e)
