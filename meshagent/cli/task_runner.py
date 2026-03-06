@@ -396,7 +396,6 @@ def build_task_runner(
                 model=model,
                 response_options={
                     "reasoning": {"summary": "concise"},
-                    "truncation": "auto",
                 },
                 log_requests=log_llm_requests,
             )
@@ -889,7 +888,7 @@ async def join(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
         ),
     ] = False,
     require_document_authoring: Annotated[
@@ -1248,7 +1247,7 @@ async def run(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
         ),
     ] = False,
     require_document_authoring: Annotated[
@@ -1650,7 +1649,7 @@ async def service(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
         ),
     ] = False,
     working_dir: WorkingDirOption = None,
@@ -1979,7 +1978,7 @@ async def spec(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
         ),
     ] = False,
     working_dir: WorkingDirOption = None,
@@ -2310,7 +2309,7 @@ async def deploy(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
         ),
     ] = False,
     working_dir: WorkingDirOption = None,

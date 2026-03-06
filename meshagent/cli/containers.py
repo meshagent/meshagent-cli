@@ -23,6 +23,8 @@ from meshagent.cli.helper import (
     get_client,
     resolve_project_id,
     resolve_room,
+    split_container_mount,
+    split_image_mount,
 )
 from meshagent.api import (
     RoomClient,
@@ -31,6 +33,12 @@ from meshagent.api import (
 from meshagent.api.helpers import websocket_room_url
 from meshagent.api.room_server_client import (
     DockerSecret,
+)
+from meshagent.api.specs.service import (
+    ContainerMountSpec,
+    ImageStorageMountSpec,
+    ProjectStorageMountSpec,
+    RoomStorageMountSpec,
 )
 
 import sys
@@ -93,6 +101,62 @@ def _parse_creds(items: List[str]) -> List[DockerSecret]:
                 f"Invalid --cred format: {s}. Use username,password or registry,username,password"
             )
     return creds
+
+
+def _parse_image_operation_mounts(
+    *,
+    mount_room_path: List[str],
+    mount_project_path: List[str],
+    mount_image: List[str],
+) -> ContainerMountSpec:
+    room_mounts: list[RoomStorageMountSpec] = []
+    project_mounts: list[ProjectStorageMountSpec] = []
+    image_mounts: list[ImageStorageMountSpec] = []
+
+    for value in mount_room_path:
+        source, mount, read_only = split_container_mount(
+            value, "--mount-room-path", False
+        )
+        subpath = source if source not in {"", ".", "/"} else None
+        room_mounts.append(
+            RoomStorageMountSpec(path=mount, subpath=subpath, read_only=read_only)
+        )
+
+    for value in mount_project_path:
+        source, mount, read_only = split_container_mount(
+            value, "--mount-project-path", True
+        )
+        subpath = source if source not in {"", ".", "/"} else None
+        project_mounts.append(
+            ProjectStorageMountSpec(path=mount, subpath=subpath, read_only=read_only)
+        )
+
+    for value in mount_image:
+        image, mount, subpath, read_only = split_image_mount(value, "--mount-image")
+        image_mounts.append(
+            ImageStorageMountSpec(
+                image=image,
+                path=mount,
+                subpath=subpath,
+                read_only=read_only,
+            )
+        )
+
+    mount_spec = ContainerMountSpec(
+        room=room_mounts or None,
+        project=project_mounts or None,
+        images=image_mounts or None,
+    )
+    if (
+        mount_spec.room is None
+        and mount_spec.project is None
+        and mount_spec.images is None
+    ):
+        raise typer.BadParameter(
+            "At least one mount is required. Use --mount-room-path, --mount-project-path, or --mount-image."
+        )
+
+    return mount_spec
 
 
 class DockerIgnore:
@@ -679,6 +743,104 @@ images_app = async_typer.AsyncTyper(help="Image operations")
 app.add_typer(images_app, name="images")
 
 
+@images_app.async_command("build", help="Build a container image inside a room.")
+async def build_container(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    tag: Annotated[
+        str, typer.Option(..., help="Image tag to build, e.g. repo/name:tag")
+    ],
+    context_path: Annotated[
+        str,
+        typer.Option(
+            ...,
+            "--context-path",
+            help="Build context path inside one of the mounted paths (absolute path)",
+        ),
+    ],
+    dockerfile_path: Annotated[
+        Optional[str],
+        typer.Option(
+            "--dockerfile-path",
+            help="Optional Dockerfile path inside one of the mounted paths (absolute path)",
+        ),
+    ] = None,
+    mount_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--mount-room-path",
+            help=(
+                "Room storage mount '<source>:<mount>[:ro|rw]'. "
+                "Example '/src:/workspace'"
+            ),
+        ),
+    ] = [],
+    mount_project_path: Annotated[
+        List[str],
+        typer.Option(
+            "--mount-project-path",
+            help=(
+                "Project storage mount '<source>:<mount>[:ro|rw]'. "
+                "Example '/shared:/project:ro'"
+            ),
+        ),
+    ] = [],
+    mount_image: Annotated[
+        List[str],
+        typer.Option(
+            "--mount-image",
+            help=(
+                "Image mount '<image>=<mount>[:ro|rw]'. "
+                "Example 'alpine:latest=/toolchain:ro'"
+            ),
+        ),
+    ] = [],
+    private: Annotated[
+        bool,
+        typer.Option(
+            "--private/--public",
+            help="Whether the build container is private to the participant",
+        ),
+    ] = False,
+    cred: Annotated[
+        List[str],
+        typer.Option(
+            "--cred",
+            help="Docker creds (username,password) or (registry,username,password)",
+        ),
+    ] = [],
+):
+    mount_spec = _parse_image_operation_mounts(
+        mount_room_path=mount_room_path,
+        mount_project_path=mount_project_path,
+        mount_image=mount_image,
+    )
+
+    if not context_path.startswith("/"):
+        raise typer.BadParameter("--context-path must be an absolute path")
+    if dockerfile_path is not None and not dockerfile_path.startswith("/"):
+        raise typer.BadParameter("--dockerfile-path must be an absolute path")
+
+    account_client, client = await _with_client(
+        project_id=project_id,
+        room=room,
+    )
+    try:
+        container_id = await client.containers.build(
+            tag=tag,
+            mounts=[mount_spec],
+            context_path=context_path,
+            dockerfile_path=dockerfile_path,
+            private=private,
+            credentials=_parse_creds(cred),
+        )
+        print(f"Build started: {container_id}")
+    finally:
+        await client.__aexit__(None, None, None)
+        await account_client.close()
+
+
 @images_app.async_command("list", help="List container images available in a room.")
 async def images_list(
     *,
@@ -737,6 +899,195 @@ async def images_pull(
     try:
         await client.containers.pull_image(tag=tag, credentials=_parse_creds(cred))
         print("Image pulled")
+    finally:
+        await client.__aexit__(None, None, None)
+        await account_client.close()
+
+
+@images_app.async_command("push", help="Push a container image from a room.")
+async def images_push(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    tag: Annotated[str, typer.Option(..., help="Image tag/ref to push")],
+    private: Annotated[
+        bool,
+        typer.Option(
+            "--private/--public",
+            help="Whether the push container is private to the participant",
+        ),
+    ] = False,
+    cred: Annotated[
+        List[str],
+        typer.Option(
+            "--cred",
+            help="Docker creds (username,password) or (registry,username,password)",
+        ),
+    ] = [],
+):
+    account_client, client = await _with_client(
+        project_id=project_id,
+        room=room,
+    )
+    try:
+        container_id = await client.containers.push_image(
+            tag=tag,
+            credentials=_parse_creds(cred),
+            private=private,
+        )
+        print(f"Image push started: {container_id}")
+    finally:
+        await client.__aexit__(None, None, None)
+        await account_client.close()
+
+
+@images_app.async_command("load", help="Load an OCI image archive into a room.")
+async def images_load(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    archive_path: Annotated[
+        str,
+        typer.Option(
+            ...,
+            "--archive-path",
+            help="Path to OCI archive inside one of the mounted paths (absolute path)",
+        ),
+    ],
+    mount_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--mount-room-path",
+            help=(
+                "Room storage mount '<source>:<mount>[:ro|rw]'. "
+                "Example '/images:/workspace'"
+            ),
+        ),
+    ] = [],
+    mount_project_path: Annotated[
+        List[str],
+        typer.Option(
+            "--mount-project-path",
+            help=(
+                "Project storage mount '<source>:<mount>[:ro|rw]'. "
+                "Example '/shared:/project:ro'"
+            ),
+        ),
+    ] = [],
+    mount_image: Annotated[
+        List[str],
+        typer.Option(
+            "--mount-image",
+            help=(
+                "Image mount '<image>=<mount>[:ro|rw]'. "
+                "Example 'alpine:latest=/toolchain:ro'"
+            ),
+        ),
+    ] = [],
+    private: Annotated[
+        bool,
+        typer.Option(
+            "--private/--public",
+            help="Whether the load container is private to the participant",
+        ),
+    ] = False,
+):
+    mount_spec = _parse_image_operation_mounts(
+        mount_room_path=mount_room_path,
+        mount_project_path=mount_project_path,
+        mount_image=mount_image,
+    )
+    if not archive_path.startswith("/"):
+        raise typer.BadParameter("--archive-path must be an absolute path")
+
+    account_client, client = await _with_client(
+        project_id=project_id,
+        room=room,
+    )
+    try:
+        container_id = await client.containers.load_image(
+            mounts=[mount_spec],
+            archive_path=archive_path,
+            private=private,
+        )
+        print(f"Image load started: {container_id}")
+    finally:
+        await client.__aexit__(None, None, None)
+        await account_client.close()
+
+
+@images_app.async_command("save", help="Save an OCI image archive from a room.")
+async def images_save(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    tag: Annotated[str, typer.Option(..., help="Image tag/ref to save")],
+    archive_path: Annotated[
+        str,
+        typer.Option(
+            ...,
+            "--archive-path",
+            help="Path to write OCI archive inside one of the mounted paths (absolute path)",
+        ),
+    ],
+    mount_room_path: Annotated[
+        List[str],
+        typer.Option(
+            "--mount-room-path",
+            help=(
+                "Room storage mount '<source>:<mount>[:ro|rw]'. "
+                "Example '/images:/workspace'"
+            ),
+        ),
+    ] = [],
+    mount_project_path: Annotated[
+        List[str],
+        typer.Option(
+            "--mount-project-path",
+            help=(
+                "Project storage mount '<source>:<mount>[:ro|rw]'. "
+                "Example '/shared:/project:ro'"
+            ),
+        ),
+    ] = [],
+    mount_image: Annotated[
+        List[str],
+        typer.Option(
+            "--mount-image",
+            help=(
+                "Image mount '<image>=<mount>[:ro|rw]'. "
+                "Example 'alpine:latest=/toolchain:ro'"
+            ),
+        ),
+    ] = [],
+    private: Annotated[
+        bool,
+        typer.Option(
+            "--private/--public",
+            help="Whether the save container is private to the participant",
+        ),
+    ] = False,
+):
+    mount_spec = _parse_image_operation_mounts(
+        mount_room_path=mount_room_path,
+        mount_project_path=mount_project_path,
+        mount_image=mount_image,
+    )
+    if not archive_path.startswith("/"):
+        raise typer.BadParameter("--archive-path must be an absolute path")
+
+    account_client, client = await _with_client(
+        project_id=project_id,
+        room=room,
+    )
+    try:
+        container_id = await client.containers.save_image(
+            tag=tag,
+            mounts=[mount_spec],
+            archive_path=archive_path,
+            private=private,
+        )
+        print(f"Image save started: {container_id}")
     finally:
         await client.__aexit__(None, None, None)
         await account_client.close()

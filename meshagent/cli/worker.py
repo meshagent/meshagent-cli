@@ -365,7 +365,6 @@ def build_worker(
             model=model,
             response_options={
                 "reasoning": {"summary": "concise"},
-                "truncation": "auto",
             },
             log_requests=log_llm_requests,
         )
@@ -872,7 +871,7 @@ async def join(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
         ),
     ] = False,
     title: Annotated[
@@ -1222,7 +1221,7 @@ async def service(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
         ),
     ] = False,
     title: Annotated[
@@ -1541,7 +1540,7 @@ async def spec(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
         ),
     ] = False,
     title: Annotated[
@@ -1873,7 +1872,7 @@ async def deploy(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
         ),
     ] = False,
     title: Annotated[

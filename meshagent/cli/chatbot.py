@@ -392,7 +392,6 @@ def build_chatbot(
                 model=model,
                 response_options={
                     "reasoning": {"summary": "concise"},
-                    "truncation": "auto",
                 },
                 log_requests=log_llm_requests,
             )
@@ -791,9 +790,7 @@ async def join(
     ] = None,
     computer_use: Annotated[
         Optional[bool],
-        typer.Option(
-            ..., help="Enable computer use (requires computer-use-preview model)"
-        ),
+        typer.Option(..., help="Enable computer use"),
     ] = False,
     local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
@@ -865,7 +862,7 @@ async def join(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
             hidden=True,
         ),
     ] = False,
@@ -1174,9 +1171,7 @@ async def service(
     ] = False,
     computer_use: Annotated[
         Optional[bool],
-        typer.Option(
-            ..., help="Enable computer use (requires computer-use-preview model)"
-        ),
+        typer.Option(..., help="Enable computer use"),
     ] = False,
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
@@ -1239,7 +1234,7 @@ async def service(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
             hidden=True,
         ),
     ] = False,
@@ -1520,9 +1515,7 @@ async def spec(
     ] = False,
     computer_use: Annotated[
         Optional[bool],
-        typer.Option(
-            ..., help="Enable computer use (requires computer-use-preview model)"
-        ),
+        typer.Option(..., help="Enable computer use"),
     ] = False,
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
@@ -1578,7 +1571,7 @@ async def spec(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
             hidden=True,
         ),
     ] = False,
@@ -1869,9 +1862,7 @@ async def deploy(
     ] = False,
     computer_use: Annotated[
         Optional[bool],
-        typer.Option(
-            ..., help="Enable computer use (requires computer-use-preview model)"
-        ),
+        typer.Option(..., help="Enable computer use"),
     ] = False,
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
@@ -1927,7 +1918,7 @@ async def deploy(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
             hidden=True,
         ),
     ] = False,
@@ -3713,9 +3704,7 @@ async def run(
     ] = None,
     computer_use: Annotated[
         Optional[bool],
-        typer.Option(
-            ..., help="Enable computer use (requires computer-use-preview model)"
-        ),
+        typer.Option(..., help="Enable computer use"),
     ] = False,
     local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
@@ -3780,7 +3769,7 @@ async def run(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
             hidden=True,
         ),
     ] = False,
