@@ -73,6 +73,7 @@ async def test_stream_container_job_logs_and_wait_for_exit_cancels_follow_stream
         drain_cancelled.set()
 
     monkeypatch.setattr(containers, "_drain_stream_plain", _fake_drain)
+    monkeypatch.setattr(containers, "_LOG_STREAM_SETTLE_TIMEOUT_SECONDS", 0.01)
 
     exit_code = await containers._stream_container_job_logs_and_wait_for_exit(
         client=client, container_id="container-1"
@@ -84,6 +85,32 @@ async def test_stream_container_job_logs_and_wait_for_exit_cancels_follow_stream
     assert drain_started.is_set()
     assert stream.cancel_calls == 1
     assert drain_cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_stream_container_job_logs_and_wait_for_exit_does_not_cancel_completed_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = _FakeLogStream()
+    client = _FakeClient(stream=stream, exit_code=0)
+    drain_started = asyncio.Event()
+
+    async def _fake_drain(log_stream, *, show_progress: bool) -> None:
+        assert log_stream is stream
+        assert show_progress is False
+        drain_started.set()
+
+    monkeypatch.setattr(containers, "_drain_stream_plain", _fake_drain)
+
+    exit_code = await containers._stream_container_job_logs_and_wait_for_exit(
+        client=client, container_id="container-1"
+    )
+
+    assert exit_code == 0
+    assert client.containers.log_calls == [("container-1", True)]
+    assert client.containers.wait_calls == ["container-1"]
+    assert drain_started.is_set()
+    assert stream.cancel_calls == 0
 
 
 @pytest.mark.asyncio

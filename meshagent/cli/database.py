@@ -141,7 +141,8 @@ NamespaceOption = Annotated[
 # ---------------------------
 
 
-@app.async_command("tables", help="List database tables in a room.")
+@app.async_command("tables", help="List database tables in a room.", hidden=True)
+@app.async_command("table", help="List database tables in a room.")
 async def list_tables(
     *,
     project_id: ProjectIdOption,
@@ -1008,7 +1009,12 @@ async def optimize(
         await account_client.close()
 
 
-@app.async_command("versions", help="List versions for a room database table.")
+@app.async_command(
+    "versions",
+    help="List versions for a room database table.",
+    hidden=True,
+)
+@app.async_command("version", help="List versions for a room database table.")
 async def list_versions(
     *,
     project_id: ProjectIdOption,
@@ -1120,7 +1126,12 @@ async def restore(
         await account_client.close()
 
 
-@app.async_command("indexes", help="List indexes on a room database table.")
+@app.async_command(
+    "indexes",
+    help="List indexes on a room database table.",
+    hidden=True,
+)
+@app.async_command("index", help="List indexes on a room database table.")
 async def list_indexes(
     *,
     project_id: ProjectIdOption,

@@ -399,7 +399,8 @@ async def secret_delete(
 # --------------------------------------------------------------------------
 #  Wire up sub-apps
 # --------------------------------------------------------------------------
-secrets_app.add_typer(keys_app, name="keys")
+secrets_app.add_typer(keys_app, name="key")
+secrets_app.add_typer(keys_app, name="keys", hidden=True)
 secrets_app.add_typer(docker_app, name="docker")
 secrets_app.add_typer(acr_app, name="acr")
 secrets_app.add_typer(gar_app, name="gar")

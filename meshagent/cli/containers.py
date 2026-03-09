@@ -44,6 +44,7 @@ from meshagent.api.specs.service import (
 import sys
 
 app = async_typer.AsyncTyper(help="Manage containers and images inside a room")
+_LOG_STREAM_SETTLE_TIMEOUT_SECONDS = 1.0
 
 # -------------------------
 # Helpers
@@ -175,9 +176,16 @@ async def _stream_container_job_logs_and_wait_for_exit(
         raise
 
     if not log_task.done():
-        await asyncio.gather(stream.cancel(), return_exceptions=True)
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(log_task),
+                timeout=_LOG_STREAM_SETTLE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            if not log_task.done():
+                await asyncio.gather(stream.cancel(), return_exceptions=True)
+            await log_task
 
-    await log_task
     return exit_code
 
 
@@ -526,8 +534,9 @@ async def stop_container(
         await account_client.close()
 
 
-@app.async_command("logs", help="Print container logs from a room.")
-async def container_logs(
+@app.async_command("logs", help="Print container logs from a room.", hidden=True)
+@app.async_command("log", help="Print container logs from a room.")
+async def container_log(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
@@ -765,7 +774,8 @@ async def run_container(
 # -------------------------
 
 images_app = async_typer.AsyncTyper(help="Image operations")
-app.add_typer(images_app, name="images")
+app.add_typer(images_app, name="image")
+app.add_typer(images_app, name="images", hidden=True)
 
 
 @images_app.async_command("build", help="Build a container image inside a room.")
