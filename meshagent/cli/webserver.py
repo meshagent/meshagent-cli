@@ -47,6 +47,7 @@ from meshagent.cli.helper import (
     resolve_key,
     resolve_project_id,
     resolve_room,
+    upload_room_bytes_stream,
 )
 from meshagent.cli.host import get_service, service_specs
 
@@ -1098,11 +1099,7 @@ async def _write_room_storage_file(
     path: str,
     data: bytes,
 ) -> None:
-    handle = await room.storage.open(path=path, overwrite=True)
-    try:
-        await room.storage.write(handle=handle, data=data)
-    finally:
-        await room.storage.close(handle=handle)
+    await upload_room_bytes_stream(room=room, path=path, data=data, overwrite=True)
 
 
 async def _sync_website_files_to_room_storage(
