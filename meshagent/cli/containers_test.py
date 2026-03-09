@@ -36,6 +36,26 @@ class _FakeClient:
         self.containers = _FakeContainers(stream=stream, exit_code=exit_code)
 
 
+class _FakeBuildStream:
+    def __init__(self, *, lines: list[str], result: str = "image-1") -> None:
+        self._lines = lines
+        self._result = result
+
+    async def logs(self):
+        for line in self._lines:
+            yield line
+
+    async def progress(self):
+        if False:
+            yield None
+
+    def __await__(self):
+        async def _done():
+            return self._result
+
+        return _done().__await__()
+
+
 @pytest.mark.asyncio
 async def test_stream_container_job_logs_and_wait_for_exit_cancels_follow_stream(
     monkeypatch: pytest.MonkeyPatch,
@@ -64,3 +84,15 @@ async def test_stream_container_job_logs_and_wait_for_exit_cancels_follow_stream
     assert drain_started.is_set()
     assert stream.cancel_calls == 1
     assert drain_cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_drain_stream_plain_does_not_double_space_newline_terminated_logs(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    stream = _FakeBuildStream(lines=["step 1\n", "step 2\n"])
+
+    result = await containers._drain_stream_plain(stream, show_progress=False)
+
+    assert result == "image-1"
+    assert capsys.readouterr().out == "step 1\nstep 2\n"

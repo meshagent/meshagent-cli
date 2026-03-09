@@ -249,7 +249,8 @@ async def _drain_stream_plain(stream, *, show_progress: bool = True):
         async for line in stream.logs():
             # Server emits plain lines; print as-is
             if line is not None:
-                print(line)
+                sys.stdout.write(line if line.endswith("\n") else f"{line}\n")
+                sys.stdout.flush()
 
     async def _prog():
         if not show_progress:
