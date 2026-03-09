@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterable, AsyncIterator
 from pydantic import ValidationError
 import json as _json
 from typing import Annotated, Optional, List, Any
@@ -72,6 +73,57 @@ def _load_json_file(path: Optional[str], *, name: str) -> Any:
 
 def _ns(namespace: Optional[List[str]]) -> Optional[List[str]]:
     return namespace or None
+
+
+def _coerce_record_list(*, value: Any, name: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise typer.BadParameter(f"{name} expects a JSON list of records")
+
+    records = list[dict[str, Any]]()
+    for index, record in enumerate(value):
+        if not isinstance(record, dict):
+            raise typer.BadParameter(
+                f"{name} expects record {index} to be a JSON object"
+            )
+        records.append(dict(record))
+    return records
+
+
+async def _record_chunks(
+    records: list[dict[str, Any]], *, rows_per_chunk: int = 128
+) -> AsyncIterator[list[dict[str, Any]]]:
+    if rows_per_chunk <= 0:
+        raise ValueError("rows_per_chunk must be greater than zero")
+    for index in range(0, len(records), rows_per_chunk):
+        yield records[index : index + rows_per_chunk]
+
+
+def _indent_block(text: str, prefix: str) -> str:
+    return "\n".join(f"{prefix}{line}" for line in text.splitlines())
+
+
+async def _print_row_batches(
+    *,
+    batches: AsyncIterable[list[dict[str, Any]]],
+    pretty: bool,
+) -> None:
+    typer.echo("[", nl=False)
+    first = True
+    async for batch in batches:
+        for row in batch:
+            if first:
+                if pretty:
+                    typer.echo("\n", nl=False)
+            else:
+                typer.echo(",\n" if pretty else ",", nl=False)
+
+            payload = _json.dumps(row, indent=2 if pretty else None)
+            typer.echo(_indent_block(payload, "  ") if pretty else payload, nl=False)
+            first = False
+
+    if pretty and not first:
+        typer.echo("\n", nl=False)
+    typer.echo("]")
 
 
 NamespaceOption = Annotated[
@@ -304,18 +356,26 @@ async def create_table(
                     for k, v in schema_obj.items()
                 }  # hacky but local import-safe
 
-            if schema is not None:
+            if data_obj is not None:
+                records = _coerce_record_list(value=data_obj, name="create")
+                await client.database.create_table_from_data_stream(
+                    name=table,
+                    chunks=_record_chunks(records),
+                    schema=schema,
+                    mode=mode,  # type: ignore
+                    namespace=_ns(namespace),
+                )
+            elif schema is not None:
                 await client.database.create_table_with_schema(
                     name=table,
                     schema=schema,
-                    data=data_obj,
                     mode=mode,  # type: ignore
                     namespace=_ns(namespace),
                 )
             else:
-                await client.database.create_table_from_data(
+                await client.database.create_table_from_data_stream(
                     name=table,
-                    data=data_obj,
+                    chunks=_record_chunks([]),
                     mode=mode,  # type: ignore
                     namespace=_ns(namespace),
                 )
@@ -515,8 +575,7 @@ async def insert(
         records = (
             records if records is not None else _load_json_file(file, name="--file")
         )
-        if not isinstance(records, list):
-            raise typer.BadParameter("insert expects a JSON list of records")
+        records = _coerce_record_list(value=records, name="insert")
 
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
@@ -530,8 +589,10 @@ async def insert(
                 token=connection.jwt,
             )
         ) as client:
-            await client.database.insert(
-                table=table, records=records, namespace=_ns(namespace)
+            await client.database.insert_stream(
+                table=table,
+                chunks=_record_chunks(records),
+                namespace=_ns(namespace),
             )
             print(
                 f"[bold green]Inserted[/bold green] {len(records)} record(s) into {table}"
@@ -565,8 +626,7 @@ async def merge(
         records = (
             records if records is not None else _load_json_file(file, name="--file")
         )
-        if not isinstance(records, list):
-            raise typer.BadParameter("merge expects a JSON list of records")
+        records = _coerce_record_list(value=records, name="merge")
 
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
@@ -580,8 +640,11 @@ async def merge(
                 token=connection.jwt,
             )
         ) as client:
-            await client.database.merge(
-                table=table, on=on, records=records, namespace=_ns(namespace)
+            await client.database.merge_stream(
+                table=table,
+                on=on,
+                chunks=_record_chunks(records),
+                namespace=_ns(namespace),
             )
             print(
                 f"[bold green]Merged[/bold green] {len(records)} record(s) into {table} on {on}"
@@ -738,17 +801,19 @@ async def search(
                 token=connection.jwt,
             )
         ) as client:
-            results = await client.database.search(
-                table=table,
-                text=text,
-                vector=vec,
-                where=(wj if wj is not None else where),
-                select=list(select) if select else None,
-                limit=limit,
-                offset=offset,
-                namespace=_ns(namespace),
+            await _print_row_batches(
+                batches=client.database.search_stream(
+                    table=table,
+                    text=text,
+                    vector=vec,
+                    where=(wj if wj is not None else where),
+                    select=list(select) if select else None,
+                    limit=limit,
+                    offset=offset,
+                    namespace=_ns(namespace),
+                ),
+                pretty=pretty,
             )
-            print(_json.dumps(results, indent=2 if pretty else None))
 
     except (RoomException, typer.BadParameter) as e:
         print(e)
@@ -895,12 +960,14 @@ async def sql(
                 token=connection.jwt,
             )
         ) as client:
-            results = await client.database.sql(
-                query=query,
-                tables=table_refs,
-                params=params_obj,
+            await _print_row_batches(
+                batches=client.database.sql_stream(
+                    query=query,
+                    tables=table_refs,
+                    params=params_obj,
+                ),
+                pretty=pretty,
             )
-            print(_json.dumps(results, indent=2 if pretty else None))
 
     except (RoomException, typer.BadParameter, ValidationError) as e:
         print(e)

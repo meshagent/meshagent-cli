@@ -159,6 +159,28 @@ def _parse_image_operation_mounts(
     return mount_spec
 
 
+async def _stream_container_job_logs_and_wait_for_exit(
+    *,
+    client: RoomClient,
+    container_id: str,
+) -> int:
+    stream = client.containers.logs(container_id=container_id, follow=True)
+    log_task = asyncio.create_task(_drain_stream_plain(stream, show_progress=False))
+
+    try:
+        exit_code = await client.containers.wait_for_exit(container_id=container_id)
+    except Exception:
+        await asyncio.gather(stream.cancel(), return_exceptions=True)
+        await asyncio.gather(log_task, return_exceptions=True)
+        raise
+
+    if not log_task.done():
+        await asyncio.gather(stream.cancel(), return_exceptions=True)
+
+    await log_task
+    return exit_code
+
+
 class DockerIgnore:
     def __init__(self, dockerignore_path: str):
         """
@@ -432,15 +454,23 @@ async def _with_client(
 
 
 # -------------------------
-# Top-level: ps / stop / logs / run
+# Top-level: list / stop / logs / run
 # -------------------------
 
 
-@app.async_command("ps", help="List containers in a room.")
+@app.async_command("list", help="List containers in a room.")
 async def list_containers(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
+    all_containers: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            "-a",
+            help="Include exited containers in the listing.",
+        ),
+    ] = False,
     output: Annotated[Optional[str], typer.Option(help="json | table")] = "json",
 ):
     account_client, client = await _with_client(
@@ -448,7 +478,7 @@ async def list_containers(
         room=room,
     )
     try:
-        containers = await client.containers.list()
+        containers = await client.containers.list(all=all_containers)
         if output == "table":
             from rich.table import Table
             from rich.console import Console
@@ -675,10 +705,6 @@ async def run_container(
     port: Annotated[
         List[str], typer.Option("--port", "-p", help="CONTAINER:HOST")
     ] = [],
-    var: Annotated[
-        List[str],
-        typer.Option("--var", help="Template variable KEY=VALUE (optional)"),
-    ] = [],
     cred: Annotated[
         List[str],
         typer.Option(
@@ -712,7 +738,6 @@ async def run_container(
         creds = _parse_creds(cred)
         env_map = _parse_keyvals(env)
         ports_map = _parse_ports(port)
-        vars_map = _parse_keyvals(var)
 
         container_id = await client.containers.run(
             name=container_name,
@@ -726,7 +751,6 @@ async def run_container(
             participant_name=participant_name,
             ports=ports_map,
             credentials=creds,
-            variables=vars_map or None,
         )
 
         print(f"Container started: {container_id}")
@@ -835,7 +859,11 @@ async def build_container(
             private=private,
             credentials=_parse_creds(cred),
         )
-        print(f"Build started: {container_id}")
+        exit_code = await _stream_container_job_logs_and_wait_for_exit(
+            client=client, container_id=container_id
+        )
+        if exit_code != 0:
+            raise typer.Exit(code=exit_code)
     finally:
         await client.__aexit__(None, None, None)
         await account_client.close()
@@ -935,7 +963,11 @@ async def images_push(
             credentials=_parse_creds(cred),
             private=private,
         )
-        print(f"Image push started: {container_id}")
+        exit_code = await _stream_container_job_logs_and_wait_for_exit(
+            client=client, container_id=container_id
+        )
+        if exit_code != 0:
+            raise typer.Exit(code=exit_code)
     finally:
         await client.__aexit__(None, None, None)
         await account_client.close()
@@ -1010,7 +1042,11 @@ async def images_load(
             archive_path=archive_path,
             private=private,
         )
-        print(f"Image load started: {container_id}")
+        exit_code = await _stream_container_job_logs_and_wait_for_exit(
+            client=client, container_id=container_id
+        )
+        if exit_code != 0:
+            raise typer.Exit(code=exit_code)
     finally:
         await client.__aexit__(None, None, None)
         await account_client.close()
@@ -1087,7 +1123,11 @@ async def images_save(
             archive_path=archive_path,
             private=private,
         )
-        print(f"Image save started: {container_id}")
+        exit_code = await _stream_container_job_logs_and_wait_for_exit(
+            client=client, container_id=container_id
+        )
+        if exit_code != 0:
+            raise typer.Exit(code=exit_code)
     finally:
         await client.__aexit__(None, None, None)
         await account_client.close()

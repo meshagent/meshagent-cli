@@ -41,6 +41,7 @@ from meshagent.cli.helper import (
     resolve_key,
     resolve_project_id,
     resolve_room,
+    upload_room_bytes_stream,
 )
 from meshagent.cli.host import (
     get_deferred,
@@ -637,12 +638,12 @@ def build_codex_chatbot(
 
             except RoomException:
                 try:
-                    handle = await self.room.storage.open(path=path, overwrite=False)
-                    await self.room.storage.write(
-                        handle=handle,
+                    await upload_room_bytes_stream(
+                        room=self.room,
+                        path=path,
                         data="# Add rules to this file to customize your agent's behavior, lines starting with # will be ignored.\n\n".encode(),
+                        overwrite=False,
                     )
-                    await self.room.storage.close(handle=handle)
                 except RoomException:
                     pass
 
@@ -798,12 +799,12 @@ def build_codex_task_runner(
 
             except RoomException:
                 try:
-                    handle = await self.room.storage.open(path=path, overwrite=False)
-                    await self.room.storage.write(
-                        handle=handle,
+                    await upload_room_bytes_stream(
+                        room=self.room,
+                        path=path,
                         data="# Add rules to this file to customize your agent's behavior, lines starting with # will be ignored.\n\n".encode(),
+                        overwrite=False,
                     )
-                    await self.room.storage.close(handle=handle)
                 except RoomException:
                     pass
 
@@ -958,15 +959,15 @@ def build_codex_worker(
                     rules.extend(rules_config.rules)
             except RoomException:
                 try:
-                    handle = await self.room.storage.open(path=path, overwrite=False)
-                    await self.room.storage.write(
-                        handle=handle,
+                    await upload_room_bytes_stream(
+                        room=self.room,
+                        path=path,
                         data=(
                             "# Add rules to this file to customize your worker's behavior. "
                             "Lines starting with # will be ignored.\n\n"
                         ).encode(),
+                        overwrite=False,
                     )
-                    await self.room.storage.close(handle=handle)
                 except RoomException:
                     pass
 

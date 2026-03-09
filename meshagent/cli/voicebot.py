@@ -14,6 +14,7 @@ from meshagent.cli.helper import (
     resolve_key,
     cleanup_args,
     cleanup_args_strip_options,
+    upload_room_bytes_stream,
 )
 from typing import List
 from meshagent.api import RequiredToolkit, RequiredSchema
@@ -126,12 +127,12 @@ def build_voicebot(
             except RoomException:
                 try:
                     logger.info("attempting to initialize rules file")
-                    handle = await self.room.storage.open(path=path, overwrite=False)
-                    await self.room.storage.write(
-                        handle=handle,
+                    await upload_room_bytes_stream(
+                        room=self.room,
+                        path=path,
                         data="# Add rules to this file to customize your agent's behavior, lines starting with # will be ignored.\n\n".encode(),
+                        overwrite=False,
                     )
-                    await self.room.storage.close(handle=handle)
 
                 except RoomException:
                     pass

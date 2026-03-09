@@ -22,6 +22,7 @@ from meshagent.cli.helper import (
     resolve_key,
     resolve_project_id,
     resolve_room,
+    upload_room_bytes_stream,
 )
 from meshagent.openai import OpenAIResponsesAdapter
 from meshagent.anthropic import (
@@ -403,12 +404,12 @@ def build_mailbot(
             except RoomException:
                 try:
                     logger.info("attempting to initialize rules file")
-                    handle = await self.room.storage.open(path=path, overwrite=False)
-                    await self.room.storage.write(
-                        handle=handle,
+                    await upload_room_bytes_stream(
+                        room=self.room,
+                        path=path,
                         data="# Add rules to this file to customize your agent's behavior, lines starting with # will be ignored.\n\n".encode(),
+                        overwrite=False,
                     )
-                    await self.room.storage.close(handle=handle)
 
                 except RoomException:
                     pass
