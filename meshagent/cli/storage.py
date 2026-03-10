@@ -7,8 +7,9 @@ import fnmatch
 import glob
 import shutil
 
-from meshagent.api import RoomClient, WebSocketClientProtocol
-from meshagent.api.room_server_client import StorageClient
+from meshagent.api import RoomClient, RoomException, WebSocketClientProtocol
+from meshagent.api.error_codes import ErrorCode
+from meshagent.api.room_server_client import StorageClient, StorageEntry
 from meshagent.api.helpers import websocket_room_url
 from meshagent.cli import async_typer
 from meshagent.cli.helper import (
@@ -333,7 +334,7 @@ async def storage_show_command(
     # If we need a remote connection, set it up:
     account_client = None
     client = None
-    storage_client = None
+    storage_client: Optional[StorageClient] = None
 
     async def ensure_storage_client():
         nonlocal account_client, client, storage_client, project_id
@@ -373,10 +374,25 @@ async def storage_show_command(
         else:
             # Remote file read
             await ensure_storage_client()
-            if not await storage_client.exists(path=subpath):
+            remote_stat = await storage_client.stat(path=subpath)
+            if remote_stat is None:
                 print(f"[bold red]Remote file '{subpath}' not found.[/bold red]")
                 raise typer.Exit(code=1)
-            remote_file = await storage_client.download(path=subpath)
+
+            if remote_stat.is_folder:
+                print(
+                    f"[bold red]Remote path '{subpath}' is a folder; use 'meshagent room storage ls' to inspect it.[/bold red]"
+                )
+                raise typer.Exit(code=1)
+
+            try:
+                remote_file = await storage_client.download(path=subpath)
+            except RoomException as ex:
+                if ex.code == ErrorCode.STORAGE_NOT_FOUND:
+                    print(f"[bold red]Remote file '{subpath}' not found.[/bold red]")
+                    raise typer.Exit(code=1)
+                raise
+
             text_content = remote_file.data.decode(encoding, errors="replace")
             print(text_content)
     finally:
@@ -696,15 +712,6 @@ async def storage_ls_command(
     # ----------------------------------------------------------------
     # Remote listing
     # ----------------------------------------------------------------
-    async def is_remote_folder(sc: StorageClient, remote_path: str) -> bool:
-        """Return True if remote_path is a folder, otherwise False or it doesn't exist."""
-        stat = await sc.stat(path=remote_path)
-
-        if stat is None:
-            return False
-        else:
-            return stat.is_folder
-
     async def list_remote_path(
         sc: StorageClient, remote_path: str, recursive: bool, prefix: str = ""
     ):
@@ -714,6 +721,7 @@ async def storage_ls_command(
         """
 
         is_root = remote_path in ("", "/")
+        entries: list[StorageEntry] = []
 
         if is_root:
             folder_name = "/"
@@ -724,18 +732,25 @@ async def storage_ls_command(
                 print(f"{prefix}[red]{remote_path} does not exist (remote)[/red]")
                 return
 
-            if await is_remote_folder(sc, remote_path):
+            stat = await sc.stat(path=remote_path)
+            if stat is not None and stat.is_folder:
                 folder_name = os.path.basename(remote_path.rstrip("/")) or remote_path
                 list_path = remote_path
             else:
-                # It's a file
-                print(f"{prefix}{os.path.basename(remote_path)}")
-                return
+                # Some backends don't report folder metadata reliably.
+                # If `list()` returns entries, treat this path as a folder.
+                entries = await sc.list(path=remote_path)
+                if not entries:
+                    print(f"{prefix}{os.path.basename(remote_path)}")
+                    return
+                folder_name = os.path.basename(remote_path.rstrip("/")) or remote_path
+                list_path = remote_path
 
         # It's a folder, list immediate children.
         print(f"{prefix}{folder_name}/")
         try:
-            entries = await sc.list(path=list_path)
+            if not entries:
+                entries = await sc.list(path=list_path)
             entries.sort(key=lambda e: e.name)
             for e in entries:
                 child_path = os.path.join(list_path, e.name)

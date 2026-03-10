@@ -222,7 +222,7 @@ def setup_command():
 
         async def activate_project(project_id: str) -> str:
             activated_project_id = await projects.activate(
-                project_id, interactive=False
+                project_id, interactive=False, return_project_id=True
             )
             if activated_project_id is None:
                 raise RuntimeError("Unable to activate selected project.")
