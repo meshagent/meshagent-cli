@@ -22,8 +22,10 @@ from meshagent.agents.config import RulesConfig
 from meshagent.agents.widget_schema import widget_schema
 
 from meshagent.cli.common_options import (
+    AllowGotoUrlOption,
     ProjectIdOption,
     RoomOption,
+    StartingUrlOption,
 )
 from meshagent.api import (
     RoomClient,
@@ -302,6 +304,8 @@ def build_task_runner(
     use_memory: Optional[str] = None,
     memory_model: Optional[str] = None,
     require_computer_use: bool = False,
+    starting_url: Optional[str] = None,
+    allow_goto_url: bool = False,
     rules_file: Optional[list[str]] = None,
     room_rules_path: Optional[list[str]] = None,
     require_discovery: Optional[str] = None,
@@ -670,6 +674,8 @@ def build_task_runner(
                     ComputerToolkit(
                         room=self.room,
                         render_screen=None,
+                        starting_url=starting_url,
+                        include_goto_tool=allow_goto_url,
                     ),
                 )
             return toolkits_out
@@ -896,6 +902,8 @@ async def join(
             help="Enable computer use",
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     require_document_authoring: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable MeshDocument authoring"),
@@ -1053,6 +1061,8 @@ async def join(
             use_memory=use_memory,
             memory_model=memory_model,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             room_rules_path=room_rules,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
@@ -1255,6 +1265,8 @@ async def run(
             help="Enable computer use",
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     require_document_authoring: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable MeshDocument authoring"),
@@ -1427,6 +1439,8 @@ async def run(
             use_memory=use_memory,
             memory_model=memory_model,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             room_rules_path=room_rules,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
@@ -1657,6 +1671,8 @@ async def service(
             help="Enable computer use",
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     working_dir: WorkingDirOption = None,
     working_directory: WorkingDirectoryAliasOption = None,
     skill_dir: Annotated[
@@ -1795,6 +1811,8 @@ async def service(
             use_memory=use_memory,
             memory_model=memory_model,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             room_rules_path=room_rules,
             working_dir=working_dir,
             shell_image=shell_image,
@@ -1986,6 +2004,8 @@ async def spec(
             help="Enable computer use",
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     working_dir: WorkingDirOption = None,
     working_directory: WorkingDirectoryAliasOption = None,
     skill_dir: Annotated[
@@ -2113,6 +2133,8 @@ async def spec(
             use_memory=use_memory,
             memory_model=memory_model,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             room_rules_path=room_rules,
             working_dir=working_dir,
             shell_image=shell_image,
@@ -2317,6 +2339,8 @@ async def deploy(
             help="Enable computer use",
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     working_dir: WorkingDirOption = None,
     working_directory: WorkingDirectoryAliasOption = None,
     skill_dir: Annotated[
@@ -2450,6 +2474,8 @@ async def deploy(
             use_memory=use_memory,
             memory_model=memory_model,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             room_rules_path=room_rules,
             working_dir=working_dir,
             shell_image=shell_image,

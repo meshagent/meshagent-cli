@@ -6,8 +6,10 @@ import os
 from meshagent.api import ParticipantToken
 from typing import Annotated, Optional
 from meshagent.cli.common_options import (
+    AllowGotoUrlOption,
     ProjectIdOption,
     RoomOption,
+    StartingUrlOption,
 )
 from meshagent.tools import Toolkit, WebFetchTool, ContainerShellTool, MemoriesToolkit
 from meshagent.api import RoomClient, WebSocketClientProtocol, ApiScope
@@ -220,6 +222,8 @@ def build_mailbot(
     require_table_read: bool,
     require_table_write: bool,
     require_computer_use: bool,
+    starting_url: Optional[str] = None,
+    allow_goto_url: bool = False,
     reply_all: bool,
     database_namespace: Optional[list[str]] = None,
     enable_attachments: bool,
@@ -530,6 +534,8 @@ def build_mailbot(
                 computer_toolkit = ComputerToolkit(
                     room=self.room,
                     render_screen=None,
+                    starting_url=starting_url,
+                    include_goto_tool=allow_goto_url,
                 )
 
                 toolkits.append(computer_toolkit)
@@ -724,6 +730,8 @@ async def join(
             help="Enable computer use",
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     reply_all: Annotated[
         bool, typer.Option(help="Reply-all when responding to emails")
     ] = False,
@@ -832,6 +840,8 @@ async def join(
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             reply_all=reply_all,
             database_namespace=database_namespace,
             enable_attachments=enable_attachments,
@@ -1048,6 +1058,8 @@ async def service(
             help="Enable computer use",
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     reply_all: Annotated[
         bool, typer.Option(help="Reply-all when responding to emails")
     ] = False,
@@ -1137,6 +1149,8 @@ async def service(
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             reply_all=reply_all,
             database_namespace=database_namespace,
             enable_attachments=enable_attachments,
@@ -1333,6 +1347,8 @@ async def spec(
             help="Enable computer use",
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     reply_all: Annotated[
         bool, typer.Option(help="Reply-all when responding to emails")
     ] = False,
@@ -1422,6 +1438,8 @@ async def spec(
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             reply_all=reply_all,
             database_namespace=database_namespace,
             enable_attachments=enable_attachments,
@@ -1638,6 +1656,8 @@ async def deploy(
             help="Enable computer use",
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     reply_all: Annotated[
         bool, typer.Option(help="Reply-all when responding to emails")
     ] = False,
@@ -1734,6 +1754,8 @@ async def deploy(
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             reply_all=reply_all,
             database_namespace=database_namespace,
             enable_attachments=enable_attachments,

@@ -24,8 +24,10 @@ from meshagent.agents.config import RulesConfig
 from meshagent.agents.widget_schema import widget_schema
 
 from meshagent.cli.common_options import (
+    AllowGotoUrlOption,
     ProjectIdOption,
     RoomOption,
+    StartingUrlOption,
 )
 from meshagent.api import (
     RoomClient,
@@ -298,6 +300,8 @@ def build_chatbot(
     require_shell: Optional[bool] = None,
     require_apply_patch: Optional[str] = None,
     require_computer_use: Optional[str] = None,
+    starting_url: Optional[str] = None,
+    allow_goto_url: bool = False,
     require_web_search: Optional[str] = None,
     require_web_fetch: Optional[str] = None,
     require_mcp: Optional[str] = None,
@@ -668,6 +672,8 @@ def build_chatbot(
                     room=self.room,
                     thread_path=thread_context.path,
                     thread_adapter=thread_adapter,
+                    starting_url=starting_url,
+                    include_goto_tool=allow_goto_url,
                 )
 
                 tk.append(computer_toolkit)
@@ -867,6 +873,8 @@ async def join(
             hidden=True,
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     require_local_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable local shell tool calling"),
@@ -1041,6 +1049,8 @@ async def join(
         CustomChatbot = build_chatbot(
             computer_use=computer_use,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             model=model,
             rule=rule,
             toolkit=require_toolkit + toolkit,
@@ -1239,6 +1249,8 @@ async def service(
             hidden=True,
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     require_local_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable local shell tool calling"),
@@ -1397,6 +1409,8 @@ async def service(
         cls=build_chatbot(
             computer_use=computer_use,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             model=model,
             local_shell=local_shell,
             shell=shell,
@@ -1576,6 +1590,8 @@ async def spec(
             hidden=True,
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     require_local_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable local shell tool calling"),
@@ -1724,6 +1740,8 @@ async def spec(
         cls=build_chatbot(
             computer_use=computer_use,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             model=model,
             local_shell=local_shell,
             shell=shell,
@@ -1923,6 +1941,8 @@ async def deploy(
             hidden=True,
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     require_local_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable local shell tool calling"),
@@ -2078,6 +2098,8 @@ async def deploy(
         cls=build_chatbot(
             computer_use=computer_use,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             model=model,
             local_shell=local_shell,
             shell=shell,
@@ -3774,6 +3796,8 @@ async def run(
             hidden=True,
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     require_local_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable local shell tool calling"),
@@ -3968,6 +3992,8 @@ async def run(
             CustomChatbot = build_chatbot(
                 computer_use=computer_use,
                 require_computer_use=require_computer_use,
+                starting_url=starting_url,
+                allow_goto_url=allow_goto_url,
                 model=model,
                 rule=rule,
                 toolkit=require_toolkit + toolkit,

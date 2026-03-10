@@ -11,7 +11,12 @@ from meshagent.tools.storage import (
 )
 
 from meshagent.cli import async_typer
-from meshagent.cli.common_options import ProjectIdOption, RoomOption
+from meshagent.cli.common_options import (
+    AllowGotoUrlOption,
+    ProjectIdOption,
+    RoomOption,
+    StartingUrlOption,
+)
 from meshagent.cli.helper import (
     cleanup_args,
     cleanup_args_strip_options,
@@ -298,6 +303,8 @@ def build_worker(
     require_table_read: list[str] | None = None,
     require_table_write: list[str] | None = None,
     require_computer_use: bool,
+    starting_url: Optional[str] = None,
+    allow_goto_url: bool = False,
     toolkit_name: Optional[str] = None,
     skill_dirs: Optional[list[str]] = None,
     shell_image: Optional[str] = None,
@@ -669,6 +676,8 @@ def build_worker(
                 computer_toolkit = ComputerToolkit(
                     room=self.room,
                     render_screen=None,
+                    starting_url=starting_url,
+                    include_goto_tool=allow_goto_url,
                 )
 
                 toolkits_out.append(computer_toolkit)
@@ -878,6 +887,8 @@ async def join(
             help="Enable computer use",
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     title: Annotated[
         Optional[str],
         typer.Option(..., help="a display name for the agent"),
@@ -994,6 +1005,8 @@ async def join(
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             database_namespace=[database_namespace] if database_namespace else None,
             title=title,
             description=description,
@@ -1228,6 +1241,8 @@ async def service(
             help="Enable computer use",
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     title: Annotated[
         Optional[str],
         typer.Option(..., help="a display name for the agent"),
@@ -1330,6 +1345,8 @@ async def service(
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             database_namespace=[database_namespace] if database_namespace else None,
             title=title,
             description=description,
@@ -1547,6 +1564,8 @@ async def spec(
             help="Enable computer use",
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     title: Annotated[
         Optional[str],
         typer.Option(..., help="a display name for the agent"),
@@ -1649,6 +1668,8 @@ async def spec(
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             database_namespace=[database_namespace] if database_namespace else None,
             title=title,
             description=description,
@@ -1879,6 +1900,8 @@ async def deploy(
             help="Enable computer use",
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     title: Annotated[
         Optional[str],
         typer.Option(..., help="a display name for the agent"),
@@ -1995,6 +2018,8 @@ async def deploy(
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             database_namespace=[database_namespace] if database_namespace else None,
             title=title,
             description=description,
