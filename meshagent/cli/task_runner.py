@@ -666,7 +666,11 @@ def build_task_runner(
                 from meshagent.computers.agent import ComputerToolkit
 
                 toolkits_out.insert(
-                    0, ComputerToolkit(room=self.room, render_screen=None)
+                    0,
+                    ComputerToolkit(
+                        room=self.room,
+                        render_screen=None,
+                    ),
                 )
             return toolkits_out
 

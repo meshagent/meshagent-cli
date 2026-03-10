@@ -527,7 +527,10 @@ def build_mailbot(
             if require_computer_use:
                 from meshagent.computers.agent import ComputerToolkit
 
-                computer_toolkit = ComputerToolkit(room=self.room, render_screen=None)
+                computer_toolkit = ComputerToolkit(
+                    room=self.room,
+                    render_screen=None,
+                )
 
                 toolkits.append(computer_toolkit)
 
