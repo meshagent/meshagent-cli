@@ -38,6 +38,22 @@ RoomOption = Annotated[
     ),
 ]
 
+StartingUrlOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--starting-url",
+        help="Initial URL to open when starting a computer-use browser session",
+    ),
+]
+
+AllowGotoUrlOption = Annotated[
+    bool,
+    typer.Option(
+        "--allow-goto-url",
+        help="Expose the goto URL helper tool for computer use",
+    ),
+]
+
 RoomCreateOption = Annotated[
     bool,
     typer.Option(
