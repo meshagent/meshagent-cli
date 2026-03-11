@@ -3,6 +3,7 @@ from typing import Annotated, Optional
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from rich import print
 import os
+import posixpath
 import fnmatch
 import glob
 import shutil
@@ -51,6 +52,10 @@ def split_glob_subpath(subpath: str):
         return (base_dir, pattern)
     else:
         return (subpath, None)
+
+
+def _join_remote_path(base_dir: str, name: str) -> str:
+    return posixpath.join(base_dir, name)
 
 
 @app.async_command("exists", help="Check whether a path exists in room storage.")
@@ -165,7 +170,7 @@ async def storage_cp_command(
                 # List base_dir, filter
                 entries = await sc.list(path=base_dir)
                 matched = [
-                    (os.path.join(base_dir, e.name), e.name)
+                    (_join_remote_path(base_dir, e.name), e.name)
                     for e in entries
                     if not e.is_folder and fnmatch.fnmatch(e.name, maybe_pattern)
                 ]
@@ -241,7 +246,7 @@ async def storage_cp_command(
                 # it's a folder
                 for full_src, fname in expanded_sources:
                     # We'll store a path "dst_subpath/fname"
-                    remote_dest_file = os.path.join(dst_subpath, fname)
+                    remote_dest_file = _join_remote_path(dst_subpath, fname)
                     copy_operations.append((full_src, remote_dest_file))
             else:
                 # single file path
@@ -276,10 +281,7 @@ async def storage_cp_command(
                 print(f"Copying local '{src_file}' -> remote '{dst_file}'")
                 with open(src_file, "rb") as fsrc:
                     data = fsrc.read()
-                # open, write, close
-                dest_handle = await storage_client.open(path=dst_file, overwrite=True)
-                await storage_client.write(handle=dest_handle, data=data)
-                await storage_client.close(handle=dest_handle)
+                await storage_client.upload(path=dst_file, data=data, overwrite=True)
                 print(
                     f"[bold cyan]Uploaded '{src_file}' to remote '{dst_file}'[/bold cyan]"
                 )
@@ -300,9 +302,12 @@ async def storage_cp_command(
                 # remote->remote
                 print(f"Copying remote '{src_file}' -> remote '{dst_file}'")
                 source_file = await storage_client.download(path=src_file)
-                dest_handle = await storage_client.open(path=dst_file, overwrite=True)
-                await storage_client.write(handle=dest_handle, data=source_file.data)
-                await storage_client.close(handle=dest_handle)
+                await storage_client.upload(
+                    path=dst_file,
+                    data=source_file.data,
+                    overwrite=True,
+                    mime_type=source_file.mime_type,
+                )
                 print(
                     f"[bold cyan]Copied remote '{src_file}' to '{dst_file}'[/bold cyan]"
                 )
