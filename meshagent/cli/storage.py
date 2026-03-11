@@ -9,7 +9,7 @@ import shutil
 
 from meshagent.api import RoomClient, RoomException, WebSocketClientProtocol
 from meshagent.api.error_codes import ErrorCode
-from meshagent.api.room_server_client import StorageClient, StorageEntry
+from meshagent.api.room_server_client import StorageClient
 from meshagent.api.helpers import websocket_room_url
 from meshagent.cli import async_typer
 from meshagent.cli.helper import (
@@ -721,36 +721,27 @@ async def storage_ls_command(
         """
 
         is_root = remote_path in ("", "/")
-        entries: list[StorageEntry] = []
 
         if is_root:
             folder_name = "/"
             list_path = ""
         else:
-            # Does it exist at all?
-            if not await sc.exists(path=remote_path):
+            stat = await sc.stat(path=remote_path)
+            if stat is None:
                 print(f"{prefix}[red]{remote_path} does not exist (remote)[/red]")
                 return
 
-            stat = await sc.stat(path=remote_path)
-            if stat is not None and stat.is_folder:
-                folder_name = os.path.basename(remote_path.rstrip("/")) or remote_path
-                list_path = remote_path
-            else:
-                # Some backends don't report folder metadata reliably.
-                # If `list()` returns entries, treat this path as a folder.
-                entries = await sc.list(path=remote_path)
-                if not entries:
-                    print(f"{prefix}{os.path.basename(remote_path)}")
-                    return
-                folder_name = os.path.basename(remote_path.rstrip("/")) or remote_path
-                list_path = remote_path
+            if not stat.is_folder:
+                print(f"{prefix}{os.path.basename(remote_path)}")
+                return
+
+            folder_name = os.path.basename(remote_path.rstrip("/")) or remote_path
+            list_path = remote_path
 
         # It's a folder, list immediate children.
         print(f"{prefix}{folder_name}/")
         try:
-            if not entries:
-                entries = await sc.list(path=list_path)
+            entries = await sc.list(path=list_path)
             entries.sort(key=lambda e: e.name)
             for e in entries:
                 child_path = os.path.join(list_path, e.name)
