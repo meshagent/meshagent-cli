@@ -11,7 +11,7 @@ async def list(*, project_id: ProjectIdOption):
     sessions = await client.list_recent_sessions(
         project_id=await resolve_project_id(project_id=project_id)
     )
-    print_json_table(sessions["sessions"])
+    print_json_table([session.model_dump(mode="json") for session in sessions])
     await client.close()
 
 
@@ -22,5 +22,5 @@ async def show(*, project_id: ProjectIdOption, session_id: str):
         project_id=await resolve_project_id(project_id=project_id),
         session_id=session_id,
     )
-    print_json_table(events["events"], "type", "data")
+    print_json_table(events, "type", "data")
     await client.close()
