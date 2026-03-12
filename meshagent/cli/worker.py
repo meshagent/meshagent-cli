@@ -11,7 +11,12 @@ from meshagent.tools.storage import (
 )
 
 from meshagent.cli import async_typer
-from meshagent.cli.common_options import ProjectIdOption, RoomOption
+from meshagent.cli.common_options import (
+    AllowGotoUrlOption,
+    ProjectIdOption,
+    RoomOption,
+    StartingUrlOption,
+)
 from meshagent.cli.helper import (
     cleanup_args,
     cleanup_args_strip_options,
@@ -22,6 +27,7 @@ from meshagent.cli.helper import (
     resolve_key,
     resolve_project_id,
     resolve_room,
+    upload_room_bytes_stream,
 )
 
 from meshagent.api import (
@@ -297,6 +303,8 @@ def build_worker(
     require_table_read: list[str] | None = None,
     require_table_write: list[str] | None = None,
     require_computer_use: bool,
+    starting_url: Optional[str] = None,
+    allow_goto_url: bool = False,
     toolkit_name: Optional[str] = None,
     skill_dirs: Optional[list[str]] = None,
     shell_image: Optional[str] = None,
@@ -365,7 +373,6 @@ def build_worker(
             model=model,
             response_options={
                 "reasoning": {"summary": "concise"},
-                "truncation": "auto",
             },
             log_requests=log_llm_requests,
         )
@@ -494,15 +501,15 @@ def build_worker(
                 # initialize rules file if missing (same behavior as mailbot)
                 try:
                     logger.info("attempting to initialize rules file")
-                    handle = await self.room.storage.open(path=path, overwrite=False)
-                    await self.room.storage.write(
-                        handle=handle,
+                    await upload_room_bytes_stream(
+                        room=self.room,
+                        path=path,
                         data=(
                             "# Add rules to this file to customize your worker's behavior. "
                             "Lines starting with # will be ignored.\n\n"
                         ).encode(),
+                        overwrite=False,
                     )
-                    await self.room.storage.close(handle=handle)
                 except RoomException:
                     pass
 
@@ -666,7 +673,12 @@ def build_worker(
             if require_computer_use:
                 from meshagent.computers.agent import ComputerToolkit
 
-                computer_toolkit = ComputerToolkit(room=self.room, render_screen=None)
+                computer_toolkit = ComputerToolkit(
+                    room=self.room,
+                    render_screen=None,
+                    starting_url=starting_url,
+                    include_goto_tool=allow_goto_url,
+                )
 
                 toolkits_out.append(computer_toolkit)
 
@@ -872,9 +884,11 @@ async def join(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     title: Annotated[
         Optional[str],
         typer.Option(..., help="a display name for the agent"),
@@ -991,6 +1005,8 @@ async def join(
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             database_namespace=[database_namespace] if database_namespace else None,
             title=title,
             description=description,
@@ -1222,9 +1238,11 @@ async def service(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     title: Annotated[
         Optional[str],
         typer.Option(..., help="a display name for the agent"),
@@ -1327,6 +1345,8 @@ async def service(
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             database_namespace=[database_namespace] if database_namespace else None,
             title=title,
             description=description,
@@ -1541,9 +1561,11 @@ async def spec(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     title: Annotated[
         Optional[str],
         typer.Option(..., help="a display name for the agent"),
@@ -1646,6 +1668,8 @@ async def spec(
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             database_namespace=[database_namespace] if database_namespace else None,
             title=title,
             description=description,
@@ -1873,9 +1897,11 @@ async def deploy(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     title: Annotated[
         Optional[str],
         typer.Option(..., help="a display name for the agent"),
@@ -1992,6 +2018,8 @@ async def deploy(
             require_table_read=require_table_read,
             require_table_write=require_table_write,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             database_namespace=[database_namespace] if database_namespace else None,
             title=title,
             description=description,

@@ -63,7 +63,8 @@ app.add_typer(webhook.app, name="webhook")
 app.add_typer(services.app, name="service")
 app.add_typer(cli_mcp.app, name="mcp")
 app.add_typer(cli_secrets.app, name="secret")
-app.add_typer(helpers.app, name="helpers")
+app.add_typer(helpers.app, name="helper")
+app.add_typer(helpers.app, name="helpers", hidden=True)
 app.add_typer(rooms.app, name="rooms")
 app.add_typer(mailboxes.app, name="mailbox")
 app.add_typer(routes.app, name="route")
@@ -221,7 +222,7 @@ def setup_command():
 
         async def activate_project(project_id: str) -> str:
             activated_project_id = await projects.activate(
-                project_id, interactive=False
+                project_id, interactive=False, return_project_id=True
             )
             if activated_project_id is None:
                 raise RuntimeError("Unable to activate selected project.")

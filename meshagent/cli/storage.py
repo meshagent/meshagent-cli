@@ -3,11 +3,13 @@ from typing import Annotated, Optional
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from rich import print
 import os
+import posixpath
 import fnmatch
 import glob
 import shutil
 
-from meshagent.api import RoomClient, WebSocketClientProtocol
+from meshagent.api import RoomClient, RoomException, WebSocketClientProtocol
+from meshagent.api.error_codes import ErrorCode
 from meshagent.api.room_server_client import StorageClient
 from meshagent.api.helpers import websocket_room_url
 from meshagent.cli import async_typer
@@ -52,6 +54,10 @@ def split_glob_subpath(subpath: str):
         return (subpath, None)
 
 
+def _join_remote_path(base_dir: str, name: str) -> str:
+    return posixpath.join(base_dir, name)
+
+
 @app.async_command("exists", help="Check whether a path exists in room storage.")
 async def storage_exists_command(
     *,
@@ -62,6 +68,9 @@ async def storage_exists_command(
     """
     Check if a file/folder exists in remote storage.
     """
+    scheme, subpath = parse_path(path)
+    remote_path = subpath if scheme == "room" else path
+
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
@@ -75,7 +84,7 @@ async def storage_exists_command(
                 token=connection.jwt,
             )
         ) as client:
-            file_exists = await client.storage.exists(path=path)
+            file_exists = await client.storage.exists(path=remote_path)
             if file_exists:
                 print(f"[bold cyan]'{path}' exists in remote storage.[/bold cyan]")
             else:
@@ -161,7 +170,7 @@ async def storage_cp_command(
                 # List base_dir, filter
                 entries = await sc.list(path=base_dir)
                 matched = [
-                    (os.path.join(base_dir, e.name), e.name)
+                    (_join_remote_path(base_dir, e.name), e.name)
                     for e in entries
                     if not e.is_folder and fnmatch.fnmatch(e.name, maybe_pattern)
                 ]
@@ -222,29 +231,22 @@ async def storage_cp_command(
                 copy_operations.append((expanded_sources[0][0], dst_subpath))
         else:
             # remote
-            # We need to see if there's a slash at the end or if it might be a directory
-            # There's no built-in "is_folder" check by default except listing. We'll do a naive approach:
-            # We'll see if the path exists as a folder by listing it. If that fails, assume it's a file path.
+            # Determine if destination should be treated as a folder.
             await ensure_storage_client()
 
-            # Let's attempt to list the `dst_subpath`. If it returns any result, it might exist as a folder.
-            # If it doesn't exist, we treat it as a file path.  This can get tricky if your backend
-            # doesn't differentiate a folder from an empty folder. We'll keep it simple.
             is_destination_folder = False
-            try:
-                await storage_client.list(path=dst_subpath)
-                # If listing worked, it might be a folder (unless it's a file with children?).
-                # We'll assume it’s a folder if we get any results or no error.
+            if dst_subpath in ("", "/") or dest_path.endswith("/"):
                 is_destination_folder = True
-            except Exception:
-                # Probably a file or does not exist
-                is_destination_folder = False
+            else:
+                dst_stat = await storage_client.stat(path=dst_subpath)
+                if dst_stat is not None and dst_stat.is_folder:
+                    is_destination_folder = True
 
             if is_destination_folder:
                 # it's a folder
                 for full_src, fname in expanded_sources:
                     # We'll store a path "dst_subpath/fname"
-                    remote_dest_file = os.path.join(dst_subpath, fname)
+                    remote_dest_file = _join_remote_path(dst_subpath, fname)
                     copy_operations.append((full_src, remote_dest_file))
             else:
                 # single file path
@@ -279,10 +281,7 @@ async def storage_cp_command(
                 print(f"Copying local '{src_file}' -> remote '{dst_file}'")
                 with open(src_file, "rb") as fsrc:
                     data = fsrc.read()
-                # open, write, close
-                dest_handle = await storage_client.open(path=dst_file, overwrite=True)
-                await storage_client.write(handle=dest_handle, data=data)
-                await storage_client.close(handle=dest_handle)
+                await storage_client.upload(path=dst_file, data=data, overwrite=True)
                 print(
                     f"[bold cyan]Uploaded '{src_file}' to remote '{dst_file}'[/bold cyan]"
                 )
@@ -303,9 +302,12 @@ async def storage_cp_command(
                 # remote->remote
                 print(f"Copying remote '{src_file}' -> remote '{dst_file}'")
                 source_file = await storage_client.download(path=src_file)
-                dest_handle = await storage_client.open(path=dst_file, overwrite=True)
-                await storage_client.write(handle=dest_handle, data=source_file.data)
-                await storage_client.close(handle=dest_handle)
+                await storage_client.upload(
+                    path=dst_file,
+                    data=source_file.data,
+                    overwrite=True,
+                    mime_type=source_file.mime_type,
+                )
                 print(
                     f"[bold cyan]Copied remote '{src_file}' to '{dst_file}'[/bold cyan]"
                 )
@@ -337,7 +339,7 @@ async def storage_show_command(
     # If we need a remote connection, set it up:
     account_client = None
     client = None
-    storage_client = None
+    storage_client: Optional[StorageClient] = None
 
     async def ensure_storage_client():
         nonlocal account_client, client, storage_client, project_id
@@ -351,7 +353,7 @@ async def storage_show_command(
         account_client = await get_client()
         project_id = await resolve_project_id(project_id=project_id)
 
-        connection = await account_client.connect_room(project_id=project_id, name=room)
+        connection = await account_client.connect_room(project_id=project_id, room=room)
 
         print("[bold green]Connecting to room...[/bold green]")
         client = RoomClient(
@@ -377,10 +379,25 @@ async def storage_show_command(
         else:
             # Remote file read
             await ensure_storage_client()
-            if not await storage_client.exists(path=subpath):
+            remote_stat = await storage_client.stat(path=subpath)
+            if remote_stat is None:
                 print(f"[bold red]Remote file '{subpath}' not found.[/bold red]")
                 raise typer.Exit(code=1)
-            remote_file = await storage_client.download(path=subpath)
+
+            if remote_stat.is_folder:
+                print(
+                    f"[bold red]Remote path '{subpath}' is a folder; use 'meshagent room storage ls' to inspect it.[/bold red]"
+                )
+                raise typer.Exit(code=1)
+
+            try:
+                remote_file = await storage_client.download(path=subpath)
+            except RoomException as ex:
+                if ex.code == ErrorCode.STORAGE_NOT_FOUND:
+                    print(f"[bold red]Remote file '{subpath}' not found.[/bold red]")
+                    raise typer.Exit(code=1)
+                raise
+
             text_content = remote_file.data.decode(encoding, errors="replace")
             print(text_content)
     finally:
@@ -434,7 +451,7 @@ async def storage_rm_command(
             project_id = await resolve_project_id(project_id=project_id)
 
             connection = await account_client.connect_room(
-                project_id=project_id, name=room
+                project_id=project_id, room=room
             )
 
             print("[bold green]Connecting to room...[/bold green]")
@@ -700,15 +717,6 @@ async def storage_ls_command(
     # ----------------------------------------------------------------
     # Remote listing
     # ----------------------------------------------------------------
-    async def is_remote_folder(sc: StorageClient, remote_path: str) -> bool:
-        """Return True if remote_path is a folder, otherwise False or it doesn't exist."""
-        stat = await sc.stat(path=remote_path)
-
-        if stat is None:
-            return False
-        else:
-            return stat.is_folder
-
     async def list_remote_path(
         sc: StorageClient, remote_path: str, recursive: bool, prefix: str = ""
     ):
@@ -717,37 +725,41 @@ async def storage_ls_command(
         If it's a folder, list its contents. If recursive=True, list subfolders too.
         """
 
-        # Does it exist at all?
-        if not await sc.exists(path=remote_path):
-            print(f"{prefix}[red]{remote_path} does not exist (remote)[/red]")
-            return
+        is_root = remote_path in ("", "/")
 
-        if await is_remote_folder(sc, remote_path):
-            # It's a folder
-            folder_name = os.path.basename(remote_path.rstrip("/")) or remote_path
-            print(f"{prefix}{folder_name}/")
-            if recursive:
-                try:
-                    entries = await sc.list(path=remote_path)
-                    # Sort by name for consistent output
-                    entries.sort(key=lambda e: e.name)
-                    for e in entries:
-                        child_path = os.path.join(remote_path, e.name)
-                        if e.is_folder:
-                            print(f"{prefix}  {e.name}/")
-                            if recursive:
-                                await list_remote_path(
-                                    sc, child_path, recursive, prefix + "    "
-                                )
-                        else:
-                            print(f"{prefix}  {e.name}")
-                except Exception as ex:
-                    print(
-                        f"{prefix}[red]Cannot list remote folder '{remote_path}': {ex}[/red]"
-                    )
+        if is_root:
+            folder_name = "/"
+            list_path = ""
         else:
-            # It's a file
-            print(f"{prefix}{os.path.basename(remote_path)}")
+            stat = await sc.stat(path=remote_path)
+            if stat is None:
+                print(f"{prefix}[red]{remote_path} does not exist (remote)[/red]")
+                return
+
+            if not stat.is_folder:
+                print(f"{prefix}{os.path.basename(remote_path)}")
+                return
+
+            folder_name = os.path.basename(remote_path.rstrip("/")) or remote_path
+            list_path = remote_path
+
+        # It's a folder, list immediate children.
+        print(f"{prefix}{folder_name}/")
+        try:
+            entries = await sc.list(path=list_path)
+            entries.sort(key=lambda e: e.name)
+            for e in entries:
+                child_path = os.path.join(list_path, e.name)
+                if e.is_folder:
+                    print(f"{prefix}  {e.name}/")
+                    if recursive:
+                        await list_remote_path(
+                            sc, child_path, recursive, prefix + "    "
+                        )
+                else:
+                    print(f"{prefix}  {e.name}")
+        except Exception as ex:
+            print(f"{prefix}[red]Cannot list remote folder '{remote_path}': {ex}[/red]")
 
     async def glob_and_list_remote(
         sc: StorageClient, path_pattern: str, recursive: bool
@@ -764,11 +776,11 @@ async def storage_ls_command(
             # For 'ls' we might want to list matching files and also matching folders if pattern matches?
             # But your earlier approach for "cp" and "rm" only matched files in wildcard.
             # Let's do a slightly broader approach: match both files and folders by listing base_dir.
-            if not await storage_client.exists(path=base_dir):
+            if base_dir not in ("", "/") and not await sc.exists(path=base_dir):
                 print(f"[red]Remote folder '{base_dir}' does not exist[/red]")
                 return
             try:
-                entries = await sc.list(path=base_dir)
+                entries = await sc.list(path="" if base_dir in ("", "/") else base_dir)
                 # Filter by pattern
                 matched = [e for e in entries if fnmatch.fnmatch(e.name, maybe_pattern)]
                 if not matched:

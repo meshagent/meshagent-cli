@@ -1,11 +1,13 @@
-import typer
-from rich.console import Console
-from rich.table import Table
-from pydantic import BaseModel
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Optional
-from meshagent.cli import auth_async
-from meshagent.cli import async_typer
+
+import typer
+from pydantic import BaseModel
+from rich.console import Console
+from rich.table import Table
+
+from meshagent.api import RoomClient
 from meshagent.api.helpers import meshagent_base_url
 from meshagent.api.specs.service import (
     ContainerMountSpec,
@@ -16,6 +18,7 @@ from meshagent.api.specs.service import (
 )
 from meshagent.agents.context import AgentSessionContext
 from meshagent.api.client import Meshagent, RoomConnectionInfo
+from meshagent.cli import async_typer, auth_async
 from meshagent.tools.storage import (
     StorageToolLocalMount,
     StorageToolMount,
@@ -211,6 +214,28 @@ async def resolve_key(project_id: str | None, key: str | None):
         raise typer.Exit(1)
 
     return key
+
+
+async def upload_room_bytes_stream(
+    *,
+    room: RoomClient,
+    path: str,
+    data: bytes,
+    overwrite: bool = False,
+    name: str | None = None,
+    mime_type: str | None = None,
+) -> None:
+    async def chunk_stream() -> AsyncIterator[bytes]:
+        yield data
+
+    await room.storage.upload_stream(
+        path=path,
+        chunks=chunk_stream(),
+        overwrite=overwrite,
+        size=len(data),
+        name=name,
+        mime_type=mime_type,
+    )
 
 
 def parse_memory_selector(value: str) -> tuple[str, Optional[list[str]]]:

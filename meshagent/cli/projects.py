@@ -1,4 +1,5 @@
 import typer
+from typing import Annotated
 from rich import print
 from meshagent.cli import async_typer
 from meshagent.cli.helper import (
@@ -51,6 +52,14 @@ async def activate(
         "--interactive",
         help="Interactively select or create a project",
     ),
+    return_project_id: Annotated[
+        bool,
+        typer.Option(
+            "--return-project-id",
+            hidden=True,
+            help="Return the active project id for internal callers.",
+        ),
+    ] = False,
 ):
     client = await get_client()
     try:
@@ -99,7 +108,10 @@ async def activate(
             for project in projects:
                 if project["id"] == project_id:
                     await set_active_project(project_id=project_id)
-                    return project_id
+                    if return_project_id:
+                        return project_id
+                    print(project_id)
+                    return None
 
             print(f"[red]Invalid project id: {project_id}[/red]")
             raise typer.Exit(code=1)

@@ -24,8 +24,10 @@ from meshagent.agents.config import RulesConfig
 from meshagent.agents.widget_schema import widget_schema
 
 from meshagent.cli.common_options import (
+    AllowGotoUrlOption,
     ProjectIdOption,
     RoomOption,
+    StartingUrlOption,
 )
 from meshagent.api import (
     RoomClient,
@@ -47,6 +49,7 @@ from meshagent.cli.helper import (
     resolve_key,
     resolve_project_id,
     resolve_room,
+    upload_room_bytes_stream,
 )
 
 from meshagent.openai import OpenAIResponsesAdapter
@@ -297,6 +300,8 @@ def build_chatbot(
     require_shell: Optional[bool] = None,
     require_apply_patch: Optional[str] = None,
     require_computer_use: Optional[str] = None,
+    starting_url: Optional[str] = None,
+    allow_goto_url: bool = False,
     require_web_search: Optional[str] = None,
     require_web_fetch: Optional[str] = None,
     require_mcp: Optional[str] = None,
@@ -392,7 +397,6 @@ def build_chatbot(
                 model=model,
                 response_options={
                     "reasoning": {"summary": "concise"},
-                    "truncation": "auto",
                 },
                 log_requests=log_llm_requests,
             )
@@ -502,12 +506,12 @@ def build_chatbot(
             except RoomException:
                 try:
                     logger.info("attempting to initialize rules file")
-                    handle = await self.room.storage.open(path=path, overwrite=False)
-                    await self.room.storage.write(
-                        handle=handle,
+                    await upload_room_bytes_stream(
+                        room=self.room,
+                        path=path,
                         data="# Add rules to this file to customize your agent's behavior, lines starting with # will be ignored.\n\n".encode(),
+                        overwrite=False,
                     )
-                    await self.room.storage.close(handle=handle)
 
                 except RoomException:
                     pass
@@ -668,6 +672,8 @@ def build_chatbot(
                     room=self.room,
                     thread_path=thread_context.path,
                     thread_adapter=thread_adapter,
+                    starting_url=starting_url,
+                    include_goto_tool=allow_goto_url,
                 )
 
                 tk.append(computer_toolkit)
@@ -791,9 +797,7 @@ async def join(
     ] = None,
     computer_use: Annotated[
         Optional[bool],
-        typer.Option(
-            ..., help="Enable computer use (requires computer-use-preview model)"
-        ),
+        typer.Option(..., help="Enable computer use"),
     ] = False,
     local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
@@ -865,10 +869,12 @@ async def join(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
             hidden=True,
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     require_local_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable local shell tool calling"),
@@ -1043,6 +1049,8 @@ async def join(
         CustomChatbot = build_chatbot(
             computer_use=computer_use,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             model=model,
             rule=rule,
             toolkit=require_toolkit + toolkit,
@@ -1174,9 +1182,7 @@ async def service(
     ] = False,
     computer_use: Annotated[
         Optional[bool],
-        typer.Option(
-            ..., help="Enable computer use (requires computer-use-preview model)"
-        ),
+        typer.Option(..., help="Enable computer use"),
     ] = False,
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
@@ -1239,10 +1245,12 @@ async def service(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
             hidden=True,
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     require_local_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable local shell tool calling"),
@@ -1401,6 +1409,8 @@ async def service(
         cls=build_chatbot(
             computer_use=computer_use,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             model=model,
             local_shell=local_shell,
             shell=shell,
@@ -1520,9 +1530,7 @@ async def spec(
     ] = False,
     computer_use: Annotated[
         Optional[bool],
-        typer.Option(
-            ..., help="Enable computer use (requires computer-use-preview model)"
-        ),
+        typer.Option(..., help="Enable computer use"),
     ] = False,
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
@@ -1578,10 +1586,12 @@ async def spec(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
             hidden=True,
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     require_local_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable local shell tool calling"),
@@ -1730,6 +1740,8 @@ async def spec(
         cls=build_chatbot(
             computer_use=computer_use,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             model=model,
             local_shell=local_shell,
             shell=shell,
@@ -1869,9 +1881,7 @@ async def deploy(
     ] = False,
     computer_use: Annotated[
         Optional[bool],
-        typer.Option(
-            ..., help="Enable computer use (requires computer-use-preview model)"
-        ),
+        typer.Option(..., help="Enable computer use"),
     ] = False,
     web_search: Annotated[
         Optional[bool], typer.Option(..., help="Enable web search tool calling")
@@ -1927,10 +1937,12 @@ async def deploy(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
             hidden=True,
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     require_local_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable local shell tool calling"),
@@ -2086,6 +2098,8 @@ async def deploy(
         cls=build_chatbot(
             computer_use=computer_use,
             require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
             model=model,
             local_shell=local_shell,
             shell=shell,
@@ -3713,9 +3727,7 @@ async def run(
     ] = None,
     computer_use: Annotated[
         Optional[bool],
-        typer.Option(
-            ..., help="Enable computer use (requires computer-use-preview model)"
-        ),
+        typer.Option(..., help="Enable computer use"),
     ] = False,
     local_shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable local shell tool calling")
@@ -3780,10 +3792,12 @@ async def run(
         Optional[bool],
         typer.Option(
             ...,
-            help="Enable computer use (requires computer-use-preview model)",
+            help="Enable computer use",
             hidden=True,
         ),
     ] = False,
+    starting_url: StartingUrlOption = None,
+    allow_goto_url: AllowGotoUrlOption = False,
     require_local_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable local shell tool calling"),
@@ -3978,6 +3992,8 @@ async def run(
             CustomChatbot = build_chatbot(
                 computer_use=computer_use,
                 require_computer_use=require_computer_use,
+                starting_url=starting_url,
+                allow_goto_url=allow_goto_url,
                 model=model,
                 rule=rule,
                 toolkit=require_toolkit + toolkit,

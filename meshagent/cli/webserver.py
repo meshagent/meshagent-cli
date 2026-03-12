@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import builtins
+from collections.abc import Awaitable
 from contextlib import contextmanager
 from dataclasses import dataclass
 import importlib.util
@@ -47,6 +48,7 @@ from meshagent.cli.helper import (
     resolve_key,
     resolve_project_id,
     resolve_room,
+    upload_room_bytes_stream,
 )
 from meshagent.cli.host import get_service, service_specs
 
@@ -57,6 +59,7 @@ DEFAULT_SERVICE_BIND_HOST = "0.0.0.0"
 DEFAULT_BIND_PORT = 8000
 DEFAULT_WEBSITE_MOUNT_PATH = "/website"
 EMPTY_DIR_MARKER_NAME = ".meshagent.keep"
+DIRECTORY_INDEX_FILE_NAME = "index.html"
 MESHAGENT_APP_DOMAIN_SUFFIX = ".meshagent.app"
 ROUTE_ADD_COMMANDS = [
     "meshagent webserver add --path / --python handlers/home.py",
@@ -749,6 +752,118 @@ def _validate_routes_file(
     )
 
 
+def _normalize_static_mount_path(*, route_path: str) -> str:
+    normalized = route_path.rstrip("/")
+    return normalized if normalized != "" else "/"
+
+
+def _resolve_static_directory_target(
+    *,
+    source: Path,
+    relative_url_path: str,
+) -> Path | None:
+    base_path = source.resolve()
+    normalized_relative_url_path = relative_url_path.lstrip("/")
+    if normalized_relative_url_path == "":
+        return base_path
+
+    relative_parts = PurePosixPath(normalized_relative_url_path).parts
+    if any(part == ".." for part in relative_parts):
+        return None
+
+    resolved_target = (base_path / Path(*relative_parts)).resolve()
+    if resolved_target != base_path and not resolved_target.is_relative_to(base_path):
+        return None
+    return resolved_target
+
+
+async def _serve_static_directory_request(
+    *,
+    source: Path,
+    relative_url_path: str,
+) -> web.StreamResponse:
+    target_path = _resolve_static_directory_target(
+        source=source,
+        relative_url_path=relative_url_path,
+    )
+    if target_path is None or not target_path.exists():
+        raise web.HTTPNotFound()
+
+    if target_path.is_dir():
+        index_path = target_path / DIRECTORY_INDEX_FILE_NAME
+        if not index_path.exists() or not index_path.is_file():
+            raise web.HTTPNotFound()
+        return web.FileResponse(path=index_path)
+
+    if not target_path.is_file():
+        raise web.HTTPNotFound()
+    return web.FileResponse(path=target_path)
+
+
+def _build_static_directory_handler(
+    *,
+    source: Path,
+) -> Callable[[web.Request], Awaitable[web.StreamResponse]]:
+    async def _static_directory(req: web.Request) -> web.StreamResponse:
+        return await _serve_static_directory_request(
+            source=source,
+            relative_url_path=req.match_info.get("tail", ""),
+        )
+
+    return _static_directory
+
+
+def _build_web_application(
+    *,
+    static_routes: list[StaticRoute],
+    loaded_python_routes: list[LoadedPythonRoute],
+    room: RoomClient,
+) -> tuple[web.Application, list[tuple[str, str]]]:
+    app = web.Application()
+    mounted: list[tuple[str, str]] = []
+
+    for route in static_routes:
+        if route.source.is_dir():
+            static_directory_handler = _build_static_directory_handler(
+                source=route.source,
+            )
+            mount_path = _normalize_static_mount_path(route_path=route.path)
+            wildcard_mount_path = (
+                "/{tail:.*}" if mount_path == "/" else f"{mount_path}/{{tail:.*}}"
+            )
+            app.router.add_get(mount_path, static_directory_handler)
+            app.router.add_get(wildcard_mount_path, static_directory_handler)
+        else:
+
+            async def _static_file(
+                _req: web.Request,
+                _source: Path = route.source,
+            ) -> web.StreamResponse:
+                if not _source.exists() or not _source.is_file():
+                    raise web.HTTPNotFound()
+                return web.FileResponse(path=_source)
+
+            app.router.add_get(route.path, _static_file)
+        mounted.append((route.path, f"static:{route.source}"))
+
+    for route in loaded_python_routes:
+
+        async def _wrapped(
+            request: web.Request,
+            _handler: Callable[..., Any] = route.handler,
+        ) -> web.StreamResponse:
+            result = _handler(room=room, req=request)
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+
+        for method in route.methods:
+            app.router.add_route(method, route.path, _wrapped)
+        mounted.append((route.path, f"python:{route.source}"))
+
+    return app, mounted
+
+
 def build_webserver(
     *,
     routes_file: str,
@@ -785,40 +900,11 @@ def build_webserver(
             return list(self._mounted)
 
         async def start(self, *, room: RoomClient) -> None:
-            app = web.Application()
-            mounted: list[tuple[str, str]] = []
-
-            for route in static_routes:
-                if route.source.is_dir():
-                    app.router.add_static(route.path, route.source, show_index=True)
-                else:
-
-                    async def _static_file(
-                        _req: web.Request,
-                        _source: Path = route.source,
-                    ) -> web.StreamResponse:
-                        if not _source.exists() or not _source.is_file():
-                            raise web.HTTPNotFound()
-                        return web.FileResponse(path=_source)
-
-                    app.router.add_get(route.path, _static_file)
-                mounted.append((route.path, f"static:{route.source}"))
-
-            for route in loaded_python_routes:
-
-                async def _wrapped(
-                    request: web.Request,
-                    _handler: Callable[..., Any] = route.handler,
-                ) -> web.StreamResponse:
-                    result = _handler(room=room, req=request)
-                    if inspect.isawaitable(result):
-                        result = await result
-                    return result
-
-                for method in route.methods:
-                    app.router.add_route(method, route.path, _wrapped)
-                mounted.append((route.path, f"python:{route.source}"))
-
+            app, mounted = _build_web_application(
+                static_routes=static_routes,
+                loaded_python_routes=loaded_python_routes,
+                room=room,
+            )
             self._mounted = mounted
             self._runner = web.AppRunner(app, access_log=None)
             await self._runner.setup()
@@ -1098,11 +1184,7 @@ async def _write_room_storage_file(
     path: str,
     data: bytes,
 ) -> None:
-    handle = await room.storage.open(path=path, overwrite=True)
-    try:
-        await room.storage.write(handle=handle, data=data)
-    finally:
-        await room.storage.close(handle=handle)
+    await upload_room_bytes_stream(room=room, path=path, data=data, overwrite=True)
 
 
 async def _sync_website_files_to_room_storage(
