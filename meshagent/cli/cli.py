@@ -40,6 +40,7 @@ import logging
 
 import os
 import sys
+import warnings
 from pathlib import Path
 
 otel_config(service_name="meshagent-cli")
@@ -51,6 +52,18 @@ logging.getLogger("textual").setLevel(logging.WARNING)
 logging.getLogger("textual.events").setLevel(logging.WARNING)
 logging.getLogger("textual.message_pump").setLevel(logging.WARNING)
 logging.getLogger("textual.screen").setLevel(logging.WARNING)
+
+
+def _configure_warning_filters() -> None:
+    warnings.filterwarnings(
+        "ignore",
+        message=r"Pydantic serializer warnings:.*",
+        category=UserWarning,
+        module=r"pydantic\.main",
+    )
+
+
+_configure_warning_filters()
 
 app = async_typer.AsyncTyper(no_args_is_help=True, name="meshagent")
 app.add_typer(call.app, name="call")

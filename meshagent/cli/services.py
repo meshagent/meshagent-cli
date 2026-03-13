@@ -55,6 +55,7 @@ from meshagent.api import (
     ParticipantToken,
     ApiScope,
 )
+from meshagent.api.client import Meshagent
 from meshagent.cli.common_options import OutputFormatOption
 
 from pydantic import RootModel
@@ -72,6 +73,24 @@ class ServiceTemplateValues(RootModel[dict[str, str]]):
 
 
 @dataclass(slots=True)
+class _SpecInputError(Exception):
+    headline: str
+    description: str
+    validation_details: str
+    guidance_lines: tuple[str, ...] = ()
+
+    def __str__(self) -> str:
+        sections = [
+            self.headline,
+            self.description,
+            f"Validation details: {self.validation_details}",
+        ]
+        if self.guidance_lines:
+            sections.append("\n".join(self.guidance_lines))
+        return "\n\n".join(sections)
+
+
+@dataclass(slots=True)
 class _DiscoveredOAuthEndpoints:
     authorization_endpoint: str
     token_endpoint: str
@@ -80,6 +99,18 @@ class _DiscoveredOAuthEndpoints:
 
 
 _SpecFormat = Literal["service", "template"]
+
+
+def _print_spec_input_error(error: _SpecInputError) -> None:
+    print(f"[red]{error.headline}[/red]")
+    print()
+    print(error.description)
+    print()
+    print(f"Validation details: {error.validation_details}")
+    if error.guidance_lines:
+        print()
+        for line in error.guidance_lines:
+            print(line)
 
 
 def _load_template_values(
@@ -567,6 +598,72 @@ def _load_input_as_template_spec(
         return _service_spec_to_template_spec(service)
 
 
+def _load_command_service_spec(
+    *,
+    file: Optional[str],
+    url: Optional[str],
+    wrong_type_command: str,
+) -> ServiceSpec:
+    spec_text = _load_yaml_text(file=file, url=url, name="service definition")
+    try:
+        return parse_yaml_raw_as(ServiceSpec, spec_text.encode("utf-8"))
+    except Exception as spec_error:
+        try:
+            parse_yaml_raw_as(ServiceTemplateSpec, spec_text)
+        except Exception:
+            raise _SpecInputError(
+                headline="Invalid service definition.",
+                description=(
+                    "The input is not in the correct service definition format."
+                ),
+                validation_details=str(spec_error),
+            ) from spec_error
+
+        raise _SpecInputError(
+            headline="Invalid service definition.",
+            description="The input is not in the correct service definition format.",
+            validation_details=str(spec_error),
+            guidance_lines=(
+                "This command must be passed a service definition.",
+                "It looks like you passed a service template instead.",
+                f"Use `{wrong_type_command}` instead.",
+            ),
+        ) from spec_error
+
+
+def _load_command_template_input(
+    *,
+    file: Optional[str],
+    url: Optional[str],
+    wrong_type_command: str,
+) -> tuple[str, ServiceTemplateSpec]:
+    template_text = _load_yaml_text(file=file, url=url, name="service template")
+    try:
+        template_spec = parse_yaml_raw_as(ServiceTemplateSpec, template_text)
+    except Exception as template_error:
+        try:
+            parse_yaml_raw_as(ServiceSpec, template_text.encode("utf-8"))
+        except Exception:
+            raise _SpecInputError(
+                headline="Invalid service template.",
+                description="The input is not in the correct service template format.",
+                validation_details=str(template_error),
+            ) from template_error
+
+        raise _SpecInputError(
+            headline="Invalid service template.",
+            description="The input is not in the correct service template format.",
+            validation_details=str(template_error),
+            guidance_lines=(
+                "This command must be passed a service template.",
+                "It looks like you passed a service definition instead.",
+                f"Use `{wrong_type_command}` instead.",
+            ),
+        ) from template_error
+
+    return template_text, template_spec
+
+
 async def _load_spec_output(
     *,
     file: Optional[str],
@@ -666,12 +763,25 @@ async def service_create(
     ] = None,
 ):
     """Create a service attached to the project."""
-    client = await get_client()
+    client: Meshagent | None = None
     try:
-        project_id = await resolve_project_id(project_id)
-        spec = await _load_service_spec(file=file, url=url, mcp=mcp)
+        try:
+            if mcp is None:
+                spec = _load_command_service_spec(
+                    file=file,
+                    url=url,
+                    wrong_type_command="meshagent service create-template",
+                )
+            else:
+                spec = await _load_service_spec(file=file, url=url, mcp=mcp)
+        except _SpecInputError as exc:
+            _print_spec_input_error(exc)
+            raise typer.Exit(code=1)
         if service_id is not None:
             spec = _apply_service_id_annotation(model=spec, service_id=service_id)
+
+        client = await get_client()
+        project_id = await resolve_project_id(project_id)
 
         if spec.id is not None:
             print("[red]id cannot be set when creating a service[/red]")
@@ -695,7 +805,8 @@ async def service_create(
             print(f"[green]Created service:[/] {new_id}")
 
     finally:
-        await client.close()
+        if client is not None:
+            await client.close()
 
 
 @app.async_command("update")
@@ -741,14 +852,27 @@ async def service_update(
     ] = None,
 ):
     """Create a service attached to the project."""
-    client = await get_client()
+    client: Meshagent | None = None
     try:
-        project_id = await resolve_project_id(project_id)
-        spec = await _load_service_spec(file=file, url=url, mcp=mcp)
+        try:
+            if mcp is None:
+                spec = _load_command_service_spec(
+                    file=file,
+                    url=url,
+                    wrong_type_command="meshagent service update-template",
+                )
+            else:
+                spec = await _load_service_spec(file=file, url=url, mcp=mcp)
+        except _SpecInputError as exc:
+            _print_spec_input_error(exc)
+            raise typer.Exit(code=1)
         if service_id is not None:
             spec = _apply_service_id_annotation(model=spec, service_id=service_id)
         if spec.id is not None:
             id = spec.id
+
+        client = await get_client()
+        project_id = await resolve_project_id(project_id)
 
         try:
             if id is None:
@@ -800,7 +924,8 @@ async def service_update(
             print(f"[green]Updated service:[/] {id}")
 
     finally:
-        await client.close()
+        if client is not None:
+            await client.close()
 
 
 @app.async_command("validate")
@@ -851,14 +976,21 @@ async def service_create_template(
     ] = os.getenv("MESHAGENT_ROOM"),
 ):
     """Create a service from a ServiceTemplate spec."""
-    client = await get_client()
+    client: Meshagent | None = None
     try:
-        project_id = await resolve_project_id(project_id)
-
-        template_text = _load_yaml_text(file=file, url=url, name="service template")
-        template_spec = parse_yaml_raw_as(ServiceTemplateSpec, template_text)
+        try:
+            template_text, template_spec = _load_command_template_input(
+                file=file,
+                url=url,
+                wrong_type_command="meshagent service create",
+            )
+        except _SpecInputError as exc:
+            _print_spec_input_error(exc)
+            raise typer.Exit(code=1)
 
         template_values = _load_template_values(values, value)
+        client = await get_client()
+        project_id = await resolve_project_id(project_id)
 
         try:
             if room is None:
@@ -886,7 +1018,8 @@ async def service_create_template(
             print(f"[green]Created service:[/] {service_id}")
 
     finally:
-        await client.close()
+        if client is not None:
+            await client.close()
 
 
 @app.async_command("update-template")
@@ -925,14 +1058,21 @@ async def service_update_template(
     ] = os.getenv("MESHAGENT_ROOM"),
 ):
     """Update a service using a ServiceTemplate spec."""
-    client = await get_client()
+    client: Meshagent | None = None
     try:
-        project_id = await resolve_project_id(project_id)
-
-        template_text = _load_yaml_text(file=file, url=url, name="service template")
-        template_spec = parse_yaml_raw_as(ServiceTemplateSpec, template_text)
+        try:
+            template_text, template_spec = _load_command_template_input(
+                file=file,
+                url=url,
+                wrong_type_command="meshagent service update",
+            )
+        except _SpecInputError as exc:
+            _print_spec_input_error(exc)
+            raise typer.Exit(code=1)
 
         template_values = _load_template_values(values, value)
+        client = await get_client()
+        project_id = await resolve_project_id(project_id)
 
         try:
             if id is None:
@@ -996,7 +1136,8 @@ async def service_update_template(
             print(f"[green]Updated service:[/] {id}")
 
     finally:
-        await client.close()
+        if client is not None:
+            await client.close()
 
 
 @app.async_command("validate-template")
