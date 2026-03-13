@@ -1049,7 +1049,7 @@ async def chatbot_join(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.2-codex",
+    ] = "gpt-5.4-codex",
     threading_mode: ChatbotThreadingModeOption = "none",
     thread_dir: ChatbotThreadDirOption = None,
     command: Annotated[
@@ -1269,7 +1269,7 @@ async def task_runner_join(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.2-codex",
+    ] = "gpt-5.4-codex",
     title: Annotated[
         Optional[str], typer.Option(..., help="A friendly title for the task runner")
     ] = None,
@@ -1493,7 +1493,7 @@ async def chatbot_service(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.2-codex",
+    ] = "gpt-5.4-codex",
     threading_mode: ChatbotThreadingModeOption = "none",
     thread_dir: ChatbotThreadDirOption = None,
     command: Annotated[
@@ -1689,7 +1689,7 @@ async def chatbot_spec(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.2-codex",
+    ] = "gpt-5.4-codex",
     threading_mode: ChatbotThreadingModeOption = "none",
     thread_dir: ChatbotThreadDirOption = None,
     command: Annotated[
@@ -1901,7 +1901,7 @@ async def chatbot_deploy(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.2-codex",
+    ] = "gpt-5.4-codex",
     threading_mode: ChatbotThreadingModeOption = "none",
     thread_dir: ChatbotThreadDirOption = None,
     command: Annotated[
@@ -2138,7 +2138,7 @@ async def worker_join(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.2-codex",
+    ] = "gpt-5.4-codex",
     command: Annotated[
         Optional[str], typer.Option(..., help="Command used to launch codex app-server")
     ] = None,
@@ -2367,7 +2367,7 @@ async def worker_service(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.2-codex",
+    ] = "gpt-5.4-codex",
     command: Annotated[
         Optional[str], typer.Option(..., help="Command used to launch codex app-server")
     ] = None,
@@ -2573,7 +2573,7 @@ async def worker_spec(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.2-codex",
+    ] = "gpt-5.4-codex",
     command: Annotated[
         Optional[str], typer.Option(..., help="Command used to launch codex app-server")
     ] = None,
@@ -2802,7 +2802,7 @@ async def worker_deploy(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.2-codex",
+    ] = "gpt-5.4-codex",
     command: Annotated[
         Optional[str], typer.Option(..., help="Command used to launch codex app-server")
     ] = None,
@@ -3030,7 +3030,7 @@ async def chatbot_run(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.2-codex",
+    ] = "gpt-5.4-codex",
     threading_mode: ChatbotThreadingModeOption = "none",
     thread_dir: ChatbotThreadDirOption = None,
     command: Annotated[
@@ -3334,7 +3334,7 @@ async def task_runner_run(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.2-codex",
+    ] = "gpt-5.4-codex",
     title: Annotated[
         Optional[str], typer.Option(..., help="A friendly title for the task runner")
     ] = None,
@@ -3592,7 +3592,7 @@ async def task_runner_service(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.2-codex",
+    ] = "gpt-5.4-codex",
     command: Annotated[
         Optional[str], typer.Option(..., help="Command used to launch codex app-server")
     ] = None,
@@ -3787,7 +3787,7 @@ async def task_runner_spec(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.2-codex",
+    ] = "gpt-5.4-codex",
     command: Annotated[
         Optional[str], typer.Option(..., help="Command used to launch codex app-server")
     ] = None,
@@ -4005,7 +4005,7 @@ async def task_runner_deploy(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.2-codex",
+    ] = "gpt-5.4-codex",
     command: Annotated[
         Optional[str], typer.Option(..., help="Command used to launch codex app-server")
     ] = None,

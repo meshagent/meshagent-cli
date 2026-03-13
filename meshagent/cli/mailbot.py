@@ -590,7 +590,7 @@ async def join(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
-    ] = "gpt-5.2",
+    ] = "gpt-5.4",
     require_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
@@ -913,7 +913,7 @@ async def service(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
-    ] = "gpt-5.2",
+    ] = "gpt-5.4",
     require_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
@@ -1211,7 +1211,7 @@ async def spec(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
-    ] = "gpt-5.2",
+    ] = "gpt-5.4",
     require_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
@@ -1520,7 +1520,7 @@ async def deploy(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
-    ] = "gpt-5.2",
+    ] = "gpt-5.4",
     require_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),

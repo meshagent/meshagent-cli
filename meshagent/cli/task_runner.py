@@ -768,7 +768,7 @@ async def join(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the task runner")
-    ] = "gpt-5.2",
+    ] = "gpt-5.4",
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -1138,7 +1138,7 @@ async def run(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the task runner")
-    ] = "gpt-5.2",
+    ] = "gpt-5.4",
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -1538,7 +1538,7 @@ async def service(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the task runner")
-    ] = "gpt-5.2",
+    ] = "gpt-5.4",
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -1871,7 +1871,7 @@ async def spec(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the task runner")
-    ] = "gpt-5.2",
+    ] = "gpt-5.4",
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -2213,7 +2213,7 @@ async def deploy(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the task runner")
-    ] = "gpt-5.2",
+    ] = "gpt-5.4",
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
