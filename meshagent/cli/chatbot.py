@@ -1,9 +1,11 @@
 import typer
+import click
 from rich import print
-from typing import Annotated, Optional, List, Literal
+from typing import Annotated, Any, Optional, List, Literal, Awaitable, Callable
 from meshagent.tools import (
     Toolkit,
     ToolkitConfig,
+    ToolkitBuilder,
     WebFetchTool,
     WebFetchToolkitBuilder,
     ContainerShellTool,
@@ -11,6 +13,7 @@ from meshagent.tools import (
 )
 from meshagent.tools.storage import (
     StorageToolMount,
+    StorageToolkit,
     StorageToolkitConfig,
     StorageToolkitBuilder,
 )
@@ -21,6 +24,8 @@ from meshagent.tools.document_tools import (
     DocumentTypeAuthoringToolkit,
 )
 from meshagent.agents.config import RulesConfig
+from meshagent.agents.context import AgentSessionContext
+from meshagent.agents.skills import to_prompt
 from meshagent.agents.widget_schema import widget_schema
 
 from meshagent.cli.common_options import (
@@ -30,6 +35,7 @@ from meshagent.cli.common_options import (
     StartingUrlOption,
 )
 from meshagent.api import (
+    Participant,
     RoomClient,
     WebSocketClientProtocol,
     ParticipantToken,
@@ -106,12 +112,47 @@ import shlex
 import sys
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 
 from meshagent.api.client import ConflictError
 
 logger = logging.getLogger("chatbot")
+
+
+async def _await_cleanup(awaitable: Awaitable[Any]) -> Any:
+    task = asyncio.ensure_future(awaitable)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError as cancel_exc:
+        try:
+            return await task
+        except Exception:
+            raise
+        raise cancel_exc
+
+
+async def _run_agent_room_session(
+    *,
+    client: RoomClient,
+    bot: Any,
+    runner: Callable[[RoomClient], Awaitable[None]],
+) -> None:
+    client_entered = False
+    bot_started = False
+    try:
+        await client.__aenter__()
+        client_entered = True
+        await bot.start(room=client)
+        bot_started = True
+        await runner(client)
+    finally:
+        if bot_started:
+            await _await_cleanup(bot.stop())
+        if client_entered:
+            await _await_cleanup(client.__aexit__(None, None, None))
+
 
 app = async_typer.AsyncTyper(help="Join a chatbot to a room")
 
@@ -177,6 +218,147 @@ ThreadDirOption = Annotated[
     ),
 ]
 
+ChannelOption = Annotated[
+    list[str],
+    typer.Option(
+        "--channel",
+        help=(
+            "Attach a channel to the agent process. "
+            "Can be repeated. Currently supported: chat, mail:EMAIL_ADDRESS, "
+            "queue:QUEUE_NAME, toolkit:NAME."
+        ),
+    ),
+]
+
+
+@dataclass(frozen=True, slots=True)
+class _MailChannelConfig:
+    queue_name: str
+    email_address: str
+
+
+@dataclass(frozen=True, slots=True)
+class _QueueChannelConfig:
+    queue_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ToolkitChannelConfig:
+    toolkit_name: str
+
+
+def _current_command_runtime() -> Literal["chatbot", "process"]:
+    context = click.get_current_context(silent=True)
+    while context is not None:
+        info_name = context.info_name
+        if info_name == "chatbot":
+            return "chatbot"
+        if info_name == "process":
+            return "process"
+        context = context.parent
+    return "chatbot"
+
+
+def _resolved_channels(
+    *,
+    runtime: Literal["chatbot", "process"],
+    channel: Optional[list[str]],
+    require_chat: bool = False,
+) -> list[str]:
+    normalized_channels: list[str] = []
+    seen_channels: set[str] = set()
+    for item in channel or []:
+        normalized = item.strip()
+        if normalized == "":
+            continue
+        if normalized.casefold() == "chat":
+            if "chat" not in seen_channels:
+                seen_channels.add("chat")
+                normalized_channels.append("chat")
+            continue
+
+        if normalized[:5].casefold() == "mail:":
+            mail_config = _parse_mail_channel(channel=normalized)
+            channel_key = f"mail:{mail_config.email_address.casefold()}"
+            if channel_key not in seen_channels:
+                seen_channels.add(channel_key)
+                normalized_channels.append(
+                    f"mail:{mail_config.email_address}",
+                )
+            continue
+
+        if normalized[:6].casefold() == "queue:":
+            queue_config = _parse_queue_channel(channel=normalized)
+            channel_key = f"queue:{queue_config.queue_name}"
+            if channel_key not in seen_channels:
+                seen_channels.add(channel_key)
+                normalized_channels.append(channel_key)
+            continue
+
+        if normalized[:8].casefold() == "toolkit:":
+            toolkit_config = _parse_toolkit_channel(channel=normalized)
+            channel_key = f"toolkit:{toolkit_config.toolkit_name}"
+            if channel_key not in seen_channels:
+                seen_channels.add(channel_key)
+                normalized_channels.append(channel_key)
+            continue
+
+        raise typer.BadParameter(f"unsupported channel: {item}")
+
+    if runtime == "chatbot":
+        return ["chat"]
+
+    if require_chat and "chat" not in normalized_channels:
+        raise typer.BadParameter("--channel=chat is required for this command")
+
+    return normalized_channels
+
+
+def _parse_mail_channel(*, channel: str) -> _MailChannelConfig:
+    if channel[:5].casefold() != "mail:":
+        raise typer.BadParameter(f"unsupported mail channel: {channel}")
+
+    address = channel[5:].strip()
+    if address == "":
+        raise typer.BadParameter(
+            "mail channels must be passed as --channel=mail:mailbox@example.com"
+        )
+
+    return _MailChannelConfig(
+        queue_name=address,
+        email_address=address,
+    )
+
+
+def _parse_queue_channel(*, channel: str) -> _QueueChannelConfig:
+    if channel[:6].casefold() != "queue:":
+        raise typer.BadParameter(f"unsupported queue channel: {channel}")
+
+    queue_name = channel[6:].strip()
+    if queue_name == "":
+        raise typer.BadParameter(
+            "queue channels must be passed as --channel=queue:QUEUE_NAME"
+        )
+
+    return _QueueChannelConfig(queue_name=queue_name)
+
+
+def _parse_toolkit_channel(*, channel: str) -> _ToolkitChannelConfig:
+    if channel[:8].casefold() != "toolkit:":
+        raise typer.BadParameter(f"unsupported toolkit channel: {channel}")
+
+    toolkit_name = channel[8:].strip()
+    if toolkit_name == "":
+        raise typer.BadParameter(
+            "toolkit channels must be passed as --channel=toolkit:NAME"
+        )
+
+    return _ToolkitChannelConfig(toolkit_name=toolkit_name)
+
+
+def _has_chat_channel(*, channels: list[str]) -> bool:
+    return "chat" in channels
+
 
 def _normalized_thread_dir(*, thread_dir: Optional[str]) -> Optional[str]:
     if thread_dir is None:
@@ -205,6 +387,45 @@ def _chatbot_agent_annotations(
         )
 
     return annotations
+
+
+def _process_agent_annotations(
+    *,
+    threading_mode: ThreadingMode,
+    thread_dir: Optional[str],
+    channel: list[str],
+) -> dict[str, str]:
+    if not _has_chat_channel(channels=channel):
+        return {}
+    return _chatbot_agent_annotations(
+        threading_mode=threading_mode,
+        thread_dir=thread_dir,
+    )
+
+
+def _agent_annotations_for_runtime(
+    *,
+    runtime: Literal["chatbot", "process"],
+    threading_mode: ThreadingMode,
+    thread_dir: Optional[str],
+    channel: list[str],
+) -> dict[str, str]:
+    if runtime == "process":
+        return _process_agent_annotations(
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
+            channel=channel,
+        )
+    return _chatbot_agent_annotations(
+        threading_mode=threading_mode,
+        thread_dir=thread_dir,
+    )
+
+
+def _builder_for_runtime(runtime: Literal["chatbot", "process"]):
+    if runtime == "process":
+        return build_process_agent
+    return build_chatbot
 
 
 def _copy_shell_env_vars(*, copy_env: Optional[list[str]]) -> dict[str, str]:
@@ -329,7 +550,9 @@ def build_chatbot(
     delegate_shell_token: Optional[bool] = None,
     shell_copy_env: Optional[list[str]] = None,
     shell_set_env: Optional[list[str]] = None,
+    channels: Optional[list[str]] = None,
 ):
+    del channels
     from meshagent.agents.chat import ChatBot
 
     from meshagent.tools.storage import StorageToolkit
@@ -739,6 +962,742 @@ def build_chatbot(
     return CustomChatbot
 
 
+def build_process_agent(
+    *,
+    model: str,
+    rule: List[str],
+    toolkit: List[str],
+    schema: List[str],
+    image_generation: Optional[str] = None,
+    local_shell: Optional[str] = None,
+    shell: Optional[str] = None,
+    apply_patch: Optional[str] = None,
+    computer_use: Optional[str] = None,
+    web_search: Optional[str] = None,
+    web_fetch: Optional[str] = None,
+    script_tool: Optional[bool] = None,
+    discover_script_tools: Optional[bool] = None,
+    mcp: Optional[str] = None,
+    storage: Optional[str] = None,
+    storage_tool_mounts: Optional[list[StorageToolMount]] = None,
+    shell_tool_mounts: Optional[ContainerMountSpec] = None,
+    require_image_generation: Optional[str] = None,
+    require_local_shell: Optional[str] = None,
+    require_shell: Optional[bool] = None,
+    require_apply_patch: Optional[str] = None,
+    require_computer_use: Optional[str] = None,
+    starting_url: Optional[str] = None,
+    allow_goto_url: bool = False,
+    require_web_search: Optional[str] = None,
+    require_web_fetch: Optional[str] = None,
+    require_mcp: Optional[str] = None,
+    require_storage: Optional[str] = None,
+    require_table_read: list[str] = None,
+    require_table_write: list[str] = None,
+    require_read_only_storage: Optional[str] = None,
+    require_time: bool = True,
+    require_uuid: bool = False,
+    use_memory: Optional[str] = None,
+    memory_model: Optional[str] = None,
+    rules_file: Optional[list[str]] = None,
+    room_rules_path: Optional[list[str]] = None,
+    require_discovery: Optional[str] = None,
+    require_document_authoring: Optional[str] = None,
+    working_dir: Optional[str] = None,
+    llm_participant: Optional[str] = None,
+    database_namespace: Optional[list[str]] = None,
+    always_reply: Optional[bool] = None,
+    thread_dir: Optional[str] = None,
+    skill_dirs: Optional[list[str]] = None,
+    threading_mode: ThreadingMode = "none",
+    shell_image: Optional[str] = None,
+    log_llm_requests: Optional[bool] = None,
+    delegate_shell_token: Optional[bool] = None,
+    shell_copy_env: Optional[list[str]] = None,
+    shell_set_env: Optional[list[str]] = None,
+    channels: Optional[list[str]] = None,
+):
+    from meshagent.agents import (
+        AgentProcessThreadAdapter,
+        ChatChannel,
+        MailChannel,
+        QueueChannel,
+        SingleRoomAgent,
+        ToolkitChannel,
+    )
+    from meshagent.agents.messages import AgentMessage, TurnStart, TurnSteer
+    from meshagent.agents.process import AgentSupervisor, LLMAgentProcess, Message
+    from meshagent.tools import RemoteToolkit, ToolContext, make_toolkits
+
+    requirements = []
+    toolkits = []
+
+    for t in toolkit:
+        requirements.append(RequiredToolkit(name=t))
+
+    for t in schema:
+        requirements.append(RequiredSchema(name=t))
+
+    client_rules = {}
+
+    if rules_file is not None:
+        for rules_path in rules_file:
+            try:
+                logger.info(f"loading rules from {rules_path}")
+                with open(Path(os.path.expanduser(rules_path)).resolve(), "r") as f:
+                    rules_config = RulesConfig.parse(f.read())
+                    if rules_config.rules is not None:
+                        rule.extend(rules_config.rules)
+                    if rules_config.client_rules is not None:
+                        client_rules.update(rules_config.client_rules)
+
+            except FileNotFoundError:
+                print(f"[yellow]rules file not found at {rules_path}[/yellow]")
+
+    is_claude_model = model.startswith("claude-")
+    is_openai = not is_claude_model
+    supports_openai_tools = llm_participant is None and not is_claude_model
+    base_shell_env = _copy_shell_env_vars(copy_env=shell_copy_env)
+    base_shell_env.update(_set_shell_env_vars(set_env=shell_set_env))
+    if not supports_openai_tools:
+        if image_generation or require_image_generation:
+            print("[red]image generation tool is only supported by openai models[/red]")
+            raise typer.Exit(1)
+        if local_shell or require_local_shell:
+            print("[red]local shell tool is only supported by openai models[/red]")
+            raise typer.Exit(1)
+        if apply_patch or require_apply_patch:
+            print("[red]apply patch tool is only supported by openai models[/red]")
+            raise typer.Exit(1)
+        if computer_use or require_computer_use:
+            print(
+                "[red]computer use tool is currently only supported by openai models[/red]"
+            )
+            raise typer.Exit(1)
+
+    memory_selection: Optional[tuple[str, Optional[list[str]]]] = None
+    if use_memory is not None:
+        memory_selection = parse_memory_selector(use_memory)
+
+    if llm_participant:
+        llm_adapter = MessageStreamLLMAdapter(
+            participant_name=llm_participant,
+        )
+    else:
+        if computer_use or require_computer_use:
+            llm_adapter = OpenAIResponsesAdapter(
+                model=model,
+                response_options={
+                    "reasoning": {"summary": "concise"},
+                },
+                log_requests=log_llm_requests,
+            )
+        else:
+            if is_claude_model:
+                llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
+                    model=model,
+                    log_requests=log_llm_requests,
+                )
+            else:
+                llm_adapter = OpenAIResponsesAdapter(
+                    model=model,
+                    log_requests=log_llm_requests,
+                )
+
+    resolved_channels = _resolved_channels(
+        runtime="process",
+        channel=channels,
+    )
+
+    class CustomProcessAgent(SingleRoomAgent):
+        def __init__(self) -> None:
+            super().__init__(requires=requirements)
+            self._skill_dirs = skill_dirs
+            self._client_rules = client_rules if len(client_rules) > 0 else None
+            self._supervisor: AgentSupervisor | None = None
+            self._exposed_toolkits = []
+            self._chat_channel: ChatChannel | None = None
+            self._mail_channels: list[MailChannel] = []
+            self._queue_channels: list[QueueChannel] = []
+            self._toolkit_channels: list[ToolkitChannel] = []
+            self._shell_tool: ShellTool | ContainerShellTool | None = None
+            self._resolved_threading_mode: str | None = None
+            if threading_mode != "none":
+                self._resolved_threading_mode = threading_mode
+
+        async def get_exposed_toolkits(self) -> list[RemoteToolkit]:
+            exposed_toolkits = await super().get_exposed_toolkits()
+            channels = []
+            if self._chat_channel is not None:
+                channels.append(self._chat_channel)
+            channels.extend(self._mail_channels)
+            channels.extend(self._queue_channels)
+            channels.extend(self._toolkit_channels)
+            for channel in channels:
+                if channel.state != "started":
+                    continue
+                exposed_toolkits.extend(channel.get_exposed_toolkits())
+            return exposed_toolkits
+
+        async def start(self, *, room: RoomClient) -> None:
+            if self._room is not None:
+                raise RoomException("agent is already started")
+
+            self._room = room
+            if _has_chat_channel(channels=resolved_channels):
+                self._chat_channel = ChatChannel(
+                    room=room,
+                    threading_mode=self._resolved_threading_mode,
+                    thread_dir=thread_dir,
+                    toolkit_builders=self.get_toolkit_builders(),
+                )
+            self._mail_channels = []
+            for channel_spec in resolved_channels:
+                if channel_spec[:5].casefold() != "mail:":
+                    continue
+                mail_config = _parse_mail_channel(channel=channel_spec)
+                self._mail_channels.append(
+                    MailChannel(
+                        room=room,
+                        queue_name=mail_config.queue_name,
+                        email_address=mail_config.email_address,
+                        thread_dir=thread_dir,
+                    )
+                )
+            self._queue_channels = []
+            for channel_spec in resolved_channels:
+                if channel_spec[:6].casefold() != "queue:":
+                    continue
+                queue_config = _parse_queue_channel(channel=channel_spec)
+                self._queue_channels.append(
+                    QueueChannel(
+                        room=room,
+                        queue_name=queue_config.queue_name,
+                        thread_dir=thread_dir,
+                    )
+                )
+            self._toolkit_channels = []
+            for channel_spec in resolved_channels:
+                if channel_spec[:8].casefold() != "toolkit:":
+                    continue
+                toolkit_config = _parse_toolkit_channel(channel=channel_spec)
+                self._toolkit_channels.append(
+                    ToolkitChannel(
+                        room=room,
+                        toolkit_name=toolkit_config.toolkit_name,
+                        thread_dir=thread_dir,
+                        toolkit_builders=self.get_toolkit_builders(),
+                    )
+                )
+            started_remote_toolkits: list[RemoteToolkit] = []
+            supervisor: AgentSupervisor | None = None
+
+            try:
+                await self.install_requirements()
+
+                env = dict(base_shell_env)
+                if delegate_shell_token:
+                    env["MESHAGENT_TOKEN"] = self.room.protocol.token
+                    env["OPENAI_API_KEY"] = self.room.protocol.token
+                    env["ANTHROPIC_API_KEY"] = self.room.protocol.token
+
+                if require_shell:
+                    if is_openai:
+                        shell_kwargs = {
+                            "working_dir": working_dir,
+                            "config": ShellConfig(name="shell"),
+                            "image": shell_image or "python:3.13",
+                            "env": env,
+                        }
+                        if shell_tool_mounts is not None:
+                            shell_kwargs["mounts"] = shell_tool_mounts
+                        self._shell_tool = ShellTool(**shell_kwargs)
+                    else:
+                        shell_kwargs = {
+                            "image": shell_image or "python:3.13",
+                            "name": "shell",
+                            "env": env,
+                        }
+                        if shell_tool_mounts is not None:
+                            shell_kwargs["mounts"] = shell_tool_mounts
+                        self._shell_tool = ContainerShellTool(**shell_kwargs)
+
+                if room_rules_path is not None:
+                    for room_rules_file in room_rules_path:
+                        await self._load_room_rules(path=room_rules_file)
+
+                supervisor = _ProcessSupervisor(agent=self)
+                if self._chat_channel is not None:
+                    supervisor.add_channel(self._chat_channel)
+                for mail_channel in self._mail_channels:
+                    supervisor.add_channel(mail_channel)
+                for queue_channel in self._queue_channels:
+                    supervisor.add_channel(queue_channel)
+                for toolkit_channel in self._toolkit_channels:
+                    supervisor.add_channel(toolkit_channel)
+                await supervisor.start()
+                self._supervisor = supervisor
+
+                self._exposed_toolkits = await self.get_exposed_toolkits()
+                for toolkit in self._exposed_toolkits:
+                    await toolkit.start(room=room)
+                    started_remote_toolkits.append(toolkit)
+            except Exception:
+                for toolkit in reversed(started_remote_toolkits):
+                    await toolkit.stop()
+                self._exposed_toolkits = []
+                if supervisor is not None:
+                    await supervisor.stop()
+                self._supervisor = None
+                self._chat_channel = None
+                self._mail_channels = []
+                self._queue_channels = []
+                self._toolkit_channels = []
+                self._room = None
+                raise
+
+        async def stop(self) -> None:
+            supervisor = self._supervisor
+            self._supervisor = None
+            if supervisor is not None:
+                await supervisor.stop()
+            self._chat_channel = None
+            self._mail_channels = []
+            self._queue_channels = []
+            self._toolkit_channels = []
+            await super().stop()
+
+        async def init_session(self) -> AgentSessionContext:
+            from meshagent.cli.helper import init_context_from_spec
+
+            context = llm_adapter.create_session()
+            await init_context_from_spec(context)
+            return context
+
+        async def _load_room_rules(
+            self,
+            *,
+            path: str,
+            participant: Optional[Participant] = None,
+        ) -> list[str]:
+            rules: list[str] = []
+            try:
+                room_rules = await self.room.storage.download(path=path)
+
+                rules_txt = room_rules.data.decode()
+                rules_config = RulesConfig.parse(rules_txt)
+
+                if rules_config.rules is not None:
+                    rules.extend(rules_config.rules)
+
+                if participant is not None:
+                    client = participant.get_attribute("client")
+                    if rules_config.client_rules is not None and client is not None:
+                        selected_rules = rules_config.client_rules.get(client)
+                        if selected_rules is not None:
+                            rules.extend(selected_rules)
+            except RoomException:
+                try:
+                    logger.info("attempting to initialize rules file")
+                    await upload_room_bytes_stream(
+                        room=self.room,
+                        path=path,
+                        data="# Add rules to this file to customize your agent's behavior, lines starting with # will be ignored.\n\n".encode(),
+                        overwrite=False,
+                    )
+                except RoomException:
+                    pass
+                logger.info(
+                    f"unable to load rules from {path}, continuing with default rules"
+                )
+
+            return rules
+
+        async def get_rules(self, *, participant: Optional[Participant]) -> list[str]:
+            rules = [*rule]
+
+            if self._skill_dirs is not None and len(self._skill_dirs) > 0:
+                rules.append(
+                    "You have access to to following skills which follow the agentskills spec:"
+                )
+                rules.append(await to_prompt([*(Path(p) for p in self._skill_dirs)]))
+                rules.append(
+                    "Use the shell or storage tool to find out more about skills and execute them when they are required"
+                )
+
+            if participant is not None:
+                client = participant.get_attribute("client")
+                if self._client_rules is not None and client is not None:
+                    selected_rules = self._client_rules.get(client)
+                    if selected_rules is not None:
+                        rules.extend(selected_rules)
+
+            if room_rules_path is not None:
+                for room_rules_file in room_rules_path:
+                    rules.extend(
+                        await self._load_room_rules(
+                            path=room_rules_file,
+                            participant=participant,
+                        )
+                    )
+
+            rules.append("based on the previous transcript, take your turn and respond")
+            return rules
+
+        def get_toolkit_builders(self) -> list[ToolkitBuilder]:
+            providers = []
+
+            if image_generation:
+                providers.append(ImageGenerationToolkitBuilder())
+
+            if apply_patch:
+                providers.append(ApplyPatchToolkitBuilder())
+
+            if local_shell:
+                providers.append(
+                    LocalShellToolkitBuilder(
+                        working_dir=working_dir,
+                    )
+                )
+
+            if shell:
+                shell_builder_kwargs = {
+                    "working_dir": working_dir,
+                    "image": shell_image,
+                    "env": base_shell_env or None,
+                }
+                if shell_tool_mounts is not None:
+                    shell_builder_kwargs["mounts"] = shell_tool_mounts
+                providers.append(ShellToolkitBuilder(**shell_builder_kwargs))
+
+            if mcp:
+                providers.append(MCPToolkitBuilder())
+
+            if web_search:
+                if is_claude_model:
+                    providers.append(AnthropicWebSearchToolkitBuilder())
+                else:
+                    providers.append(WebSearchToolkitBuilder())
+
+            if web_fetch:
+                if is_claude_model:
+                    providers.append(AnthropicWebFetchToolkitBuilder())
+                else:
+                    providers.append(WebFetchToolkitBuilder())
+
+            if script_tool:
+                providers.append(ScriptToolkitBuilder())
+
+            if storage:
+                providers.append(StorageToolkitBuilder(mounts=storage_tool_mounts))
+
+            return providers
+
+        async def get_process_turn_toolkits(
+            self,
+            *,
+            process: "_CustomLLMAgentProcess",
+            sender: Participant | None,
+            model: str,
+            turns: list[TurnStart | TurnSteer],
+        ) -> list[Toolkit]:
+            providers = []
+            extra_toolkits: list[Toolkit] = []
+
+            if discover_script_tools:
+                providers.extend(await get_script_tools(self.room))
+
+            if require_image_generation:
+                providers.append(
+                    ImageGenerationTool(
+                        config=ImageGenerationConfig(
+                            name="image_generation",
+                            partial_images=3,
+                        ),
+                    )
+                )
+
+            if require_local_shell:
+                providers.append(
+                    LocalShellTool(
+                        working_dir=working_dir,
+                        config=LocalShellConfig(name="local_shell"),
+                    )
+                )
+
+            if require_apply_patch:
+                providers.append(
+                    ApplyPatchTool(
+                        config=ApplyPatchConfig(name="apply_patch"),
+                    )
+                )
+
+            if self._shell_tool is not None:
+                providers.append(self._shell_tool)
+
+            if require_mcp:
+                raise Exception(
+                    "mcp tool cannot be required by cli currently, use 'optional' instead"
+                )
+
+            if require_web_search:
+                if is_claude_model:
+                    providers.append(AnthropicWebSearchTool())
+                else:
+                    providers.append(
+                        WebSearchTool(config=WebSearchConfig(name="web_search"))
+                    )
+
+            if require_web_fetch:
+                if is_claude_model:
+                    providers.append(AnthropicWebFetchTool())
+                else:
+                    providers.append(WebFetchTool())
+
+            if require_storage:
+                providers.extend(StorageToolkit(mounts=storage_tool_mounts).tools)
+
+            if len(require_table_read) > 0:
+                providers.extend(
+                    (
+                        await DatabaseToolkitBuilder().make(
+                            room=self.room,
+                            model=model,
+                            config=DatabaseToolkitConfig(
+                                tables=require_table_read,
+                                read_only=True,
+                                namespace=database_namespace,
+                            ),
+                        )
+                    ).tools
+                )
+
+            if require_time:
+                providers.extend(DatetimeToolkit().tools)
+
+            if require_uuid:
+                providers.extend(UUIDToolkit().tools)
+
+            if memory_selection is not None:
+                memory_name, memory_namespace = memory_selection
+                providers.extend(
+                    MemoriesToolkit(
+                        memory_name=memory_name,
+                        namespace=memory_namespace,
+                        llm_model=memory_model,
+                    ).tools
+                )
+
+            if len(require_table_write) > 0:
+                providers.extend(
+                    (
+                        await DatabaseToolkitBuilder().make(
+                            room=self.room,
+                            model=model,
+                            config=DatabaseToolkitConfig(
+                                tables=require_table_write,
+                                read_only=False,
+                                namespace=database_namespace,
+                            ),
+                        )
+                    ).tools
+                )
+
+            if require_read_only_storage:
+                providers.extend(
+                    StorageToolkit(read_only=True, mounts=storage_tool_mounts).tools
+                )
+
+            if require_document_authoring:
+                providers.extend(DocumentAuthoringToolkit().tools)
+                providers.extend(
+                    DocumentTypeAuthoringToolkit(
+                        schema=widget_schema,
+                        document_type="widget",
+                    ).tools
+                )
+
+            if require_discovery:
+                from meshagent.tools.discovery import DiscoveryToolkit
+
+                providers.extend(DiscoveryToolkit().tools)
+
+            if require_computer_use:
+                from meshagent.computers.agent import ComputerToolkit
+
+                computer_toolkit = ComputerToolkit(
+                    room=self.room,
+                    thread_path=process.thread_id,
+                    thread_adapter=process.thread_adapter,
+                    starting_url=starting_url,
+                    include_goto_tool=allow_goto_url,
+                )
+                extra_toolkits.append(computer_toolkit)
+
+            def handle_tool_event(event: dict) -> None:
+                thread_adapter = process.thread_adapter
+                if thread_adapter is not None:
+                    thread_adapter.push(event=event)
+
+            caller_context: dict[str, Any] | None = {
+                "thread_id": process.thread_id,
+            }
+            if process.session_context is not None:
+                caller_context["chat"] = process.session_context.to_json()
+
+            required_toolkits = await self.get_required_toolkits(
+                context=ToolContext(
+                    room=self.room,
+                    caller=self.room.local_participant,
+                    on_behalf_of=sender,
+                    caller_context=caller_context,
+                    event_handler=handle_tool_event,
+                )
+            )
+
+            requested_toolkits: list[dict[str, Any]] = []
+            for turn in turns:
+                if turn.toolkits is not None and len(turn.toolkits) > 0:
+                    requested_toolkits.extend(turn.toolkits)
+
+            optional_toolkits = await make_toolkits(
+                room=self.room,
+                model=model,
+                providers=self.get_toolkit_builders(),
+                tools=requested_toolkits,
+            )
+
+            combined_toolkits: list[Toolkit] = [*toolkits]
+            if len(providers) > 0:
+                combined_toolkits.append(Toolkit(name="tools", tools=providers))
+            combined_toolkits.extend(required_toolkits)
+            combined_toolkits.extend(extra_toolkits)
+            if process.supervisor is not None:
+                for channel in process.supervisor.channels:
+                    if channel.state != "started":
+                        continue
+                    combined_toolkits.extend(channel.get_agent_toolkits())
+            if process.thread_adapter is not None:
+                combined_toolkits.append(process.thread_adapter.make_toolkit())
+            combined_toolkits.extend(optional_toolkits)
+            return combined_toolkits
+
+    class _CustomLLMAgentProcess(LLMAgentProcess):
+        def __init__(
+            self,
+            *,
+            agent: CustomProcessAgent,
+            thread_id: str,
+            thread_adapter: AgentProcessThreadAdapter,
+        ) -> None:
+            super().__init__(
+                thread_id=thread_id,
+                room=agent.room,
+                llm_adapter=llm_adapter,
+                toolkit_builders=agent.get_toolkit_builders(),
+                toolkits=[*toolkits],
+                thread_adapter=thread_adapter,
+            )
+            self._agent = agent
+
+        async def on_session_context_created(self) -> None:
+            session_context = self.session_context
+            if session_context is None:
+                return
+
+            initialized_context = await self._agent.init_session()
+            session_context.messages.extend(initialized_context.messages)
+            session_context.previous_messages.extend(
+                initialized_context.previous_messages
+            )
+            session_context.previous_response_id = (
+                initialized_context.previous_response_id
+            )
+            session_context.instructions = initialized_context.instructions
+
+        async def on_turn_start(self, message: Message) -> None:
+            turn = (
+                message.data
+                if isinstance(message.data, TurnStart)
+                else TurnStart.model_validate(message.data.model_dump(mode="python"))
+            )
+            instructions = turn.instructions
+            if instructions is None:
+                rules = await self._agent.get_rules(participant=message.sender)
+                if len(rules) > 0:
+                    instructions = "\n".join(rules)
+
+            await super().on_turn_start(
+                Message(
+                    data=turn.model_copy(update={"instructions": instructions}),
+                    sender=message.sender,
+                    source=message.source,
+                )
+            )
+
+        async def _execute_turn_batch(
+            self,
+            *,
+            queued_messages,
+            session: AgentSessionContext,
+            model: str,
+        ) -> None:
+            turns = [queued_message.request for queued_message in queued_messages]
+            sender = self._sender_for_turn_batch(queued_messages=queued_messages)
+            self._record_applied_turns(queued_messages=queued_messages)
+            await self._append_turn_content(session=session, turns=turns)
+            self._emit_turn_steered_events(queued_messages=queued_messages)
+            combined_toolkits = await self._agent.get_process_turn_toolkits(
+                process=self,
+                sender=sender,
+                model=model,
+                turns=turns,
+            )
+            turn_id = self.turn_id
+            thread_id = self.thread_id
+            if turn_id is None or thread_id is None:
+                raise RuntimeError("turn publisher requested without an active turn")
+
+            def publish_event(message: AgentMessage) -> None:
+                self.emit(sender=sender, payload=message)
+
+            handle_event = self.llm_adapter.make_agent_event_publisher(
+                turn_id=turn_id,
+                thread_id=thread_id,
+                callback=publish_event,
+            )
+
+            self._active_turn_sender = sender
+            try:
+                await self.llm_adapter.next(
+                    context=session,
+                    toolkits=combined_toolkits,
+                    room=self.room,
+                    event_handler=handle_event,
+                    model=model,
+                    on_behalf_of=sender,
+                )
+            finally:
+                self._active_turn_sender = None
+
+    class _ProcessSupervisor(AgentSupervisor):
+        def __init__(self, *, agent: CustomProcessAgent) -> None:
+            super().__init__()
+            self._agent = agent
+
+        def create_thread_process(self, thread_id: str) -> LLMAgentProcess:
+            return _CustomLLMAgentProcess(
+                agent=self._agent,
+                thread_id=thread_id,
+                thread_adapter=AgentProcessThreadAdapter(
+                    room=self._agent.room,
+                    path=thread_id,
+                ),
+            )
+
+    return CustomProcessAgent
+
+
 @app.async_command("join", help="Join a room and run a chatbot agent.")
 async def join(
     *,
@@ -978,6 +1937,7 @@ async def join(
     ] = None,
     threading_mode: ThreadingModeOption = "none",
     thread_dir: ThreadDirOption = None,
+    channel: ChannelOption = [],
     skill_dir: Annotated[
         list[str],
         typer.Option(..., help="an agent skills directory"),
@@ -997,6 +1957,8 @@ async def join(
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
 ):
+    runtime = _current_command_runtime()
+    resolved_channels = _resolved_channels(runtime=runtime, channel=channel)
     working_dir = _resolve_working_dir_option(
         working_dir=working_dir,
         working_directory=working_directory,
@@ -1046,7 +2008,8 @@ async def join(
             image_paths=shell_image_mount,
         )
 
-        CustomChatbot = build_chatbot(
+        builder = _builder_for_runtime(runtime)
+        CustomChatbot = builder(
             computer_use=computer_use,
             require_computer_use=require_computer_use,
             starting_url=starting_url,
@@ -1098,6 +2061,7 @@ async def join(
             shell_copy_env=shell_copy_env,
             shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
+            channels=resolved_channels,
         )
 
         bot = CustomChatbot()
@@ -1107,22 +2071,30 @@ async def join(
 
             agents.append((bot, jwt))
         else:
-            async with RoomClient(
+            client = RoomClient(
                 protocol=WebSocketClientProtocol(
                     url=websocket_room_url(room_name=room),
                     token=jwt,
                 )
-            ) as client:
-                await bot.start(room=client)
-                try:
-                    print(
-                        f"[bold green]Open the studio to interact with your agent: {meshagent_base_url().replace('api.', 'studio.')}/projects/{project_id}/rooms/{client.room_name}[/bold green]",
-                        flush=True,
-                    )
-                    await client.protocol.wait_for_close()
+            )
 
-                except KeyboardInterrupt:
-                    await bot.stop()
+            async def run_join_session(client: RoomClient) -> None:
+                print(
+                    f"[bold green]Open the studio to interact with your agent: {meshagent_base_url().replace('api.', 'studio.')}/projects/{project_id}/rooms/{client.room_name}[/bold green]",
+                    flush=True,
+                )
+                await client.protocol.wait_for_close()
+
+            try:
+                await _run_agent_room_session(
+                    client=client,
+                    bot=bot,
+                    runner=run_join_session,
+                )
+            except KeyboardInterrupt:
+                return
+            except asyncio.CancelledError:
+                return
     finally:
         await account_client.close()
 
@@ -1349,6 +2321,7 @@ async def service(
     ] = None,
     threading_mode: ThreadingModeOption = "none",
     thread_dir: ThreadDirOption = None,
+    channel: ChannelOption = [],
     skill_dir: Annotated[
         list[str],
         typer.Option(..., help="an agent skills directory"),
@@ -1368,6 +2341,8 @@ async def service(
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
 ):
+    runtime = _current_command_runtime()
+    resolved_channels = _resolved_channels(runtime=runtime, channel=channel)
     working_dir = _resolve_working_dir_option(
         working_dir=working_dir,
         working_directory=working_directory,
@@ -1396,17 +2371,20 @@ async def service(
     service.agents.append(
         AgentSpec(
             name=agent_name,
-            annotations=_chatbot_agent_annotations(
+            annotations=_agent_annotations_for_runtime(
+                runtime=runtime,
                 threading_mode=threading_mode,
                 thread_dir=thread_dir,
+                channel=resolved_channels,
             ),
         )
     )
 
+    builder = _builder_for_runtime(runtime)
     service.add_path(
         identity=agent_name,
         path=path,
-        cls=build_chatbot(
+        cls=builder(
             computer_use=computer_use,
             require_computer_use=require_computer_use,
             starting_url=starting_url,
@@ -1458,6 +2436,7 @@ async def service(
             shell_copy_env=shell_copy_env,
             shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
+            channels=resolved_channels,
         ),
     )
 
@@ -1681,6 +2660,7 @@ async def spec(
     ] = None,
     threading_mode: ThreadingModeOption = "none",
     thread_dir: ThreadDirOption = None,
+    channel: ChannelOption = [],
     skill_dir: Annotated[
         list[str],
         typer.Option(..., help="an agent skills directory"),
@@ -1700,6 +2680,8 @@ async def spec(
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
 ):
+    runtime = _current_command_runtime()
+    resolved_channels = _resolved_channels(runtime=runtime, channel=channel)
     resolved_service_name = service_name if service_name is not None else agent_name
     working_dir = _resolve_working_dir_option(
         working_dir=working_dir,
@@ -1727,17 +2709,20 @@ async def spec(
     service.agents.append(
         AgentSpec(
             name=agent_name,
-            annotations=_chatbot_agent_annotations(
+            annotations=_agent_annotations_for_runtime(
+                runtime=runtime,
                 threading_mode=threading_mode,
                 thread_dir=thread_dir,
+                channel=resolved_channels,
             ),
         )
     )
 
+    builder = _builder_for_runtime(runtime)
     service.add_path(
         identity=agent_name,
         path=path,
-        cls=build_chatbot(
+        cls=builder(
             computer_use=computer_use,
             require_computer_use=require_computer_use,
             starting_url=starting_url,
@@ -1789,6 +2774,7 @@ async def spec(
             shell_copy_env=shell_copy_env,
             shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
+            channels=resolved_channels,
         ),
     )
 
@@ -1804,7 +2790,7 @@ async def spec(
     spec.container.command = shlex.join(
         [
             "meshagent",
-            "chatbot",
+            runtime,
             "join",
             *cleanup_args_strip_options(
                 cleanup_args(sys.argv[2:]),
@@ -2032,6 +3018,7 @@ async def deploy(
     ] = None,
     threading_mode: ThreadingModeOption = "none",
     thread_dir: ThreadDirOption = None,
+    channel: ChannelOption = [],
     skill_dir: Annotated[
         list[str],
         typer.Option(..., help="an agent skills directory"),
@@ -2056,6 +3043,8 @@ async def deploy(
         typer.Option("--room", help="The name of a room to create the service for"),
     ] = os.getenv("MESHAGENT_ROOM"),
 ):
+    runtime = _current_command_runtime()
+    resolved_channels = _resolved_channels(runtime=runtime, channel=channel)
     resolved_service_name = service_name if service_name is not None else agent_name
     working_dir = _resolve_working_dir_option(
         working_dir=working_dir,
@@ -2085,17 +3074,20 @@ async def deploy(
     service.agents.append(
         AgentSpec(
             name=agent_name,
-            annotations=_chatbot_agent_annotations(
+            annotations=_agent_annotations_for_runtime(
+                runtime=runtime,
                 threading_mode=threading_mode,
                 thread_dir=thread_dir,
+                channel=resolved_channels,
             ),
         )
     )
 
+    builder = _builder_for_runtime(runtime)
     service.add_path(
         identity=agent_name,
         path=path,
-        cls=build_chatbot(
+        cls=builder(
             computer_use=computer_use,
             require_computer_use=require_computer_use,
             starting_url=starting_url,
@@ -2147,6 +3139,7 @@ async def deploy(
             shell_copy_env=shell_copy_env,
             shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
+            channels=resolved_channels,
         ),
     )
 
@@ -2163,7 +3156,7 @@ async def deploy(
     spec.container.command = shlex.join(
         [
             "meshagent",
-            "chatbot",
+            runtime,
             "join",
             *cleanup_args_strip_options(
                 cleanup_args(sys.argv[2:]),
@@ -3892,6 +4885,7 @@ async def run(
     ] = None,
     threading_mode: ThreadingModeOption = "none",
     thread_dir: ThreadDirOption = None,
+    channel: ChannelOption = [],
     skill_dir: Annotated[
         list[str],
         typer.Option(..., help="an agent skills directory"),
@@ -3938,6 +4932,12 @@ async def run(
         typer.Option(..., help="request the storage tool"),
     ] = None,
 ):
+    runtime = _current_command_runtime()
+    resolved_channels = _resolved_channels(
+        runtime=runtime,
+        channel=channel,
+        require_chat=runtime == "process",
+    )
     working_dir = _resolve_working_dir_option(
         working_dir=working_dir,
         working_directory=working_directory,
@@ -3983,71 +4983,72 @@ async def run(
             project_paths=shell_tool_project_path,
         )
 
-        async with RoomClient(
+        client = RoomClient(
             protocol=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=jwt,
             )
-        ) as client:
-            CustomChatbot = build_chatbot(
-                computer_use=computer_use,
-                require_computer_use=require_computer_use,
-                starting_url=starting_url,
-                allow_goto_url=allow_goto_url,
-                model=model,
-                rule=rule,
-                toolkit=require_toolkit + toolkit,
-                schema=require_schema + schema,
-                rules_file=rules_file,
-                local_shell=local_shell,
-                shell=shell,
-                apply_patch=apply_patch,
-                image_generation=image_generation,
-                web_search=web_search,
-                web_fetch=web_fetch,
-                script_tool=script_tool,
-                discover_script_tools=discover_script_tools,
-                mcp=mcp,
-                storage=storage,
-                storage_tool_mounts=storage_tool_mounts,
-                shell_tool_mounts=shell_tool_mounts,
-                require_apply_patch=require_apply_patch,
-                require_web_search=require_web_search,
-                require_web_fetch=require_web_fetch,
-                require_local_shell=require_local_shell,
-                require_shell=require_shell,
-                require_image_generation=require_image_generation,
-                require_mcp=require_mcp,
-                require_storage=require_storage,
-                require_table_read=require_table_read,
-                require_table_write=require_table_write,
-                require_read_only_storage=require_read_only_storage,
-                require_time=require_time,
-                require_uuid=require_uuid,
-                use_memory=use_memory,
-                memory_model=memory_model,
-                room_rules_path=room_rules,
-                require_document_authoring=require_document_authoring,
-                require_discovery=require_discovery,
-                working_dir=working_dir,
-                llm_participant=llm_participant,
-                always_reply=always_reply,
-                threading_mode=threading_mode,
-                thread_dir=thread_dir,
-                database_namespace=database_namespace,
-                skill_dirs=skill_dir,
-                shell_image=shell_image,
-                delegate_shell_token=delegate_shell_token,
-                shell_copy_env=shell_copy_env,
-                shell_set_env=shell_set_env,
-                log_llm_requests=log_llm_requests,
-            )
+        )
+        builder = _builder_for_runtime(runtime)
+        CustomChatbot = builder(
+            computer_use=computer_use,
+            require_computer_use=require_computer_use,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
+            model=model,
+            rule=rule,
+            toolkit=require_toolkit + toolkit,
+            schema=require_schema + schema,
+            rules_file=rules_file,
+            local_shell=local_shell,
+            shell=shell,
+            apply_patch=apply_patch,
+            image_generation=image_generation,
+            web_search=web_search,
+            web_fetch=web_fetch,
+            script_tool=script_tool,
+            discover_script_tools=discover_script_tools,
+            mcp=mcp,
+            storage=storage,
+            storage_tool_mounts=storage_tool_mounts,
+            shell_tool_mounts=shell_tool_mounts,
+            require_apply_patch=require_apply_patch,
+            require_web_search=require_web_search,
+            require_web_fetch=require_web_fetch,
+            require_local_shell=require_local_shell,
+            require_shell=require_shell,
+            require_image_generation=require_image_generation,
+            require_mcp=require_mcp,
+            require_storage=require_storage,
+            require_table_read=require_table_read,
+            require_table_write=require_table_write,
+            require_read_only_storage=require_read_only_storage,
+            require_time=require_time,
+            require_uuid=require_uuid,
+            use_memory=use_memory,
+            memory_model=memory_model,
+            room_rules_path=room_rules,
+            require_document_authoring=require_document_authoring,
+            require_discovery=require_discovery,
+            working_dir=working_dir,
+            llm_participant=llm_participant,
+            always_reply=always_reply,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
+            database_namespace=database_namespace,
+            skill_dirs=skill_dir,
+            shell_image=shell_image,
+            delegate_shell_token=delegate_shell_token,
+            shell_copy_env=shell_copy_env,
+            shell_set_env=shell_set_env,
+            log_llm_requests=log_llm_requests,
+            channels=resolved_channels,
+        )
 
-            bot = CustomChatbot()
+        bot = CustomChatbot()
 
-            await bot.start(room=client)
-
-            _, pending = await asyncio.wait(
+        async def run_interactive_session(client: RoomClient) -> None:
+            done, pending = await asyncio.wait(
                 [
                     asyncio.create_task(client.protocol.wait_for_close()),
                     asyncio.create_task(
@@ -4068,8 +5069,20 @@ async def run(
                 return_when="FIRST_COMPLETED",
             )
 
-            for t in pending:
-                t.cancel()
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            for task in done:
+                task.result()
+
+        try:
+            await _run_agent_room_session(
+                client=client,
+                bot=bot,
+                runner=run_interactive_session,
+            )
+        except KeyboardInterrupt:
+            return
 
     except asyncio.CancelledError:
         return
