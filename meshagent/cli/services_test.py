@@ -1,8 +1,161 @@
 import pytest
 import typer
 import json
+import pathlib
 
 from meshagent.cli import services
+
+
+_SERVICE_YAML = """\
+version: v1
+kind: Service
+metadata:
+  name: demo
+ports: []
+container:
+  image: busybox
+"""
+
+_SERVICE_TEMPLATE_YAML = """\
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: demo
+ports: []
+container:
+  image: busybox
+"""
+
+_INVALID_SERVICE_YAML = """\
+version: v1
+kind: Service
+ports: []
+"""
+
+_INVALID_SERVICE_TEMPLATE_YAML = """\
+version: v1
+kind: ServiceTemplate
+ports: []
+"""
+
+
+class _UnusedServicesClient:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+    async def create_service(self, *, project_id, service):
+        del project_id, service
+        raise AssertionError("create_service should not be called")
+
+    async def create_room_service(self, *, project_id, service, room_name):
+        del project_id, service, room_name
+        raise AssertionError("create_room_service should not be called")
+
+    async def update_service(self, *, project_id, service_id, service):
+        del project_id, service_id, service
+        raise AssertionError("update_service should not be called")
+
+    async def update_room_service(self, *, project_id, service_id, service, room_name):
+        del project_id, service_id, service, room_name
+        raise AssertionError("update_room_service should not be called")
+
+    async def list_services(self, *, project_id):
+        del project_id
+        raise AssertionError("list_services should not be called")
+
+    async def list_room_services(self, *, project_id, room_name):
+        del project_id, room_name
+        raise AssertionError("list_room_services should not be called")
+
+    async def create_service_from_template(self, *, project_id, template, values):
+        del project_id, template, values
+        raise AssertionError("create_service_from_template should not be called")
+
+    async def create_room_service_from_template(
+        self, *, project_id, template, values, room_name
+    ):
+        del project_id, template, values, room_name
+        raise AssertionError("create_room_service_from_template should not be called")
+
+    async def update_service_from_template(
+        self, *, project_id, service_id, template, values
+    ):
+        del project_id, service_id, template, values
+        raise AssertionError("update_service_from_template should not be called")
+
+    async def update_room_service_from_template(
+        self, *, project_id, service_id, template, values, room_name
+    ):
+        del project_id, service_id, template, values, room_name
+        raise AssertionError("update_room_service_from_template should not be called")
+
+
+def _write_yaml(tmp_path: pathlib.Path, name: str, contents: str) -> pathlib.Path:
+    path = tmp_path / name
+    path.write_text(contents, encoding="utf-8")
+    return path
+
+
+def _capture_prints(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    printed: list[str] = []
+
+    def _fake_print(*args, **kwargs) -> None:
+        del kwargs
+        printed.append(" ".join(str(arg) for arg in args))
+
+    monkeypatch.setattr(services, "print", _fake_print)
+    return printed
+
+
+def _assert_spec_input_error_output(
+    printed: list[str],
+    *,
+    headline: str,
+    description: str,
+    detail_fragment: str,
+    guidance_lines: tuple[str, ...] = (),
+) -> None:
+    expected = [
+        f"[red]{headline}[/red]",
+        "",
+        description,
+        "",
+    ]
+    expected.append(f"Validation details: {detail_fragment}")
+    if guidance_lines:
+        expected.append("")
+        expected.extend(guidance_lines)
+
+    assert printed[0] == expected[0]
+    assert printed[1] == expected[1]
+    assert printed[2] == expected[2]
+    assert printed[3] == expected[3]
+    assert printed[4].startswith("Validation details:")
+    assert detail_fragment in printed[4]
+    if guidance_lines:
+        assert printed[5:] == expected[5:]
+    else:
+        assert len(printed) == 5
+
+
+def _patch_service_command_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> _UnusedServicesClient:
+    client = _UnusedServicesClient()
+
+    async def _fake_get_client():
+        return client
+
+    async def _fake_resolve_project_id(project_id):
+        del project_id
+        return "project-1"
+
+    monkeypatch.setattr(services, "get_client", _fake_get_client)
+    monkeypatch.setattr(services, "resolve_project_id", _fake_resolve_project_id)
+    return client
 
 
 def test_ensure_single_source_accepts_one_source() -> None:
@@ -350,3 +503,183 @@ async def test_load_spec_output_mcp_template_format(
 
     assert isinstance(model, services.ServiceTemplateSpec)
     assert model.kind == "ServiceTemplate"
+
+
+@pytest.mark.asyncio
+async def test_service_create_template_rejects_service_spec_with_friendly_error(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_yaml(tmp_path, "service.yaml", _SERVICE_YAML)
+    printed = _capture_prints(monkeypatch)
+    client = _patch_service_command_runtime(monkeypatch)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        await services.service_create_template(
+            project_id=None,
+            file=str(spec_path),
+            room=None,
+        )
+
+    assert exc_info.value.exit_code == 1
+    assert client.closed is False
+    _assert_spec_input_error_output(
+        printed,
+        headline="Invalid service template.",
+        description="The input is not in the correct service template format.",
+        detail_fragment="kind",
+        guidance_lines=(
+            "This command must be passed a service template.",
+            "It looks like you passed a service definition instead.",
+            "Use `meshagent service create` instead.",
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_service_update_template_rejects_service_spec_with_friendly_error(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_yaml(tmp_path, "service.yaml", _SERVICE_YAML)
+    printed = _capture_prints(monkeypatch)
+    client = _patch_service_command_runtime(monkeypatch)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        await services.service_update_template(
+            project_id=None,
+            file=str(spec_path),
+            room=None,
+        )
+
+    assert exc_info.value.exit_code == 1
+    assert client.closed is False
+    _assert_spec_input_error_output(
+        printed,
+        headline="Invalid service template.",
+        description="The input is not in the correct service template format.",
+        detail_fragment="kind",
+        guidance_lines=(
+            "This command must be passed a service template.",
+            "It looks like you passed a service definition instead.",
+            "Use `meshagent service update` instead.",
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_service_create_rejects_service_template_with_friendly_error(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_yaml(tmp_path, "template.yaml", _SERVICE_TEMPLATE_YAML)
+    printed = _capture_prints(monkeypatch)
+    client = _patch_service_command_runtime(monkeypatch)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        await services.service_create(
+            project_id=None,
+            file=str(spec_path),
+            room=None,
+        )
+
+    assert exc_info.value.exit_code == 1
+    assert client.closed is False
+    _assert_spec_input_error_output(
+        printed,
+        headline="Invalid service definition.",
+        description="The input is not in the correct service definition format.",
+        detail_fragment="kind",
+        guidance_lines=(
+            "This command must be passed a service definition.",
+            "It looks like you passed a service template instead.",
+            "Use `meshagent service create-template` instead.",
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_service_update_rejects_service_template_with_friendly_error(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_yaml(tmp_path, "template.yaml", _SERVICE_TEMPLATE_YAML)
+    printed = _capture_prints(monkeypatch)
+    client = _patch_service_command_runtime(monkeypatch)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        await services.service_update(
+            project_id=None,
+            file=str(spec_path),
+            room=None,
+        )
+
+    assert exc_info.value.exit_code == 1
+    assert client.closed is False
+    _assert_spec_input_error_output(
+        printed,
+        headline="Invalid service definition.",
+        description="The input is not in the correct service definition format.",
+        detail_fragment="kind",
+        guidance_lines=(
+            "This command must be passed a service definition.",
+            "It looks like you passed a service template instead.",
+            "Use `meshagent service update-template` instead.",
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_service_create_prints_friendly_validation_error_for_invalid_spec(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_yaml(tmp_path, "invalid-service.yaml", _INVALID_SERVICE_YAML)
+    printed = _capture_prints(monkeypatch)
+    client = _patch_service_command_runtime(monkeypatch)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        await services.service_create(
+            project_id=None,
+            file=str(spec_path),
+            room=None,
+        )
+
+    assert exc_info.value.exit_code == 1
+    assert client.closed is False
+    _assert_spec_input_error_output(
+        printed,
+        headline="Invalid service definition.",
+        description="The input is not in the correct service definition format.",
+        detail_fragment="metadata",
+    )
+
+
+@pytest.mark.asyncio
+async def test_service_create_template_prints_friendly_validation_error_for_invalid_template(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_yaml(
+        tmp_path,
+        "invalid-template.yaml",
+        _INVALID_SERVICE_TEMPLATE_YAML,
+    )
+    printed = _capture_prints(monkeypatch)
+    client = _patch_service_command_runtime(monkeypatch)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        await services.service_create_template(
+            project_id=None,
+            file=str(spec_path),
+            room=None,
+        )
+
+    assert exc_info.value.exit_code == 1
+    assert client.closed is False
+    _assert_spec_input_error_output(
+        printed,
+        headline="Invalid service template.",
+        description="The input is not in the correct service template format.",
+        detail_fragment="metadata",
+    )
