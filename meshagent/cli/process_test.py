@@ -272,6 +272,52 @@ async def test_process_turn_toolkits_keep_computer_toolkit_top_level(
 
 
 @pytest.mark.asyncio
+async def test_process_turn_toolkits_preserve_required_toolkit_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_cls = chatbot.build_process_agent(
+        model="gpt-5.4",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_storage=True,
+        require_time=True,
+        require_uuid=True,
+        require_table_read=[],
+        require_table_write=[],
+    )
+    agent = agent_cls()
+    agent._room = _FakeProcessRoom()
+
+    async def _fake_get_required_toolkits(*, context):
+        del context
+        return []
+
+    monkeypatch.setattr(agent, "get_required_toolkits", _fake_get_required_toolkits)
+
+    combined_toolkits = await agent.get_process_turn_toolkits(
+        process=_FakeProcessState(),
+        sender=None,
+        model="gpt-5.4",
+        turns=[
+            TurnStart(
+                type="meshagent.agent.turn.start",
+                thread_id="threads/example",
+                content=[AgentTextContent(type="text", text="hello")],
+            )
+        ],
+    )
+
+    toolkit_names = [
+        toolkit.name for toolkit in combined_toolkits if isinstance(toolkit, Toolkit)
+    ]
+    assert "storage" in toolkit_names
+    assert "datetime" in toolkit_names
+    assert "uuid" in toolkit_names
+    assert "tools" not in toolkit_names
+
+
+@pytest.mark.asyncio
 async def test_process_turn_toolkits_include_thread_id_in_caller_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

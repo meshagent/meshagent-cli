@@ -761,38 +761,48 @@ def build_chatbot(
             return rules
 
         async def get_thread_toolkits(self, *, thread_context, participant):
-            providers = []
+            required_toolkits: list[Toolkit] = []
+
+            def add_toolkit(toolkit: Toolkit) -> None:
+                required_toolkits.append(toolkit)
+
+            def add_tool(*, toolkit_name: str, tool) -> None:
+                add_toolkit(Toolkit(name=toolkit_name, tools=[tool]))
 
             if discover_script_tools:
-                providers.extend(await get_script_tools(self.room))
+                for script_tool in await get_script_tools(self.room):
+                    add_tool(toolkit_name="script", tool=script_tool)
 
             if require_image_generation:
-                providers.append(
-                    ImageGenerationTool(
+                add_tool(
+                    toolkit_name="image_generation",
+                    tool=ImageGenerationTool(
                         config=ImageGenerationConfig(
                             name="image_generation",
                             partial_images=3,
                         ),
-                    )
+                    ),
                 )
 
             if require_local_shell:
-                providers.append(
-                    LocalShellTool(
+                add_tool(
+                    toolkit_name="local_shell",
+                    tool=LocalShellTool(
                         working_dir=working_dir,
                         config=LocalShellConfig(name="local_shell"),
-                    )
+                    ),
                 )
 
             if require_apply_patch:
-                providers.append(
-                    ApplyPatchTool(
+                add_tool(
+                    toolkit_name="apply_patch",
+                    tool=ApplyPatchTool(
                         config=ApplyPatchConfig(name="apply_patch"),
-                    )
+                    ),
                 )
 
             if self.shell_tool is not None:
-                providers.append(self.shell_tool)
+                add_tool(toolkit_name=self.shell_tool.name, tool=self.shell_tool)
             if require_mcp:
                 raise Exception(
                     "mcp tool cannot be required by cli currently, use 'optional' instead"
@@ -800,84 +810,85 @@ def build_chatbot(
 
             if require_web_search:
                 if is_claude_model:
-                    providers.append(AnthropicWebSearchTool())
+                    add_tool(
+                        toolkit_name="web_search",
+                        tool=AnthropicWebSearchTool(),
+                    )
                 else:
-                    providers.append(
-                        WebSearchTool(config=WebSearchConfig(name="web_search"))
+                    add_tool(
+                        toolkit_name="web_search",
+                        tool=WebSearchTool(config=WebSearchConfig(name="web_search")),
                     )
 
             if require_web_fetch:
                 if is_claude_model:
-                    providers.append(AnthropicWebFetchTool())
+                    add_tool(
+                        toolkit_name="web_fetch",
+                        tool=AnthropicWebFetchTool(),
+                    )
                 else:
-                    providers.append(WebFetchTool())
+                    add_tool(toolkit_name="web_fetch", tool=WebFetchTool())
 
             if require_storage:
-                providers.extend(StorageToolkit(mounts=storage_tool_mounts).tools)
+                add_toolkit(StorageToolkit(mounts=storage_tool_mounts))
 
             if len(require_table_read) > 0:
-                providers.extend(
-                    (
-                        await DatabaseToolkitBuilder().make(
-                            room=self.room,
-                            model=model,
-                            config=DatabaseToolkitConfig(
-                                tables=require_table_read,
-                                read_only=True,
-                                namespace=database_namespace,
-                            ),
-                        )
-                    ).tools
+                add_toolkit(
+                    await DatabaseToolkitBuilder().make(
+                        room=self.room,
+                        model=model,
+                        config=DatabaseToolkitConfig(
+                            tables=require_table_read,
+                            read_only=True,
+                            namespace=database_namespace,
+                        ),
+                    )
                 )
 
             if require_time:
-                providers.extend((DatetimeToolkit()).tools)
+                add_toolkit(DatetimeToolkit())
 
             if require_uuid:
-                providers.extend((UUIDToolkit()).tools)
+                add_toolkit(UUIDToolkit())
 
             if memory_selection is not None:
                 memory_name, memory_namespace = memory_selection
-                providers.extend(
+                add_toolkit(
                     MemoriesToolkit(
                         memory_name=memory_name,
                         namespace=memory_namespace,
                         llm_model=memory_model,
-                    ).tools
+                    )
                 )
 
             if len(require_table_write) > 0:
-                providers.extend(
-                    (
-                        await DatabaseToolkitBuilder().make(
-                            room=self.room,
-                            model=model,
-                            config=DatabaseToolkitConfig(
-                                tables=require_table_write,
-                                read_only=False,
-                                namespace=database_namespace,
-                            ),
-                        )
-                    ).tools
+                add_toolkit(
+                    await DatabaseToolkitBuilder().make(
+                        room=self.room,
+                        model=model,
+                        config=DatabaseToolkitConfig(
+                            tables=require_table_write,
+                            read_only=False,
+                            namespace=database_namespace,
+                        ),
+                    )
                 )
 
             if require_read_only_storage:
-                providers.extend(
-                    StorageToolkit(read_only=True, mounts=storage_tool_mounts).tools
-                )
+                add_toolkit(StorageToolkit(read_only=True, mounts=storage_tool_mounts))
 
             if require_document_authoring:
-                providers.extend(DocumentAuthoringToolkit().tools)
-                providers.extend(
+                add_toolkit(DocumentAuthoringToolkit())
+                add_toolkit(
                     DocumentTypeAuthoringToolkit(
                         schema=widget_schema, document_type="widget"
-                    ).tools
+                    )
                 )
 
             if require_discovery:
                 from meshagent.tools.discovery import DiscoveryToolkit
 
-                providers.extend(DiscoveryToolkit().tools)
+                add_toolkit(DiscoveryToolkit())
 
             tk = await super().get_thread_toolkits(
                 thread_context=thread_context, participant=participant
@@ -901,14 +912,7 @@ def build_chatbot(
 
                 tk.append(computer_toolkit)
 
-            return [
-                *(
-                    [Toolkit(name="tools", tools=providers)]
-                    if len(providers) > 0
-                    else []
-                ),
-                *tk,
-            ]
+            return [*required_toolkits, *tk]
 
         def get_toolkit_builders(self):
             providers = []
@@ -1401,39 +1405,49 @@ def build_process_agent(
             model: str,
             turns: list[TurnStart | TurnSteer],
         ) -> list[Toolkit]:
-            providers = []
+            built_required_toolkits: list[Toolkit] = []
             extra_toolkits: list[Toolkit] = []
 
+            def add_toolkit(toolkit: Toolkit) -> None:
+                built_required_toolkits.append(toolkit)
+
+            def add_tool(*, toolkit_name: str, tool) -> None:
+                add_toolkit(Toolkit(name=toolkit_name, tools=[tool]))
+
             if discover_script_tools:
-                providers.extend(await get_script_tools(self.room))
+                for script_tool in await get_script_tools(self.room):
+                    add_tool(toolkit_name="script", tool=script_tool)
 
             if require_image_generation:
-                providers.append(
-                    ImageGenerationTool(
+                add_tool(
+                    toolkit_name="image_generation",
+                    tool=ImageGenerationTool(
                         config=ImageGenerationConfig(
                             name="image_generation",
                             partial_images=3,
                         ),
-                    )
+                    ),
                 )
 
             if require_local_shell:
-                providers.append(
-                    LocalShellTool(
+                add_tool(
+                    toolkit_name="local_shell",
+                    tool=LocalShellTool(
                         working_dir=working_dir,
                         config=LocalShellConfig(name="local_shell"),
-                    )
+                    ),
                 )
 
             if require_apply_patch:
-                providers.append(
-                    ApplyPatchTool(
+                add_tool(
+                    toolkit_name="apply_patch",
+                    tool=ApplyPatchTool(
                         config=ApplyPatchConfig(name="apply_patch"),
-                    )
+                    ),
                 )
 
             if self._shell_tool is not None:
-                providers.append(self._shell_tool)
+                add_tool(toolkit_name=self._shell_tool.name, tool=self._shell_tool)
 
             if require_mcp:
                 raise Exception(
@@ -1442,85 +1456,86 @@ def build_process_agent(
 
             if require_web_search:
                 if is_claude_model:
-                    providers.append(AnthropicWebSearchTool())
+                    add_tool(
+                        toolkit_name="web_search",
+                        tool=AnthropicWebSearchTool(),
+                    )
                 else:
-                    providers.append(
-                        WebSearchTool(config=WebSearchConfig(name="web_search"))
+                    add_tool(
+                        toolkit_name="web_search",
+                        tool=WebSearchTool(config=WebSearchConfig(name="web_search")),
                     )
 
             if require_web_fetch:
                 if is_claude_model:
-                    providers.append(AnthropicWebFetchTool())
+                    add_tool(
+                        toolkit_name="web_fetch",
+                        tool=AnthropicWebFetchTool(),
+                    )
                 else:
-                    providers.append(WebFetchTool())
+                    add_tool(toolkit_name="web_fetch", tool=WebFetchTool())
 
             if require_storage:
-                providers.extend(StorageToolkit(mounts=storage_tool_mounts).tools)
+                add_toolkit(StorageToolkit(mounts=storage_tool_mounts))
 
             if len(require_table_read) > 0:
-                providers.extend(
-                    (
-                        await DatabaseToolkitBuilder().make(
-                            room=self.room,
-                            model=model,
-                            config=DatabaseToolkitConfig(
-                                tables=require_table_read,
-                                read_only=True,
-                                namespace=database_namespace,
-                            ),
-                        )
-                    ).tools
+                add_toolkit(
+                    await DatabaseToolkitBuilder().make(
+                        room=self.room,
+                        model=model,
+                        config=DatabaseToolkitConfig(
+                            tables=require_table_read,
+                            read_only=True,
+                            namespace=database_namespace,
+                        ),
+                    )
                 )
 
             if require_time:
-                providers.extend(DatetimeToolkit().tools)
+                add_toolkit(DatetimeToolkit())
 
             if require_uuid:
-                providers.extend(UUIDToolkit().tools)
+                add_toolkit(UUIDToolkit())
 
             if memory_selection is not None:
                 memory_name, memory_namespace = memory_selection
-                providers.extend(
+                add_toolkit(
                     MemoriesToolkit(
                         memory_name=memory_name,
                         namespace=memory_namespace,
                         llm_model=memory_model,
-                    ).tools
+                    )
                 )
 
             if len(require_table_write) > 0:
-                providers.extend(
-                    (
-                        await DatabaseToolkitBuilder().make(
-                            room=self.room,
-                            model=model,
-                            config=DatabaseToolkitConfig(
-                                tables=require_table_write,
-                                read_only=False,
-                                namespace=database_namespace,
-                            ),
-                        )
-                    ).tools
+                add_toolkit(
+                    await DatabaseToolkitBuilder().make(
+                        room=self.room,
+                        model=model,
+                        config=DatabaseToolkitConfig(
+                            tables=require_table_write,
+                            read_only=False,
+                            namespace=database_namespace,
+                        ),
+                    )
                 )
 
             if require_read_only_storage:
-                providers.extend(
-                    StorageToolkit(read_only=True, mounts=storage_tool_mounts).tools
-                )
+                add_toolkit(StorageToolkit(read_only=True, mounts=storage_tool_mounts))
 
             if require_document_authoring:
-                providers.extend(DocumentAuthoringToolkit().tools)
-                providers.extend(
+                add_toolkit(DocumentAuthoringToolkit())
+                add_toolkit(
                     DocumentTypeAuthoringToolkit(
                         schema=widget_schema,
                         document_type="widget",
-                    ).tools
+                    )
                 )
 
             if require_discovery:
                 from meshagent.tools.discovery import DiscoveryToolkit
 
-                providers.extend(DiscoveryToolkit().tools)
+                add_toolkit(DiscoveryToolkit())
 
             if require_computer_use:
                 from meshagent.computers.agent import ComputerToolkit
@@ -1568,8 +1583,7 @@ def build_process_agent(
             )
 
             combined_toolkits: list[Toolkit] = [*toolkits]
-            if len(providers) > 0:
-                combined_toolkits.append(Toolkit(name="tools", tools=providers))
+            combined_toolkits.extend(built_required_toolkits)
             combined_toolkits.extend(required_toolkits)
             combined_toolkits.extend(extra_toolkits)
             if process.supervisor is not None:
