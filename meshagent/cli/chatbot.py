@@ -1029,8 +1029,8 @@ def build_process_agent(
         SingleRoomAgent,
         ToolkitChannel,
     )
-    from meshagent.agents.messages import AgentMessage, TurnStart, TurnSteer
-    from meshagent.agents.process import AgentSupervisor, LLMAgentProcess, Message
+    from meshagent.agents.messages import TurnStart, TurnSteer
+    from meshagent.agents.process import AgentSupervisor, LLMAgentProcess
     from meshagent.tools import RemoteToolkit, ToolContext, make_toolkits
 
     requirements = []
@@ -1400,7 +1400,7 @@ def build_process_agent(
         async def get_process_turn_toolkits(
             self,
             *,
-            process: "_CustomLLMAgentProcess",
+            process: LLMAgentProcess,
             sender: Participant | None,
             model: str,
             turns: list[TurnStart | TurnSteer],
@@ -1596,118 +1596,43 @@ def build_process_agent(
             combined_toolkits.extend(optional_toolkits)
             return combined_toolkits
 
-    class _CustomLLMAgentProcess(LLMAgentProcess):
-        def __init__(
-            self,
-            *,
-            agent: CustomProcessAgent,
-            thread_id: str,
-            thread_adapter: AgentProcessThreadAdapter,
-        ) -> None:
-            super().__init__(
-                thread_id=thread_id,
-                room=agent.room,
-                llm_adapter=llm_adapter,
-                toolkit_builders=agent.get_toolkit_builders(),
-                toolkits=[*toolkits],
-                thread_adapter=thread_adapter,
-            )
-            self._agent = agent
-
-        async def on_session_context_created(self) -> None:
-            session_context = self.session_context
-            if session_context is None:
-                return
-
-            initialized_context = await self._agent.init_session()
-            session_context.messages.extend(initialized_context.messages)
-            session_context.previous_messages.extend(
-                initialized_context.previous_messages
-            )
-            session_context.previous_response_id = (
-                initialized_context.previous_response_id
-            )
-            session_context.instructions = initialized_context.instructions
-
-        async def on_turn_start(self, message: Message) -> None:
-            turn = (
-                message.data
-                if isinstance(message.data, TurnStart)
-                else TurnStart.model_validate(message.data.model_dump(mode="python"))
-            )
-            instructions = turn.instructions
-            if instructions is None:
-                rules = await self._agent.get_rules(participant=message.sender)
-                if len(rules) > 0:
-                    instructions = "\n".join(rules)
-
-            await super().on_turn_start(
-                Message(
-                    data=turn.model_copy(update={"instructions": instructions}),
-                    sender=message.sender,
-                    source=message.source,
-                )
-            )
-
-        async def _execute_turn_batch(
-            self,
-            *,
-            queued_messages,
-            session: AgentSessionContext,
-            model: str,
-        ) -> None:
-            turns = [queued_message.request for queued_message in queued_messages]
-            sender = self._sender_for_turn_batch(queued_messages=queued_messages)
-            self._record_applied_turns(queued_messages=queued_messages)
-            await self._append_turn_content(session=session, turns=turns)
-            self._emit_turn_steered_events(queued_messages=queued_messages)
-            combined_toolkits = await self._agent.get_process_turn_toolkits(
-                process=self,
-                sender=sender,
-                model=model,
-                turns=turns,
-            )
-            turn_id = self.turn_id
-            thread_id = self.thread_id
-            if turn_id is None or thread_id is None:
-                raise RuntimeError("turn publisher requested without an active turn")
-
-            def publish_event(message: AgentMessage) -> None:
-                self.emit(sender=sender, payload=message)
-
-            handle_event = self.llm_adapter.make_agent_event_publisher(
-                turn_id=turn_id,
-                thread_id=thread_id,
-                callback=publish_event,
-            )
-
-            self._active_turn_sender = sender
-            try:
-                await self.llm_adapter.next(
-                    context=session,
-                    toolkits=combined_toolkits,
-                    room=self.room,
-                    event_handler=handle_event,
-                    model=model,
-                    on_behalf_of=sender,
-                )
-            finally:
-                self._active_turn_sender = None
-
     class _ProcessSupervisor(AgentSupervisor):
         def __init__(self, *, agent: CustomProcessAgent) -> None:
             super().__init__()
             self._agent = agent
 
         def create_thread_process(self, thread_id: str) -> LLMAgentProcess:
-            return _CustomLLMAgentProcess(
-                agent=self._agent,
+            async def _turn_instructions_provider(
+                participant: Participant | None,
+            ) -> str | None:
+                rules = await self._agent.get_rules(participant=participant)
+                if len(rules) == 0:
+                    return None
+
+                return "\n".join(rules)
+
+            process = LLMAgentProcess(
                 thread_id=thread_id,
+                room=self._agent.room,
+                llm_adapter=llm_adapter,
+                toolkit_builders=self._agent.get_toolkit_builders(),
+                toolkits=[*toolkits],
                 thread_adapter=AgentProcessThreadAdapter(
                     room=self._agent.room,
                     path=thread_id,
                 ),
+                session_initializer=self._agent.init_session,
+                turn_instructions_provider=_turn_instructions_provider,
+                turn_toolkits_builder=lambda sender, model, turns: (
+                    self._agent.get_process_turn_toolkits(
+                        process=process,
+                        sender=sender,
+                        model=model,
+                        turns=turns,
+                    )
+                ),
             )
+            return process
 
     return CustomProcessAgent
 

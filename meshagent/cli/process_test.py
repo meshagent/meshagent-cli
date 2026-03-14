@@ -4,7 +4,15 @@ import click
 import pytest
 from typer.main import get_command
 
-from meshagent.agents.messages import AgentTextContent, TurnStart
+from meshagent.agents.context import AgentSessionContext
+from meshagent.agents.messages import (
+    AGENT_MESSAGE_TURN_START,
+    AGENT_MESSAGE_TURN_STEER,
+    AgentTextContent,
+    TurnStart,
+    TurnSteer,
+)
+from meshagent.agents.process import Message
 from meshagent.api.specs.service import ContainerSpec, ServiceMetadata, ServiceSpec
 from meshagent.cli import chatbot
 from meshagent.cli import cli as root_cli
@@ -223,6 +231,110 @@ class _FakeProcessState:
         self.session_context = None
 
 
+class _FakeProcessProtocol:
+    token = "token"
+
+
+class _FakeProcessRoomClient:
+    def __init__(self) -> None:
+        self.local_participant = _FakeParticipant()
+        self.protocol = _FakeProcessProtocol()
+
+
+class _FakeProcessThreadAdapter:
+    def __init__(self, *, room, path: str) -> None:
+        del room
+        self.path = path
+
+    async def start(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+    async def set_pending_messages(self, *, pending_messages: list[dict]) -> None:
+        del pending_messages
+
+    async def set_thread_turn_id(self, *, turn_id: str | None) -> None:
+        del turn_id
+
+    def push_message(self, *, message, sender=None) -> None:
+        del message
+        del sender
+
+    def restore_session_context(self, *, context) -> None:
+        del context
+
+    def make_toolkit(self):
+        return Toolkit(name="thread", tools=[])
+
+
+class _SteeringRecordingAdapter:
+    def __init__(self) -> None:
+        self.session = AgentSessionContext()
+        self.call_started = asyncio.Event()
+        self.release_tool_boundary = asyncio.Event()
+        self.calls: list[dict[str, object]] = []
+        self.tool_call_approval_handler = None
+
+    def default_model(self) -> str:
+        return "gpt-5.4"
+
+    def create_session(self) -> AgentSessionContext:
+        return self.session
+
+    def set_tool_call_approval_handler(self, handler) -> None:
+        self.tool_call_approval_handler = handler
+
+    def make_agent_event_publisher(self, *, turn_id, thread_id, callback):
+        del turn_id
+        del thread_id
+        del callback
+        return lambda message: None
+
+    async def next(
+        self,
+        *,
+        context: AgentSessionContext,
+        room,
+        toolkits: list[Toolkit],
+        output_schema=None,
+        event_handler=None,
+        steering_callback=None,
+        model: str | None = None,
+        on_behalf_of=None,
+        options=None,
+    ) -> dict[str, object]:
+        del room
+        del toolkits
+        del output_schema
+        del event_handler
+        del model
+        del on_behalf_of
+        del options
+
+        call: dict[str, object] = {
+            "messages_before_boundary": [*context.messages],
+        }
+        self.calls.append(call)
+        self.call_started.set()
+        await self.release_tool_boundary.wait()
+        if steering_callback is not None:
+            call["steered"] = await steering_callback()
+        else:
+            call["steered"] = False
+        call["messages_after_boundary"] = [*context.messages]
+        return {"ok": True}
+
+
+async def _wait_for(predicate, *, timeout: float = 1) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        if asyncio.get_running_loop().time() >= deadline:
+            raise asyncio.TimeoutError()
+        await asyncio.sleep(0.01)
+
+
 @pytest.mark.asyncio
 async def test_process_turn_toolkits_keep_computer_toolkit_top_level(
     monkeypatch: pytest.MonkeyPatch,
@@ -354,3 +466,109 @@ async def test_process_turn_toolkits_include_thread_id_in_caller_context(
     )
 
     assert caller_contexts == [{"thread_id": "threads/example"}]
+
+
+@pytest.mark.asyncio
+async def test_build_process_agent_forwards_tool_boundary_steering_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import meshagent.agents as agents_module
+    import meshagent.agents.process as process_module
+
+    fake_adapter = _SteeringRecordingAdapter()
+    monkeypatch.setattr(
+        chatbot,
+        "OpenAIResponsesAdapter",
+        lambda **kwargs: fake_adapter,
+    )
+    monkeypatch.setattr(
+        agents_module,
+        "AgentProcessThreadAdapter",
+        _FakeProcessThreadAdapter,
+    )
+    monkeypatch.setattr(
+        process_module,
+        "AgentProcessThreadAdapter",
+        _FakeProcessThreadAdapter,
+    )
+
+    agent_cls = chatbot.build_process_agent(
+        model="gpt-5.4",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+    )
+    agent = agent_cls()
+    monkeypatch.setattr(agent, "install_requirements", lambda: asyncio.sleep(0))
+    monkeypatch.setattr(agent, "get_exposed_toolkits", lambda: asyncio.sleep(0, []))
+    monkeypatch.setattr(
+        agent,
+        "init_session",
+        lambda: asyncio.sleep(0, fake_adapter.create_session()),
+    )
+
+    async def _fake_get_process_turn_toolkits(**kwargs):
+        del kwargs
+        return []
+
+    monkeypatch.setattr(
+        agent, "get_process_turn_toolkits", _fake_get_process_turn_toolkits
+    )
+
+    room = _FakeProcessRoomClient()
+    await agent.start(room=room)  # type: ignore[arg-type]
+    try:
+        supervisor = agent._supervisor
+        assert supervisor is not None
+
+        supervisor.send(
+            Message(
+                data=TurnStart(
+                    type=AGENT_MESSAGE_TURN_START,
+                    thread_id="threads/example",
+                    content=[AgentTextContent(type="text", text="first")],
+                )
+            )
+        )
+
+        await asyncio.wait_for(fake_adapter.call_started.wait(), timeout=1)
+        await _wait_for(lambda: len(supervisor.processes) == 1)
+        process = supervisor.processes[0]
+        turn_id = process.turn_id
+        assert turn_id is not None
+
+        supervisor.send(
+            Message(
+                data=TurnSteer(
+                    type=AGENT_MESSAGE_TURN_STEER,
+                    thread_id="threads/example",
+                    turn_id=turn_id,
+                    content=[AgentTextContent(type="text", text="second")],
+                )
+            )
+        )
+
+        await _wait_for(
+            lambda: (
+                process._active_turn_queue is not None
+                and process._active_turn_queue.qsize() >= 1
+            )
+        )
+        fake_adapter.release_tool_boundary.set()
+        await _wait_for(
+            lambda: fake_adapter.calls[0].get("messages_after_boundary") is not None
+        )
+
+        assert fake_adapter.calls[0]["steered"] is True
+        assert fake_adapter.calls[0]["messages_before_boundary"] == [
+            {"role": "user", "content": "first"}
+        ]
+        assert fake_adapter.calls[0]["messages_after_boundary"] == [
+            {"role": "user", "content": "first"},
+            {"role": "user", "content": "second"},
+        ]
+    finally:
+        await agent.stop()
