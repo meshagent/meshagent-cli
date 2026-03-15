@@ -54,6 +54,7 @@ from meshagent.cli.helper import (
 from meshagent.api import (
     ParticipantToken,
     ApiScope,
+    RoomException,
 )
 from meshagent.api.client import Meshagent
 from meshagent.cli.common_options import OutputFormatOption
@@ -575,6 +576,12 @@ def _dump_model_yaml(model: ServiceSpec | ServiceTemplateSpec) -> str:
     )
 
 
+def _service_id_from_create_result(result: str | ServiceSpec) -> str:
+    if isinstance(result, ServiceSpec):
+        return result.id or ""
+    return result
+
+
 def _load_input_as_service_spec(
     *, file: Optional[str], url: Optional[str]
 ) -> ServiceSpec:
@@ -631,37 +638,47 @@ def _load_command_service_spec(
         ) from spec_error
 
 
-def _load_command_template_input(
+def _load_command_template_text(
     *,
     file: Optional[str],
     url: Optional[str],
     wrong_type_command: str,
-) -> tuple[str, ServiceTemplateSpec]:
+) -> str:
     template_text = _load_yaml_text(file=file, url=url, name="service template")
     try:
-        template_spec = parse_yaml_raw_as(ServiceTemplateSpec, template_text)
-    except Exception as template_error:
-        try:
-            parse_yaml_raw_as(ServiceSpec, template_text.encode("utf-8"))
-        except Exception:
-            raise _SpecInputError(
-                headline="Invalid service template.",
-                description="The input is not in the correct service template format.",
-                validation_details=str(template_error),
-            ) from template_error
+        parse_yaml_raw_as(ServiceSpec, template_text.encode("utf-8"))
+    except Exception:
+        return template_text
 
+    raise _SpecInputError(
+        headline="Invalid service template.",
+        description="The input is not in the correct service template format.",
+        validation_details="kind",
+        guidance_lines=(
+            "This command must be passed a service template.",
+            "It looks like you passed a service definition instead.",
+            f"Use `{wrong_type_command}` instead.",
+        ),
+    )
+
+
+async def _render_command_template_input(
+    *,
+    client: Meshagent,
+    template_text: str,
+    template_values: dict[str, str],
+) -> ServiceTemplateSpec:
+    try:
+        return await client.render_template(
+            template=template_text,
+            values=template_values,
+        )
+    except RoomException as template_error:
         raise _SpecInputError(
             headline="Invalid service template.",
             description="The input is not in the correct service template format.",
             validation_details=str(template_error),
-            guidance_lines=(
-                "This command must be passed a service template.",
-                "It looks like you passed a service definition instead.",
-                f"Use `{wrong_type_command}` instead.",
-            ),
         ) from template_error
-
-    return template_text, template_spec
 
 
 async def _load_spec_output(
@@ -789,11 +806,11 @@ async def service_create(
 
         try:
             if room is None:
-                new_id = await client.create_service(
+                created = await client.create_service(
                     project_id=project_id, service=spec
                 )
             else:
-                new_id = await client.create_room_service(
+                created = await client.create_room_service(
                     project_id=project_id, service=spec, room_name=room
                 )
         except ClientResponseError as exc:
@@ -802,6 +819,7 @@ async def service_create(
                 raise typer.Exit(code=1)
             raise
         else:
+            new_id = _service_id_from_create_result(created)
             print(f"[green]Created service:[/] {new_id}")
 
     finally:
@@ -893,9 +911,10 @@ async def service_update(
 
             if id is None:
                 if room is None:
-                    id = await client.create_service(
+                    created = await client.create_service(
                         project_id=project_id, service=spec
                     )
+                    id = _service_id_from_create_result(created)
                 else:
                     id = await client.create_room_service(
                         project_id=project_id, service=spec, room_name=room
@@ -979,7 +998,7 @@ async def service_create_template(
     client: Meshagent | None = None
     try:
         try:
-            template_text, template_spec = _load_command_template_input(
+            template_text = _load_command_template_text(
                 file=file,
                 url=url,
                 wrong_type_command="meshagent service create",
@@ -990,6 +1009,15 @@ async def service_create_template(
 
         template_values = _load_template_values(values, value)
         client = await get_client()
+        try:
+            template_spec = await _render_command_template_input(
+                client=client,
+                template_text=template_text,
+                template_values=template_values,
+            )
+        except _SpecInputError as exc:
+            _print_spec_input_error(exc)
+            raise typer.Exit(code=1)
         project_id = await resolve_project_id(project_id)
 
         try:
@@ -1061,7 +1089,7 @@ async def service_update_template(
     client: Meshagent | None = None
     try:
         try:
-            template_text, template_spec = _load_command_template_input(
+            template_text = _load_command_template_text(
                 file=file,
                 url=url,
                 wrong_type_command="meshagent service update",
@@ -1072,6 +1100,15 @@ async def service_update_template(
 
         template_values = _load_template_values(values, value)
         client = await get_client()
+        try:
+            template_spec = await _render_command_template_input(
+                client=client,
+                template_text=template_text,
+                template_values=template_values,
+            )
+        except _SpecInputError as exc:
+            _print_spec_input_error(exc)
+            raise typer.Exit(code=1)
         project_id = await resolve_project_id(project_id)
 
         try:

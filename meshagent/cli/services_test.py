@@ -26,6 +26,26 @@ container:
   image: busybox
 """
 
+_JINJA_SERVICE_TEMPLATE_YAML = """\
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: assistant
+variables:
+  - name: email
+    type: email
+    optional: true
+container:
+  image: meshagent/cli:default
+{% if email %}
+  command: >
+    /usr/bin/meshagent multi join --email-address={{email}}
+{% else %}
+  command: >
+    /usr/bin/meshagent chatbot join
+{% endif %}
+"""
+
 _INVALID_SERVICE_YAML = """\
 version: v1
 kind: Service
@@ -45,6 +65,15 @@ class _UnusedServicesClient:
 
     async def close(self) -> None:
         self.closed = True
+
+    async def render_template(self, *, template, values):
+        try:
+            return services.ServiceTemplateSpec.from_yaml(
+                yaml=template,
+                values=values,
+            )
+        except Exception as exc:
+            raise services.RoomException(str(exc)) from exc
 
     async def create_service(self, *, project_id, service):
         del project_id, service
@@ -91,6 +120,78 @@ class _UnusedServicesClient:
     ):
         del project_id, service_id, template, values, room_name
         raise AssertionError("update_room_service_from_template should not be called")
+
+
+class _TemplateCommandClient(_UnusedServicesClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.render_calls: list[tuple[str, dict[str, str]]] = []
+        self.create_calls: list[tuple[str, str, dict[str, str]]] = []
+        self.create_room_calls: list[tuple[str, str, str, dict[str, str]]] = []
+        self.update_calls: list[tuple[str, str, str, dict[str, str]]] = []
+        self.update_room_calls: list[tuple[str, str, str, str, dict[str, str]]] = []
+
+    async def render_template(self, *, template, values):
+        self.render_calls.append((template, values))
+        return await super().render_template(template=template, values=values)
+
+    async def create_service_from_template(self, *, project_id, template, values):
+        self.create_calls.append((project_id, template, values))
+        spec = services.ServiceTemplateSpec.from_yaml(yaml=template, values=values)
+        service = spec.to_service_spec()
+        service.id = "service-1"
+        return service
+
+    async def create_room_service_from_template(
+        self, *, project_id, template, values, room_name
+    ):
+        self.create_room_calls.append((project_id, room_name, template, values))
+        spec = services.ServiceTemplateSpec.from_yaml(yaml=template, values=values)
+        service = spec.to_service_spec()
+        service.id = "room-service-1"
+        return service
+
+    async def update_service_from_template(
+        self, *, project_id, service_id, template, values
+    ):
+        self.update_calls.append((project_id, service_id, template, values))
+        spec = services.ServiceTemplateSpec.from_yaml(yaml=template, values=values)
+        service = spec.to_service_spec()
+        service.id = service_id
+        return service
+
+    async def update_room_service_from_template(
+        self, *, project_id, service_id, template, values, room_name
+    ):
+        self.update_room_calls.append(
+            (project_id, room_name, service_id, template, values)
+        )
+        spec = services.ServiceTemplateSpec.from_yaml(yaml=template, values=values)
+        service = spec.to_service_spec()
+        service.id = service_id
+        return service
+
+
+class _ServiceCommandClient(_UnusedServicesClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.create_calls: list[tuple[str, services.ServiceSpec]] = []
+        self.create_room_calls: list[tuple[str, str, services.ServiceSpec]] = []
+        self.list_calls: list[str] = []
+
+    async def create_service(self, *, project_id, service):
+        self.create_calls.append((project_id, service))
+        created = service.model_copy()
+        created.id = "service-1"
+        return created
+
+    async def create_room_service(self, *, project_id, service, room_name):
+        self.create_room_calls.append((project_id, room_name, service))
+        return "room-service-1"
+
+    async def list_services(self, *, project_id):
+        self.list_calls.append(project_id)
+        return []
 
 
 def _write_yaml(tmp_path: pathlib.Path, name: str, contents: str) -> pathlib.Path:
@@ -143,8 +244,10 @@ def _assert_spec_input_error_output(
 
 def _patch_service_command_runtime(
     monkeypatch: pytest.MonkeyPatch,
+    client: _UnusedServicesClient | None = None,
 ) -> _UnusedServicesClient:
-    client = _UnusedServicesClient()
+    if client is None:
+        client = _UnusedServicesClient()
 
     async def _fake_get_client():
         return client
@@ -676,10 +779,174 @@ async def test_service_create_template_prints_friendly_validation_error_for_inva
         )
 
     assert exc_info.value.exit_code == 1
-    assert client.closed is False
+    assert client.closed is True
     _assert_spec_input_error_output(
         printed,
         headline="Invalid service template.",
         description="The input is not in the correct service template format.",
         detail_fragment="metadata",
     )
+
+
+@pytest.mark.asyncio
+async def test_service_create_template_uses_render_template_for_jinja_template(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_yaml(tmp_path, "assistant.yaml", _JINJA_SERVICE_TEMPLATE_YAML)
+    printed = _capture_prints(monkeypatch)
+    client = _TemplateCommandClient()
+    _patch_service_command_runtime(monkeypatch, client=client)
+
+    await services.service_create_template(
+        project_id=None,
+        file=str(spec_path),
+        room=None,
+        value=None,
+    )
+
+    assert client.render_calls == [(_JINJA_SERVICE_TEMPLATE_YAML, {})]
+    assert client.create_calls == [("project-1", _JINJA_SERVICE_TEMPLATE_YAML, {})]
+    assert client.update_calls == []
+    assert printed == ["[green]Created service:[/] service-1"]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_service_update_template_uses_render_template_for_jinja_template(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_yaml(tmp_path, "assistant.yaml", _JINJA_SERVICE_TEMPLATE_YAML)
+    printed = _capture_prints(monkeypatch)
+    client = _TemplateCommandClient()
+    _patch_service_command_runtime(monkeypatch, client=client)
+
+    await services.service_update_template(
+        project_id=None,
+        id="service-1",
+        file=str(spec_path),
+        room=None,
+        value=["email=a@example.com"],
+    )
+
+    assert client.render_calls == [
+        (_JINJA_SERVICE_TEMPLATE_YAML, {"email": "a@example.com"})
+    ]
+    assert client.create_calls == []
+    assert client.update_calls == [
+        (
+            "project-1",
+            "service-1",
+            _JINJA_SERVICE_TEMPLATE_YAML,
+            {"email": "a@example.com"},
+        )
+    ]
+    assert printed == ["[green]Updated service:[/] service-1"]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_service_create_template_room_prints_only_created_service_id(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_yaml(tmp_path, "assistant.yaml", _JINJA_SERVICE_TEMPLATE_YAML)
+    printed = _capture_prints(monkeypatch)
+    client = _TemplateCommandClient()
+    _patch_service_command_runtime(monkeypatch, client=client)
+
+    await services.service_create_template(
+        project_id=None,
+        file=str(spec_path),
+        room="jesse2",
+        value=None,
+    )
+
+    assert client.render_calls == [(_JINJA_SERVICE_TEMPLATE_YAML, {})]
+    assert client.create_calls == []
+    assert client.create_room_calls == [
+        ("project-1", "jesse2", _JINJA_SERVICE_TEMPLATE_YAML, {})
+    ]
+    assert printed == ["[green]Created service:[/] room-service-1"]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_service_update_template_room_prints_only_updated_service_id(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_yaml(tmp_path, "assistant.yaml", _JINJA_SERVICE_TEMPLATE_YAML)
+    printed = _capture_prints(monkeypatch)
+    client = _TemplateCommandClient()
+    _patch_service_command_runtime(monkeypatch, client=client)
+
+    await services.service_update_template(
+        project_id=None,
+        id="room-service-1",
+        file=str(spec_path),
+        room="jesse2",
+        value=["email=a@example.com"],
+    )
+
+    assert client.render_calls == [
+        (_JINJA_SERVICE_TEMPLATE_YAML, {"email": "a@example.com"})
+    ]
+    assert client.update_calls == []
+    assert client.update_room_calls == [
+        (
+            "project-1",
+            "jesse2",
+            "room-service-1",
+            _JINJA_SERVICE_TEMPLATE_YAML,
+            {"email": "a@example.com"},
+        )
+    ]
+    assert printed == ["[green]Updated service:[/] room-service-1"]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_service_create_prints_only_created_service_id(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_yaml(tmp_path, "service.yaml", _SERVICE_YAML)
+    printed = _capture_prints(monkeypatch)
+    client = _ServiceCommandClient()
+    _patch_service_command_runtime(monkeypatch, client=client)
+
+    await services.service_create(
+        project_id=None,
+        file=str(spec_path),
+        room=None,
+    )
+
+    assert len(client.create_calls) == 1
+    assert client.create_calls[0][0] == "project-1"
+    assert printed == ["[green]Created service:[/] service-1"]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_service_update_with_create_prints_only_created_service_id(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_yaml(tmp_path, "service.yaml", _SERVICE_YAML)
+    printed = _capture_prints(monkeypatch)
+    client = _ServiceCommandClient()
+    _patch_service_command_runtime(monkeypatch, client=client)
+
+    await services.service_update(
+        project_id=None,
+        file=str(spec_path),
+        room=None,
+        create=True,
+    )
+
+    assert client.list_calls == ["project-1"]
+    assert len(client.create_calls) == 1
+    assert printed == ["[green]Updated service:[/] service-1"]
+    assert client.closed is True
