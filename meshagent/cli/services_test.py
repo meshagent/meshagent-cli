@@ -2,6 +2,7 @@ import pytest
 import typer
 import json
 import pathlib
+from typing import Optional
 
 from meshagent.cli import services
 
@@ -16,11 +17,35 @@ container:
   image: busybox
 """
 
+_SERVICE_WITH_ID_YAML = """\
+version: v1
+kind: Service
+metadata:
+  name: demo
+  annotations:
+    meshagent.service.id: demo.service
+ports: []
+container:
+  image: busybox
+"""
+
 _SERVICE_TEMPLATE_YAML = """\
 version: v1
 kind: ServiceTemplate
 metadata:
   name: demo
+ports: []
+container:
+  image: busybox
+"""
+
+_SERVICE_TEMPLATE_WITH_ID_YAML = """\
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: demo
+  annotations:
+    meshagent.service.id: demo.service
 ports: []
 container:
   image: busybox
@@ -130,6 +155,8 @@ class _TemplateCommandClient(_UnusedServicesClient):
         self.create_room_calls: list[tuple[str, str, str, dict[str, str]]] = []
         self.update_calls: list[tuple[str, str, str, dict[str, str]]] = []
         self.update_room_calls: list[tuple[str, str, str, str, dict[str, str]]] = []
+        self.services: list[services.ServiceSpec] = []
+        self.room_services: list[services.ServiceSpec] = []
 
     async def render_template(self, *, template, values):
         self.render_calls.append((template, values))
@@ -171,13 +198,26 @@ class _TemplateCommandClient(_UnusedServicesClient):
         service.id = service_id
         return service
 
+    async def list_services(self, *, project_id):
+        del project_id
+        return [service.model_copy() for service in self.services]
+
+    async def list_room_services(self, *, project_id, room_name):
+        del project_id, room_name
+        return [service.model_copy() for service in self.room_services]
+
 
 class _ServiceCommandClient(_UnusedServicesClient):
     def __init__(self) -> None:
         super().__init__()
         self.create_calls: list[tuple[str, services.ServiceSpec]] = []
         self.create_room_calls: list[tuple[str, str, services.ServiceSpec]] = []
+        self.update_calls: list[tuple[str, str, services.ServiceSpec]] = []
+        self.update_room_calls: list[tuple[str, str, str, services.ServiceSpec]] = []
         self.list_calls: list[str] = []
+        self.list_room_calls: list[tuple[str, str]] = []
+        self.services: list[services.ServiceSpec] = []
+        self.room_services: list[services.ServiceSpec] = []
 
     async def create_service(self, *, project_id, service):
         self.create_calls.append((project_id, service))
@@ -189,9 +229,41 @@ class _ServiceCommandClient(_UnusedServicesClient):
         self.create_room_calls.append((project_id, room_name, service))
         return "room-service-1"
 
+    async def update_service(self, *, project_id, service_id, service):
+        self.update_calls.append((project_id, service_id, service))
+        updated = service.model_copy()
+        updated.id = service_id
+        return updated
+
+    async def update_room_service(self, *, project_id, room_name, service_id, service):
+        self.update_room_calls.append((project_id, room_name, service_id, service))
+
     async def list_services(self, *, project_id):
         self.list_calls.append(project_id)
-        return []
+        return [service.model_copy() for service in self.services]
+
+    async def list_room_services(self, *, project_id, room_name):
+        self.list_room_calls.append((project_id, room_name))
+        return [service.model_copy() for service in self.room_services]
+
+
+def _service_record(
+    *,
+    id: str,
+    name: str,
+    service_annotation_id: Optional[str],
+) -> services.ServiceSpec:
+    annotations: dict[str, str] | None = None
+    if service_annotation_id is not None:
+        annotations = {services.ANNOTATION_SERVICE_ID: service_annotation_id}
+    return services.ServiceSpec(
+        version="v1",
+        kind="Service",
+        id=id,
+        metadata=services.ServiceMetadata(name=name, annotations=annotations),
+        ports=[],
+        container=None,
+    )
 
 
 def _write_yaml(tmp_path: pathlib.Path, name: str, contents: str) -> pathlib.Path:
@@ -622,6 +694,7 @@ async def test_service_create_template_rejects_service_spec_with_friendly_error(
             project_id=None,
             file=str(spec_path),
             room=None,
+            global_=True,
         )
 
     assert exc_info.value.exit_code == 1
@@ -653,6 +726,7 @@ async def test_service_update_template_rejects_service_spec_with_friendly_error(
             project_id=None,
             file=str(spec_path),
             room=None,
+            global_=True,
         )
 
     assert exc_info.value.exit_code == 1
@@ -684,6 +758,7 @@ async def test_service_create_rejects_service_template_with_friendly_error(
             project_id=None,
             file=str(spec_path),
             room=None,
+            global_=True,
         )
 
     assert exc_info.value.exit_code == 1
@@ -715,6 +790,7 @@ async def test_service_update_rejects_service_template_with_friendly_error(
             project_id=None,
             file=str(spec_path),
             room=None,
+            global_=True,
         )
 
     assert exc_info.value.exit_code == 1
@@ -746,6 +822,7 @@ async def test_service_create_prints_friendly_validation_error_for_invalid_spec(
             project_id=None,
             file=str(spec_path),
             room=None,
+            global_=True,
         )
 
     assert exc_info.value.exit_code == 1
@@ -776,6 +853,7 @@ async def test_service_create_template_prints_friendly_validation_error_for_inva
             project_id=None,
             file=str(spec_path),
             room=None,
+            global_=True,
         )
 
     assert exc_info.value.exit_code == 1
@@ -802,6 +880,7 @@ async def test_service_create_template_uses_render_template_for_jinja_template(
         project_id=None,
         file=str(spec_path),
         room=None,
+        global_=True,
         value=None,
     )
 
@@ -809,6 +888,52 @@ async def test_service_create_template_uses_render_template_for_jinja_template(
     assert client.create_calls == [("project-1", _JINJA_SERVICE_TEMPLATE_YAML, {})]
     assert client.update_calls == []
     assert printed == ["[green]Created service:[/] service-1"]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_service_validate_template_uses_render_template_for_jinja_template(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_yaml(tmp_path, "assistant.yaml", _JINJA_SERVICE_TEMPLATE_YAML)
+    printed = _capture_prints(monkeypatch)
+    client = _TemplateCommandClient()
+    _patch_service_command_runtime(monkeypatch, client=client)
+
+    await services.service_validate_template(
+        file=str(spec_path),
+        value=["email=a@example.com"],
+    )
+
+    assert client.render_calls == [
+        (_JINJA_SERVICE_TEMPLATE_YAML, {"email": "a@example.com"})
+    ]
+    assert printed == ["[green]Service template is valid:[/] assistant"]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_service_render_template_prints_rendered_yaml(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_yaml(tmp_path, "assistant.yaml", _JINJA_SERVICE_TEMPLATE_YAML)
+    printed = _capture_prints(monkeypatch)
+    client = _TemplateCommandClient()
+    _patch_service_command_runtime(monkeypatch, client=client)
+
+    await services.service_render_template(
+        file=str(spec_path),
+        value=["email=a@example.com"],
+    )
+
+    assert client.render_calls == [
+        (_JINJA_SERVICE_TEMPLATE_YAML, {"email": "a@example.com"})
+    ]
+    assert len(printed) == 1
+    assert "command:" in printed[0]
+    assert "a@example.com" in printed[0]
     assert client.closed is True
 
 
@@ -827,6 +952,7 @@ async def test_service_update_template_uses_render_template_for_jinja_template(
         id="service-1",
         file=str(spec_path),
         room=None,
+        global_=True,
         value=["email=a@example.com"],
     )
 
@@ -921,6 +1047,7 @@ async def test_service_create_prints_only_created_service_id(
         project_id=None,
         file=str(spec_path),
         room=None,
+        global_=True,
     )
 
     assert len(client.create_calls) == 1
@@ -943,10 +1070,227 @@ async def test_service_update_with_create_prints_only_created_service_id(
         project_id=None,
         file=str(spec_path),
         room=None,
+        global_=True,
         create=True,
     )
 
     assert client.list_calls == ["project-1"]
     assert len(client.create_calls) == 1
     assert printed == ["[green]Updated service:[/] service-1"]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_service_create_requires_explicit_scope(
+    tmp_path: pathlib.Path,
+) -> None:
+    spec_path = _write_yaml(tmp_path, "service.yaml", _SERVICE_YAML)
+
+    with pytest.raises(
+        typer.BadParameter,
+        match="Pass --room to install in a room or --global to install globally.",
+    ):
+        await services.service_create(
+            project_id=None,
+            file=str(spec_path),
+        )
+
+
+@pytest.mark.asyncio
+async def test_service_create_rejects_existing_service_id_in_global_scope(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_yaml(tmp_path, "service.yaml", _SERVICE_WITH_ID_YAML)
+    printed = _capture_prints(monkeypatch)
+    client = _ServiceCommandClient()
+    client.services = [
+        _service_record(
+            id="existing-1",
+            name="existing",
+            service_annotation_id="demo.service",
+        )
+    ]
+    _patch_service_command_runtime(monkeypatch, client=client)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        await services.service_create(
+            project_id=None,
+            file=str(spec_path),
+            global_=True,
+        )
+
+    assert exc_info.value.exit_code == 1
+    assert client.list_calls == ["project-1"]
+    assert client.create_calls == []
+    assert client.update_calls == []
+    assert printed == [
+        '[red]service already exists with the service id: "demo.service" use --force to ignore or --replace to replace it[/red]'
+    ]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_service_create_force_ignores_existing_service_id_in_global_scope(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_yaml(tmp_path, "service.yaml", _SERVICE_WITH_ID_YAML)
+    printed = _capture_prints(monkeypatch)
+    client = _ServiceCommandClient()
+    client.services = [
+        _service_record(
+            id="existing-1",
+            name="existing",
+            service_annotation_id="demo.service",
+        )
+    ]
+    _patch_service_command_runtime(monkeypatch, client=client)
+
+    await services.service_create(
+        project_id=None,
+        file=str(spec_path),
+        global_=True,
+        force=True,
+    )
+
+    assert len(client.create_calls) == 1
+    assert client.update_calls == []
+    assert printed == ["[green]Created service:[/] service-1"]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_service_create_replace_updates_existing_service_id_in_global_scope(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_yaml(tmp_path, "service.yaml", _SERVICE_WITH_ID_YAML)
+    printed = _capture_prints(monkeypatch)
+    client = _ServiceCommandClient()
+    client.services = [
+        _service_record(
+            id="existing-1",
+            name="existing",
+            service_annotation_id="demo.service",
+        )
+    ]
+    _patch_service_command_runtime(monkeypatch, client=client)
+
+    await services.service_create(
+        project_id=None,
+        file=str(spec_path),
+        global_=True,
+        replace=True,
+    )
+
+    assert client.create_calls == []
+    assert len(client.update_calls) == 1
+    assert client.update_calls[0][1] == "existing-1"
+    assert printed == ["[green]Updated service:[/] existing-1"]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_service_update_rejects_existing_service_id_when_target_differs(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_yaml(tmp_path, "service.yaml", _SERVICE_WITH_ID_YAML)
+    printed = _capture_prints(monkeypatch)
+    client = _ServiceCommandClient()
+    client.services = [
+        _service_record(
+            id="existing-1",
+            name="existing",
+            service_annotation_id="demo.service",
+        )
+    ]
+    _patch_service_command_runtime(monkeypatch, client=client)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        await services.service_update(
+            project_id=None,
+            id="other-1",
+            file=str(spec_path),
+            global_=True,
+        )
+
+    assert exc_info.value.exit_code == 1
+    assert client.update_calls == []
+    assert printed == [
+        '[red]service already exists with the service id: "demo.service" use --force to ignore or --replace to replace it[/red]'
+    ]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_service_update_template_replace_updates_existing_service_id_in_room(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_yaml(
+        tmp_path,
+        "template.yaml",
+        _SERVICE_TEMPLATE_WITH_ID_YAML,
+    )
+    printed = _capture_prints(monkeypatch)
+    client = _TemplateCommandClient()
+    client.room_services = [
+        _service_record(
+            id="room-existing-1",
+            name="existing",
+            service_annotation_id="demo.service",
+        )
+    ]
+    _patch_service_command_runtime(monkeypatch, client=client)
+
+    await services.service_update_template(
+        project_id=None,
+        file=str(spec_path),
+        room="jesse2",
+        replace=True,
+    )
+
+    assert client.create_room_calls == []
+    assert len(client.update_room_calls) == 1
+    assert client.update_room_calls[0][2] == "room-existing-1"
+    assert printed == ["[green]Updated service:[/] room-existing-1"]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_service_create_template_rejects_existing_service_id_in_room(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec_path = _write_yaml(
+        tmp_path,
+        "template.yaml",
+        _SERVICE_TEMPLATE_WITH_ID_YAML,
+    )
+    printed = _capture_prints(monkeypatch)
+    client = _TemplateCommandClient()
+    client.room_services = [
+        _service_record(
+            id="room-existing-1",
+            name="existing",
+            service_annotation_id="demo.service",
+        )
+    ]
+    _patch_service_command_runtime(monkeypatch, client=client)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        await services.service_create_template(
+            project_id=None,
+            file=str(spec_path),
+            room="jesse2",
+        )
+
+    assert exc_info.value.exit_code == 1
+    assert client.create_room_calls == []
+    assert client.update_room_calls == []
+    assert printed == [
+        '[red]service already exists with the service id: "demo.service" use --force to ignore or --replace to replace it[/red]'
+    ]
     assert client.closed is True

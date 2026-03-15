@@ -99,6 +99,15 @@ class _DiscoveredOAuthEndpoints:
     no_pkce: Optional[bool]
 
 
+@dataclass(frozen=True, slots=True)
+class _ServiceCommandScope:
+    room_name: Optional[str]
+
+    @property
+    def is_global(self) -> bool:
+        return self.room_name is None
+
+
 _SpecFormat = Literal["service", "template"]
 
 
@@ -582,6 +591,202 @@ def _service_id_from_create_result(result: str | ServiceSpec) -> str:
     return result
 
 
+def _annotation_service_id(
+    annotations: Optional[dict[str, str]],
+) -> Optional[str]:
+    if annotations is None:
+        return None
+    value = annotations.get(ANNOTATION_SERVICE_ID)
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _service_id_from_metadata(
+    model: ServiceSpec | ServiceTemplateSpec,
+) -> Optional[str]:
+    return _annotation_service_id(model.metadata.annotations)
+
+
+def _require_service_record_id(service: ServiceSpec) -> str:
+    if service.id is None or service.id == "":
+        raise RoomException("Expected listed service to have an id")
+    return service.id
+
+
+def _resolve_service_command_scope(
+    *,
+    room: Optional[str],
+    global_: bool,
+) -> _ServiceCommandScope:
+    if room is not None and global_:
+        raise typer.BadParameter("Pass either --room or --global, not both.")
+    if room is None and not global_:
+        raise typer.BadParameter(
+            "Pass --room to install in a room or --global to install globally."
+        )
+    return _ServiceCommandScope(room_name=room)
+
+
+def _validate_replace_flags(*, force: bool, replace: bool) -> None:
+    if force and replace:
+        raise typer.BadParameter("Pass only one of --force or --replace.")
+
+
+async def _list_services_in_scope(
+    *,
+    client: Meshagent,
+    project_id: str,
+    scope: _ServiceCommandScope,
+) -> list[ServiceSpec]:
+    if scope.is_global:
+        return await client.list_services(project_id=project_id)
+    return await client.list_room_services(
+        project_id=project_id,
+        room_name=scope.room_name or "",
+    )
+
+
+def _find_service_by_service_annotation_id(
+    *,
+    services: list[ServiceSpec],
+    service_id: str,
+) -> Optional[ServiceSpec]:
+    for service in services:
+        if _annotation_service_id(service.metadata.annotations) == service_id:
+            return service
+    return None
+
+
+def _print_existing_service_id_error(service_id: str) -> None:
+    print(
+        f'[red]service already exists with the service id: "{service_id}" use --force to ignore or --replace to replace it[/red]'
+    )
+
+
+def _resolve_target_service_id_for_upsert(
+    *,
+    target_service_id: Optional[str],
+    requested_service_record_id: Optional[str],
+    services_in_scope: list[ServiceSpec],
+    force: bool,
+    replace: bool,
+) -> Optional[str]:
+    if target_service_id is None:
+        return requested_service_record_id
+
+    existing = _find_service_by_service_annotation_id(
+        services=services_in_scope,
+        service_id=target_service_id,
+    )
+    if existing is None or force:
+        return requested_service_record_id
+
+    existing_id = _require_service_record_id(existing)
+    if requested_service_record_id == existing_id:
+        return requested_service_record_id
+
+    if replace:
+        return existing_id
+
+    _print_existing_service_id_error(target_service_id)
+    raise typer.Exit(code=1)
+
+
+async def _create_service_in_scope(
+    *,
+    client: Meshagent,
+    project_id: str,
+    scope: _ServiceCommandScope,
+    spec: ServiceSpec,
+) -> str:
+    if scope.is_global:
+        created = await client.create_service(project_id=project_id, service=spec)
+        return _service_id_from_create_result(created)
+    return await client.create_room_service(
+        project_id=project_id,
+        service=spec,
+        room_name=scope.room_name or "",
+    )
+
+
+async def _update_service_in_scope(
+    *,
+    client: Meshagent,
+    project_id: str,
+    scope: _ServiceCommandScope,
+    service_id: str,
+    spec: ServiceSpec,
+) -> str:
+    spec.id = service_id
+    if scope.is_global:
+        updated = await client.update_service(
+            project_id=project_id,
+            service_id=service_id,
+            service=spec,
+        )
+        return updated.id or service_id
+    await client.update_room_service(
+        project_id=project_id,
+        service_id=service_id,
+        service=spec,
+        room_name=scope.room_name or "",
+    )
+    return service_id
+
+
+async def _create_service_from_template_in_scope(
+    *,
+    client: Meshagent,
+    project_id: str,
+    scope: _ServiceCommandScope,
+    template: str,
+    values: dict[str, str],
+) -> str:
+    if scope.is_global:
+        service = await client.create_service_from_template(
+            project_id=project_id,
+            template=template,
+            values=values,
+        )
+        return service.id or ""
+    service = await client.create_room_service_from_template(
+        project_id=project_id,
+        template=template,
+        values=values,
+        room_name=scope.room_name or "",
+    )
+    return service.id or ""
+
+
+async def _update_service_from_template_in_scope(
+    *,
+    client: Meshagent,
+    project_id: str,
+    scope: _ServiceCommandScope,
+    service_id: str,
+    template: str,
+    values: dict[str, str],
+) -> str:
+    if scope.is_global:
+        service = await client.update_service_from_template(
+            project_id=project_id,
+            service_id=service_id,
+            template=template,
+            values=values,
+        )
+        return service.id or service_id
+    service = await client.update_room_service_from_template(
+        project_id=project_id,
+        service_id=service_id,
+        template=template,
+        values=values,
+        room_name=scope.room_name or "",
+    )
+    return service.id or service_id
+
+
 def _load_input_as_service_spec(
     *, file: Optional[str], url: Optional[str]
 ) -> ServiceSpec:
@@ -766,9 +971,13 @@ async def service_create(
             ),
         ),
     ] = None,
-    room: Annotated[
-        Optional[str], typer.Option("--room", help="Room name")
-    ] = os.getenv("MESHAGENT_ROOM"),
+    room: Annotated[Optional[str], typer.Option("--room", help="Room name")] = None,
+    global_: Annotated[
+        bool,
+        typer.Option(
+            "--global", help="Create the service globally instead of in a room"
+        ),
+    ] = False,
     service_id: Annotated[
         Optional[str],
         typer.Option(
@@ -778,10 +987,26 @@ async def service_create(
             ),
         ),
     ] = None,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Ignore an existing service with the same meshagent.service.id.",
+        ),
+    ] = False,
+    replace: Annotated[
+        bool,
+        typer.Option(
+            "--replace",
+            help="Replace an existing service with the same meshagent.service.id.",
+        ),
+    ] = False,
 ):
     """Create a service attached to the project."""
     client: Meshagent | None = None
     try:
+        _validate_replace_flags(force=force, replace=replace)
+        scope = _resolve_service_command_scope(room=room, global_=global_)
         try:
             if mcp is None:
                 spec = _load_command_service_spec(
@@ -804,14 +1029,34 @@ async def service_create(
             print("[red]id cannot be set when creating a service[/red]")
             raise typer.Exit(code=1)
 
+        services_in_scope = await _list_services_in_scope(
+            client=client,
+            project_id=project_id,
+            scope=scope,
+        )
+        replacement_service_id = _resolve_target_service_id_for_upsert(
+            target_service_id=_service_id_from_metadata(spec),
+            requested_service_record_id=None,
+            services_in_scope=services_in_scope,
+            force=force,
+            replace=replace,
+        )
+
         try:
-            if room is None:
-                created = await client.create_service(
-                    project_id=project_id, service=spec
+            if replacement_service_id is None:
+                new_id = await _create_service_in_scope(
+                    client=client,
+                    project_id=project_id,
+                    scope=scope,
+                    spec=spec,
                 )
             else:
-                created = await client.create_room_service(
-                    project_id=project_id, service=spec, room_name=room
+                new_id = await _update_service_in_scope(
+                    client=client,
+                    project_id=project_id,
+                    scope=scope,
+                    service_id=replacement_service_id,
+                    spec=spec,
                 )
         except ClientResponseError as exc:
             if exc.status == 409:
@@ -819,8 +1064,10 @@ async def service_create(
                 raise typer.Exit(code=1)
             raise
         else:
-            new_id = _service_id_from_create_result(created)
-            print(f"[green]Created service:[/] {new_id}")
+            if replacement_service_id is None:
+                print(f"[green]Created service:[/] {new_id}")
+            else:
+                print(f"[green]Updated service:[/] {new_id}")
 
     finally:
         if client is not None:
@@ -856,9 +1103,13 @@ async def service_update(
             help="create the service if it does not exist",
         ),
     ] = False,
-    room: Annotated[
-        Optional[str], typer.Option("--room", help="Room name")
-    ] = os.getenv("MESHAGENT_ROOM"),
+    room: Annotated[Optional[str], typer.Option("--room", help="Room name")] = None,
+    global_: Annotated[
+        bool,
+        typer.Option(
+            "--global", help="Update the global service instead of a room service"
+        ),
+    ] = False,
     service_id: Annotated[
         Optional[str],
         typer.Option(
@@ -868,10 +1119,26 @@ async def service_update(
             ),
         ),
     ] = None,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Ignore an existing service with the same meshagent.service.id.",
+        ),
+    ] = False,
+    replace: Annotated[
+        bool,
+        typer.Option(
+            "--replace",
+            help="Replace an existing service with the same meshagent.service.id.",
+        ),
+    ] = False,
 ):
     """Create a service attached to the project."""
     client: Meshagent | None = None
     try:
+        _validate_replace_flags(force=force, replace=replace)
+        scope = _resolve_service_command_scope(room=room, global_=global_)
         try:
             if mcp is None:
                 spec = _load_command_service_spec(
@@ -891,17 +1158,22 @@ async def service_update(
 
         client = await get_client()
         project_id = await resolve_project_id(project_id)
+        services_in_scope = await _list_services_in_scope(
+            client=client,
+            project_id=project_id,
+            scope=scope,
+        )
+        id = _resolve_target_service_id_for_upsert(
+            target_service_id=_service_id_from_metadata(spec),
+            requested_service_record_id=id,
+            services_in_scope=services_in_scope,
+            force=force,
+            replace=replace,
+        )
 
         try:
             if id is None:
-                if room is None:
-                    services = await client.list_services(project_id=project_id)
-                else:
-                    services = await client.list_room_services(
-                        project_id=project_id, room_name=room
-                    )
-
-                for s in services:
+                for s in services_in_scope:
                     if s.metadata.name == spec.metadata.name:
                         id = s.id
 
@@ -910,29 +1182,21 @@ async def service_update(
                 raise typer.Exit(code=1)
 
             if id is None:
-                if room is None:
-                    created = await client.create_service(
-                        project_id=project_id, service=spec
-                    )
-                    id = _service_id_from_create_result(created)
-                else:
-                    id = await client.create_room_service(
-                        project_id=project_id, service=spec, room_name=room
-                    )
+                id = await _create_service_in_scope(
+                    client=client,
+                    project_id=project_id,
+                    scope=scope,
+                    spec=spec,
+                )
 
             else:
-                spec.id = id
-                if room is None:
-                    await client.update_service(
-                        project_id=project_id, service_id=id, service=spec
-                    )
-                else:
-                    await client.update_room_service(
-                        project_id=project_id,
-                        service_id=id,
-                        service=spec,
-                        room_name=room,
-                    )
+                id = await _update_service_in_scope(
+                    client=client,
+                    project_id=project_id,
+                    scope=scope,
+                    service_id=id,
+                    spec=spec,
+                )
 
         except ClientResponseError as exc:
             if exc.status == 409:
@@ -990,13 +1254,33 @@ async def service_create_template(
             help="Template value override (key=value)",
         ),
     ] = None,
-    room: Annotated[
-        Optional[str], typer.Option("--room", help="Room name")
-    ] = os.getenv("MESHAGENT_ROOM"),
+    room: Annotated[Optional[str], typer.Option("--room", help="Room name")] = None,
+    global_: Annotated[
+        bool,
+        typer.Option(
+            "--global", help="Create the service globally instead of in a room"
+        ),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Ignore an existing service with the same meshagent.service.id.",
+        ),
+    ] = False,
+    replace: Annotated[
+        bool,
+        typer.Option(
+            "--replace",
+            help="Replace an existing service with the same meshagent.service.id.",
+        ),
+    ] = False,
 ):
     """Create a service from a ServiceTemplate spec."""
     client: Meshagent | None = None
     try:
+        _validate_replace_flags(force=force, replace=replace)
+        scope = _resolve_service_command_scope(room=room, global_=global_)
         try:
             template_text = _load_command_template_text(
                 file=file,
@@ -1019,20 +1303,36 @@ async def service_create_template(
             _print_spec_input_error(exc)
             raise typer.Exit(code=1)
         project_id = await resolve_project_id(project_id)
+        services_in_scope = await _list_services_in_scope(
+            client=client,
+            project_id=project_id,
+            scope=scope,
+        )
+        replacement_service_id = _resolve_target_service_id_for_upsert(
+            target_service_id=_service_id_from_metadata(template_spec),
+            requested_service_record_id=None,
+            services_in_scope=services_in_scope,
+            force=force,
+            replace=replace,
+        )
 
         try:
-            if room is None:
-                service = await client.create_service_from_template(
+            if replacement_service_id is None:
+                service_id = await _create_service_from_template_in_scope(
+                    client=client,
                     project_id=project_id,
+                    scope=scope,
                     template=template_text,
                     values=template_values,
                 )
             else:
-                service = await client.create_room_service_from_template(
+                service_id = await _update_service_from_template_in_scope(
+                    client=client,
                     project_id=project_id,
+                    scope=scope,
+                    service_id=replacement_service_id,
                     template=template_text,
                     values=template_values,
-                    room_name=room,
                 )
         except ClientResponseError as exc:
             if exc.status == 409:
@@ -1042,8 +1342,10 @@ async def service_create_template(
                 raise typer.Exit(code=1)
             raise
         else:
-            service_id = service.id or ""
-            print(f"[green]Created service:[/] {service_id}")
+            if replacement_service_id is None:
+                print(f"[green]Created service:[/] {service_id}")
+            else:
+                print(f"[green]Updated service:[/] {service_id}")
 
     finally:
         if client is not None:
@@ -1081,13 +1383,33 @@ async def service_update_template(
             help="create the service if it does not exist",
         ),
     ] = False,
-    room: Annotated[
-        Optional[str], typer.Option("--room", help="Room name")
-    ] = os.getenv("MESHAGENT_ROOM"),
+    room: Annotated[Optional[str], typer.Option("--room", help="Room name")] = None,
+    global_: Annotated[
+        bool,
+        typer.Option(
+            "--global", help="Update the global service instead of a room service"
+        ),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Ignore an existing service with the same meshagent.service.id.",
+        ),
+    ] = False,
+    replace: Annotated[
+        bool,
+        typer.Option(
+            "--replace",
+            help="Replace an existing service with the same meshagent.service.id.",
+        ),
+    ] = False,
 ):
     """Update a service using a ServiceTemplate spec."""
     client: Meshagent | None = None
     try:
+        _validate_replace_flags(force=force, replace=replace)
+        scope = _resolve_service_command_scope(room=room, global_=global_)
         try:
             template_text = _load_command_template_text(
                 file=file,
@@ -1110,17 +1432,22 @@ async def service_update_template(
             _print_spec_input_error(exc)
             raise typer.Exit(code=1)
         project_id = await resolve_project_id(project_id)
+        services_in_scope = await _list_services_in_scope(
+            client=client,
+            project_id=project_id,
+            scope=scope,
+        )
+        id = _resolve_target_service_id_for_upsert(
+            target_service_id=_service_id_from_metadata(template_spec),
+            requested_service_record_id=id,
+            services_in_scope=services_in_scope,
+            force=force,
+            replace=replace,
+        )
 
         try:
             if id is None:
-                if room is None:
-                    services = await client.list_services(project_id=project_id)
-                else:
-                    services = await client.list_room_services(
-                        project_id=project_id, room_name=room
-                    )
-
-                for s in services:
+                for s in services_in_scope:
                     if s.metadata.name == template_spec.metadata.name:
                         id = s.id
 
@@ -1129,38 +1456,22 @@ async def service_update_template(
                 raise typer.Exit(code=1)
 
             if id is None:
-                if room is None:
-                    service = await client.create_service_from_template(
-                        project_id=project_id,
-                        template=template_text,
-                        values=template_values,
-                    )
-                else:
-                    service = await client.create_room_service_from_template(
-                        project_id=project_id,
-                        template=template_text,
-                        values=template_values,
-                        room_name=room,
-                    )
-                id = service.id
+                id = await _create_service_from_template_in_scope(
+                    client=client,
+                    project_id=project_id,
+                    scope=scope,
+                    template=template_text,
+                    values=template_values,
+                )
             else:
-                if room is None:
-                    service = await client.update_service_from_template(
-                        project_id=project_id,
-                        service_id=id,
-                        template=template_text,
-                        values=template_values,
-                    )
-                else:
-                    service = await client.update_room_service_from_template(
-                        project_id=project_id,
-                        service_id=id,
-                        template=template_text,
-                        values=template_values,
-                        room_name=room,
-                    )
-                if service.id is not None:
-                    id = service.id
+                id = await _update_service_from_template_in_scope(
+                    client=client,
+                    project_id=project_id,
+                    scope=scope,
+                    service_id=id,
+                    template=template_text,
+                    values=template_values,
+                )
 
         except ClientResponseError as exc:
             if exc.status == 409:
@@ -1181,19 +1492,110 @@ async def service_update_template(
 async def service_validate_template(
     *,
     file: Annotated[
-        str,
+        Optional[str],
         typer.Option("--file", "-f", help="File path to a service template"),
-    ],
+    ] = None,
+    url: Annotated[
+        Optional[str],
+        typer.Option("--url", help="URL to a service template"),
+    ] = None,
+    values: Annotated[
+        Optional[str],
+        typer.Option("--values-file", help="File path to template values"),
+    ] = None,
+    value: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--value",
+            "-v",
+            help="Template value override (key=value)",
+        ),
+    ] = None,
 ):
     """Validate a service template from a YAML file."""
+    client: Meshagent | None = None
     try:
-        with open(str(pathlib.Path(file).expanduser().resolve()), "rb") as f:
-            template = parse_yaml_raw_as(ServiceTemplateSpec, f.read())
-    except Exception as exc:
-        print(f"[red]Invalid service template: {exc}[/red]")
-        raise typer.Exit(code=1)
+        try:
+            template_text = _load_command_template_text(
+                file=file,
+                url=url,
+                wrong_type_command="meshagent service validate",
+            )
+        except _SpecInputError as exc:
+            _print_spec_input_error(exc)
+            raise typer.Exit(code=1)
 
-    print(f"[green]Service template is valid:[/] {template.metadata.name}")
+        template_values = _load_template_values(values, value)
+        client = await get_client()
+        try:
+            template = await _render_command_template_input(
+                client=client,
+                template_text=template_text,
+                template_values=template_values,
+            )
+        except _SpecInputError as exc:
+            _print_spec_input_error(exc)
+            raise typer.Exit(code=1)
+
+        print(f"[green]Service template is valid:[/] {template.metadata.name}")
+    finally:
+        if client is not None:
+            await client.close()
+
+
+@app.async_command("render-template")
+async def service_render_template(
+    *,
+    file: Annotated[
+        Optional[str],
+        typer.Option("--file", "-f", help="File path to a service template"),
+    ] = None,
+    url: Annotated[
+        Optional[str],
+        typer.Option("--url", help="URL to a service template"),
+    ] = None,
+    values: Annotated[
+        Optional[str],
+        typer.Option("--values-file", help="File path to template values"),
+    ] = None,
+    value: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--value",
+            "-v",
+            help="Template value override (key=value)",
+        ),
+    ] = None,
+):
+    """Render a service template with variables and print the rendered YAML."""
+    client: Meshagent | None = None
+    try:
+        try:
+            template_text = _load_command_template_text(
+                file=file,
+                url=url,
+                wrong_type_command="meshagent service spec --format template",
+            )
+        except _SpecInputError as exc:
+            _print_spec_input_error(exc)
+            raise typer.Exit(code=1)
+
+        template_values = _load_template_values(values, value)
+        client = await get_client()
+        try:
+            template = await _render_command_template_input(
+                client=client,
+                template_text=template_text,
+                template_values=template_values,
+            )
+        except _SpecInputError as exc:
+            _print_spec_input_error(exc)
+            raise typer.Exit(code=1)
+
+        print(_dump_model_yaml(template), end="")
+    finally:
+        if client is not None:
+            await client.close()
 
 
 @app.async_command(
