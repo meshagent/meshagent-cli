@@ -164,3 +164,40 @@ async def receive(
         raise typer.Exit(1)
     finally:
         await account_client.close()
+
+
+@app.async_command("size", help="Show the current size of a room queue.")
+async def size(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    queue: Annotated[str, typer.Option(..., help="Queue name")],
+):
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        room = resolve_room(room)
+
+        connection = await account_client.connect_room(project_id=project_id, room=room)
+
+        async with RoomClient(
+            protocol=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room),
+                token=connection.jwt,
+            )
+        ) as client:
+            matching_queue = next(
+                (item for item in await client.queues.list() if item.name == queue),
+                None,
+            )
+            if matching_queue is None:
+                print(f"[bold red]Queue not found:[/bold red] {queue}")
+                raise typer.Exit(1)
+
+            print(matching_queue.size)
+
+    except RoomException as e:
+        print(e)
+        raise typer.Exit(1)
+    finally:
+        await account_client.close()
