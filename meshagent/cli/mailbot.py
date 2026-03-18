@@ -9,6 +9,12 @@ from meshagent.cli.common_options import (
     AllowGotoUrlOption,
     ProjectIdOption,
     RoomOption,
+    ShellEmptyDirMountLegacyOption,
+    ShellEmptyDirMountOption,
+    ShellProjectMountLegacyOption,
+    ShellProjectMountOption,
+    ShellRoomMountLegacyOption,
+    ShellRoomMountOption,
     StartingUrlOption,
 )
 from meshagent.tools import Toolkit, WebFetchTool, ContainerShellTool, MemoriesToolkit
@@ -18,6 +24,7 @@ from meshagent.cli.helper import (
     cleanup_args,
     cleanup_args_strip_options,
     get_client,
+    merge_option_lists,
     parse_shell_tool_mounts,
     parse_memory_selector,
     parse_storage_tool_mounts,
@@ -662,20 +669,12 @@ async def join(
             help="Mount room path as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
-    shell_tool_room_path: Annotated[
-        List[str],
-        typer.Option(
-            "--shell-tool-room-path",
-            help="Mount room storage as <source>:<mount>[:ro|rw]",
-        ),
-    ] = [],
-    shell_tool_project_path: Annotated[
-        List[str],
-        typer.Option(
-            "--shell-tool-project-path",
-            help="Mount project storage as <source>:<mount>[:ro|rw]",
-        ),
-    ] = [],
+    shell_room_mount: ShellRoomMountOption = [],
+    shell_tool_room_path: ShellRoomMountLegacyOption = [],
+    shell_project_mount: ShellProjectMountOption = [],
+    shell_tool_project_path: ShellProjectMountLegacyOption = [],
+    shell_empty_dir_mount: ShellEmptyDirMountOption = [],
+    shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
     shell_image_mount: Annotated[
         List[str],
         typer.Option(
@@ -806,8 +805,18 @@ async def join(
             room_paths=storage_tool_room_path,
         )
         shell_tool_mounts = parse_shell_tool_mounts(
-            room_paths=shell_tool_room_path,
-            project_paths=shell_tool_project_path,
+            room_paths=merge_option_lists(
+                shell_room_mount,
+                shell_tool_room_path,
+            ),
+            project_paths=merge_option_lists(
+                shell_project_mount,
+                shell_tool_project_path,
+            ),
+            empty_dir_paths=merge_option_lists(
+                shell_empty_dir_mount,
+                shell_tool_empty_dir,
+            ),
             image_paths=shell_image_mount,
         )
 
@@ -990,20 +999,12 @@ async def service(
             help="Mount room path as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
-    shell_tool_room_path: Annotated[
-        List[str],
-        typer.Option(
-            "--shell-tool-room-path",
-            help="Mount room storage as <source>:<mount>[:ro|rw]",
-        ),
-    ] = [],
-    shell_tool_project_path: Annotated[
-        List[str],
-        typer.Option(
-            "--shell-tool-project-path",
-            help="Mount project storage as <source>:<mount>[:ro|rw]",
-        ),
-    ] = [],
+    shell_room_mount: ShellRoomMountOption = [],
+    shell_tool_room_path: ShellRoomMountLegacyOption = [],
+    shell_project_mount: ShellProjectMountOption = [],
+    shell_tool_project_path: ShellProjectMountLegacyOption = [],
+    shell_empty_dir_mount: ShellEmptyDirMountOption = [],
+    shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
     shell_image_mount: Annotated[
         List[str],
         typer.Option(
@@ -1101,8 +1102,18 @@ async def service(
         room_paths=storage_tool_room_path,
     )
     shell_tool_mounts = parse_shell_tool_mounts(
-        room_paths=shell_tool_room_path,
-        project_paths=shell_tool_project_path,
+        room_paths=merge_option_lists(
+            shell_room_mount,
+            shell_tool_room_path,
+        ),
+        project_paths=merge_option_lists(
+            shell_project_mount,
+            shell_tool_project_path,
+        ),
+        empty_dir_paths=merge_option_lists(
+            shell_empty_dir_mount,
+            shell_tool_empty_dir,
+        ),
         image_paths=shell_image_mount,
     )
     if path is None:
@@ -1279,20 +1290,12 @@ async def spec(
             help="Mount room path as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
-    shell_tool_room_path: Annotated[
-        List[str],
-        typer.Option(
-            "--shell-tool-room-path",
-            help="Mount room storage as <source>:<mount>[:ro|rw]",
-        ),
-    ] = [],
-    shell_tool_project_path: Annotated[
-        List[str],
-        typer.Option(
-            "--shell-tool-project-path",
-            help="Mount project storage as <source>:<mount>[:ro|rw]",
-        ),
-    ] = [],
+    shell_room_mount: ShellRoomMountOption = [],
+    shell_tool_room_path: ShellRoomMountLegacyOption = [],
+    shell_project_mount: ShellProjectMountOption = [],
+    shell_tool_project_path: ShellProjectMountLegacyOption = [],
+    shell_empty_dir_mount: ShellEmptyDirMountOption = [],
+    shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
     shell_image_mount: Annotated[
         List[str],
         typer.Option(
@@ -1391,8 +1394,18 @@ async def spec(
         room_paths=storage_tool_room_path,
     )
     shell_tool_mounts = parse_shell_tool_mounts(
-        room_paths=shell_tool_room_path,
-        project_paths=shell_tool_project_path,
+        room_paths=merge_option_lists(
+            shell_room_mount,
+            shell_tool_room_path,
+        ),
+        project_paths=merge_option_lists(
+            shell_project_mount,
+            shell_tool_project_path,
+        ),
+        empty_dir_paths=merge_option_lists(
+            shell_empty_dir_mount,
+            shell_tool_empty_dir,
+        ),
         image_paths=shell_image_mount,
     )
     path = "/agent"
@@ -1588,20 +1601,12 @@ async def deploy(
             help="Mount room path as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
-    shell_tool_room_path: Annotated[
-        List[str],
-        typer.Option(
-            "--shell-tool-room-path",
-            help="Mount room storage as <source>:<mount>[:ro|rw]",
-        ),
-    ] = [],
-    shell_tool_project_path: Annotated[
-        List[str],
-        typer.Option(
-            "--shell-tool-project-path",
-            help="Mount project storage as <source>:<mount>[:ro|rw]",
-        ),
-    ] = [],
+    shell_room_mount: ShellRoomMountOption = [],
+    shell_tool_room_path: ShellRoomMountLegacyOption = [],
+    shell_project_mount: ShellProjectMountOption = [],
+    shell_tool_project_path: ShellProjectMountLegacyOption = [],
+    shell_empty_dir_mount: ShellEmptyDirMountOption = [],
+    shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
     shell_image_mount: Annotated[
         List[str],
         typer.Option(
@@ -1707,8 +1712,18 @@ async def deploy(
         room_paths=storage_tool_room_path,
     )
     shell_tool_mounts = parse_shell_tool_mounts(
-        room_paths=shell_tool_room_path,
-        project_paths=shell_tool_project_path,
+        room_paths=merge_option_lists(
+            shell_room_mount,
+            shell_tool_room_path,
+        ),
+        project_paths=merge_option_lists(
+            shell_project_mount,
+            shell_tool_project_path,
+        ),
+        empty_dir_paths=merge_option_lists(
+            shell_empty_dir_mount,
+            shell_tool_empty_dir,
+        ),
         image_paths=shell_image_mount,
     )
     path = "/agent"
