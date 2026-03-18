@@ -311,10 +311,18 @@ class _SteeringRecordingAdapter:
     def set_tool_call_approval_handler(self, handler) -> None:
         self.tool_call_approval_handler = handler
 
-    def make_agent_event_publisher(self, *, turn_id, thread_id, callback):
+    def make_agent_event_publisher(
+        self,
+        *,
+        turn_id,
+        thread_id,
+        callback,
+        custom_event_callback=None,
+    ):
         del turn_id
         del thread_id
         del callback
+        del custom_event_callback
         return lambda message: None
 
     async def next(
