@@ -11,6 +11,7 @@ from meshagent.api import RoomClient
 from meshagent.api.helpers import meshagent_base_url
 from meshagent.api.specs.service import (
     ContainerMountSpec,
+    EmptyDirMountSpec,
     ImageStorageMountSpec,
     ProjectStorageMountSpec,
     RoomStorageMountSpec,
@@ -254,6 +255,13 @@ def parse_memory_selector(value: str) -> tuple[str, Optional[list[str]]]:
     return memory_name, namespace or None
 
 
+def merge_option_lists(*option_lists: list[str]) -> list[str]:
+    merged: list[str] = []
+    for values in option_lists:
+        merged.extend(values)
+    return merged
+
+
 def _split_mount_value(
     value: str, option_name: str, default_read_only: bool
 ) -> tuple[str, str, bool]:
@@ -290,6 +298,32 @@ def split_container_mount(
     value: str, option_name: str, default_read_only: bool
 ) -> tuple[str, str, bool]:
     return _split_mount_value(value, option_name, default_read_only)
+
+
+def split_empty_dir_mount(value: str, option_name: str) -> tuple[str, bool]:
+    cleaned = value.strip()
+    if cleaned == "":
+        raise typer.BadParameter(f"{option_name} cannot be empty")
+
+    read_only = False
+    mount = cleaned
+    parts = cleaned.rsplit(":", 1)
+    if len(parts) == 2:
+        suffix = parts[1].lower()
+        if suffix in {"ro", "rw"}:
+            mount = parts[0].strip()
+            read_only = suffix == "ro"
+        else:
+            raise typer.BadParameter(
+                f"{option_name} must be in the form '<mount>[:ro|rw]'"
+            )
+
+    if mount == "":
+        raise typer.BadParameter(f"{option_name} must include a mount path")
+    if ":" in mount:
+        raise typer.BadParameter(f"{option_name} must be in the form '<mount>[:ro|rw]'")
+
+    return mount, read_only
 
 
 def split_image_mount(
@@ -367,13 +401,17 @@ def parse_shell_tool_mounts(
     room_paths: list[str],
     project_paths: list[str],
     image_paths: Optional[list[str]] = None,
+    empty_dir_paths: Optional[list[str]] = None,
 ) -> Optional[ContainerMountSpec]:
     room_mounts: list[RoomStorageMountSpec] = []
     project_mounts: list[ProjectStorageMountSpec] = []
     image_mounts: list[ImageStorageMountSpec] = []
+    empty_dir_mounts: list[EmptyDirMountSpec] = []
 
     if image_paths is None:
         image_paths = []
+    if empty_dir_paths is None:
+        empty_dir_paths = []
 
     for value in room_paths:
         source, mount, read_only = split_container_mount(
@@ -407,13 +445,28 @@ def parse_shell_tool_mounts(
             )
         )
 
-    if not room_mounts and not project_mounts and not image_mounts:
+    for value in empty_dir_paths:
+        mount, read_only = split_empty_dir_mount(value, "--shell-tool-empty-dir")
+        empty_dir_mounts.append(
+            EmptyDirMountSpec(
+                path=mount,
+                read_only=read_only,
+            )
+        )
+
+    if (
+        not room_mounts
+        and not project_mounts
+        and not image_mounts
+        and not empty_dir_mounts
+    ):
         return None
 
     return ContainerMountSpec(
         room=room_mounts or None,
         project=project_mounts or None,
         images=image_mounts or None,
+        empty_dirs=empty_dir_mounts or None,
     )
 
 

@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import importlib.util
 import inspect
+import logging
 import os
 import shlex
 import sys
@@ -176,6 +177,7 @@ async def handler(
 
 
 app = async_typer.AsyncTyper(help=WEBSERVER_APP_HELP)
+logger = logging.getLogger("meshagent.webserver")
 
 
 @dataclass(frozen=True)
@@ -522,11 +524,27 @@ def _with_app_dir_on_syspath(*, app_dir_path: Path):
 
 
 def _load_python_routes(
-    routes: list[PythonRoute], *, app_dir_path: Path
+    routes: list[PythonRoute], *, app_dir_path: Path, allow_runtime_fallback: bool
 ) -> list[LoadedPythonRoute]:
     loaded: list[LoadedPythonRoute] = []
     for route in routes:
-        handler = _load_python_handler(route.source, app_dir_path=app_dir_path)
+        try:
+            handler = _load_python_handler(route.source, app_dir_path=app_dir_path)
+        except typer.BadParameter as exc:
+            if not allow_runtime_fallback:
+                raise
+            logger.error("%s", exc)
+            handler = _build_failed_python_handler()
+        except Exception as exc:
+            if not allow_runtime_fallback:
+                raise typer.BadParameter(
+                    _python_route_load_error_message(path=route.source, error=exc)
+                ) from exc
+            logger.exception(
+                "%s",
+                _python_route_load_error_message(path=route.source, error=exc),
+            )
+            handler = _build_failed_python_handler()
         loaded.append(
             LoadedPythonRoute(
                 path=route.path,
@@ -536,6 +554,35 @@ def _load_python_routes(
             )
         )
     return loaded
+
+
+def _build_failed_python_handler() -> Callable[..., Awaitable[web.StreamResponse]]:
+    async def _failed_handler(
+        *, room: RoomClient, req: web.Request
+    ) -> web.StreamResponse:
+        del room
+        del req
+        return web.Response(status=500, text="Internal Server Error")
+
+    return _failed_handler
+
+
+def _python_route_load_error_message(*, path: Path, error: Exception) -> str:
+    if isinstance(error, SyntaxError):
+        syntax_path = path
+        if isinstance(error.filename, str) and error.filename.strip() != "":
+            syntax_path = Path(error.filename).expanduser().resolve()
+        location = f"{syntax_path}:{error.lineno}:{error.offset}"
+        return (
+            f"Unable to load python route file {path}: "
+            f"invalid syntax at {location}: {error.msg}"
+        )
+
+    error_name = type(error).__name__
+    error_message = str(error).strip()
+    if error_message == "":
+        return f"Unable to load python route file {path}: {error_name}"
+    return f"Unable to load python route file {path}: {error_name}: {error_message}"
 
 
 def _load_python_handler(path: Path, *, app_dir_path: Path) -> Callable[..., Any]:
@@ -683,6 +730,21 @@ def _resolve_validated_routes(
     routes_path: Path,
     app_dir_path: Path,
 ) -> tuple[list[StaticRoute], list[LoadedPythonRoute]]:
+    return _resolve_loaded_routes(
+        config=config,
+        routes_path=routes_path,
+        app_dir_path=app_dir_path,
+        allow_runtime_fallback=False,
+    )
+
+
+def _resolve_loaded_routes(
+    *,
+    config: WebServerConfig,
+    routes_path: Path,
+    app_dir_path: Path,
+    allow_runtime_fallback: bool,
+) -> tuple[list[StaticRoute], list[LoadedPythonRoute]]:
     static_routes, python_routes = _resolve_routes_config(
         config=config,
         routes_path=routes_path,
@@ -701,8 +763,23 @@ def _resolve_validated_routes(
     loaded_python_routes = _load_python_routes(
         python_routes,
         app_dir_path=app_dir_path,
+        allow_runtime_fallback=allow_runtime_fallback,
     )
     return static_routes, loaded_python_routes
+
+
+def _resolve_runtime_routes(
+    *,
+    config: WebServerConfig,
+    routes_path: Path,
+    app_dir_path: Path,
+) -> tuple[list[StaticRoute], list[LoadedPythonRoute]]:
+    return _resolve_loaded_routes(
+        config=config,
+        routes_path=routes_path,
+        app_dir_path=app_dir_path,
+        allow_runtime_fallback=True,
+    )
 
 
 def _watch_paths(
@@ -884,7 +961,7 @@ def build_webserver(
         host_override=host_override,
         port_override=port_override,
     )
-    static_routes, loaded_python_routes = _resolve_validated_routes(
+    static_routes, loaded_python_routes = _resolve_runtime_routes(
         config=config,
         routes_path=routes_path,
         app_dir_path=app_dir_path,

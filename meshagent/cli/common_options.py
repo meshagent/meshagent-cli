@@ -46,6 +46,57 @@ StartingUrlOption = Annotated[
     ),
 ]
 
+ShellRoomMountOption = Annotated[
+    list[str],
+    typer.Option(
+        "--shell-room-mount",
+        help="Mount room storage as <source>:<mount>[:ro|rw]",
+    ),
+]
+
+ShellRoomMountLegacyOption = Annotated[
+    list[str],
+    typer.Option(
+        "--shell-tool-room-path",
+        help="Mount room storage as <source>:<mount>[:ro|rw]",
+        hidden=True,
+    ),
+]
+
+ShellProjectMountOption = Annotated[
+    list[str],
+    typer.Option(
+        "--shell-project-mount",
+        help="Mount project storage as <source>:<mount>[:ro|rw]",
+    ),
+]
+
+ShellProjectMountLegacyOption = Annotated[
+    list[str],
+    typer.Option(
+        "--shell-tool-project-path",
+        help="Mount project storage as <source>:<mount>[:ro|rw]",
+        hidden=True,
+    ),
+]
+
+ShellEmptyDirMountOption = Annotated[
+    list[str],
+    typer.Option(
+        "--shell-empty-dir-mount",
+        help="Mount empty dir at <mount>[:ro|rw]",
+    ),
+]
+
+ShellEmptyDirMountLegacyOption = Annotated[
+    list[str],
+    typer.Option(
+        "--shell-tool-empty-dir",
+        help="Mount empty dir at <mount>[:ro|rw]",
+        hidden=True,
+    ),
+]
+
 AllowGotoUrlOption = Annotated[
     bool,
     typer.Option(
