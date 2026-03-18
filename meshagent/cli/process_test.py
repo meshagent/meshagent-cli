@@ -15,6 +15,7 @@ from meshagent.agents.messages import (
 from meshagent.agents.process import Message
 from meshagent.api.specs.service import ContainerSpec, ServiceMetadata, ServiceSpec
 from meshagent.cli import chatbot
+from meshagent.cli import codex
 from meshagent.cli import cli as root_cli
 from meshagent.computers.agent import ComputerToolkit
 from meshagent.tools import Toolkit
@@ -73,6 +74,30 @@ def test_resolved_channels_accept_toolkit_channel() -> None:
         runtime="process",
         channel=["toolkit:assistant"],
     ) == ["toolkit:assistant"]
+
+
+def test_chatbot_agent_annotations_include_thread_dir() -> None:
+    assert chatbot._chatbot_agent_annotations(
+        threading_mode="default-new",
+        thread_dir="/threads/helper",
+    ) == {
+        "meshagent.agent.type": "ChatBot",
+        "meshagent.chatbot.threading": "default-new",
+        "meshagent.chatbot.thread-dir": "/threads/helper",
+        "meshagent.chatbot.thread-list": "/threads/helper/index.threadl",
+    }
+
+
+def test_codex_chatbot_agent_annotations_include_thread_dir() -> None:
+    assert codex._chatbot_agent_annotations(
+        threading_mode="default-new",
+        thread_dir="/threads/helper",
+    ) == {
+        "meshagent.agent.type": "ChatBot",
+        "meshagent.chatbot.threading": "default-new",
+        "meshagent.chatbot.thread-dir": "/threads/helper",
+        "meshagent.chatbot.thread-list": "/threads/helper/index.threadl",
+    }
 
 
 def test_process_spec_uses_process_runtime_and_chat_channel(monkeypatch) -> None:
