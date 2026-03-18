@@ -16,17 +16,29 @@ class _FakeConnection:
 class _FakeQueuesClient:
     def __init__(self) -> None:
         self.sent: list[dict[str, object]] = []
+        self.queues: list[_FakeQueue] = []
 
     async def send(self, *, name: str, message: dict) -> None:
         self.sent.append({"name": name, "message": message})
 
+    async def list(self) -> list["_FakeQueue"]:
+        return self.queues
+
+
+class _FakeQueue:
+    def __init__(self, *, name: str, size: int) -> None:
+        self.name = name
+        self.size = size
+
 
 class _FakeRoomClient:
     last_instance: "_FakeRoomClient | None" = None
+    default_queues: list[_FakeQueue] = []
 
     def __init__(self, *, protocol) -> None:
         self.protocol = protocol
         self.queues = _FakeQueuesClient()
+        self.queues.queues = list(type(self).default_queues)
         type(self).last_instance = self
 
     async def __aenter__(self) -> "_FakeRoomClient":
@@ -97,6 +109,45 @@ async def _run_send_mail(
     room_client = _FakeRoomClient.last_instance
     assert room_client is not None
     return account_client, printed, room_client
+
+
+async def _run_size(
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    room_name: str,
+    queue_name: str,
+    queues: list[_FakeQueue],
+) -> tuple[_FakeAccountClient, list[str]]:
+    account_client = _FakeAccountClient()
+    printed: list[str] = []
+
+    async def _fake_get_client() -> _FakeAccountClient:
+        return account_client
+
+    async def _fake_resolve_project_id(*, project_id):
+        del project_id
+        return "project-1"
+
+    def _fake_resolve_room(room: str) -> str:
+        return room
+
+    def _fake_print(*args, **kwargs) -> None:
+        del kwargs
+        printed.append(" ".join(str(arg) for arg in args))
+
+    monkeypatch.setattr(queue, "get_client", _fake_get_client)
+    monkeypatch.setattr(queue, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(queue, "resolve_room", _fake_resolve_room)
+    _FakeRoomClient.default_queues = queues
+    monkeypatch.setattr(queue, "RoomClient", _FakeRoomClient)
+    monkeypatch.setattr(queue, "print", _fake_print)
+
+    await queue.size(
+        project_id=None,
+        room=room_name,
+        queue=queue_name,
+    )
+    return account_client, printed
 
 
 @pytest.mark.asyncio
@@ -189,3 +240,39 @@ async def test_send_mail_allows_empty_body(
     assert body_part is not None
     assert body_part.get_content().strip() == ""
     assert list(email_message.iter_attachments()) == []
+
+
+@pytest.mark.asyncio
+async def test_size_prints_matching_queue_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account_client, printed = await _run_size(
+        monkeypatch=monkeypatch,
+        room_name="demo-room",
+        queue_name="jobs",
+        queues=[
+            _FakeQueue(name="jobs", size=3),
+            _FakeQueue(name="other", size=1),
+        ],
+    )
+
+    assert account_client.connect_calls == [
+        {"project_id": "project-1", "room": "demo-room"}
+    ]
+    assert account_client.closed is True
+    assert printed == ["3"]
+
+
+@pytest.mark.asyncio
+async def test_size_errors_for_missing_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(queue.typer.Exit) as exc_info:
+        await _run_size(
+            monkeypatch=monkeypatch,
+            room_name="demo-room",
+            queue_name="missing",
+            queues=[_FakeQueue(name="jobs", size=3)],
+        )
+
+    assert exc_info.value.exit_code == 1

@@ -382,6 +382,7 @@ def _chatbot_agent_annotations(
 
     normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
     if normalized_thread_dir is not None:
+        annotations["meshagent.chatbot.thread-dir"] = normalized_thread_dir
         annotations["meshagent.chatbot.thread-list"] = (
             f"{normalized_thread_dir}/index.threadl"
         )
