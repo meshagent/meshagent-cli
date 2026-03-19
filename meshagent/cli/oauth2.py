@@ -16,7 +16,7 @@ import sys
 import base64
 import binascii
 
-app = async_typer.AsyncTyper(help="OAuth2 test commands")
+app = async_typer.AsyncTyper(help="Manage room-scoped secrets and OAuth flows")
 
 
 def _read_bytes(*, input_path: str) -> bytes:

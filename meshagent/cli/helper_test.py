@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 import typer
 
@@ -5,6 +7,7 @@ from meshagent.cli.helper import (
     parse_memory_selector,
     parse_shell_tool_mounts,
     resolve_shell_image,
+    init_context_from_spec,
 )
 
 
@@ -83,3 +86,62 @@ def test_parse_shell_tool_mounts_rejects_empty_dir_bind_syntax(value: str) -> No
             project_paths=[],
             empty_dir_paths=[value],
         )
+
+
+@pytest.mark.asyncio
+async def test_init_context_from_spec_handles_missing_annotations(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    spec_path = tmp_path / "meshagent.yaml"
+    spec_path.write_text(
+        "\n".join(
+            [
+                "version: v1",
+                "kind: Service",
+                "metadata:",
+                "  name: chatbot",
+                "  description: Helpful chatbot",
+            ]
+        )
+    )
+    monkeypatch.setenv("MESHAGENT_SPEC_PATH", str(spec_path))
+    context = AgentSessionContext(system_role=None)
+
+    await init_context_from_spec(context)
+
+    assert context.messages == [
+        {
+            "role": "assistant",
+            "content": "This agent's description:\nHelpful chatbot",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_init_context_from_spec_adds_readme_when_annotation_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    spec_path = tmp_path / "meshagent.yaml"
+    spec_path.write_text(
+        "\n".join(
+            [
+                "version: v1",
+                "kind: Service",
+                "metadata:",
+                "  name: chatbot",
+                "  annotations:",
+                '    meshagent.service.readme: "Read me first"',
+            ]
+        )
+    )
+    monkeypatch.setenv("MESHAGENT_SPEC_PATH", str(spec_path))
+    context = AgentSessionContext(system_role=None)
+
+    await init_context_from_spec(context)
+
+    assert context.messages == [
+        {
+            "role": "assistant",
+            "content": "This agent's README:\nRead me first",
+        }
+    ]

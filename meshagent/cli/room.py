@@ -22,11 +22,11 @@ app.add_typer(
     help="Interact with agents and toolkits",
     hidden=True,
 )
-app.add_typer(oauth2.app, name="secret", help="Manage secrets for your project")
+app.add_typer(oauth2.app, name="secret", help="Manage secrets in a room")
 app.add_typer(
     oauth2.app,
     name="secrets",
-    help="Manage secrets for your project",
+    help="Manage secrets in a room",
     hidden=True,
 )
 app.add_typer(queue.app, name="queue", help="Use queues in a room")

@@ -10,6 +10,7 @@ from rich.table import Table
 from meshagent.api import RoomClient
 from meshagent.api.helpers import meshagent_base_url
 from meshagent.api.specs.service import (
+    ANNOTATION_SERVICE_README,
     ContainerMountSpec,
     EmptyDirMountSpec,
     ImageStorageMountSpec,
@@ -204,7 +205,8 @@ async def init_context_from_spec(context: AgentSessionContext) -> None:
             # fallback on yaml parser if spec can't
             spec = parse_yaml_raw_as(ServiceSpec, spec_str)
 
-        readme = spec.metadata.annotations.get("meshagent.service.readme")
+        annotations = spec.metadata.annotations or {}
+        readme = annotations.get(ANNOTATION_SERVICE_README)
 
         if spec.metadata.description:
             context.append_assistant_message(
