@@ -33,10 +33,25 @@ import json
 from rich import print
 
 SETTINGS_FILE = Path.home() / ".meshagent" / "project.json"
+DEFAULT_SHELL_IMAGE = "python:3.13"
 
 
 def _ensure_cache_dir():
     SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+
+def resolve_shell_image(shell_image: Optional[str]) -> Optional[str]:
+    if shell_image is None:
+        return DEFAULT_SHELL_IMAGE
+
+    normalized = shell_image.strip()
+    if normalized == "":
+        return DEFAULT_SHELL_IMAGE
+
+    if normalized.lower() == "none":
+        return None
+
+    return normalized
 
 
 class Settings(BaseModel):

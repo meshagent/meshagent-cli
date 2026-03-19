@@ -1,7 +1,11 @@
 import pytest
 import typer
 
-from meshagent.cli.helper import parse_memory_selector, parse_shell_tool_mounts
+from meshagent.cli.helper import (
+    parse_memory_selector,
+    parse_shell_tool_mounts,
+    resolve_shell_image,
+)
 
 
 def test_parse_memory_selector_name_only() -> None:
@@ -16,6 +20,21 @@ def test_parse_memory_selector_with_namespace() -> None:
 
     assert memory_name == "graph"
     assert namespace == ["team", "shared"]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, "python:3.13"),
+        ("", "python:3.13"),
+        ("  ", "python:3.13"),
+        ("python:3.12", "python:3.12"),
+        (" none ", None),
+        ("NONE", None),
+    ],
+)
+def test_resolve_shell_image(value: str | None, expected: str | None) -> None:
+    assert resolve_shell_image(value) == expected
 
 
 @pytest.mark.parametrize(

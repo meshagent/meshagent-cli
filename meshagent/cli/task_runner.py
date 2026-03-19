@@ -51,6 +51,7 @@ from meshagent.cli.helper import (
     parse_shell_tool_mounts,
     parse_memory_selector,
     parse_storage_tool_mounts,
+    resolve_shell_image,
     resolve_key,
     resolve_project_id,
     resolve_room,
@@ -379,6 +380,7 @@ def build_task_runner(
     supports_openai_tools = llm_participant is None and not is_claude_model
     base_shell_env = _copy_shell_env_vars(copy_env=shell_copy_env)
     base_shell_env.update(_set_shell_env_vars(set_env=shell_set_env))
+    resolved_shell_image = resolve_shell_image(shell_image)
     memory_selection: Optional[tuple[str, Optional[list[str]]]] = None
     if use_memory is not None:
         memory_selection = parse_memory_selector(use_memory)
@@ -454,7 +456,7 @@ def build_task_runner(
                     shell_kwargs = {
                         "working_dir": working_dir,
                         "config": ShellConfig(name="shell"),
-                        "image": shell_image or "python:3.13",
+                        "image": resolved_shell_image,
                         "env": env,
                     }
                     if shell_tool_mounts is not None:
@@ -462,7 +464,7 @@ def build_task_runner(
                     self.shell_tool = ShellTool(**shell_kwargs)
                 else:
                     shell_kwargs = {
-                        "image": shell_image or "python:3.13",
+                        "image": resolved_shell_image,
                         "name": "shell",
                         "env": env,
                     }
@@ -706,6 +708,7 @@ def build_task_runner(
             if shell:
                 shell_builder_kwargs = {
                     "working_dir": working_dir,
+                    "image": resolved_shell_image,
                     "env": base_shell_env or None,
                 }
                 if shell_tool_mounts is not None:

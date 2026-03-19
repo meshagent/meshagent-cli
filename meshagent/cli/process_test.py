@@ -207,6 +207,16 @@ class _FakeBot:
         await asyncio.sleep(0)
 
 
+class _FakeShellProtocol:
+    def __init__(self) -> None:
+        self.token = "test-token"
+
+
+class _FakeShellRoom:
+    def __init__(self) -> None:
+        self.protocol = _FakeShellProtocol()
+
+
 @pytest.mark.asyncio
 async def test_run_agent_room_session_cleans_up_on_cancellation() -> None:
     client = _FakeRoomClient()
@@ -605,3 +615,64 @@ async def test_build_process_agent_forwards_tool_boundary_steering_callback(
         ]
     finally:
         await agent.stop()
+
+
+def test_process_agent_shell_toolkit_builder_defaults_image() -> None:
+    custom_process_agent = chatbot.build_process_agent(
+        model="gpt-5",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        shell="enabled",
+        channels=[],
+    )
+
+    agent = custom_process_agent()
+
+    builders = agent.get_toolkit_builders()
+
+    assert len(builders) == 1
+    assert builders[0].image == "python:3.13"
+
+
+def test_process_agent_shell_toolkit_builder_uses_none_sentinel() -> None:
+    custom_process_agent = chatbot.build_process_agent(
+        model="gpt-5",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        shell="enabled",
+        shell_image="none",
+        channels=[],
+    )
+
+    agent = custom_process_agent()
+
+    builders = agent.get_toolkit_builders()
+
+    assert len(builders) == 1
+    assert builders[0].image is None
+
+
+@pytest.mark.asyncio
+async def test_chatbot_require_shell_uses_none_sentinel(monkeypatch) -> None:
+    custom_chatbot = chatbot.build_chatbot(
+        model="gpt-5",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_shell=True,
+        shell_image="none",
+    )
+
+    async def fake_start(self, *, room) -> None:
+        self._room = room
+
+    monkeypatch.setattr(custom_chatbot.__mro__[1], "start", fake_start)
+
+    agent = custom_chatbot()
+
+    await agent.start(room=_FakeShellRoom())
+
+    assert agent.shell_tool is not None
+    assert agent.shell_tool.image is None
