@@ -5,11 +5,16 @@ import typer
 
 from meshagent.agents.context import AgentSessionContext
 from meshagent.cli.helper import (
+    DEFAULT_SHELL_IMAGE,
+    build_shell_toolkit_builder,
+    init_context_from_spec,
     parse_memory_selector,
     parse_shell_tool_mounts,
     resolve_shell_image,
-    init_context_from_spec,
+    supports_openai_shell_tool,
 )
+from meshagent.openai.tools.responses_adapter import ShellTool
+from meshagent.tools import ContainerShellTool
 
 
 def test_parse_memory_selector_name_only() -> None:
@@ -39,6 +44,63 @@ def test_parse_memory_selector_with_namespace() -> None:
 )
 def test_resolve_shell_image(value: str | None, expected: str | None) -> None:
     assert resolve_shell_image(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("model", "llm_participant", "expected"),
+    [
+        ("gpt-5", None, True),
+        ("o3", None, False),
+        ("claude-3-7-sonnet", None, False),
+        ("gpt-5", "remote-llm", False),
+    ],
+)
+def test_supports_openai_shell_tool(
+    model: str, llm_participant: str | None, expected: bool
+) -> None:
+    assert (
+        supports_openai_shell_tool(
+            model=model,
+            llm_participant=llm_participant,
+        )
+        is expected
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_shell_toolkit_builder_uses_container_shell_for_non_gpt_model() -> (
+    None
+):
+    builder = build_shell_toolkit_builder(
+        use_openai_shell_tool=False,
+        working_dir="/workspace",
+        image=DEFAULT_SHELL_IMAGE,
+    )
+
+    toolkit = await builder.make(
+        room=None,  # type: ignore[arg-type]
+        model="o3",
+        config=builder.type.model_validate({"name": "shell"}),
+    )
+
+    assert isinstance(toolkit.tools[0], ContainerShellTool)
+
+
+@pytest.mark.asyncio
+async def test_build_shell_toolkit_builder_uses_shell_tool_for_gpt_model() -> None:
+    builder = build_shell_toolkit_builder(
+        use_openai_shell_tool=True,
+        working_dir="/workspace",
+        image=DEFAULT_SHELL_IMAGE,
+    )
+
+    toolkit = await builder.make(
+        room=None,  # type: ignore[arg-type]
+        model="gpt-5",
+        config=builder.type.model_validate({"name": "shell"}),
+    )
+
+    assert isinstance(toolkit.tools[0], ShellTool)
 
 
 @pytest.mark.parametrize(

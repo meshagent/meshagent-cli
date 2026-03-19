@@ -18,7 +18,9 @@ from meshagent.cli import chatbot
 from meshagent.cli import codex
 from meshagent.cli import cli as root_cli
 from meshagent.computers.agent import ComputerToolkit
+from meshagent.openai.tools.responses_adapter import ShellTool
 from meshagent.tools import Toolkit
+from meshagent.tools import ContainerShellTool
 
 
 class _FakeService:
@@ -655,6 +657,56 @@ def test_process_agent_shell_toolkit_builder_uses_none_sentinel() -> None:
 
 
 @pytest.mark.asyncio
+async def test_process_agent_shell_toolkit_builder_uses_container_shell_for_non_gpt_model() -> (
+    None
+):
+    custom_process_agent = chatbot.build_process_agent(
+        model="o3",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        shell="enabled",
+        channels=[],
+    )
+
+    agent = custom_process_agent()
+    builder = agent.get_toolkit_builders()[0]
+
+    toolkit = await builder.make(
+        room=None,  # type: ignore[arg-type]
+        model="o3",
+        config=builder.type.model_validate({"name": "shell"}),
+    )
+
+    assert isinstance(toolkit.tools[0], ContainerShellTool)
+
+
+@pytest.mark.asyncio
+async def test_process_agent_shell_toolkit_builder_uses_shell_tool_for_gpt_model() -> (
+    None
+):
+    custom_process_agent = chatbot.build_process_agent(
+        model="gpt-5",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        shell="enabled",
+        channels=[],
+    )
+
+    agent = custom_process_agent()
+    builder = agent.get_toolkit_builders()[0]
+
+    toolkit = await builder.make(
+        room=None,  # type: ignore[arg-type]
+        model="gpt-5",
+        config=builder.type.model_validate({"name": "shell"}),
+    )
+
+    assert isinstance(toolkit.tools[0], ShellTool)
+
+
+@pytest.mark.asyncio
 async def test_chatbot_require_shell_uses_none_sentinel(monkeypatch) -> None:
     custom_chatbot = chatbot.build_chatbot(
         model="gpt-5",
@@ -676,3 +728,27 @@ async def test_chatbot_require_shell_uses_none_sentinel(monkeypatch) -> None:
 
     assert agent.shell_tool is not None
     assert agent.shell_tool.image is None
+
+
+@pytest.mark.asyncio
+async def test_chatbot_require_shell_uses_container_shell_for_non_gpt_model(
+    monkeypatch,
+) -> None:
+    custom_chatbot = chatbot.build_chatbot(
+        model="o3",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_shell=True,
+    )
+
+    async def fake_start(self, *, room) -> None:
+        self._room = room
+
+    monkeypatch.setattr(custom_chatbot.__mro__[1], "start", fake_start)
+
+    agent = custom_chatbot()
+
+    await agent.start(room=_FakeShellRoom())
+
+    assert isinstance(agent.shell_tool, ContainerShellTool)

@@ -21,6 +21,9 @@ from meshagent.api.specs.service import (
 from meshagent.agents.context import AgentSessionContext
 from meshagent.api.client import Meshagent, RoomConnectionInfo
 from meshagent.cli import async_typer, auth_async
+from meshagent.openai.tools.responses_adapter import ShellConfig, ShellToolkitBuilder
+from meshagent.tools import ContainerShellTool, Toolkit, ToolkitBuilder
+from meshagent.tools.container_shell import DEFAULT_CONTAINER_MOUNT_SPEC
 from meshagent.tools.storage import (
     StorageToolLocalMount,
     StorageToolMount,
@@ -53,6 +56,71 @@ def resolve_shell_image(shell_image: Optional[str]) -> Optional[str]:
         return None
 
     return normalized
+
+
+def supports_openai_shell_tool(
+    *, model: str, llm_participant: Optional[str] = None
+) -> bool:
+    return llm_participant is None and model.startswith("gpt-")
+
+
+class _ContainerBackedShellToolkitBuilder(ToolkitBuilder):
+    def __init__(
+        self,
+        *,
+        working_dir: Optional[str] = None,
+        image: Optional[str] = DEFAULT_SHELL_IMAGE,
+        mounts: Optional[ContainerMountSpec] = DEFAULT_CONTAINER_MOUNT_SPEC,
+        env: Optional[dict[str, str]] = None,
+    ) -> None:
+        super().__init__(name="shell", type=ShellConfig)
+        self.working_dir = working_dir
+        self.image = image
+        self.mounts = mounts
+        self.env = env
+
+    async def make(
+        self, *, room: RoomClient, model: str, config: ShellConfig
+    ) -> Toolkit:
+        del room
+        del model
+        del config
+        return Toolkit(
+            name="shell",
+            tools=[
+                ContainerShellTool(
+                    name="shell",
+                    working_dir=self.working_dir,
+                    image=self.image,
+                    mounts=self.mounts,
+                    env=self.env,
+                )
+            ],
+        )
+
+
+def build_shell_toolkit_builder(
+    *,
+    use_openai_shell_tool: bool,
+    working_dir: Optional[str] = None,
+    image: Optional[str] = DEFAULT_SHELL_IMAGE,
+    mounts: Optional[ContainerMountSpec] = DEFAULT_CONTAINER_MOUNT_SPEC,
+    env: Optional[dict[str, str]] = None,
+) -> ToolkitBuilder:
+    if use_openai_shell_tool:
+        return ShellToolkitBuilder(
+            working_dir=working_dir,
+            image=image,
+            mounts=mounts,
+            env=env,
+        )
+
+    return _ContainerBackedShellToolkitBuilder(
+        working_dir=working_dir,
+        image=image,
+        mounts=mounts,
+        env=env,
+    )
 
 
 class Settings(BaseModel):

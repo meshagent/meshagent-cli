@@ -32,6 +32,7 @@ from meshagent.cli.helper import (
     resolve_key,
     resolve_project_id,
     resolve_room,
+    supports_openai_shell_tool,
     upload_room_bytes_stream,
 )
 from meshagent.openai import OpenAIResponsesAdapter
@@ -270,8 +271,10 @@ def build_mailbot(
                 print(f"[yellow]rules file not found at {rules_path}[/yellow]")
 
     is_claude_model = model.startswith("claude-")
-    is_openai = not is_claude_model
     supports_openai_tools = llm_participant is None and not is_claude_model
+    supports_openai_shell = supports_openai_shell_tool(
+        model=model, llm_participant=llm_participant
+    )
     base_shell_env = _copy_shell_env_vars(copy_env=shell_copy_env)
     base_shell_env.update(_set_shell_env_vars(set_env=shell_set_env))
     resolved_shell_image = resolve_shell_image(shell_image)
@@ -366,7 +369,7 @@ def build_mailbot(
                 env["ANTHROPIC_API_KEY"] = self.room.protocol.token
 
             if require_shell:
-                if is_openai:
+                if supports_openai_shell:
                     shell_kwargs = {
                         "working_dir": working_dir,
                         "config": ShellConfig(name="shell"),

@@ -52,6 +52,7 @@ from meshagent.api import (
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.cli import async_typer
 from meshagent.cli.helper import (
+    build_shell_toolkit_builder,
     cleanup_args,
     cleanup_args_strip_options,
     get_client,
@@ -63,6 +64,7 @@ from meshagent.cli.helper import (
     resolve_key,
     resolve_project_id,
     resolve_room,
+    supports_openai_shell_tool,
     upload_room_bytes_stream,
 )
 
@@ -89,7 +91,6 @@ from meshagent.openai.tools.responses_adapter import (
     ApplyPatchConfig,
     ApplyPatchTool,
     ApplyPatchToolkitBuilder,
-    ShellToolkitBuilder,
     ShellTool,
     LocalShellToolkitBuilder,
     LocalShellTool,
@@ -593,8 +594,10 @@ def build_chatbot(
                 print(f"[yellow]rules file not found at {rules_path}[/yellow]")
 
     is_claude_model = model.startswith("claude-")
-    is_openai = not is_claude_model
     supports_openai_tools = llm_participant is None and not is_claude_model
+    supports_openai_shell = supports_openai_shell_tool(
+        model=model, llm_participant=llm_participant
+    )
     base_shell_env = _copy_shell_env_vars(copy_env=shell_copy_env)
     base_shell_env.update(_set_shell_env_vars(set_env=shell_set_env))
     resolved_shell_image = resolve_shell_image(shell_image)
@@ -678,7 +681,7 @@ def build_chatbot(
                 env["ANTHROPIC_API_KEY"] = self.room.protocol.token
 
             if require_shell:
-                if is_openai:
+                if supports_openai_shell:
                     shell_kwargs = {
                         "working_dir": working_dir,
                         "config": ShellConfig(name="shell"),
@@ -948,7 +951,12 @@ def build_chatbot(
                 }
                 if shell_tool_mounts is not None:
                     shell_builder_kwargs["mounts"] = shell_tool_mounts
-                providers.append(ShellToolkitBuilder(**shell_builder_kwargs))
+                providers.append(
+                    build_shell_toolkit_builder(
+                        use_openai_shell_tool=supports_openai_shell,
+                        **shell_builder_kwargs,
+                    )
+                )
 
             if mcp:
                 providers.append(MCPToolkitBuilder())
@@ -1069,8 +1077,10 @@ def build_process_agent(
                 print(f"[yellow]rules file not found at {rules_path}[/yellow]")
 
     is_claude_model = model.startswith("claude-")
-    is_openai = not is_claude_model
     supports_openai_tools = llm_participant is None and not is_claude_model
+    supports_openai_shell = supports_openai_shell_tool(
+        model=model, llm_participant=llm_participant
+    )
     base_shell_env = _copy_shell_env_vars(copy_env=shell_copy_env)
     base_shell_env.update(_set_shell_env_vars(set_env=shell_set_env))
     resolved_shell_image = resolve_shell_image(shell_image)
@@ -1217,7 +1227,7 @@ def build_process_agent(
                     env["ANTHROPIC_API_KEY"] = self.room.protocol.token
 
                 if require_shell:
-                    if is_openai:
+                    if supports_openai_shell:
                         shell_kwargs = {
                             "working_dir": working_dir,
                             "config": ShellConfig(name="shell"),
@@ -1383,7 +1393,12 @@ def build_process_agent(
                 }
                 if shell_tool_mounts is not None:
                     shell_builder_kwargs["mounts"] = shell_tool_mounts
-                providers.append(ShellToolkitBuilder(**shell_builder_kwargs))
+                providers.append(
+                    build_shell_toolkit_builder(
+                        use_openai_shell_tool=supports_openai_shell,
+                        **shell_builder_kwargs,
+                    )
+                )
 
             if mcp:
                 providers.append(MCPToolkitBuilder())
