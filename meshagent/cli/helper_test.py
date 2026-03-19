@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 import typer
 
+from meshagent.agents.context import AgentSessionContext
 from meshagent.cli.helper import (
     parse_memory_selector,
     parse_shell_tool_mounts,
