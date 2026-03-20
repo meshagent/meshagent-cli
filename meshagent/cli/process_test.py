@@ -71,6 +71,66 @@ def test_resolved_channels_accept_queue_channel() -> None:
     ) == ["queue:jobs"]
 
 
+@pytest.mark.asyncio
+async def test_process_agent_passes_threading_mode_to_queue_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import meshagent.agents
+    from meshagent.agents.process import Channel
+
+    captured_calls: list[dict[str, object]] = []
+
+    class _RecordingQueueChannel(Channel):
+        def __init__(
+            self,
+            *,
+            room,
+            queue_name: str,
+            threading_mode: str | None = None,
+            thread_dir: str | None = None,
+        ) -> None:
+            super().__init__()
+            captured_calls.append(
+                {
+                    "room": room,
+                    "queue_name": queue_name,
+                    "threading_mode": threading_mode,
+                    "thread_dir": thread_dir,
+                }
+            )
+
+        def handles(self, message: Message) -> bool:
+            del message
+            return False
+
+    monkeypatch.setattr(meshagent.agents, "QueueChannel", _RecordingQueueChannel)
+
+    agent_cls = chatbot.build_process_agent(
+        model="gpt-5.4",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        threading_mode="default-new",
+        thread_dir="/threads/queue",
+        channels=["queue:jobs"],
+    )
+    agent = agent_cls()
+    room = _FakeProcessRoomClient()
+
+    await agent.start(room=room)  # type: ignore[arg-type]
+    try:
+        assert captured_calls == [
+            {
+                "room": room,
+                "queue_name": "jobs",
+                "threading_mode": "default-new",
+                "thread_dir": "/threads/queue",
+            }
+        ]
+    finally:
+        await agent.stop()
+
+
 def test_resolved_channels_accept_toolkit_channel() -> None:
     assert chatbot._resolved_channels(
         runtime="process",

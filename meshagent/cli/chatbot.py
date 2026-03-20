@@ -210,7 +210,7 @@ ThreadingModeOption = Annotated[
     typer.Option(
         "--threading-mode",
         help=(
-            "Threading mode for chat UIs. "
+            "Threading mode for thread UIs. "
             "Use 'default-new' to show a new-thread composer before loading a thread."
         ),
     ),
@@ -221,7 +221,7 @@ ThreadDirOption = Annotated[
     typer.Option(
         "--thread-dir",
         help=(
-            "Thread directory for chat thread files. "
+            "Thread directory for agent thread files. "
             "Defaults to .threads/<agent-name> when not provided."
         ),
     ),
@@ -1198,6 +1198,7 @@ def build_process_agent(
                     QueueChannel(
                         room=room,
                         queue_name=queue_config.queue_name,
+                        threading_mode=self._resolved_threading_mode,
                         thread_dir=thread_dir,
                     )
                 )
