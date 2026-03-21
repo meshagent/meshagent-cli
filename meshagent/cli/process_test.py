@@ -117,6 +117,11 @@ async def test_process_agent_passes_threading_mode_to_queue_channel(
     agent = agent_cls()
     room = _FakeProcessRoomClient()
 
+    async def _skip_install_requirements() -> None:
+        return None
+
+    monkeypatch.setattr(agent, "install_requirements", _skip_install_requirements)
+
     await agent.start(room=room)  # type: ignore[arg-type]
     try:
         assert captured_calls == [
