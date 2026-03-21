@@ -88,6 +88,7 @@ async def test_process_agent_passes_threading_mode_to_queue_channel(
             queue_name: str,
             threading_mode: str | None = None,
             thread_dir: str | None = None,
+            llm_adapter=None,
         ) -> None:
             super().__init__()
             captured_calls.append(
@@ -96,6 +97,7 @@ async def test_process_agent_passes_threading_mode_to_queue_channel(
                     "queue_name": queue_name,
                     "threading_mode": threading_mode,
                     "thread_dir": thread_dir,
+                    "llm_adapter": llm_adapter,
                 }
             )
 
@@ -124,14 +126,228 @@ async def test_process_agent_passes_threading_mode_to_queue_channel(
 
     await agent.start(room=room)  # type: ignore[arg-type]
     try:
-        assert captured_calls == [
-            {
-                "room": room,
-                "queue_name": "jobs",
-                "threading_mode": "default-new",
-                "thread_dir": "/threads/queue",
-            }
-        ]
+        assert len(captured_calls) == 1
+        assert captured_calls[0]["room"] is room
+        assert captured_calls[0]["queue_name"] == "jobs"
+        assert captured_calls[0]["threading_mode"] == "default-new"
+        assert captured_calls[0]["thread_dir"] == "/threads/queue"
+        assert captured_calls[0]["llm_adapter"] is not None
+    finally:
+        await agent.stop()
+
+
+@pytest.mark.asyncio
+async def test_process_agent_passes_threading_mode_to_mail_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import meshagent.agents
+    from meshagent.agents.process import Channel
+
+    captured_calls: list[dict[str, object]] = []
+
+    class _RecordingMailChannel(Channel):
+        def __init__(
+            self,
+            *,
+            room,
+            queue_name: str,
+            email_address: str,
+            threading_mode: str | None = None,
+            thread_dir: str | None = None,
+            llm_adapter=None,
+        ) -> None:
+            super().__init__()
+            captured_calls.append(
+                {
+                    "room": room,
+                    "queue_name": queue_name,
+                    "email_address": email_address,
+                    "threading_mode": threading_mode,
+                    "thread_dir": thread_dir,
+                    "llm_adapter": llm_adapter,
+                }
+            )
+
+        def handles(self, message: Message) -> bool:
+            del message
+            return False
+
+    monkeypatch.setattr(meshagent.agents, "MailChannel", _RecordingMailChannel)
+
+    agent_cls = chatbot.build_process_agent(
+        model="gpt-5.4",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        threading_mode="default-new",
+        thread_dir="/threads/mail",
+        channels=["mail:mailbox@mail.meshagent.com"],
+    )
+    agent = agent_cls()
+    room = _FakeProcessRoomClient()
+
+    async def _skip_install_requirements() -> None:
+        return None
+
+    monkeypatch.setattr(agent, "install_requirements", _skip_install_requirements)
+
+    await agent.start(room=room)  # type: ignore[arg-type]
+    try:
+        assert len(captured_calls) == 1
+        assert captured_calls[0]["room"] is room
+        assert captured_calls[0]["queue_name"] == "mailbox@mail.meshagent.com"
+        assert captured_calls[0]["email_address"] == "mailbox@mail.meshagent.com"
+        assert captured_calls[0]["threading_mode"] == "default-new"
+        assert captured_calls[0]["thread_dir"] == "/threads/mail"
+        assert captured_calls[0]["llm_adapter"] is not None
+    finally:
+        await agent.stop()
+
+
+@pytest.mark.asyncio
+async def test_process_agent_uses_shared_decision_adapter_for_threaded_channels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import meshagent.agents
+    from meshagent.agents.process import Channel
+
+    created_adapters: list[object] = []
+    captured_calls: list[dict[str, object]] = []
+
+    class _FakeDecisionAdapter:
+        def __init__(
+            self,
+            *,
+            model: str | None = None,
+            response_options=None,
+            log_requests=None,
+        ) -> None:
+            self._model = model if model is not None else "default-model"
+            self.response_options = response_options
+            self.log_requests = log_requests
+            created_adapters.append(self)
+
+        def default_model(self) -> str:
+            return self._model
+
+        def create_session(self) -> AgentSessionContext:
+            return AgentSessionContext()
+
+        async def next(self, **kwargs):
+            del kwargs
+            raise AssertionError("decision adapter should not be used in this test")
+
+    class _RecordingChatChannel(Channel):
+        def __init__(
+            self,
+            *,
+            room,
+            threading_mode: str | None = None,
+            thread_dir: str | None = None,
+            llm_adapter=None,
+            toolkit_builders=None,
+        ) -> None:
+            super().__init__()
+            del toolkit_builders
+            captured_calls.append(
+                {
+                    "kind": "chat",
+                    "room": room,
+                    "threading_mode": threading_mode,
+                    "thread_dir": thread_dir,
+                    "llm_adapter": llm_adapter,
+                }
+            )
+
+        def handles(self, message: Message) -> bool:
+            del message
+            return False
+
+    class _RecordingQueueChannel(Channel):
+        def __init__(
+            self,
+            *,
+            room,
+            queue_name: str,
+            threading_mode: str | None = None,
+            thread_dir: str | None = None,
+            llm_adapter=None,
+        ) -> None:
+            super().__init__()
+            captured_calls.append(
+                {
+                    "kind": "queue",
+                    "room": room,
+                    "queue_name": queue_name,
+                    "threading_mode": threading_mode,
+                    "thread_dir": thread_dir,
+                    "llm_adapter": llm_adapter,
+                }
+            )
+
+        def handles(self, message: Message) -> bool:
+            del message
+            return False
+
+    class _RecordingMailChannel(Channel):
+        def __init__(
+            self,
+            *,
+            room,
+            queue_name: str,
+            email_address: str,
+            threading_mode: str | None = None,
+            thread_dir: str | None = None,
+            llm_adapter=None,
+        ) -> None:
+            super().__init__()
+            captured_calls.append(
+                {
+                    "kind": "mail",
+                    "room": room,
+                    "queue_name": queue_name,
+                    "email_address": email_address,
+                    "threading_mode": threading_mode,
+                    "thread_dir": thread_dir,
+                    "llm_adapter": llm_adapter,
+                }
+            )
+
+        def handles(self, message: Message) -> bool:
+            del message
+            return False
+
+    monkeypatch.setattr(chatbot, "OpenAIResponsesAdapter", _FakeDecisionAdapter)
+    monkeypatch.setattr(meshagent.agents, "ChatChannel", _RecordingChatChannel)
+    monkeypatch.setattr(meshagent.agents, "QueueChannel", _RecordingQueueChannel)
+    monkeypatch.setattr(meshagent.agents, "MailChannel", _RecordingMailChannel)
+
+    agent_cls = chatbot.build_process_agent(
+        model="gpt-5.4",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        channels=["chat", "queue:jobs", "mail:mailbox@mail.meshagent.com"],
+    )
+    agent = agent_cls()
+    room = _FakeProcessRoomClient()
+
+    async def _skip_install_requirements() -> None:
+        return None
+
+    monkeypatch.setattr(agent, "install_requirements", _skip_install_requirements)
+
+    await agent.start(room=room)  # type: ignore[arg-type]
+    try:
+        assert len(created_adapters) == 2
+        channel_adapter = created_adapters[0]
+        main_adapter = created_adapters[1]
+        assert channel_adapter.default_model() == "gpt-5.4-mini"
+        assert main_adapter.default_model() == "gpt-5.4"
+        assert len(captured_calls) == 3
+        assert {call["kind"] for call in captured_calls} == {"chat", "queue", "mail"}
+        assert all(call["llm_adapter"] is channel_adapter for call in captured_calls)
+        assert all(call["llm_adapter"] is not main_adapter for call in captured_calls)
     finally:
         await agent.stop()
 
@@ -205,6 +421,8 @@ def test_process_spec_uses_process_runtime_and_chat_channel(monkeypatch) -> None
             "spec",
             "--agent-name",
             "helper",
+            "--decision-model",
+            "gpt-5.4-nano",
             "--channel",
             "chat",
         ],
@@ -213,6 +431,7 @@ def test_process_spec_uses_process_runtime_and_chat_channel(monkeypatch) -> None
     async def invoke_spec() -> None:
         await chatbot.spec(
             agent_name="helper",
+            decision_model="gpt-5.4-nano",
             channel=["chat"],
         )
 
@@ -234,12 +453,15 @@ def test_process_spec_uses_process_runtime_and_chat_channel(monkeypatch) -> None
 
     assert len(build_calls) == 1
     assert build_calls[0]["channels"] == ["chat"]
+    assert build_calls[0]["decision_model"] == "gpt-5.4-nano"
     assert len(fake_service.agents) == 1
     assert fake_service.agents[0].annotations == {
         "meshagent.agent.type": "ChatBot",
     }
     assert len(printed) == 1
-    assert "meshagent process join --agent-name helper --channel chat" in printed[0]
+    assert "meshagent process join --agent-name helper" in printed[0]
+    assert "--decision-model gpt-5.4-nano" in printed[0]
+    assert "--channel chat" in printed[0]
 
 
 class _FakeRoomClient:

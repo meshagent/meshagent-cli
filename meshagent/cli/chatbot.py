@@ -100,7 +100,7 @@ from meshagent.openai.tools.responses_adapter import (
 )
 
 from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
-from meshagent.agents.adapter import MessageStreamLLMAdapter
+from meshagent.agents.adapter import LLMAdapter, MessageStreamLLMAdapter
 
 from meshagent.api import RequiredToolkit, RequiredSchema
 import logging
@@ -224,6 +224,14 @@ ThreadDirOption = Annotated[
             "Thread directory for agent thread files. "
             "Defaults to .threads/<agent-name> when not provided."
         ),
+    ),
+]
+
+DecisionModelOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--decision-model",
+        help="Model used for thread naming and other secondary LLM decisions",
     ),
 ]
 
@@ -378,6 +386,34 @@ def _normalized_thread_dir(*, thread_dir: Optional[str]) -> Optional[str]:
         return None
 
     return normalized
+
+
+def _normalized_decision_model(*, decision_model: Optional[str]) -> Optional[str]:
+    if not isinstance(decision_model, str):
+        return None
+
+    normalized = decision_model.strip()
+    if normalized == "":
+        return None
+
+    return normalized
+
+
+def _build_decision_llm_adapter(
+    *,
+    decision_model: str,
+    log_llm_requests: Optional[bool],
+) -> LLMAdapter:
+    if decision_model.startswith("claude-"):
+        return AnthropicOpenAIResponsesStreamAdapter(
+            model=decision_model,
+            log_requests=log_llm_requests,
+        )
+
+    return OpenAIResponsesAdapter(
+        model=decision_model,
+        log_requests=log_llm_requests,
+    )
 
 
 def _chatbot_agent_annotations(
@@ -550,6 +586,7 @@ def build_chatbot(
     require_document_authoring: Optional[str] = None,
     working_dir: Optional[str] = None,
     llm_participant: Optional[str] = None,
+    decision_model: Optional[str] = None,
     database_namespace: Optional[list[str]] = None,
     always_reply: Optional[bool] = None,
     thread_dir: Optional[str] = None,
@@ -622,7 +659,7 @@ def build_chatbot(
         memory_selection = parse_memory_selector(use_memory)
 
     BaseClass = ChatBot
-    decision_model = None
+    resolved_decision_model = _normalized_decision_model(decision_model=decision_model)
     if llm_participant:
         llm_adapter = MessageStreamLLMAdapter(
             participant_name=llm_participant,
@@ -642,7 +679,8 @@ def build_chatbot(
                     model=model,
                     log_requests=log_llm_requests,
                 )
-                decision_model = model
+                if resolved_decision_model is None:
+                    resolved_decision_model = model
             else:
                 llm_adapter = OpenAIResponsesAdapter(
                     model=model,
@@ -665,7 +703,7 @@ def build_chatbot(
                 thread_dir=thread_dir,
                 skill_dirs=skill_dirs,
                 threading_mode=resolved_threading_mode,
-                decision_model=decision_model,
+                decision_model=resolved_decision_model,
             )
 
             self.shell_tool = None
@@ -1027,6 +1065,7 @@ def build_process_agent(
     require_document_authoring: Optional[str] = None,
     working_dir: Optional[str] = None,
     llm_participant: Optional[str] = None,
+    decision_model: Optional[str] = None,
     database_namespace: Optional[list[str]] = None,
     always_reply: Optional[bool] = None,
     thread_dir: Optional[str] = None,
@@ -1104,6 +1143,14 @@ def build_process_agent(
     if use_memory is not None:
         memory_selection = parse_memory_selector(use_memory)
 
+    resolved_channel_decision_model = (
+        _normalized_decision_model(decision_model=decision_model) or "gpt-5.4-mini"
+    )
+    channel_llm_adapter = _build_decision_llm_adapter(
+        decision_model=resolved_channel_decision_model,
+        log_llm_requests=log_llm_requests,
+    )
+
     if llm_participant:
         llm_adapter = MessageStreamLLMAdapter(
             participant_name=llm_participant,
@@ -1174,6 +1221,7 @@ def build_process_agent(
                     room=room,
                     threading_mode=self._resolved_threading_mode,
                     thread_dir=thread_dir,
+                    llm_adapter=channel_llm_adapter,
                     toolkit_builders=self.get_toolkit_builders(),
                 )
             self._mail_channels = []
@@ -1186,7 +1234,9 @@ def build_process_agent(
                         room=room,
                         queue_name=mail_config.queue_name,
                         email_address=mail_config.email_address,
+                        threading_mode=self._resolved_threading_mode,
                         thread_dir=thread_dir,
+                        llm_adapter=channel_llm_adapter,
                     )
                 )
             self._queue_channels = []
@@ -1200,6 +1250,7 @@ def build_process_agent(
                         queue_name=queue_config.queue_name,
                         threading_mode=self._resolved_threading_mode,
                         thread_dir=thread_dir,
+                        llm_adapter=channel_llm_adapter,
                     )
                 )
             self._toolkit_channels = []
@@ -1880,6 +1931,7 @@ async def join(
         Optional[str],
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
+    decision_model: DecisionModelOption = None,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -2019,6 +2071,7 @@ async def join(
             require_discovery=require_discovery,
             working_dir=working_dir,
             llm_participant=llm_participant,
+            decision_model=decision_model,
             always_reply=always_reply,
             threading_mode=threading_mode,
             thread_dir=thread_dir,
@@ -2266,6 +2319,7 @@ async def service(
         Optional[str],
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
+    decision_model: DecisionModelOption = None,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -2397,6 +2451,7 @@ async def service(
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
             llm_participant=llm_participant,
+            decision_model=decision_model,
             always_reply=always_reply,
             threading_mode=threading_mode,
             thread_dir=thread_dir,
@@ -2616,6 +2671,7 @@ async def spec(
         Optional[str],
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
+    decision_model: DecisionModelOption = None,
     always_reply: Annotated[
         Optional[bool],
         typer.Option(..., help="Always reply"),
@@ -2737,6 +2793,7 @@ async def spec(
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
             llm_participant=llm_participant,
+            decision_model=decision_model,
             always_reply=always_reply,
             threading_mode=threading_mode,
             thread_dir=thread_dir,
@@ -2976,6 +3033,7 @@ async def deploy(
         Optional[str],
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
+    decision_model: DecisionModelOption = None,
     always_reply: Annotated[
         Optional[bool],
         typer.Option(..., help="Always reply"),
@@ -3104,6 +3162,7 @@ async def deploy(
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
             llm_participant=llm_participant,
+            decision_model=decision_model,
             always_reply=always_reply,
             threading_mode=threading_mode,
             thread_dir=thread_dir,
@@ -4845,6 +4904,7 @@ async def run(
         Optional[str],
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
+    decision_model: DecisionModelOption = None,
     always_reply: Annotated[
         Optional[bool],
         typer.Option(..., help="Always reply"),
@@ -5008,6 +5068,7 @@ async def run(
             require_discovery=require_discovery,
             working_dir=working_dir,
             llm_participant=llm_participant,
+            decision_model=decision_model,
             always_reply=always_reply,
             threading_mode=threading_mode,
             thread_dir=thread_dir,
