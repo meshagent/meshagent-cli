@@ -1,24 +1,73 @@
-import typer
-from rich import print
-from typing import Annotated, Optional
-from meshagent.cli.common_options import ProjectIdOption, RoomOption
-import json as _json
 import base64
+import json as _json
 import mimetypes
 from pathlib import Path
+from typing import Annotated, Optional
 
-from meshagent.api.helpers import websocket_room_url
+import typer
+from rich import print
+
 from meshagent.api import (
     RoomClient,
-    WebSocketClientProtocol,
     RoomException,
+    WebSocketClientProtocol,
 )
+from meshagent.api.helpers import websocket_room_url
+from meshagent.api.room_server_client import Queue as RoomQueue
 from meshagent.agents.mail_common import create_email_message
-from meshagent.cli.helper import resolve_project_id, resolve_room
 from meshagent.cli import async_typer
-from meshagent.cli.helper import get_client
+from meshagent.cli.common_options import OutputFormatOption, ProjectIdOption, RoomOption
+from meshagent.cli.helper import (
+    get_client,
+    print_json_table,
+    resolve_project_id,
+    resolve_room,
+)
 
 app = async_typer.AsyncTyper(help="Use queues in a room")
+
+
+def _queue_rows(queues: list[RoomQueue]) -> list[dict[str, str | int]]:
+    return [{"name": item.name, "size": item.size} for item in queues]
+
+
+@app.async_command("list", help="List queues in a room.")
+async def queue_list(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    output: OutputFormatOption = "table",
+):
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        room = resolve_room(room)
+
+        connection = await account_client.connect_room(project_id=project_id, room=room)
+
+        async with RoomClient(
+            protocol=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room),
+                token=connection.jwt,
+            )
+        ) as client:
+            rows = _queue_rows(await client.queues.list())
+
+            if output == "json":
+                print(_json.dumps({"queues": rows}, indent=2))
+                return
+
+            if len(rows) == 0:
+                print("There are no queues currently in the room")
+                return
+
+            print_json_table(rows, "name", "size")
+
+    except RoomException as e:
+        print(e)
+        raise typer.Exit(1)
+    finally:
+        await account_client.close()
 
 
 @app.async_command("send", help="Send a JSON message to a room queue.")

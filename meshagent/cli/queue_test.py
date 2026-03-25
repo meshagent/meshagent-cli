@@ -150,6 +150,50 @@ async def _run_size(
     return account_client, printed
 
 
+async def _run_queue_list(
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    room_name: str,
+    queues: list[_FakeQueue],
+    output: str = "table",
+) -> tuple[_FakeAccountClient, list[str], list[dict[str, object]]]:
+    account_client = _FakeAccountClient()
+    printed: list[str] = []
+    table_calls: list[dict[str, object]] = []
+
+    async def _fake_get_client() -> _FakeAccountClient:
+        return account_client
+
+    async def _fake_resolve_project_id(*, project_id):
+        del project_id
+        return "project-1"
+
+    def _fake_resolve_room(room: str) -> str:
+        return room
+
+    def _fake_print(*args, **kwargs) -> None:
+        del kwargs
+        printed.append(" ".join(str(arg) for arg in args))
+
+    def _fake_print_json_table(records: list[dict[str, object]], *cols: str) -> None:
+        table_calls.append({"records": records, "cols": cols})
+
+    monkeypatch.setattr(queue, "get_client", _fake_get_client)
+    monkeypatch.setattr(queue, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(queue, "resolve_room", _fake_resolve_room)
+    monkeypatch.setattr(queue, "print_json_table", _fake_print_json_table)
+    _FakeRoomClient.default_queues = queues
+    monkeypatch.setattr(queue, "RoomClient", _FakeRoomClient)
+    monkeypatch.setattr(queue, "print", _fake_print)
+
+    await queue.queue_list(
+        project_id=None,
+        room=room_name,
+        output=output,
+    )
+    return account_client, printed, table_calls
+
+
 @pytest.mark.asyncio
 async def test_send_mail_queues_base64_email_payload(
     monkeypatch: pytest.MonkeyPatch,
@@ -240,6 +284,74 @@ async def test_send_mail_allows_empty_body(
     assert body_part is not None
     assert body_part.get_content().strip() == ""
     assert list(email_message.iter_attachments()) == []
+
+
+@pytest.mark.asyncio
+async def test_queue_list_prints_queue_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account_client, printed, table_calls = await _run_queue_list(
+        monkeypatch=monkeypatch,
+        room_name="demo-room",
+        queues=[
+            _FakeQueue(name="jobs", size=3),
+            _FakeQueue(name="other", size=1),
+        ],
+    )
+
+    assert account_client.connect_calls == [
+        {"project_id": "project-1", "room": "demo-room"}
+    ]
+    assert account_client.closed is True
+    assert printed == []
+    assert table_calls == [
+        {
+            "records": [
+                {"name": "jobs", "size": 3},
+                {"name": "other", "size": 1},
+            ],
+            "cols": ("name", "size"),
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_queue_list_prints_empty_room_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account_client, printed, table_calls = await _run_queue_list(
+        monkeypatch=monkeypatch,
+        room_name="demo-room",
+        queues=[],
+    )
+
+    assert account_client.connect_calls == [
+        {"project_id": "project-1", "room": "demo-room"}
+    ]
+    assert account_client.closed is True
+    assert printed == ["There are no queues currently in the room"]
+    assert table_calls == []
+
+
+@pytest.mark.asyncio
+async def test_queue_list_json_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account_client, printed, table_calls = await _run_queue_list(
+        monkeypatch=monkeypatch,
+        room_name="demo-room",
+        queues=[_FakeQueue(name="jobs", size=3)],
+        output="json",
+    )
+
+    assert account_client.connect_calls == [
+        {"project_id": "project-1", "room": "demo-room"}
+    ]
+    assert account_client.closed is True
+    assert printed == [
+        '{\n  "queues": [\n    {\n      "name": "jobs",\n      "size": 3\n    }\n  ]\n}'
+    ]
+    assert table_calls == []
 
 
 @pytest.mark.asyncio
