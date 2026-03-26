@@ -4,8 +4,131 @@ from pathlib import Path
 import pytest
 import typer
 from aiohttp.test_utils import TestClient, TestServer
+from meshagent.api.client import ConflictError, Route
+from meshagent.api.specs.service import ANNOTATION_SERVICE_ID
 
 from meshagent.cli import webserver
+
+
+class _FakeRouteClient:
+    def __init__(
+        self,
+        *,
+        existing_route: Route | None = None,
+        create_conflict: bool = False,
+    ) -> None:
+        self._existing_route = existing_route
+        self._create_conflict = create_conflict
+        self.created_routes: list[dict[str, object]] = []
+        self.updated_routes: list[dict[str, object]] = []
+
+    async def create_route(
+        self,
+        *,
+        project_id: str,
+        domain: str,
+        room_name: str,
+        port: str,
+        annotations: dict[str, str],
+    ) -> None:
+        self.created_routes.append(
+            {
+                "project_id": project_id,
+                "domain": domain,
+                "room_name": room_name,
+                "port": port,
+                "annotations": annotations,
+            }
+        )
+        if self._create_conflict:
+            raise ConflictError("route already exists")
+
+    async def get_route(self, *, project_id: str, domain: str) -> Route:
+        assert self._existing_route is not None
+        assert project_id
+        assert domain
+        return self._existing_route
+
+    async def update_route(
+        self,
+        *,
+        project_id: str,
+        domain: str,
+        room_name: str,
+        port: str,
+        annotations: dict[str, str],
+    ) -> None:
+        self.updated_routes.append(
+            {
+                "project_id": project_id,
+                "domain": domain,
+                "room_name": room_name,
+                "port": port,
+                "annotations": annotations,
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_upsert_domain_route_creates_route_with_service_id_annotation() -> None:
+    client = _FakeRouteClient()
+
+    await webserver._upsert_domain_route(
+        client=client,
+        project_id="project-123",
+        domain="site.meshagent.app",
+        room_name="demo-room",
+        port="8000",
+        service_id="demo-webserver",
+    )
+
+    assert client.created_routes == [
+        {
+            "project_id": "project-123",
+            "domain": "site.meshagent.app",
+            "room_name": "demo-room",
+            "port": "8000",
+            "annotations": {ANNOTATION_SERVICE_ID: "demo-webserver"},
+        }
+    ]
+    assert client.updated_routes == []
+
+
+@pytest.mark.asyncio
+async def test_upsert_domain_route_backfills_service_id_annotation_when_port_matches() -> (
+    None
+):
+    client = _FakeRouteClient(
+        create_conflict=True,
+        existing_route=Route(
+            domain="site.meshagent.app",
+            room_name="demo-room",
+            port="8000",
+            annotations={"meshagent.custom": "keep-me"},
+        ),
+    )
+
+    await webserver._upsert_domain_route(
+        client=client,
+        project_id="project-123",
+        domain="site.meshagent.app",
+        room_name="demo-room",
+        port="8000",
+        service_id="demo-webserver",
+    )
+
+    assert client.updated_routes == [
+        {
+            "project_id": "project-123",
+            "domain": "site.meshagent.app",
+            "room_name": "demo-room",
+            "port": "8000",
+            "annotations": {
+                "meshagent.custom": "keep-me",
+                ANNOTATION_SERVICE_ID: "demo-webserver",
+            },
+        }
+    ]
 
 
 async def _start_static_test_client(

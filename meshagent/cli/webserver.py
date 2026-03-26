@@ -34,6 +34,7 @@ from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.api.specs.service import (
     AgentSpec,
     ANNOTATION_AGENT_TYPE,
+    ANNOTATION_SERVICE_ID,
     ContainerMountSpec,
     EnvironmentVariable,
     PortSpec,
@@ -275,15 +276,17 @@ async def _upsert_domain_route(
     domain: str,
     room_name: str,
     port: str,
+    service_id: str,
 ) -> None:
     _warn_if_non_meshagent_app_domain(domain)
+    route_annotations = {ANNOTATION_SERVICE_ID: service_id}
     try:
         await client.create_route(
             project_id=project_id,
             domain=domain,
             room_name=room_name,
             port=port,
-            annotations={},
+            annotations=route_annotations,
         )
     except ConflictError:
         existing = await client.get_route(project_id=project_id, domain=domain)
@@ -293,7 +296,9 @@ async def _upsert_domain_route(
                 f"Refusing to change it to room {room_name}. "
                 "Use `meshagent route update` if you want to repoint it."
             )
-        if existing.port == port:
+        updated_annotations = dict(existing.annotations)
+        updated_annotations[ANNOTATION_SERVICE_ID] = service_id
+        if existing.port == port and existing.annotations == updated_annotations:
             print(f"[green]Route already configured:[/] {domain} -> {room_name}:{port}")
             return
         await client.update_route(
@@ -301,7 +306,7 @@ async def _upsert_domain_route(
             domain=domain,
             room_name=room_name,
             port=port,
-            annotations=existing.annotations,
+            annotations=updated_annotations,
         )
         print(f"[green]Updated route:[/] {domain} -> {room_name}:{port}")
     else:
@@ -2057,6 +2062,7 @@ async def deploy(
                     domain=domain,
                     room_name=cast(str, room_name),
                     port=str(resolved_web_port),
+                    service_id=resolved_service_name,
                 )
 
     finally:
