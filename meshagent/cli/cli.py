@@ -29,6 +29,7 @@ from meshagent.cli import helpers
 from meshagent.cli import meeting_transcriber
 from meshagent.cli import rooms
 from meshagent.cli import room
+from meshagent.cli import image
 from meshagent.cli import port
 from meshagent.cli import webserver
 from meshagent.cli import codex
@@ -99,6 +100,7 @@ app.add_typer(task_runner.app, name="task-runner")
 app.add_typer(worker.app, name="worker")
 
 app.add_typer(room.app, name="room")
+app.add_typer(image.app, name="image")
 
 
 def _run_async(coro):
