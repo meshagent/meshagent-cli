@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 import asyncio
-import platform
 import posixpath
 import queue
 import re
 import threading
 import tempfile
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Optional
 
+import click
 import typer
+from click.core import ParameterSource
 from rich import print
 
 from meshagent.cli import async_typer
@@ -24,8 +26,20 @@ from meshagent.cli.containers import (
     _with_client,
 )
 from meshagent.cli.helper import resolve_room
-from meshagent.cli.helper import split_container_mount, split_image_mount
+from meshagent.cli.helper import (
+    resolve_project_id,
+    split_container_mount,
+    split_image_mount,
+)
 from meshagent.api import RoomClient
+from meshagent.api.client import ConflictError
+from meshagent.api.specs.service import (
+    ANNOTATION_SERVICE_ID,
+    ContainerSpec,
+    PortSpec,
+    ServiceMetadata,
+    ServiceSpec,
+)
 from meshagent.cli.oci_archive import (
     DEFAULT_ARCHITECTURE,
     ImagePackError,
@@ -38,6 +52,12 @@ from meshagent.cli.oci_archive import (
 app = async_typer.AsyncTyper(help="Build and pack OCI images")
 _ARCHIVE_STREAM_QUEUE_SIZE = 8
 _DEFAULT_CONTEXT_MOUNT_PATH = "/context"
+_ROOM_PACK_TAG_REGISTRY = "room.meshagent.com"
+_TEMP_BUILD_PACK_ROOM_PATH_PREFIX = "/temp/build/packs"
+_IMAGE_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
+_REPOSITORY_COMPONENT_RE = re.compile(r"^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$")
+_REGISTRY_COMPONENT_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
+_EXPOSED_PORT_RE = re.compile(r"^(?P<port>\d+)(?:/(?P<protocol>[A-Za-z]+))?$")
 ImageProjectIdOption = Annotated[
     Optional[str],
     typer.Option(
@@ -68,9 +88,38 @@ class _BuildPackSpec:
 
 
 @dataclass(frozen=True)
+class _ParsedImageTag:
+    value: str
+    registry: str | None
+    repository: str
+    tag: str | None
+
+    @property
+    def repository_ref(self) -> str:
+        if self.registry is None:
+            return self.repository
+        return f"{self.registry}/{self.repository}"
+
+    @property
+    def latest_ref(self) -> str:
+        return f"{self.repository_ref}:latest"
+
+
+@dataclass(frozen=True)
 class _UploadedPackedArchive:
     packed_archive: PackedOciArchive
     remote_path: str
+
+
+@dataclass(frozen=True)
+class _ServiceDeployPlan:
+    spec: ServiceSpec
+    service_id_annotation: str
+
+
+@dataclass(frozen=True)
+class _RoomRouteTarget:
+    port: str
 
 
 class _StreamingArchiveOutput:
@@ -355,35 +404,123 @@ def _resolve_build_context_path(
     return resolved_context_path
 
 
-def _resolve_build_pack_room_path(*, tag: str, room_path: str | None) -> str | None:
-    if room_path is None or room_path.strip() == "":
-        return None
+def _parse_build_tag(tag: str) -> _ParsedImageTag:
+    cleaned = tag.strip()
+    if cleaned == "":
+        raise typer.BadParameter("--tag cannot be empty")
+    if "@" in cleaned:
+        raise typer.BadParameter(
+            "--tag must be an OCI image reference without a digest"
+        )
 
-    if not room_path.startswith("/"):
+    tag_suffix: str | None = None
+    last_colon = cleaned.rfind(":")
+    last_slash = cleaned.rfind("/")
+    if last_colon > last_slash:
+        tag_suffix = cleaned[last_colon + 1 :]
+        cleaned = cleaned[:last_colon]
+        if tag_suffix == "" or _IMAGE_TAG_RE.fullmatch(tag_suffix) is None:
+            raise typer.BadParameter(f"invalid OCI image tag: {tag}")
+
+    if cleaned == "":
+        raise typer.BadParameter(f"invalid OCI image reference: {tag}")
+
+    parts = cleaned.split("/")
+    if any(part == "" for part in parts):
+        raise typer.BadParameter(f"invalid OCI image reference: {tag}")
+
+    registry: str | None = None
+    repository_parts = parts
+    first_part = parts[0]
+    if "." in first_part or ":" in first_part or first_part == "localhost":
+        registry = first_part
+        repository_parts = parts[1:]
+        if len(repository_parts) == 0:
+            raise typer.BadParameter(
+                f"missing repository name in OCI image reference: {tag}"
+            )
+
+        host, separator, port = registry.partition(":")
+        registry_components = host.split(".")
+        if any(
+            component == "" or _REGISTRY_COMPONENT_RE.fullmatch(component) is None
+            for component in registry_components
+        ):
+            raise typer.BadParameter(f"invalid OCI image registry: {tag}")
+        if separator != "" and (port == "" or not port.isdigit()):
+            raise typer.BadParameter(f"invalid OCI image registry port: {tag}")
+
+    if any(
+        _REPOSITORY_COMPONENT_RE.fullmatch(component) is None
+        for component in repository_parts
+    ):
+        raise typer.BadParameter(f"invalid OCI image repository: {tag}")
+
+    return _ParsedImageTag(
+        value=tag.strip(),
+        registry=registry,
+        repository="/".join(repository_parts),
+        tag=tag_suffix,
+    )
+
+
+def _require_room_pack_tag(*, parsed_tag: _ParsedImageTag) -> None:
+    if parsed_tag.registry != _ROOM_PACK_TAG_REGISTRY:
+        raise typer.BadParameter(
+            "--pack requires --tag to start with room.meshagent.com/"
+        )
+
+
+def _resolve_build_pack_room_path(
+    *, parsed_tag: _ParsedImageTag, room_path: str | None
+) -> str:
+    if room_path is None or room_path.strip() == "":
+        return posixpath.join("/", parsed_tag.repository)
+
+    cleaned_room_path = room_path.strip()
+    if not cleaned_room_path.startswith("/"):
         raise typer.BadParameter(
             "--pack-room-path must be an absolute room storage path"
         )
 
-    if room_path.endswith("/"):
-        return posixpath.join(room_path, f"{tag}.tar")
+    if cleaned_room_path.endswith("/"):
+        return posixpath.join(cleaned_room_path, parsed_tag.repository)
 
-    return room_path
+    return cleaned_room_path
 
 
-def _default_build_pack_room_path(*, packed_archive: PackedOciArchive) -> str:
-    algorithm, separator, digest_hex = packed_archive.manifest_digest.partition(":")
-    if algorithm != "sha256" or separator == "" or digest_hex == "":
+def _build_pack_ref_name_for_room_path(*, room_path: str) -> str:
+    repository = room_path.lstrip("/")
+    if repository == "":
         raise typer.BadParameter(
-            "packed build context produced an unsupported manifest digest"
+            "packed build contexts require a non-root room storage path"
         )
-    return f"/.images/{digest_hex}.tar"
+
+    repository_parts = repository.split("/")
+    if any(
+        _REPOSITORY_COMPONENT_RE.fullmatch(component) is None
+        for component in repository_parts
+    ):
+        raise typer.BadParameter(
+            "--pack-room-path must map to a valid room.meshagent.com repository path"
+        )
+
+    return f"{_ROOM_PACK_TAG_REGISTRY}/{repository}:latest"
 
 
-def _build_pack_ref_name(*, tag: str) -> str:
-    cleaned = re.sub(r"[^a-z0-9_.-]+", "-", tag.lower()).strip("._-")
-    if cleaned == "":
-        cleaned = "context"
-    return f"meshagent-build-context:{cleaned}"
+def _resolve_uploaded_build_pack_room_path(
+    *, parsed_tag: _ParsedImageTag, room_path: str | None
+) -> tuple[str, bool]:
+    if room_path is None or room_path.strip() == "":
+        temporary_room_path = posixpath.join(
+            _TEMP_BUILD_PACK_ROOM_PATH_PREFIX,
+            uuid.uuid4().hex,
+        )
+        return temporary_room_path, True
+
+    return _resolve_build_pack_room_path(
+        parsed_tag=parsed_tag, room_path=room_path
+    ), False
 
 
 def _infer_packed_dockerfile_path(
@@ -412,13 +549,267 @@ def _infer_packed_dockerfile_path(
     )
 
 
-def _default_pack_architecture() -> str:
-    machine = platform.machine().lower()
-    if machine in {"x86_64", "amd64"}:
-        return "amd64"
-    if machine in {"aarch64", "arm64"}:
-        return "arm64"
-    return DEFAULT_ARCHITECTURE
+def _resolve_local_packed_dockerfile(
+    *,
+    pack_spec: _BuildPackSpec | None,
+    dockerfile_path: str | None,
+) -> Path | None:
+    if pack_spec is None or dockerfile_path is None:
+        return None
+
+    mounted_root = PurePosixPath(pack_spec.mount_path)
+    mounted_dockerfile = PurePosixPath(dockerfile_path)
+    try:
+        relative_path = mounted_dockerfile.relative_to(mounted_root)
+    except ValueError:
+        return None
+
+    if len(relative_path.parts) == 0:
+        return None
+
+    return pack_spec.source_dir.expanduser().resolve().joinpath(*relative_path.parts)
+
+
+def _parse_exposed_ports_from_dockerfile(*, dockerfile_path: Path) -> list[int]:
+    instructions: list[str] = []
+    current_instruction = ""
+    for raw_line in dockerfile_path.read_text(encoding="utf-8").splitlines():
+        stripped = raw_line.strip()
+        if stripped == "" or stripped.startswith("#"):
+            continue
+        if stripped.endswith("\\"):
+            current_instruction += stripped[:-1].rstrip() + " "
+            continue
+        current_instruction += stripped
+        instructions.append(current_instruction)
+        current_instruction = ""
+
+    if current_instruction != "":
+        instructions.append(current_instruction)
+
+    exposed_ports: list[int] = []
+    seen_ports: set[int] = set()
+    for instruction in instructions:
+        keyword, separator, value = instruction.partition(" ")
+        if separator == "" or keyword.upper() != "EXPOSE":
+            continue
+
+        for token in value.split():
+            if token.startswith("#"):
+                break
+            match = _EXPOSED_PORT_RE.fullmatch(token)
+            if match is None:
+                continue
+            port = int(match.group("port"))
+            protocol = (match.group("protocol") or "tcp").lower()
+            if protocol not in {"tcp", ""}:
+                continue
+            if port < 1 or port > 65535 or port in seen_ports:
+                continue
+            seen_ports.add(port)
+            exposed_ports.append(port)
+
+    return exposed_ports
+
+
+def _build_service_ports(
+    *,
+    exposed_ports: list[int],
+    public: bool,
+) -> list[PortSpec]:
+    return [
+        PortSpec(
+            num=port,
+            type="http",
+            published=True,
+            public=True if public else None,
+        )
+        for port in exposed_ports
+    ]
+
+
+def _derive_service_name(*, parsed_tag: _ParsedImageTag) -> str:
+    return parsed_tag.repository.replace("/", "-")
+
+
+def _deploy_ports_are_public(*, private: bool) -> bool:
+    context = click.get_current_context(silent=True)
+    if context is None:
+        return False
+    if context.get_parameter_source("private") == ParameterSource.DEFAULT:
+        return False
+    return not private
+
+
+def _build_deploy_service_spec(
+    *,
+    existing_service: ServiceSpec | None,
+    parsed_tag: _ParsedImageTag,
+    exposed_ports: list[int] | None,
+    public: bool,
+) -> _ServiceDeployPlan:
+    service_name = _derive_service_name(parsed_tag=parsed_tag)
+    annotations = (
+        dict(existing_service.metadata.annotations or {})
+        if existing_service is not None
+        else {}
+    )
+    annotations[ANNOTATION_SERVICE_ID] = service_name
+
+    if existing_service is not None and existing_service.external is not None:
+        raise typer.BadParameter(
+            f"existing service {service_name} is external and cannot be replaced with a container deployment"
+        )
+
+    metadata = (
+        existing_service.metadata.model_copy(
+            update={"name": service_name, "annotations": annotations}
+        )
+        if existing_service is not None
+        else ServiceMetadata(
+            name=service_name,
+            annotations=annotations,
+        )
+    )
+    container = (
+        existing_service.container.model_copy(update={"image": parsed_tag.value})
+        if existing_service is not None and existing_service.container is not None
+        else ContainerSpec(image=parsed_tag.value)
+    )
+
+    ports = existing_service.ports if existing_service is not None else []
+    if exposed_ports:
+        ports = _build_service_ports(exposed_ports=exposed_ports, public=public)
+
+    spec = (
+        existing_service.model_copy(
+            update={
+                "metadata": metadata,
+                "container": container,
+                "ports": ports,
+                "external": None,
+            }
+        )
+        if existing_service is not None
+        else ServiceSpec(
+            version="v1",
+            kind="Service",
+            metadata=metadata,
+            container=container,
+            ports=ports,
+        )
+    )
+    return _ServiceDeployPlan(spec=spec, service_id_annotation=service_name)
+
+
+def _resolve_domain_route_target(*, service_spec: ServiceSpec) -> _RoomRouteTarget:
+    published_ports = [
+        port
+        for port in service_spec.ports or []
+        if port.published and isinstance(port.num, int)
+    ]
+    if len(published_ports) == 0:
+        raise typer.BadParameter(
+            "--domain requires exactly one published service port; none were inferred from the Dockerfile"
+        )
+    if len(published_ports) > 1:
+        raise typer.BadParameter(
+            "--domain requires exactly one published service port; multiple published ports were inferred from the Dockerfile"
+        )
+    return _RoomRouteTarget(port=str(published_ports[0].num))
+
+
+async def _find_room_service_by_name(
+    *,
+    account_client,
+    project_id: str,
+    room_name: str,
+    service_name: str,
+) -> ServiceSpec | None:
+    services = await account_client.list_room_services(
+        project_id=project_id,
+        room_name=room_name,
+    )
+    for service in services:
+        if service.metadata.name == service_name:
+            return service
+    return None
+
+
+async def _upsert_room_service(
+    *,
+    account_client,
+    project_id: str,
+    room_name: str,
+    service_spec: ServiceSpec,
+) -> str:
+    existing_service = await _find_room_service_by_name(
+        account_client=account_client,
+        project_id=project_id,
+        room_name=room_name,
+        service_name=service_spec.metadata.name,
+    )
+    if existing_service is None:
+        return await account_client.create_room_service(
+            project_id=project_id,
+            room_name=room_name,
+            service=service_spec,
+        )
+
+    if existing_service.id is None or existing_service.id == "":
+        raise typer.BadParameter(
+            f"existing service {service_spec.metadata.name} is missing an id"
+        )
+    service_spec.id = existing_service.id
+    await account_client.update_room_service(
+        project_id=project_id,
+        room_name=room_name,
+        service_id=existing_service.id,
+        service=service_spec,
+    )
+    return existing_service.id
+
+
+async def _upsert_domain_route(
+    *,
+    account_client,
+    project_id: str,
+    room_name: str,
+    domain: str,
+    port: str,
+    service_id: str,
+) -> None:
+    route_annotations = {ANNOTATION_SERVICE_ID: service_id}
+    try:
+        await account_client.create_route(
+            project_id=project_id,
+            domain=domain,
+            room_name=room_name,
+            port=port,
+            annotations=route_annotations,
+        )
+    except ConflictError:
+        existing = await account_client.get_route(project_id=project_id, domain=domain)
+        if existing.room_name != room_name:
+            raise typer.BadParameter(
+                f"--domain {domain} already routes to room {existing.room_name}. "
+                f"Refusing to change it to room {room_name}."
+            ) from None
+        updated_annotations = dict(existing.annotations)
+        updated_annotations[ANNOTATION_SERVICE_ID] = service_id
+        if existing.port == port and existing.annotations == updated_annotations:
+            print(f"[green]Route already configured:[/] {domain} -> {room_name}:{port}")
+            return
+        await account_client.update_route(
+            project_id=project_id,
+            domain=domain,
+            room_name=room_name,
+            port=port,
+            annotations=updated_annotations,
+        )
+        print(f"[green]Updated route:[/] {domain} -> {room_name}:{port}")
+    else:
+        print(f"[green]Created route:[/] {domain} -> {room_name}:{port}")
 
 
 async def _upload_oci_archive_to_room(
@@ -456,12 +847,12 @@ async def _upload_oci_archive_to_room(
         )
 
         async def _upload_archive() -> str:
-            packed_archive = await packed_archive_ready
-            resolved_remote_path = (
-                remote_path
-                if remote_path is not None
-                else _default_build_pack_room_path(packed_archive=packed_archive)
-            )
+            await packed_archive_ready
+            if remote_path is None:
+                raise typer.BadParameter(
+                    "packed archive upload requires an explicit room storage path"
+                )
+            resolved_remote_path = remote_path
             upload_name = (
                 output_path.name
                 if output_path is not None
@@ -515,7 +906,14 @@ async def build_image(
     project_id: ImageProjectIdOption = None,
     room: ImageRoomOption = None,
     tag: Annotated[
-        str, typer.Option(..., help="Image tag to build, e.g. repo/name:tag")
+        str,
+        typer.Option(
+            ...,
+            help=(
+                "Image tag to build, e.g. repo/name:tag. When --pack is used, "
+                "this must start with room.meshagent.com/."
+            ),
+        ),
     ],
     context_path: Annotated[
         Optional[str],
@@ -544,24 +942,25 @@ async def build_image(
             ),
         ),
     ] = None,
-    pack_architecture: Annotated[
-        Optional[str],
+    arch: Annotated[
+        str,
         typer.Option(
-            "--pack-architecture",
+            "--arch",
             help=(
                 "Architecture metadata for the packed build context image. Defaults "
-                "to the local machine architecture."
+                "to amd64 for room runtimes."
             ),
         ),
-    ] = None,
+    ] = DEFAULT_ARCHITECTURE,
     pack_room_path: Annotated[
         Optional[str],
         typer.Option(
             "--pack-room-path",
             help=(
                 "Room storage path for the uploaded packed archive. Defaults to "
-                "'/.images/{manifest-digest}.tar'. If a directory is provided, "
-                "'{tag}.tar' is appended."
+                "a temporary path under /temp/build/packs/ that is deleted after "
+                "the build completes. If a directory is provided, the repository "
+                "path from --tag is appended."
             ),
         ),
     ] = None,
@@ -595,6 +994,27 @@ async def build_image(
             ),
         ),
     ] = [],
+    deploy: Annotated[
+        bool,
+        typer.Option(
+            "--deploy",
+            help=(
+                "Create or update a room service that references the built image. "
+                "When a local packed Dockerfile exposes ports, they are added as "
+                "published service ports."
+            ),
+        ),
+    ] = False,
+    domain: Annotated[
+        Optional[str],
+        typer.Option(
+            "--domain",
+            help=(
+                "Create or update a room route for the deployed service. Requires "
+                "--deploy and exactly one published service port."
+            ),
+        ),
+    ] = None,
     private: Annotated[
         bool,
         typer.Option(
@@ -610,6 +1030,7 @@ async def build_image(
         ),
     ] = [],
 ) -> None:
+    parsed_tag = _parse_build_tag(tag)
     normalized_room_mounts, room_context_candidates = _normalize_build_container_mounts(
         values=mount_room_path,
         option_name="--mount-room-path",
@@ -647,23 +1068,43 @@ async def build_image(
     resolved_room = resolve_room(room)
     if resolved_room is None:
         raise typer.BadParameter("--room is required unless MESHAGENT_ROOM is set")
+    if domain is not None:
+        domain = domain.strip()
+        if domain == "":
+            raise typer.BadParameter("--domain cannot be empty")
+    if domain is not None and not deploy:
+        raise typer.BadParameter("--domain requires --deploy")
+    resolved_project_id = await resolve_project_id(project_id=project_id)
+    local_packed_dockerfile = _resolve_local_packed_dockerfile(
+        pack_spec=pack_spec,
+        dockerfile_path=dockerfile_path,
+    )
+    if local_packed_dockerfile is not None and not local_packed_dockerfile.is_file():
+        raise typer.BadParameter(
+            f"packed Dockerfile does not exist locally: {local_packed_dockerfile}"
+        )
 
     account_client, client = await _with_client(
-        project_id=project_id,
+        project_id=resolved_project_id,
         room=resolved_room,
     )
+    packed_room_path: str | None = None
+    should_delete_packed_room_path = False
     try:
         if pack_spec is not None:
-            packed_ref_name = _build_pack_ref_name(tag=tag)
-            requested_packed_room_path = _resolve_build_pack_room_path(
-                tag=tag,
-                room_path=pack_room_path,
+            _require_room_pack_tag(parsed_tag=parsed_tag)
+            requested_packed_room_path, should_delete_packed_room_path = (
+                _resolve_uploaded_build_pack_room_path(
+                    parsed_tag=parsed_tag,
+                    room_path=pack_room_path,
+                )
             )
-            resolved_pack_architecture = (
-                pack_architecture.strip()
-                if pack_architecture is not None and pack_architecture.strip() != ""
-                else _default_pack_architecture()
+            packed_ref_name = _build_pack_ref_name_for_room_path(
+                room_path=requested_packed_room_path
             )
+            resolved_pack_architecture = arch.strip()
+            if resolved_pack_architecture == "":
+                raise typer.BadParameter("--arch cannot be empty")
             uploaded_packed_archive = await _upload_oci_archive_to_room(
                 client=client,
                 source_dir=pack_spec.source_dir,
@@ -676,14 +1117,18 @@ async def build_image(
             packed_room_path = uploaded_packed_archive.remote_path
             normalized_image_mounts.append(
                 _format_image_mount(
-                    image=f"meshagent.room:{packed_room_path}",
+                    image=packed_ref_name,
                     mount=pack_spec.mount_path,
                     read_only=True,
                 )
             )
+            upload_label = (
+                "Uploaded temporary packed build context"
+                if should_delete_packed_room_path
+                else "Uploaded packed build context"
+            )
             print(
-                f"[green]Uploaded packed build context[/green] {packed_room_path} "
-                f"({packed_ref_name})"
+                f"[green]{upload_label}[/green] {packed_room_path} ({packed_ref_name})"
             )
 
         mount_spec = _parse_image_operation_mounts(
@@ -692,7 +1137,7 @@ async def build_image(
             mount_image=normalized_image_mounts,
         )
         container_id = await client.containers.build(
-            tag=tag,
+            tag=parsed_tag.value,
             mounts=[mount_spec],
             context_path=context_path,
             dockerfile_path=dockerfile_path,
@@ -704,7 +1149,58 @@ async def build_image(
         )
         if exit_code != 0:
             raise typer.Exit(code=exit_code)
+        if deploy:
+            exposed_ports = (
+                _parse_exposed_ports_from_dockerfile(
+                    dockerfile_path=local_packed_dockerfile
+                )
+                if local_packed_dockerfile is not None
+                else None
+            )
+            deploy_plan = _build_deploy_service_spec(
+                existing_service=await _find_room_service_by_name(
+                    account_client=account_client,
+                    project_id=resolved_project_id,
+                    room_name=resolved_room,
+                    service_name=_derive_service_name(parsed_tag=parsed_tag),
+                ),
+                parsed_tag=parsed_tag,
+                exposed_ports=exposed_ports,
+                public=_deploy_ports_are_public(private=private),
+            )
+            route_target = (
+                _resolve_domain_route_target(service_spec=deploy_plan.spec)
+                if domain is not None
+                else None
+            )
+            service_id = await _upsert_room_service(
+                account_client=account_client,
+                project_id=resolved_project_id,
+                room_name=resolved_room,
+                service_spec=deploy_plan.spec,
+            )
+            print(
+                f"[green]Deployed service:[/] {deploy_plan.spec.metadata.name} "
+                f"({service_id})"
+            )
+            if domain is not None and route_target is not None:
+                await _upsert_domain_route(
+                    account_client=account_client,
+                    project_id=resolved_project_id,
+                    room_name=resolved_room,
+                    domain=domain,
+                    port=route_target.port,
+                    service_id=deploy_plan.service_id_annotation,
+                )
     finally:
+        if should_delete_packed_room_path and packed_room_path is not None:
+            try:
+                await client.storage.delete(path=packed_room_path)
+            except Exception as exc:
+                print(
+                    "[yellow]Unable to delete temporary packed build context:[/yellow] "
+                    f"{packed_room_path} ({exc})"
+                )
         await client.__aexit__(None, None, None)
         await account_client.close()
 
@@ -715,6 +1211,16 @@ async def pack_image(
     project_id: ImageProjectIdOption = None,
     room: ImageRoomOption = None,
     path: Annotated[str, typer.Argument(help="Local directory to pack")],
+    tag: Annotated[
+        Optional[str],
+        typer.Option(
+            "--tag",
+            help=(
+                "Image reference to embed in the packed archive. Required with "
+                "--room, and must start with room.meshagent.com/ there."
+            ),
+        ),
+    ] = None,
     output: Annotated[
         str,
         typer.Option(
@@ -731,10 +1237,10 @@ async def pack_image(
             help="Optional base image reference. Defaults to scratch semantics.",
         ),
     ] = None,
-    architecture: Annotated[
+    arch: Annotated[
         str,
         typer.Option(
-            "--architecture",
+            "--arch",
             help="Architecture to use when resolving --base",
         ),
     ] = DEFAULT_ARCHITECTURE,
@@ -744,13 +1250,14 @@ async def pack_image(
             "--room-path",
             help=(
                 "Room storage path to upload the archive to when --room is set. "
-                "Defaults to the output file name."
+                "Defaults to the repository path from --tag."
             ),
         ),
     ] = None,
 ) -> None:
     source_dir = Path(path)
     output_path = Path(output).expanduser().resolve()
+    parsed_tag = _parse_build_tag(tag) if tag is not None else None
     resolved_room = resolve_room(room)
     if resolved_room is None:
         try:
@@ -758,7 +1265,8 @@ async def pack_image(
                 source_dir=source_dir,
                 output_path=output_path,
                 base_image=base,
-                architecture=architecture,
+                architecture=arch,
+                ref_name=parsed_tag.value if parsed_tag is not None else None,
             )
         except ImagePackError as exc:
             raise typer.BadParameter(str(exc)) from exc
@@ -769,8 +1277,11 @@ async def pack_image(
         )
         return
 
-    remote_path = _resolve_room_archive_path(
-        output_path=output_path,
+    if parsed_tag is None:
+        raise typer.BadParameter("--tag is required when --room is set")
+    _require_room_pack_tag(parsed_tag=parsed_tag)
+    remote_path = _resolve_build_pack_room_path(
+        parsed_tag=parsed_tag,
         room_path=room_path,
     )
     account_client, client = await _with_client(
@@ -784,7 +1295,8 @@ async def pack_image(
             remote_path=remote_path,
             output_path=output_path,
             base_image=base,
-            architecture=architecture,
+            architecture=arch,
+            ref_name=parsed_tag.value,
         )
     finally:
         await client.__aexit__(None, None, None)
