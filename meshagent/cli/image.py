@@ -51,6 +51,7 @@ from meshagent.cli.oci_archive import (
 
 app = async_typer.AsyncTyper(help="Build and pack OCI images")
 _ARCHIVE_STREAM_QUEUE_SIZE = 8
+_CLIENT_CLOSE_TIMEOUT_SECONDS = 2.0
 _DEFAULT_CONTEXT_MOUNT_PATH = "/context"
 _ROOM_PACK_TAG_REGISTRY = "room.meshagent.com"
 _TEMP_BUILD_PACK_ROOM_PATH_PREFIX = "/temp/build/packs"
@@ -233,10 +234,10 @@ async def _build_oci_archive_to_streaming_output(
             **build_kwargs,
         )
     except BaseException as exc:
-        archive_output.fail(exc)
+        await asyncio.to_thread(archive_output.fail, exc)
         raise
 
-    archive_output.finish()
+    await asyncio.to_thread(archive_output.finish)
     return packed_archive
 
 
@@ -900,6 +901,28 @@ async def _upload_oci_archive_to_room(
     )
 
 
+async def _close_pack_clients(
+    *,
+    account_client,
+    client: RoomClient,
+) -> None:
+    try:
+        await asyncio.wait_for(
+            client.__aexit__(None, None, None),
+            timeout=_CLIENT_CLOSE_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        print("[yellow]Timed out closing room client after upload[/yellow]")
+
+    try:
+        await asyncio.wait_for(
+            account_client.close(),
+            timeout=_CLIENT_CLOSE_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        print("[yellow]Timed out closing account client after upload[/yellow]")
+
+
 @app.async_command("build", help="Build a container image inside a room.")
 async def build_image(
     *,
@@ -1222,14 +1245,16 @@ async def pack_image(
         ),
     ] = None,
     output: Annotated[
-        str,
+        Optional[str],
         typer.Option(
-            ...,
             "--output",
             "-o",
-            help="Local path to write the OCI archive tar",
+            help=(
+                "Local path to write the OCI archive tar. Required unless --room is "
+                "set."
+            ),
         ),
-    ],
+    ] = None,
     base: Annotated[
         Optional[str],
         typer.Option(
@@ -1256,10 +1281,12 @@ async def pack_image(
     ] = None,
 ) -> None:
     source_dir = Path(path)
-    output_path = Path(output).expanduser().resolve()
+    output_path = Path(output).expanduser().resolve() if output is not None else None
     parsed_tag = _parse_build_tag(tag) if tag is not None else None
     resolved_room = resolve_room(room)
     if resolved_room is None:
+        if output_path is None:
+            raise typer.BadParameter("--output is required unless --room is set")
         try:
             packed_archive = await build_oci_archive(
                 source_dir=source_dir,
@@ -1298,12 +1325,14 @@ async def pack_image(
             architecture=arch,
             ref_name=parsed_tag.value,
         )
-    finally:
-        await client.__aexit__(None, None, None)
-        await account_client.close()
+    except Exception:
+        await _close_pack_clients(account_client=account_client, client=client)
+        raise
 
-    print(
-        f"[green]Wrote OCI archive[/green] {uploaded_archive.packed_archive.output_path} "
-        f"({uploaded_archive.packed_archive.ref_name})"
-    )
+    if output_path is not None:
+        print(
+            f"[green]Wrote OCI archive[/green] {uploaded_archive.packed_archive.output_path} "
+            f"({uploaded_archive.packed_archive.ref_name})"
+        )
     print(f"[green]Uploaded OCI archive[/green] {uploaded_archive.remote_path}")
+    await _close_pack_clients(account_client=account_client, client=client)
