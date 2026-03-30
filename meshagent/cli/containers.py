@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import re
 import tarfile
 import time
 from pathlib import Path
@@ -45,6 +46,9 @@ import sys
 
 app = async_typer.AsyncTyper(help="Manage containers and images inside a room")
 _LOG_STREAM_SETTLE_TIMEOUT_SECONDS = 1.0
+_CRI_LOG_LINE_PATTERN = re.compile(
+    r"^(?P<timestamp>\S+)\s+(?P<stream>stdout|stderr)\s+(?P<flags>[FP])\s(?P<message>.*)$"
+)
 
 # -------------------------
 # Helpers
@@ -253,11 +257,27 @@ async def _make_targz_from_dir(path: Path) -> bytes:
 
 
 async def _drain_stream_plain(stream, *, show_progress: bool = True):
+    def _format_line(line: str) -> str:
+        has_newline = line.endswith("\n")
+        line_without_newline = line[:-1] if has_newline else line
+        match = _CRI_LOG_LINE_PATTERN.match(line_without_newline)
+        if match is None:
+            return line
+
+        message = match.group("message")
+        if has_newline:
+            return f"{message}\n"
+        return message
+
     async def _logs():
         async for line in stream.logs():
-            # Server emits plain lines; print as-is
             if line is not None:
-                sys.stdout.write(line if line.endswith("\n") else f"{line}\n")
+                formatted_line = _format_line(line)
+                sys.stdout.write(
+                    formatted_line
+                    if formatted_line.endswith("\n")
+                    else f"{formatted_line}\n"
+                )
                 sys.stdout.flush()
 
     async def _prog():

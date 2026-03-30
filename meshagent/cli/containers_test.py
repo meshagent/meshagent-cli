@@ -123,3 +123,20 @@ async def test_drain_stream_plain_does_not_double_space_newline_terminated_logs(
 
     assert result == "image-1"
     assert capsys.readouterr().out == "step 1\nstep 2\n"
+
+
+@pytest.mark.asyncio
+async def test_drain_stream_plain_strips_cri_log_prefixes(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    stream = _FakeBuildStream(
+        lines=[
+            "2026-03-30T04:21:56.562896627Z stderr F step 1\n",
+            "2026-03-30T04:21:57.000000000Z stdout F step 2\n",
+        ]
+    )
+
+    result = await containers._drain_stream_plain(stream, show_progress=False)
+
+    assert result == "image-1"
+    assert capsys.readouterr().out == "step 1\nstep 2\n"

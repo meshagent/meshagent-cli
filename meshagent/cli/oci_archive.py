@@ -654,6 +654,8 @@ async def _build_oci_archive_with_base(
     architecture: str,
     ref_name: str,
     base_source: BaseImageSource | None,
+    on_packed_archive_ready: Callable[[PackedOciArchive], Awaitable[None]]
+    | None = None,
 ) -> PackedOciArchive:
     prepared_archive = await _prepare_oci_archive_with_base(
         source_dir=source_dir,
@@ -663,6 +665,8 @@ async def _build_oci_archive_with_base(
         base_source=base_source,
     )
     try:
+        if on_packed_archive_ready is not None:
+            await on_packed_archive_ready(prepared_archive.packed_archive)
         await asyncio.to_thread(
             _write_prepared_oci_archive,
             prepared_archive=prepared_archive,
@@ -1104,6 +1108,8 @@ async def _build_oci_archive_resolved(
     architecture: str,
     ref_name: str,
     base_source: BaseImageSource | None,
+    on_packed_archive_ready: Callable[[PackedOciArchive], Awaitable[None]]
+    | None = None,
 ) -> PackedOciArchive:
     if base_image is None:
         return await _build_oci_archive_with_base(
@@ -1113,6 +1119,7 @@ async def _build_oci_archive_resolved(
             architecture=architecture,
             ref_name=ref_name,
             base_source=base_source,
+            on_packed_archive_ready=on_packed_archive_ready,
         )
 
     if base_source is not None:
@@ -1123,6 +1130,7 @@ async def _build_oci_archive_resolved(
             architecture=architecture,
             ref_name=ref_name,
             base_source=base_source,
+            on_packed_archive_ready=on_packed_archive_ready,
         )
 
     async with _RegistryClient() as registry_client:
@@ -1137,6 +1145,7 @@ async def _build_oci_archive_resolved(
             architecture=architecture,
             ref_name=ref_name,
             base_source=resolved_base_source,
+            on_packed_archive_ready=on_packed_archive_ready,
         )
 
 
@@ -1178,6 +1187,8 @@ async def build_oci_archive_to_writer(
     architecture: str = DEFAULT_ARCHITECTURE,
     ref_name: str | None = None,
     base_source: BaseImageSource | None = None,
+    on_packed_archive_ready: Callable[[PackedOciArchive], Awaitable[None]]
+    | None = None,
 ) -> PackedOciArchive:
     resolved_source_dir, resolved_output_path, resolved_ref_name = (
         _resolve_build_oci_archive_inputs(
@@ -1194,4 +1205,5 @@ async def build_oci_archive_to_writer(
         architecture=architecture,
         ref_name=resolved_ref_name,
         base_source=base_source,
+        on_packed_archive_ready=on_packed_archive_ready,
     )
