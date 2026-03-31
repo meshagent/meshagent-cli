@@ -124,6 +124,12 @@ class _RoomRouteTarget:
     port: str
 
 
+@dataclass(frozen=True)
+class _RoomServiceUpsertResult:
+    service_id: str
+    created: bool
+
+
 class _StreamingArchiveOutput:
     def __init__(self, *, output_path: Path | None = None) -> None:
         self._output_path = output_path
@@ -744,7 +750,7 @@ async def _upsert_room_service(
     project_id: str,
     room_name: str,
     service_spec: ServiceSpec,
-) -> str:
+) -> _RoomServiceUpsertResult:
     existing_service = await _find_room_service_by_name(
         account_client=account_client,
         project_id=project_id,
@@ -752,11 +758,12 @@ async def _upsert_room_service(
         service_name=service_spec.metadata.name,
     )
     if existing_service is None:
-        return await account_client.create_room_service(
+        service_id = await account_client.create_room_service(
             project_id=project_id,
             room_name=room_name,
             service=service_spec,
         )
+        return _RoomServiceUpsertResult(service_id=service_id, created=True)
 
     if existing_service.id is None or existing_service.id == "":
         raise typer.BadParameter(
@@ -769,7 +776,7 @@ async def _upsert_room_service(
         service_id=existing_service.id,
         service=service_spec,
     )
-    return existing_service.id
+    return _RoomServiceUpsertResult(service_id=existing_service.id, created=False)
 
 
 async def _upsert_domain_route(
@@ -1210,7 +1217,7 @@ async def build_image(
                 if domain is not None
                 else None
             )
-            service_id = await _upsert_room_service(
+            deploy_result = await _upsert_room_service(
                 account_client=account_client,
                 project_id=resolved_project_id,
                 room_name=resolved_room,
@@ -1218,8 +1225,14 @@ async def build_image(
             )
             print(
                 f"[green]Deployed service:[/] {deploy_plan.spec.metadata.name} "
-                f"({service_id})"
+                f"({deploy_result.service_id})"
             )
+            if not deploy_result.created:
+                await client.services.restart(service_id=deploy_result.service_id)
+                print(
+                    f"[green]Restarted service:[/] {deploy_plan.spec.metadata.name} "
+                    f"({deploy_result.service_id})"
+                )
             if domain is not None and route_target is not None:
                 await _upsert_domain_route(
                     account_client=account_client,

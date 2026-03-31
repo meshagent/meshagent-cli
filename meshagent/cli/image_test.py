@@ -6,6 +6,7 @@ import pytest
 import typer
 
 from meshagent.cli import image
+from meshagent.api.specs.service import ContainerSpec, ServiceMetadata, ServiceSpec
 
 
 def test_resolve_room_archive_path_uses_output_name_for_directory_targets() -> None:
@@ -506,6 +507,10 @@ async def test_build_image_pack_uploads_archive_and_defaults_context_path(
         def __init__(self) -> None:
             self.containers = _FakeContainers()
             self.storage = _FakeStorage()
+            self.services = SimpleNamespace(restart=self._restart)
+
+        async def _restart(self, *, service_id: str) -> None:
+            captured["restarted_service_id"] = service_id
 
         async def __aexit__(self, exc_type, exc, tb) -> None:
             del exc_type, exc, tb
@@ -1148,6 +1153,164 @@ async def test_build_image_deploy_creates_room_service_and_route_from_packed_doc
         "8080",
         {image.ANNOTATION_SERVICE_ID: "website-pack"},
     )
+    assert "restarted_service_id" not in captured
+    assert captured["deleted_path"] == "/temp/build/packs/pack-123"
+    assert captured["room_client_closed"] is True
+    assert captured["account_client_closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_build_image_deploy_restarts_updated_room_service(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    source_dir = tmp_path / "website"
+    source_dir.mkdir()
+    (source_dir / "Dockerfile").write_text(
+        "FROM scratch\nEXPOSE 8080\n",
+        encoding="utf-8",
+    )
+    existing_service = ServiceSpec(
+        version="v1",
+        kind="Service",
+        id="service-1",
+        metadata=ServiceMetadata(
+            name="website-pack",
+            annotations={image.ANNOTATION_SERVICE_ID: "website-pack"},
+        ),
+        container=ContainerSpec(image="room.meshagent.com/website-pack:old"),
+    )
+
+    class _FakeContainers:
+        async def build(self, **kwargs) -> str:
+            captured["build_kwargs"] = kwargs
+            return "build-1"
+
+    class _FakeStorage:
+        async def delete(self, path: str) -> None:
+            captured["deleted_path"] = path
+
+    class _FakeRoomClient:
+        def __init__(self) -> None:
+            self.containers = _FakeContainers()
+            self.storage = _FakeStorage()
+            self.services = SimpleNamespace(restart=self._restart)
+
+        async def _restart(self, *, service_id: str) -> None:
+            captured["restarted_service_id"] = service_id
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+            captured["room_client_closed"] = True
+
+    class _FakeAccountClient:
+        async def list_room_services(self, *, project_id: str, room_name: str):
+            captured.setdefault("list_room_services", []).append(
+                (project_id, room_name)
+            )
+            return [existing_service]
+
+        async def update_room_service(
+            self,
+            *,
+            project_id: str,
+            room_name: str,
+            service_id: str,
+            service,
+        ) -> None:
+            captured["updated_service"] = (
+                project_id,
+                room_name,
+                service_id,
+                service,
+            )
+
+        async def close(self) -> None:
+            captured["account_client_closed"] = True
+
+    async def _fake_with_client(*, project_id, room):
+        captured["project_id"] = project_id
+        captured["room"] = room
+        return _FakeAccountClient(), _FakeRoomClient()
+
+    async def _fake_stream_build_job_logs_and_wait_for_exit(
+        *,
+        client,
+        build_id: str,
+    ) -> int:
+        captured["wait_client"] = client
+        captured["build_id"] = build_id
+        return 0
+
+    async def _fake_upload_oci_archive_to_room(**kwargs) -> SimpleNamespace:
+        captured["upload_kwargs"] = kwargs
+        return SimpleNamespace(
+            packed_archive=SimpleNamespace(
+                output_path=Path("/tmp/ignored.tar"),
+                ref_name="room.meshagent.com/temp/build/packs/pack-123:latest",
+            ),
+            remote_path="/temp/build/packs/pack-123",
+        )
+
+    monkeypatch.setattr(image, "_with_client", _fake_with_client)
+    monkeypatch.setattr(image, "resolve_room", lambda room: room)
+
+    async def _fake_resolve_project_id(*, project_id):
+        del project_id
+        return "project-1"
+
+    monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(
+        image,
+        "_upload_oci_archive_to_room",
+        _fake_upload_oci_archive_to_room,
+    )
+    monkeypatch.setattr(image, "_parse_creds", lambda values: [])
+    monkeypatch.setattr(
+        image,
+        "_stream_build_job_logs_and_wait_for_exit",
+        _fake_stream_build_job_logs_and_wait_for_exit,
+    )
+    monkeypatch.setattr(
+        image,
+        "_deploy_ports_are_public",
+        lambda *, private: True,
+    )
+    monkeypatch.setattr(
+        image.uuid,
+        "uuid4",
+        lambda: SimpleNamespace(hex="pack-123"),
+    )
+    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
+
+    await image.build_image(
+        project_id="project-1",
+        room="room-1",
+        tag="room.meshagent.com/website-pack",
+        context_path=None,
+        dockerfile_path=None,
+        pack=str(source_dir),
+        arch="amd64",
+        pack_room_path=None,
+        mount_room_path=[],
+        mount_project_path=[],
+        mount_image=[],
+        deploy=True,
+        domain=None,
+        private=False,
+        cred=[],
+    )
+
+    updated_service = captured["updated_service"]
+    assert isinstance(updated_service, tuple)
+    assert updated_service[0] == "project-1"
+    assert updated_service[1] == "room-1"
+    assert updated_service[2] == "service-1"
+    updated_spec = updated_service[3]
+    assert updated_spec.container is not None
+    assert updated_spec.container.image == "room.meshagent.com/website-pack"
+    assert captured["restarted_service_id"] == "service-1"
     assert captured["deleted_path"] == "/temp/build/packs/pack-123"
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
