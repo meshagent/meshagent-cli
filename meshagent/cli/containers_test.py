@@ -56,6 +56,21 @@ class _FakeBuildStream:
         return _done().__await__()
 
 
+class _FakeBuildContainers:
+    def __init__(self, *, stream: _FakeBuildStream) -> None:
+        self._stream = stream
+        self.build_log_calls: list[tuple[str, bool]] = []
+
+    def get_build_logs(self, *, build_id: str, follow: bool = True) -> _FakeBuildStream:
+        self.build_log_calls.append((build_id, follow))
+        return self._stream
+
+
+class _FakeBuildClient:
+    def __init__(self, *, stream: _FakeBuildStream) -> None:
+        self.containers = _FakeBuildContainers(stream=stream)
+
+
 @pytest.mark.asyncio
 async def test_stream_container_job_logs_and_wait_for_exit_cancels_follow_stream(
     monkeypatch: pytest.MonkeyPatch,
@@ -140,3 +155,26 @@ async def test_drain_stream_plain_strips_cri_log_prefixes(
 
     assert result == "image-1"
     assert capsys.readouterr().out == "step 1\nstep 2\n"
+
+
+@pytest.mark.asyncio
+async def test_stream_build_job_logs_and_wait_for_exit_uses_build_log_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = _FakeBuildStream(lines=["line 1\n"], result=0)
+    client = _FakeBuildClient(stream=stream)
+
+    async def _fake_drain(log_stream, *, show_progress: bool):
+        assert log_stream is stream
+        assert show_progress is False
+        return await log_stream
+
+    monkeypatch.setattr(containers, "_drain_stream_plain", _fake_drain)
+
+    exit_code = await containers._stream_build_job_logs_and_wait_for_exit(
+        client=client,
+        build_id="build-1",
+    )
+
+    assert exit_code == 0
+    assert client.containers.build_log_calls == [("build-1", True)]

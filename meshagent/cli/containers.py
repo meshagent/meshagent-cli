@@ -193,6 +193,24 @@ async def _stream_container_job_logs_and_wait_for_exit(
     return exit_code
 
 
+async def _stream_build_job_logs_and_wait_for_exit(
+    *,
+    client: RoomClient,
+    build_id: str,
+) -> int:
+    stream = client.containers.get_build_logs(build_id=build_id, follow=True)
+    try:
+        exit_code = await _drain_stream_plain(stream, show_progress=False)
+    except Exception:
+        await asyncio.gather(stream.cancel(), return_exceptions=True)
+        raise
+
+    if exit_code is None:
+        raise RuntimeError("build log stream closed before an exit code was returned")
+
+    return exit_code
+
+
 class DockerIgnore:
     def __init__(self, dockerignore_path: str):
         """

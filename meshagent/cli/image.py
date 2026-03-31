@@ -22,7 +22,7 @@ from meshagent.cli import async_typer
 from meshagent.cli.containers import (
     _parse_creds,
     _parse_image_operation_mounts,
-    _stream_container_job_logs_and_wait_for_exit,
+    _stream_build_job_logs_and_wait_for_exit,
     _with_client,
 )
 from meshagent.cli.helper import resolve_room
@@ -35,6 +35,7 @@ from meshagent.api import RoomClient
 from meshagent.api.client import ConflictError
 from meshagent.api.specs.service import (
     ANNOTATION_SERVICE_ID,
+    ContainerMountSpec,
     ContainerSpec,
     PortSpec,
     ServiceMetadata,
@@ -1113,6 +1114,10 @@ async def build_image(
     )
     packed_room_path: str | None = None
     should_delete_packed_room_path = False
+    context_archive_path: str | None = None
+    context_archive_ref: str | None = None
+    context_archive_mount_path: str | None = None
+    context_archive_arch: str | None = None
     try:
         if pack_spec is not None:
             _require_room_pack_tag(parsed_tag=parsed_tag)
@@ -1138,13 +1143,10 @@ async def build_image(
                 ref_name=packed_ref_name,
             )
             packed_room_path = uploaded_packed_archive.remote_path
-            normalized_image_mounts.append(
-                _format_image_mount(
-                    image=packed_ref_name,
-                    mount=pack_spec.mount_path,
-                    read_only=True,
-                )
-            )
+            context_archive_path = packed_room_path
+            context_archive_ref = packed_ref_name
+            context_archive_mount_path = pack_spec.mount_path
+            context_archive_arch = resolved_pack_architecture
             upload_label = (
                 "Uploaded temporary packed build context"
                 if should_delete_packed_room_path
@@ -1154,21 +1156,33 @@ async def build_image(
                 f"[green]{upload_label}[/green] {packed_room_path} ({packed_ref_name})"
             )
 
-        mount_spec = _parse_image_operation_mounts(
-            mount_room_path=normalized_room_mounts,
-            mount_project_path=normalized_project_mounts,
-            mount_image=normalized_image_mounts,
-        )
-        container_id = await client.containers.build(
+        mounts: list[ContainerMountSpec] = []
+        if (
+            len(normalized_room_mounts) > 0
+            or len(normalized_project_mounts) > 0
+            or len(normalized_image_mounts) > 0
+        ):
+            mounts.append(
+                _parse_image_operation_mounts(
+                    mount_room_path=normalized_room_mounts,
+                    mount_project_path=normalized_project_mounts,
+                    mount_image=normalized_image_mounts,
+                )
+            )
+        build_id = await client.containers.build(
             tag=parsed_tag.value,
-            mounts=[mount_spec],
+            mounts=mounts,
             context_path=context_path,
             dockerfile_path=dockerfile_path,
             private=private,
             credentials=_parse_creds(cred),
+            context_archive_path=context_archive_path,
+            context_archive_ref=context_archive_ref,
+            context_archive_mount_path=context_archive_mount_path,
+            context_archive_arch=context_archive_arch,
         )
-        exit_code = await _stream_container_job_logs_and_wait_for_exit(
-            client=client, container_id=container_id
+        exit_code = await _stream_build_job_logs_and_wait_for_exit(
+            client=client, build_id=build_id
         )
         if exit_code != 0:
             raise typer.Exit(code=exit_code)

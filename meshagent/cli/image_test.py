@@ -394,7 +394,7 @@ async def test_build_image_starts_room_build_and_waits_for_exit(
     class _FakeContainers:
         async def build(self, **kwargs) -> str:
             captured["build_kwargs"] = kwargs
-            return "container-1"
+            return "build-1"
 
     class _FakeRoomClient:
         def __init__(self) -> None:
@@ -413,13 +413,13 @@ async def test_build_image_starts_room_build_and_waits_for_exit(
         captured["room"] = room
         return _FakeAccountClient(), _FakeRoomClient()
 
-    async def _fake_stream_container_job_logs_and_wait_for_exit(
+    async def _fake_stream_build_job_logs_and_wait_for_exit(
         *,
         client,
-        container_id: str,
+        build_id: str,
     ) -> int:
         captured["wait_client"] = client
-        captured["container_id"] = container_id
+        captured["build_id"] = build_id
         return 0
 
     def _fake_parse_image_operation_mounts(**kwargs):
@@ -436,8 +436,8 @@ async def test_build_image_starts_room_build_and_waits_for_exit(
     monkeypatch.setattr(image, "resolve_room", lambda room: room)
     monkeypatch.setattr(
         image,
-        "_stream_container_job_logs_and_wait_for_exit",
-        _fake_stream_container_job_logs_and_wait_for_exit,
+        "_stream_build_job_logs_and_wait_for_exit",
+        _fake_stream_build_job_logs_and_wait_for_exit,
     )
 
     await image.build_image(
@@ -467,8 +467,12 @@ async def test_build_image_starts_room_build_and_waits_for_exit(
         "dockerfile_path": "/workspace/Dockerfile",
         "private": True,
         "credentials": credentials,
+        "context_archive_path": None,
+        "context_archive_ref": None,
+        "context_archive_mount_path": None,
+        "context_archive_arch": None,
     }
-    assert captured["container_id"] == "container-1"
+    assert captured["build_id"] == "build-1"
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
 
@@ -478,7 +482,6 @@ async def test_build_image_pack_uploads_archive_and_defaults_context_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    mount_spec = object()
     captured: dict[str, object] = {}
     parse_mount_args: dict[str, object] = {}
     source_dir = tmp_path / "website"
@@ -489,7 +492,7 @@ async def test_build_image_pack_uploads_archive_and_defaults_context_path(
     class _FakeContainers:
         async def build(self, **kwargs) -> str:
             captured["build_kwargs"] = kwargs
-            return "container-1"
+            return "build-1"
 
         async def pull_image(self, *, tag: str, credentials=None) -> None:
             del credentials
@@ -517,13 +520,13 @@ async def test_build_image_pack_uploads_archive_and_defaults_context_path(
         captured["room"] = room
         return _FakeAccountClient(), _FakeRoomClient()
 
-    async def _fake_stream_container_job_logs_and_wait_for_exit(
+    async def _fake_stream_build_job_logs_and_wait_for_exit(
         *,
         client,
-        container_id: str,
+        build_id: str,
     ) -> int:
         captured["wait_client"] = client
-        captured["container_id"] = container_id
+        captured["build_id"] = build_id
         return 0
 
     async def _fake_upload_oci_archive_to_room(**kwargs) -> SimpleNamespace:
@@ -538,7 +541,7 @@ async def test_build_image_pack_uploads_archive_and_defaults_context_path(
 
     def _fake_parse_image_operation_mounts(**kwargs):
         parse_mount_args.update(kwargs)
-        return mount_spec
+        raise AssertionError("_parse_image_operation_mounts should not be called")
 
     monkeypatch.setattr(image, "_with_client", _fake_with_client)
     monkeypatch.setattr(image, "resolve_room", lambda room: room)
@@ -555,8 +558,8 @@ async def test_build_image_pack_uploads_archive_and_defaults_context_path(
     monkeypatch.setattr(image, "_parse_creds", lambda values: [])
     monkeypatch.setattr(
         image,
-        "_stream_container_job_logs_and_wait_for_exit",
-        _fake_stream_container_job_logs_and_wait_for_exit,
+        "_stream_build_job_logs_and_wait_for_exit",
+        _fake_stream_build_job_logs_and_wait_for_exit,
     )
     monkeypatch.setattr(
         image.uuid,
@@ -592,20 +595,20 @@ async def test_build_image_pack_uploads_archive_and_defaults_context_path(
         "architecture": "arm64",
         "ref_name": "room.meshagent.com/temp/build/packs/pack-123:latest",
     }
-    assert parse_mount_args == {
-        "mount_room_path": [],
-        "mount_project_path": [],
-        "mount_image": ["room.meshagent.com/temp/build/packs/pack-123:latest=/context"],
-    }
+    assert parse_mount_args == {}
     assert captured["build_kwargs"] == {
         "tag": "room.meshagent.com/website:1",
-        "mounts": [mount_spec],
+        "mounts": [],
         "context_path": "/context",
         "dockerfile_path": "/context/Dockerfile",
         "private": False,
         "credentials": [],
+        "context_archive_path": temporary_pack_path,
+        "context_archive_ref": "room.meshagent.com/temp/build/packs/pack-123:latest",
+        "context_archive_mount_path": "/context",
+        "context_archive_arch": "arm64",
     }
-    assert captured["container_id"] == "container-1"
+    assert captured["build_id"] == "build-1"
     assert captured["deleted_path"] == temporary_pack_path
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
@@ -624,7 +627,7 @@ async def test_build_image_pack_defaults_architecture_to_amd64(
     class _FakeContainers:
         async def build(self, **kwargs) -> str:
             captured["build_kwargs"] = kwargs
-            return "container-1"
+            return "build-1"
 
     class _FakeStorage:
         async def delete(self, path: str) -> None:
@@ -646,12 +649,12 @@ async def test_build_image_pack_defaults_architecture_to_amd64(
         del project_id, room
         return _FakeAccountClient(), _FakeRoomClient()
 
-    async def _fake_stream_container_job_logs_and_wait_for_exit(
+    async def _fake_stream_build_job_logs_and_wait_for_exit(
         *,
         client,
-        container_id: str,
+        build_id: str,
     ) -> int:
-        del client, container_id
+        del client, build_id
         return 0
 
     async def _fake_upload_oci_archive_to_room(**kwargs) -> SimpleNamespace:
@@ -679,8 +682,8 @@ async def test_build_image_pack_defaults_architecture_to_amd64(
     monkeypatch.setattr(image, "_parse_creds", lambda values: [])
     monkeypatch.setattr(
         image,
-        "_stream_container_job_logs_and_wait_for_exit",
-        _fake_stream_container_job_logs_and_wait_for_exit,
+        "_stream_build_job_logs_and_wait_for_exit",
+        _fake_stream_build_job_logs_and_wait_for_exit,
     )
     monkeypatch.setattr(
         image.uuid,
@@ -749,7 +752,7 @@ async def test_build_image_defaults_context_path_from_mount_room_path(
     class _FakeContainers:
         async def build(self, **kwargs) -> str:
             captured["build_kwargs"] = kwargs
-            return "container-1"
+            return "build-1"
 
     class _FakeRoomClient:
         def __init__(self) -> None:
@@ -766,12 +769,12 @@ async def test_build_image_defaults_context_path_from_mount_room_path(
         del project_id, room
         return _FakeAccountClient(), _FakeRoomClient()
 
-    async def _fake_stream_container_job_logs_and_wait_for_exit(
+    async def _fake_stream_build_job_logs_and_wait_for_exit(
         *,
         client,
-        container_id: str,
+        build_id: str,
     ) -> int:
-        del client, container_id
+        del client, build_id
         return 0
 
     def _fake_parse_image_operation_mounts(**kwargs):
@@ -788,8 +791,8 @@ async def test_build_image_defaults_context_path_from_mount_room_path(
     monkeypatch.setattr(image, "_parse_creds", lambda values: [])
     monkeypatch.setattr(
         image,
-        "_stream_container_job_logs_and_wait_for_exit",
-        _fake_stream_container_job_logs_and_wait_for_exit,
+        "_stream_build_job_logs_and_wait_for_exit",
+        _fake_stream_build_job_logs_and_wait_for_exit,
     )
 
     await image.build_image(
@@ -819,6 +822,10 @@ async def test_build_image_defaults_context_path_from_mount_room_path(
         "dockerfile_path": None,
         "private": False,
         "credentials": [],
+        "context_archive_path": None,
+        "context_archive_ref": None,
+        "context_archive_mount_path": None,
+        "context_archive_arch": None,
     }
 
 
@@ -988,7 +995,7 @@ async def test_build_image_deploy_creates_room_service_and_route_from_packed_doc
     class _FakeContainers:
         async def build(self, **kwargs) -> str:
             captured["build_kwargs"] = kwargs
-            return "container-1"
+            return "build-1"
 
     class _FakeStorage:
         async def delete(self, path: str) -> None:
@@ -1045,13 +1052,13 @@ async def test_build_image_deploy_creates_room_service_and_route_from_packed_doc
         captured["room"] = room
         return _FakeAccountClient(), _FakeRoomClient()
 
-    async def _fake_stream_container_job_logs_and_wait_for_exit(
+    async def _fake_stream_build_job_logs_and_wait_for_exit(
         *,
         client,
-        container_id: str,
+        build_id: str,
     ) -> int:
         captured["wait_client"] = client
-        captured["container_id"] = container_id
+        captured["build_id"] = build_id
         return 0
 
     async def _fake_upload_oci_archive_to_room(**kwargs) -> SimpleNamespace:
@@ -1085,8 +1092,8 @@ async def test_build_image_deploy_creates_room_service_and_route_from_packed_doc
     monkeypatch.setattr(image, "_parse_creds", lambda values: [])
     monkeypatch.setattr(
         image,
-        "_stream_container_job_logs_and_wait_for_exit",
-        _fake_stream_container_job_logs_and_wait_for_exit,
+        "_stream_build_job_logs_and_wait_for_exit",
+        _fake_stream_build_job_logs_and_wait_for_exit,
     )
     monkeypatch.setattr(
         image,
@@ -1162,7 +1169,7 @@ async def test_build_image_deploy_domain_requires_exactly_one_published_port(
     class _FakeContainers:
         async def build(self, **kwargs) -> str:
             captured["build_kwargs"] = kwargs
-            return "container-1"
+            return "build-1"
 
     class _FakeStorage:
         async def delete(self, path: str) -> None:
@@ -1195,12 +1202,12 @@ async def test_build_image_deploy_domain_requires_exactly_one_published_port(
         del project_id, room
         return _FakeAccountClient(), _FakeRoomClient()
 
-    async def _fake_stream_container_job_logs_and_wait_for_exit(
+    async def _fake_stream_build_job_logs_and_wait_for_exit(
         *,
         client,
-        container_id: str,
+        build_id: str,
     ) -> int:
-        del client, container_id
+        del client, build_id
         return 0
 
     async def _fake_upload_oci_archive_to_room(**kwargs) -> SimpleNamespace:
@@ -1234,8 +1241,8 @@ async def test_build_image_deploy_domain_requires_exactly_one_published_port(
     monkeypatch.setattr(image, "_parse_creds", lambda values: [])
     monkeypatch.setattr(
         image,
-        "_stream_container_job_logs_and_wait_for_exit",
-        _fake_stream_container_job_logs_and_wait_for_exit,
+        "_stream_build_job_logs_and_wait_for_exit",
+        _fake_stream_build_job_logs_and_wait_for_exit,
     )
     monkeypatch.setattr(
         image.uuid,
