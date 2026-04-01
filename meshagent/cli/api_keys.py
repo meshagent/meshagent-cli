@@ -1,19 +1,34 @@
 import json
+import shlex
+from typing import Annotated
+
+import typer
 from rich import print
 
-from meshagent.cli.common_options import ProjectIdOption
 from meshagent.cli import async_typer
+from meshagent.cli.common_options import OutputFormatOption, ProjectIdOption
 from meshagent.cli.helper import (
+    get_active_api_key,
     get_client,
     print_json_table,
     resolve_project_id,
     set_active_api_key,
 )
-from meshagent.cli.common_options import OutputFormatOption
-from typing import Annotated
-import typer
 
 app = async_typer.AsyncTyper(help="Manage or activate api-keys for your project")
+
+
+async def _require_active_api_key(*, project_id: str | None) -> str:
+    resolved_project_id = await resolve_project_id(project_id=project_id)
+    key = await get_active_api_key(project_id=resolved_project_id)
+    if key is None:
+        print(
+            f"[red]No activated API key found for project {resolved_project_id}. "
+            "Use meshagent api-key activate or meshagent api-key create "
+            "--activate to store one locally.[/red]"
+        )
+        raise typer.Exit(code=1)
+    return key
 
 
 @app.async_command("list", help="List API keys for a project.")
@@ -82,6 +97,21 @@ async def create(
         )
 
 
+@app.async_command("show", help="Show the activated API key for a project.")
+async def show(*, project_id: ProjectIdOption):
+    key = await _require_active_api_key(project_id=project_id)
+    typer.echo(key)
+
+
+@app.async_command(
+    "env",
+    help="Print the activated API key as a shell export snippet.",
+)
+async def env(*, project_id: ProjectIdOption):
+    key = await _require_active_api_key(project_id=project_id)
+    typer.echo(f"export MESHAGENT_API_KEY={shlex.quote(key)}")
+
+
 @app.async_command(
     "activate",
     help="Set the default API key for a project in local CLI settings.",
@@ -92,8 +122,7 @@ async def activate(
     key: str,
 ):
     project_id = await resolve_project_id(project_id=project_id)
-    if activate:
-        await set_active_api_key(project_id=project_id, key=key)
+    await set_active_api_key(project_id=project_id, key=key)
 
 
 @app.async_command("delete", help="Delete an API key from a project.")
