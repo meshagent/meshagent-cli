@@ -605,7 +605,6 @@ async def exec_container(
         Optional[str],
         typer.Option(..., help="Command to execute in the container (quoted string)"),
     ] = None,
-    tty: Annotated[bool, typer.Option(..., help="Allocate a TTY")] = False,
 ):
     account_client, client = await _with_client(
         project_id=project_id,
@@ -614,16 +613,13 @@ async def exec_container(
     result = 1
 
     try:
-        import termios
         import shlex
-
-        from contextlib import contextmanager
 
         parsed_command = shlex.split(command) if command else None
         container = await client.containers.exec(
             container_id=container_id,
             command=parsed_command,
-            tty=tty,
+            tty=False,
         )
 
         async def write_all(fd, data: bytes) -> None:
@@ -650,17 +646,6 @@ async def exec_container(
             async for output in container.stdout():
                 await write_all(sys.stdout.fileno(), output)
 
-        @contextmanager
-        def raw_mode(fd: int):
-            import tty
-
-            old = termios.tcgetattr(fd)
-            try:
-                tty.setraw(fd)  # immediate bytes
-                yield
-            finally:
-                termios.tcsetattr(fd, termios.TCSADRAIN, old)
-
         async def read_piped_stdin(bufsize: int = 1024):
             while True:
                 chunk = await asyncio.to_thread(sys.stdin.buffer.read, bufsize)
@@ -671,53 +656,11 @@ async def exec_container(
 
                 await container.write(chunk)
 
-        async def read_stdin(bufsize: int = 1024):
-            # If stdin is piped, just read normally (blocking is fine; no TTY semantics)
-            if not sys.stdin.isatty():
-                while True:
-                    chunk = sys.stdin.buffer.read(bufsize)
-                    if not chunk:
-                        return
-                    await container.write(chunk)
-                return
-
-            fd = sys.stdin.fileno()
-
-            # Make reads non-blocking so we never hang shutdown
-            prev_blocking = os.get_blocking(fd)
-            os.set_blocking(fd, False)
-
-            try:
-                with raw_mode(fd):
-                    while True:
-                        try:
-                            chunk = os.read(fd, bufsize)
-                        except BlockingIOError:
-                            # nothing typed yet
-                            await asyncio.sleep(0.01)
-                            continue
-
-                        if chunk == b"":
-                            return
-
-                        # optional: allow Ctrl-C to exit
-                        if chunk == b"\x03":
-                            return
-
-                        await container.write(chunk)
-            finally:
-                os.set_blocking(fd, prev_blocking)
-
-        if not tty and not sys.stdin.isatty():
-            await asyncio.gather(read_stdout(), read_stderr(), read_piped_stdin())
-        else:
-            if not sys.stdin.isatty():
-                print("[red]TTY requested but not a TTY[/red]")
-                raise typer.Exit(-1)
-
-            reader = asyncio.create_task(read_stdin())
+        if sys.stdin.isatty():
+            await container.close_stdin()
             await asyncio.gather(read_stdout(), read_stderr())
-            reader.cancel()
+        else:
+            await asyncio.gather(read_stdout(), read_stderr(), read_piped_stdin())
 
         result = await container.result
     finally:

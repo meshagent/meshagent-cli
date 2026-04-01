@@ -50,7 +50,6 @@ def test_resolve_shell_image(value: str | None, expected: str | None) -> None:
     ("model", "llm_participant", "expected"),
     [
         ("gpt-5", None, True),
-        ("o3", None, False),
         ("claude-3-7-sonnet", None, False),
         ("gpt-5", "remote-llm", False),
     ],
@@ -79,7 +78,7 @@ async def test_build_shell_toolkit_builder_uses_container_shell_for_non_gpt_mode
 
     toolkit = await builder.make(
         room=None,  # type: ignore[arg-type]
-        model="o3",
+        model="claude-3-7-sonnet",
         config=builder.type.model_validate({"name": "shell"}),
     )
 

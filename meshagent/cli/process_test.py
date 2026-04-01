@@ -20,7 +20,7 @@ from meshagent.cli import cli as root_cli
 from meshagent.computers.agent import ComputerToolkit
 from meshagent.openai.tools.responses_adapter import ShellTool
 from meshagent.tools import Toolkit
-from meshagent.tools import ContainerShellTool
+from meshagent.tools import ContainerShellTool, ContainerToolkit
 
 
 class _FakeService:
@@ -948,7 +948,7 @@ async def test_process_agent_shell_toolkit_builder_uses_container_shell_for_non_
     None
 ):
     custom_process_agent = chatbot.build_process_agent(
-        model="o3",
+        model="claude-3-7-sonnet",
         rule=[],
         toolkit=[],
         schema=[],
@@ -961,7 +961,7 @@ async def test_process_agent_shell_toolkit_builder_uses_container_shell_for_non_
 
     toolkit = await builder.make(
         room=None,  # type: ignore[arg-type]
-        model="o3",
+        model="claude-3-7-sonnet",
         config=builder.type.model_validate({"name": "shell"}),
     )
 
@@ -1022,11 +1022,12 @@ async def test_chatbot_require_shell_uses_container_shell_for_non_gpt_model(
     monkeypatch,
 ) -> None:
     custom_chatbot = chatbot.build_chatbot(
-        model="o3",
+        model="claude-3-7-sonnet",
         rule=[],
         toolkit=[],
         schema=[],
         require_shell=True,
+        working_dir="/workspace",
     )
 
     async def fake_start(self, *, room) -> None:
@@ -1039,3 +1040,94 @@ async def test_chatbot_require_shell_uses_container_shell_for_non_gpt_model(
     await agent.start(room=_FakeShellRoom())
 
     assert isinstance(agent.shell_tool, ContainerShellTool)
+    assert agent.shell_tool.working_dir == "/workspace"
+
+
+@pytest.mark.asyncio
+async def test_chatbot_require_advanced_shell_uses_container_toolkit_with_shell_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COPIED_ENV", "copied")
+    custom_chatbot = chatbot.build_chatbot(
+        model="gpt-5.4",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_advanced_shell=True,
+        working_dir="/workspace",
+        shell_image="python:3.13",
+        shell_copy_env=["COPIED_ENV"],
+        shell_set_env=["SET_ENV=set"],
+        delegate_shell_token=True,
+    )
+
+    async def fake_start(self, *, room) -> None:
+        self._room = room
+
+    monkeypatch.setattr(custom_chatbot.__mro__[1], "start", fake_start)
+
+    agent = custom_chatbot()
+
+    await agent.start(room=_FakeShellRoom())
+
+    assert isinstance(agent.advanced_shell_toolkit, ContainerToolkit)
+    assert agent.advanced_shell_toolkit.default_working_dir == "/workspace"
+    assert agent.advanced_shell_toolkit.default_image == "python:3.13"
+    assert agent.advanced_shell_toolkit.default_env == {
+        "COPIED_ENV": "copied",
+        "SET_ENV": "set",
+        "MESHAGENT_TOKEN": "test-token",
+        "OPENAI_API_KEY": "test-token",
+        "ANTHROPIC_API_KEY": "test-token",
+    }
+
+
+@pytest.mark.asyncio
+async def test_process_agent_require_advanced_shell_uses_container_toolkit_with_shell_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import meshagent.agents.process as process_module
+
+    monkeypatch.setenv("COPIED_ENV", "copied")
+    custom_process_agent = chatbot.build_process_agent(
+        model="gpt-5.4",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_advanced_shell=True,
+        working_dir="/workspace",
+        shell_image="python:3.13",
+        shell_copy_env=["COPIED_ENV"],
+        shell_set_env=["SET_ENV=set"],
+        delegate_shell_token=True,
+        channels=[],
+    )
+    agent = custom_process_agent()
+
+    async def fake_install_requirements() -> None:
+        return None
+
+    async def fake_supervisor_start(self) -> None:
+        return None
+
+    async def fake_supervisor_stop(self) -> None:
+        return None
+
+    monkeypatch.setattr(agent, "install_requirements", fake_install_requirements)
+    monkeypatch.setattr(process_module.AgentSupervisor, "start", fake_supervisor_start)
+    monkeypatch.setattr(process_module.AgentSupervisor, "stop", fake_supervisor_stop)
+
+    await agent.start(room=_FakeProcessRoomClient())
+    try:
+        assert isinstance(agent._advanced_shell_toolkit, ContainerToolkit)
+        assert agent._advanced_shell_toolkit.default_working_dir == "/workspace"
+        assert agent._advanced_shell_toolkit.default_image == "python:3.13"
+        assert agent._advanced_shell_toolkit.default_env == {
+            "COPIED_ENV": "copied",
+            "SET_ENV": "set",
+            "MESHAGENT_TOKEN": "token",
+            "OPENAI_API_KEY": "token",
+            "ANTHROPIC_API_KEY": "token",
+        }
+    finally:
+        await agent.stop()

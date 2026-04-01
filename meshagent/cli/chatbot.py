@@ -9,6 +9,7 @@ from meshagent.tools import (
     WebFetchTool,
     WebFetchToolkitBuilder,
     ContainerShellTool,
+    ContainerToolkit,
     MemoriesToolkit,
 )
 from meshagent.tools.storage import (
@@ -183,6 +184,14 @@ ShellSetEnvOption = Annotated[
     typer.Option(
         "--shell-set-env",
         help=("Set env vars in shell tool env as NAME=VALUE. Can be repeated."),
+    ),
+]
+
+RequireAdvancedShellOption = Annotated[
+    Optional[bool],
+    typer.Option(
+        "--require-advanced-shell",
+        help=("Enable the managed container toolkit with start/list/stop/run tools."),
     ),
 ]
 
@@ -527,6 +536,20 @@ def _set_shell_env_vars(*, set_env: Optional[list[str]]) -> dict[str, str]:
     return env
 
 
+def _build_shell_tool_env(
+    *,
+    base_env: dict[str, str],
+    delegate_shell_token: Optional[bool],
+    room: RoomClient,
+) -> dict[str, str]:
+    env = dict(base_env)
+    if delegate_shell_token:
+        env["MESHAGENT_TOKEN"] = room.protocol.token
+        env["OPENAI_API_KEY"] = room.protocol.token
+        env["ANTHROPIC_API_KEY"] = room.protocol.token
+    return env
+
+
 def _resolve_working_dir_option(
     *,
     working_dir: Optional[str],
@@ -565,6 +588,7 @@ def build_chatbot(
     require_image_generation: Optional[str] = None,
     require_local_shell: Optional[str] = None,
     require_shell: Optional[bool] = None,
+    require_advanced_shell: Optional[bool] = None,
     require_apply_patch: Optional[str] = None,
     require_computer_use: Optional[str] = None,
     starting_url: Optional[str] = None,
@@ -707,16 +731,16 @@ def build_chatbot(
             )
 
             self.shell_tool = None
+            self.advanced_shell_toolkit = None
 
         async def start(self, *, room: RoomClient):
             await super().start(room=room)
 
-            env = dict(base_shell_env)
-
-            if delegate_shell_token:
-                env["MESHAGENT_TOKEN"] = self.room.protocol.token
-                env["OPENAI_API_KEY"] = self.room.protocol.token
-                env["ANTHROPIC_API_KEY"] = self.room.protocol.token
+            env = _build_shell_tool_env(
+                base_env=base_shell_env,
+                delegate_shell_token=delegate_shell_token,
+                room=room,
+            )
 
             if require_shell:
                 if supports_openai_shell:
@@ -733,6 +757,7 @@ def build_chatbot(
                     shell_kwargs = {
                         "image": resolved_shell_image,
                         "name": "shell",
+                        "working_dir": working_dir,
                         "env": env,
                     }
                     if shell_tool_mounts is not None:
@@ -740,9 +765,27 @@ def build_chatbot(
 
                     self.shell_tool = ContainerShellTool(**shell_kwargs)
 
+            if require_advanced_shell:
+                self.advanced_shell_toolkit = ContainerToolkit(
+                    working_dir=working_dir,
+                    default_image=resolved_shell_image,
+                    mounts=shell_tool_mounts,
+                    env=env or None,
+                )
+
             if room_rules_path is not None:
                 for p in room_rules_path:
                     await self._load_room_rules(path=p)
+
+        async def stop(self) -> None:
+            room = self._room
+            try:
+                if self.advanced_shell_toolkit is not None and room is not None:
+                    await self.advanced_shell_toolkit.stop_all(room=room)
+            finally:
+                self.advanced_shell_toolkit = None
+                self.shell_tool = None
+                await super().stop()
 
         async def init_session(self):
             from meshagent.cli.helper import init_context_from_spec
@@ -854,6 +897,8 @@ def build_chatbot(
 
             if self.shell_tool is not None:
                 add_tool(toolkit_name=self.shell_tool.name, tool=self.shell_tool)
+            if self.advanced_shell_toolkit is not None:
+                add_toolkit(self.advanced_shell_toolkit)
             if require_mcp:
                 raise Exception(
                     "mcp tool cannot be required by cli currently, use 'optional' instead"
@@ -1044,6 +1089,7 @@ def build_process_agent(
     require_image_generation: Optional[str] = None,
     require_local_shell: Optional[str] = None,
     require_shell: Optional[bool] = None,
+    require_advanced_shell: Optional[bool] = None,
     require_apply_patch: Optional[str] = None,
     require_computer_use: Optional[str] = None,
     starting_url: Optional[str] = None,
@@ -1193,6 +1239,7 @@ def build_process_agent(
             self._queue_channels: list[QueueChannel] = []
             self._toolkit_channels: list[ToolkitChannel] = []
             self._shell_tool: ShellTool | ContainerShellTool | None = None
+            self._advanced_shell_toolkit: ContainerToolkit | None = None
             self._resolved_threading_mode: str | None = None
             if threading_mode != "none":
                 self._resolved_threading_mode = threading_mode
@@ -1272,11 +1319,11 @@ def build_process_agent(
             try:
                 await self.install_requirements()
 
-                env = dict(base_shell_env)
-                if delegate_shell_token:
-                    env["MESHAGENT_TOKEN"] = self.room.protocol.token
-                    env["OPENAI_API_KEY"] = self.room.protocol.token
-                    env["ANTHROPIC_API_KEY"] = self.room.protocol.token
+                env = _build_shell_tool_env(
+                    base_env=base_shell_env,
+                    delegate_shell_token=delegate_shell_token,
+                    room=room,
+                )
 
                 if require_shell:
                     if supports_openai_shell:
@@ -1293,11 +1340,20 @@ def build_process_agent(
                         shell_kwargs = {
                             "image": resolved_shell_image,
                             "name": "shell",
+                            "working_dir": working_dir,
                             "env": env,
                         }
                         if shell_tool_mounts is not None:
                             shell_kwargs["mounts"] = shell_tool_mounts
                         self._shell_tool = ContainerShellTool(**shell_kwargs)
+
+                if require_advanced_shell:
+                    self._advanced_shell_toolkit = ContainerToolkit(
+                        working_dir=working_dir,
+                        default_image=resolved_shell_image,
+                        mounts=shell_tool_mounts,
+                        env=env or None,
+                    )
 
                 if room_rules_path is not None:
                     for room_rules_file in room_rules_path:
@@ -1330,6 +1386,7 @@ def build_process_agent(
                 self._mail_channels = []
                 self._queue_channels = []
                 self._toolkit_channels = []
+                self._advanced_shell_toolkit = None
                 self._room = None
                 raise
 
@@ -1342,7 +1399,14 @@ def build_process_agent(
             self._mail_channels = []
             self._queue_channels = []
             self._toolkit_channels = []
-            await super().stop()
+            room = self._room
+            try:
+                if self._advanced_shell_toolkit is not None and room is not None:
+                    await self._advanced_shell_toolkit.stop_all(room=room)
+            finally:
+                self._advanced_shell_toolkit = None
+                self._shell_tool = None
+                await super().stop()
 
         async def init_session(self) -> AgentSessionContext:
             from meshagent.cli.helper import init_context_from_spec
@@ -1526,6 +1590,8 @@ def build_process_agent(
 
             if self._shell_tool is not None:
                 add_tool(toolkit_name=self._shell_tool.name, tool=self._shell_tool)
+            if self._advanced_shell_toolkit is not None:
+                add_toolkit(self._advanced_shell_toolkit)
 
             if require_mcp:
                 raise Exception(
@@ -1851,6 +1917,7 @@ async def join(
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
     ] = False,
+    require_advanced_shell: RequireAdvancedShellOption = False,
     require_apply_patch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable apply patch tool calling"),
@@ -2056,6 +2123,7 @@ async def join(
             require_web_fetch=require_web_fetch,
             require_local_shell=require_local_shell,
             require_shell=require_shell,
+            require_advanced_shell=require_advanced_shell,
             require_image_generation=require_image_generation,
             require_mcp=require_mcp,
             require_storage=require_storage,
@@ -2244,6 +2312,7 @@ async def service(
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
     ] = False,
+    require_advanced_shell: RequireAdvancedShellOption = False,
     require_apply_patch: Annotated[
         Optional[bool], typer.Option(..., help="Enable apply patch tool")
     ] = False,
@@ -2434,6 +2503,7 @@ async def service(
             require_web_search=require_web_search,
             require_web_fetch=require_web_fetch,
             require_shell=require_shell,
+            require_advanced_shell=require_advanced_shell,
             require_apply_patch=require_apply_patch,
             require_local_shell=require_local_shell,
             require_image_generation=require_image_generation,
@@ -2596,6 +2666,7 @@ async def spec(
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
     ] = False,
+    require_advanced_shell: RequireAdvancedShellOption = False,
     require_apply_patch: Annotated[
         Optional[bool], typer.Option(..., help="Enable apply patch tool")
     ] = False,
@@ -2776,6 +2847,7 @@ async def spec(
             require_web_search=require_web_search,
             require_web_fetch=require_web_fetch,
             require_shell=require_shell,
+            require_advanced_shell=require_advanced_shell,
             require_apply_patch=require_apply_patch,
             require_local_shell=require_local_shell,
             require_image_generation=require_image_generation,
@@ -2958,6 +3030,7 @@ async def deploy(
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
     ] = False,
+    require_advanced_shell: RequireAdvancedShellOption = False,
     require_apply_patch: Annotated[
         Optional[bool], typer.Option(..., help="Enable apply patch tool")
     ] = False,
@@ -3145,6 +3218,7 @@ async def deploy(
             require_web_search=require_web_search,
             require_web_fetch=require_web_fetch,
             require_shell=require_shell,
+            require_advanced_shell=require_advanced_shell,
             require_apply_patch=require_apply_patch,
             require_local_shell=require_local_shell,
             require_image_generation=require_image_generation,
@@ -4824,6 +4898,7 @@ async def run(
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
     ] = False,
+    require_advanced_shell: RequireAdvancedShellOption = False,
     require_apply_patch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable apply patch tool calling"),
@@ -5053,6 +5128,7 @@ async def run(
             require_web_fetch=require_web_fetch,
             require_local_shell=require_local_shell,
             require_shell=require_shell,
+            require_advanced_shell=require_advanced_shell,
             require_image_generation=require_image_generation,
             require_mcp=require_mcp,
             require_storage=require_storage,
