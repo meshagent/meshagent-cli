@@ -1081,6 +1081,73 @@ async def test_deploy_image_creates_room_service_with_mounts_env_and_token(
 
 
 @pytest.mark.asyncio
+async def test_deploy_image_sets_cookie_validation_when_private(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeRoomClient:
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+            captured["room_client_closed"] = True
+
+    class _FakeAccountClient:
+        async def list_room_services(self, *, project_id: str, room_name: str):
+            captured.setdefault("list_room_services", []).append(
+                (project_id, room_name)
+            )
+            return []
+
+        async def create_room_service(
+            self, *, project_id: str, room_name: str, service
+        ):
+            captured["created_service"] = (project_id, room_name, service)
+            return "service-1"
+
+        async def close(self) -> None:
+            captured["account_client_closed"] = True
+
+    async def _fake_with_client(*, project_id, room):
+        captured["project_id"] = project_id
+        captured["room"] = room
+        return _FakeAccountClient(), _FakeRoomClient()
+
+    async def _fake_resolve_project_id(*, project_id):
+        del project_id
+        return "project-1"
+
+    monkeypatch.setattr(image, "_with_client", _fake_with_client)
+    monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
+
+    await image.deploy_image(
+        project_id="project-1",
+        room="room-1",
+        tag="repo/web:1",
+        domain=None,
+        room_mount=[],
+        project_mount=[],
+        empty_dir_mount=[],
+        image_mount=[],
+        env=[],
+        env_token=None,
+        private=True,
+    )
+
+    created_service = captured["created_service"]
+    assert isinstance(created_service, tuple)
+    service_spec = created_service[2]
+    assert service_spec.metadata.annotations is not None
+    assert (
+        service_spec.metadata.annotations[image.ANNOTATION_REQUEST_VALIDATION_METHOD]
+        == "cookie"
+    )
+    assert captured["room_client_closed"] is True
+    assert captured["account_client_closed"] is True
+
+
+@pytest.mark.asyncio
 async def test_deploy_image_updates_existing_service_route_and_preserves_token_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1240,6 +1307,125 @@ async def test_deploy_image_updates_existing_service_route_and_preserves_token_i
     assert captured["restarted_service_id"] == "service-1"
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_deploy_image_sets_cookie_validation_on_private_published_ports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    existing_service = ServiceSpec(
+        version="v1",
+        kind="Service",
+        id="service-1",
+        metadata=ServiceMetadata(
+            name="repo-web",
+            annotations={image.ANNOTATION_SERVICE_ID: "repo-web"},
+        ),
+        ports=[
+            PortSpec(
+                num=8080,
+                type="http",
+                published=True,
+                public=True,
+                annotations={"keep": "1"},
+            )
+        ],
+        container=ContainerSpec(image="repo/web:old"),
+    )
+
+    class _FakeServices:
+        async def restart(self, *, service_id: str) -> None:
+            captured["restarted_service_id"] = service_id
+
+    class _FakeRoomClient:
+        def __init__(self) -> None:
+            self.services = _FakeServices()
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+            captured["room_client_closed"] = True
+
+    class _FakeAccountClient:
+        async def list_room_services(self, *, project_id: str, room_name: str):
+            captured.setdefault("list_room_services", []).append(
+                (project_id, room_name)
+            )
+            return [existing_service]
+
+        async def update_room_service(
+            self,
+            *,
+            project_id: str,
+            room_name: str,
+            service_id: str,
+            service,
+        ) -> None:
+            captured["updated_service"] = (
+                project_id,
+                room_name,
+                service_id,
+                service,
+            )
+
+        async def close(self) -> None:
+            captured["account_client_closed"] = True
+
+    async def _fake_with_client(*, project_id, room):
+        captured["project_id"] = project_id
+        captured["room"] = room
+        return _FakeAccountClient(), _FakeRoomClient()
+
+    async def _fake_resolve_project_id(*, project_id):
+        del project_id
+        return "project-1"
+
+    monkeypatch.setattr(image, "_with_client", _fake_with_client)
+    monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
+
+    await image.deploy_image(
+        project_id="project-1",
+        room="room-1",
+        tag="repo/web:2",
+        domain=None,
+        room_mount=[],
+        project_mount=[],
+        empty_dir_mount=[],
+        image_mount=[],
+        env=[],
+        env_token=None,
+        private=True,
+    )
+
+    updated_service = captured["updated_service"]
+    assert isinstance(updated_service, tuple)
+    updated_spec = updated_service[3]
+    assert updated_spec.metadata.annotations is not None
+    assert (
+        updated_spec.metadata.annotations[image.ANNOTATION_REQUEST_VALIDATION_METHOD]
+        == "cookie"
+    )
+    assert updated_spec.ports is not None
+    assert updated_spec.ports[0].public is None
+    assert updated_spec.ports[0].annotations == {
+        "keep": "1",
+        image.ANNOTATION_REQUEST_VALIDATION_METHOD: "cookie",
+    }
+    assert captured["restarted_service_id"] == "service-1"
+    assert captured["room_client_closed"] is True
+    assert captured["account_client_closed"] is True
+
+
+def test_update_request_validation_annotations_removes_cookie_when_public() -> None:
+    assert image._update_request_validation_annotations(
+        annotations={
+            image.ANNOTATION_REQUEST_VALIDATION_METHOD: "cookie",
+            "keep": "1",
+        },
+        public=True,
+    ) == {"keep": "1"}
 
 
 @pytest.mark.asyncio

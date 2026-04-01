@@ -554,7 +554,6 @@ def build_worker(
                     shell_builder_kwargs["mounts"] = shell_tool_mounts
                 providers.append(
                     build_shell_toolkit_builder(
-                        use_openai_shell_tool=supports_openai_shell,
                         **shell_builder_kwargs,
                     )
                 )

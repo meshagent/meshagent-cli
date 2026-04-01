@@ -21,8 +21,13 @@ from meshagent.api.specs.service import (
 from meshagent.agents.context import AgentSessionContext
 from meshagent.api.client import Meshagent, RoomConnectionInfo
 from meshagent.cli import async_typer, auth_async
-from meshagent.openai.tools.responses_adapter import ShellConfig, ShellToolkitBuilder
-from meshagent.tools import ContainerShellTool, Toolkit, ToolkitBuilder
+from meshagent.openai.tools.responses_adapter import ShellConfig, ShellTool
+from meshagent.tools import (
+    ContainerShellTool,
+    ProcessShellTool,
+    Toolkit,
+    ToolkitBuilder,
+)
 from meshagent.tools.container_shell import DEFAULT_CONTAINER_MOUNT_SPEC
 from meshagent.tools.storage import (
     StorageToolLocalMount,
@@ -64,16 +69,56 @@ def supports_openai_shell_tool(
     return llm_participant is None and model.startswith("gpt-")
 
 
-class _ContainerBackedShellToolkitBuilder(ToolkitBuilder):
+def build_shell_tool(
+    *,
+    model: str,
+    llm_participant: Optional[str] = None,
+    config: Optional[ShellConfig] = None,
+    working_dir: Optional[str] = None,
+    image: Optional[str] = DEFAULT_SHELL_IMAGE,
+    mounts: Optional[ContainerMountSpec] = DEFAULT_CONTAINER_MOUNT_SPEC,
+    env: Optional[dict[str, str]] = None,
+) -> ShellTool | ContainerShellTool | ProcessShellTool:
+    if config is None:
+        config = ShellConfig(name="shell")
+
+    if supports_openai_shell_tool(model=model, llm_participant=llm_participant):
+        return ShellTool(
+            config=config,
+            working_dir=working_dir,
+            image=image,
+            mounts=mounts,
+            env=env,
+        )
+
+    if image is None:
+        return ProcessShellTool(
+            name=config.name,
+            working_dir=working_dir,
+            env=env,
+        )
+
+    return ContainerShellTool(
+        name=config.name,
+        working_dir=working_dir,
+        image=image,
+        mounts=mounts,
+        env=env,
+    )
+
+
+class _RuntimeAwareShellToolkitBuilder(ToolkitBuilder):
     def __init__(
         self,
         *,
+        llm_participant: Optional[str] = None,
         working_dir: Optional[str] = None,
         image: Optional[str] = DEFAULT_SHELL_IMAGE,
         mounts: Optional[ContainerMountSpec] = DEFAULT_CONTAINER_MOUNT_SPEC,
         env: Optional[dict[str, str]] = None,
     ) -> None:
         super().__init__(name="shell", type=ShellConfig)
+        self.llm_participant = llm_participant
         self.working_dir = working_dir
         self.image = image
         self.mounts = mounts
@@ -83,13 +128,13 @@ class _ContainerBackedShellToolkitBuilder(ToolkitBuilder):
         self, *, room: RoomClient, model: str, config: ShellConfig
     ) -> Toolkit:
         del room
-        del model
-        del config
         return Toolkit(
             name="shell",
             tools=[
-                ContainerShellTool(
-                    name="shell",
+                build_shell_tool(
+                    model=model,
+                    llm_participant=self.llm_participant,
+                    config=config,
                     working_dir=self.working_dir,
                     image=self.image,
                     mounts=self.mounts,
@@ -101,21 +146,14 @@ class _ContainerBackedShellToolkitBuilder(ToolkitBuilder):
 
 def build_shell_toolkit_builder(
     *,
-    use_openai_shell_tool: bool,
+    llm_participant: Optional[str] = None,
     working_dir: Optional[str] = None,
     image: Optional[str] = DEFAULT_SHELL_IMAGE,
     mounts: Optional[ContainerMountSpec] = DEFAULT_CONTAINER_MOUNT_SPEC,
     env: Optional[dict[str, str]] = None,
 ) -> ToolkitBuilder:
-    if use_openai_shell_tool:
-        return ShellToolkitBuilder(
-            working_dir=working_dir,
-            image=image,
-            mounts=mounts,
-            env=env,
-        )
-
-    return _ContainerBackedShellToolkitBuilder(
+    return _RuntimeAwareShellToolkitBuilder(
+        llm_participant=llm_participant,
         working_dir=working_dir,
         image=image,
         mounts=mounts,

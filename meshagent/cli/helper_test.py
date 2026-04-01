@@ -14,7 +14,7 @@ from meshagent.cli.helper import (
     supports_openai_shell_tool,
 )
 from meshagent.openai.tools.responses_adapter import ShellTool
-from meshagent.tools import ContainerShellTool
+from meshagent.tools import ContainerShellTool, ProcessShellTool
 
 
 def test_parse_memory_selector_name_only() -> None:
@@ -71,7 +71,6 @@ async def test_build_shell_toolkit_builder_uses_container_shell_for_non_gpt_mode
     None
 ):
     builder = build_shell_toolkit_builder(
-        use_openai_shell_tool=False,
         working_dir="/workspace",
         image=DEFAULT_SHELL_IMAGE,
     )
@@ -88,7 +87,6 @@ async def test_build_shell_toolkit_builder_uses_container_shell_for_non_gpt_mode
 @pytest.mark.asyncio
 async def test_build_shell_toolkit_builder_uses_shell_tool_for_gpt_model() -> None:
     builder = build_shell_toolkit_builder(
-        use_openai_shell_tool=True,
         working_dir="/workspace",
         image=DEFAULT_SHELL_IMAGE,
     )
@@ -100,6 +98,24 @@ async def test_build_shell_toolkit_builder_uses_shell_tool_for_gpt_model() -> No
     )
 
     assert isinstance(toolkit.tools[0], ShellTool)
+
+
+@pytest.mark.asyncio
+async def test_build_shell_toolkit_builder_uses_process_shell_for_non_gpt_model_without_image() -> (
+    None
+):
+    builder = build_shell_toolkit_builder(
+        working_dir="/workspace",
+        image=None,
+    )
+
+    toolkit = await builder.make(
+        room=None,  # type: ignore[arg-type]
+        model="claude-3-7-sonnet",
+        config=builder.type.model_validate({"name": "shell"}),
+    )
+
+    assert isinstance(toolkit.tools[0], ProcessShellTool)
 
 
 @pytest.mark.parametrize(

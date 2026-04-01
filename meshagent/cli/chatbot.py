@@ -53,6 +53,7 @@ from meshagent.api import (
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.cli import async_typer
 from meshagent.cli.helper import (
+    build_shell_tool,
     build_shell_toolkit_builder,
     cleanup_args,
     cleanup_args_strip_options,
@@ -1036,7 +1037,7 @@ def build_chatbot(
                     shell_builder_kwargs["mounts"] = shell_tool_mounts
                 providers.append(
                     build_shell_toolkit_builder(
-                        use_openai_shell_tool=supports_openai_shell,
+                        llm_participant=llm_participant,
                         **shell_builder_kwargs,
                     )
                 )
@@ -1163,9 +1164,6 @@ def build_process_agent(
 
     is_claude_model = model.startswith("claude-")
     supports_openai_tools = llm_participant is None and not is_claude_model
-    supports_openai_shell = supports_openai_shell_tool(
-        model=model, llm_participant=llm_participant
-    )
     base_shell_env = _copy_shell_env_vars(copy_env=shell_copy_env)
     base_shell_env.update(_set_shell_env_vars(set_env=shell_set_env))
     resolved_shell_image = resolve_shell_image(shell_image)
@@ -1238,7 +1236,7 @@ def build_process_agent(
             self._mail_channels: list[MailChannel] = []
             self._queue_channels: list[QueueChannel] = []
             self._toolkit_channels: list[ToolkitChannel] = []
-            self._shell_tool: ShellTool | ContainerShellTool | None = None
+            self._shell_env: dict[str, str] = dict(base_shell_env)
             self._advanced_shell_toolkit: ContainerToolkit | None = None
             self._resolved_threading_mode: str | None = None
             if threading_mode != "none":
@@ -1326,26 +1324,7 @@ def build_process_agent(
                 )
 
                 if require_shell:
-                    if supports_openai_shell:
-                        shell_kwargs = {
-                            "working_dir": working_dir,
-                            "config": ShellConfig(name="shell"),
-                            "image": resolved_shell_image,
-                            "env": env,
-                        }
-                        if shell_tool_mounts is not None:
-                            shell_kwargs["mounts"] = shell_tool_mounts
-                        self._shell_tool = ShellTool(**shell_kwargs)
-                    else:
-                        shell_kwargs = {
-                            "image": resolved_shell_image,
-                            "name": "shell",
-                            "working_dir": working_dir,
-                            "env": env,
-                        }
-                        if shell_tool_mounts is not None:
-                            shell_kwargs["mounts"] = shell_tool_mounts
-                        self._shell_tool = ContainerShellTool(**shell_kwargs)
+                    self._shell_env = env
 
                 if require_advanced_shell:
                     self._advanced_shell_toolkit = ContainerToolkit(
@@ -1405,7 +1384,7 @@ def build_process_agent(
                     await self._advanced_shell_toolkit.stop_all(room=room)
             finally:
                 self._advanced_shell_toolkit = None
-                self._shell_tool = None
+                self._shell_env = dict(base_shell_env)
                 await super().stop()
 
         async def init_session(self) -> AgentSessionContext:
@@ -1511,7 +1490,7 @@ def build_process_agent(
                     shell_builder_kwargs["mounts"] = shell_tool_mounts
                 providers.append(
                     build_shell_toolkit_builder(
-                        use_openai_shell_tool=supports_openai_shell,
+                        llm_participant=llm_participant,
                         **shell_builder_kwargs,
                     )
                 )
@@ -1588,8 +1567,20 @@ def build_process_agent(
                     ),
                 )
 
-            if self._shell_tool is not None:
-                add_tool(toolkit_name=self._shell_tool.name, tool=self._shell_tool)
+            if require_shell:
+                shell_config = ShellConfig(name="shell")
+                add_tool(
+                    toolkit_name=shell_config.name,
+                    tool=build_shell_tool(
+                        model=model,
+                        llm_participant=llm_participant,
+                        config=shell_config,
+                        working_dir=working_dir,
+                        image=resolved_shell_image,
+                        mounts=shell_tool_mounts,
+                        env=self._shell_env,
+                    ),
+                )
             if self._advanced_shell_toolkit is not None:
                 add_toolkit(self._advanced_shell_toolkit)
 

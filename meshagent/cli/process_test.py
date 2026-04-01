@@ -20,7 +20,7 @@ from meshagent.cli import cli as root_cli
 from meshagent.computers.agent import ComputerToolkit
 from meshagent.openai.tools.responses_adapter import ShellTool
 from meshagent.tools import Toolkit
-from meshagent.tools import ContainerShellTool, ContainerToolkit
+from meshagent.tools import ContainerShellTool, ContainerToolkit, ProcessShellTool
 
 
 class _FakeService:
@@ -991,6 +991,79 @@ async def test_process_agent_shell_toolkit_builder_uses_shell_tool_for_gpt_model
     )
 
     assert isinstance(toolkit.tools[0], ShellTool)
+
+
+@pytest.mark.asyncio
+async def test_process_agent_shell_toolkit_builder_uses_process_shell_for_selected_claude_model_without_image() -> (
+    None
+):
+    custom_process_agent = chatbot.build_process_agent(
+        model="gpt-5",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        shell="enabled",
+        shell_image="none",
+        channels=[],
+    )
+
+    agent = custom_process_agent()
+    builder = agent.get_toolkit_builders()[0]
+
+    toolkit = await builder.make(
+        room=None,  # type: ignore[arg-type]
+        model="claude-3-7-sonnet",
+        config=builder.type.model_validate({"name": "shell"}),
+    )
+
+    assert isinstance(toolkit.tools[0], ProcessShellTool)
+
+
+@pytest.mark.asyncio
+async def test_process_agent_require_shell_uses_process_shell_for_selected_claude_model_without_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    custom_process_agent = chatbot.build_process_agent(
+        model="gpt-5",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_shell=True,
+        shell_image="none",
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+    )
+    agent = custom_process_agent()
+    agent._room = _FakeProcessRoom()
+
+    async def _fake_get_required_toolkits(*, context):
+        del context
+        return []
+
+    monkeypatch.setattr(agent, "get_required_toolkits", _fake_get_required_toolkits)
+
+    combined_toolkits = await agent.get_process_turn_toolkits(
+        process=_FakeProcessState(),
+        sender=None,
+        model="claude-3-7-sonnet",
+        turns=[
+            TurnStart(
+                type="meshagent.agent.turn.start",
+                thread_id="threads/example",
+                content=[AgentTextContent(type="text", text="hello")],
+            )
+        ],
+    )
+
+    shell_toolkit = next(
+        toolkit
+        for toolkit in combined_toolkits
+        if isinstance(toolkit, Toolkit) and toolkit.name == "shell"
+    )
+
+    assert len(shell_toolkit.tools) == 1
+    assert isinstance(shell_toolkit.tools[0], ProcessShellTool)
 
 
 @pytest.mark.asyncio

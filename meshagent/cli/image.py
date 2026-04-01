@@ -34,12 +34,14 @@ from meshagent.cli.helper import (
 from meshagent.api import ApiScope, RoomClient
 from meshagent.api.client import ConflictError
 from meshagent.api.specs.service import (
+    ANNOTATION_REQUEST_VALIDATION_METHOD,
     ANNOTATION_SERVICE_ID,
     ContainerMountSpec,
     ContainerSpec,
     EmptyDirMountSpec,
     EnvironmentVariable,
     ImageStorageMountSpec,
+    PortSpec,
     ProjectStorageMountSpec,
     RoomStorageMountSpec,
     ServiceMetadata,
@@ -64,6 +66,7 @@ _TEMP_BUILD_PACK_ROOM_PATH_PREFIX = "/temp/build/packs"
 _IMAGE_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 _REPOSITORY_COMPONENT_RE = re.compile(r"^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$")
 _REGISTRY_COMPONENT_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
+_COOKIE_VALIDATION_METHOD = "cookie"
 ImageProjectIdOption = Annotated[
     Optional[str],
     typer.Option(
@@ -805,10 +808,13 @@ def _build_deploy_service_spec(
     storage: ContainerMountSpec | None = None,
 ) -> _ServiceDeployPlan:
     service_name = _derive_service_name(parsed_tag=parsed_tag)
-    annotations = (
-        dict(existing_service.metadata.annotations or {})
-        if existing_service is not None
-        else {}
+    annotations = _update_request_validation_annotations(
+        annotations=(
+            dict(existing_service.metadata.annotations or {})
+            if existing_service is not None
+            else {}
+        ),
+        public=public,
     )
     annotations[ANNOTATION_SERVICE_ID] = service_name
 
@@ -839,12 +845,7 @@ def _build_deploy_service_spec(
 
     ports = list(existing_service.ports or []) if existing_service is not None else []
     if public is not None and len(ports) > 0:
-        ports = [
-            port.model_copy(update={"public": True if public else None})
-            if port.published
-            else port.model_copy(deep=True)
-            for port in ports
-        ]
+        ports = [_update_deploy_port(port=port, public=public) for port in ports]
 
     spec = (
         existing_service.model_copy(
@@ -865,6 +866,42 @@ def _build_deploy_service_spec(
         )
     )
     return _ServiceDeployPlan(spec=spec, service_id_annotation=service_name)
+
+
+def _update_request_validation_annotations(
+    *,
+    annotations: dict[str, str],
+    public: bool | None,
+) -> dict[str, str]:
+    updated_annotations = dict(annotations)
+    if public is False:
+        updated_annotations[ANNOTATION_REQUEST_VALIDATION_METHOD] = (
+            _COOKIE_VALIDATION_METHOD
+        )
+    elif (
+        public is True
+        and updated_annotations.get(ANNOTATION_REQUEST_VALIDATION_METHOD)
+        == _COOKIE_VALIDATION_METHOD
+    ):
+        del updated_annotations[ANNOTATION_REQUEST_VALIDATION_METHOD]
+
+    return updated_annotations
+
+
+def _update_deploy_port(*, port: PortSpec, public: bool) -> PortSpec:
+    if not port.published:
+        return port.model_copy(deep=True)
+
+    annotations = _update_request_validation_annotations(
+        annotations=dict(port.annotations or {}),
+        public=public,
+    )
+    return port.model_copy(
+        update={
+            "public": True if public else None,
+            "annotations": annotations or None,
+        }
+    )
 
 
 def _resolve_domain_route_target(*, service_spec: ServiceSpec) -> _RoomRouteTarget:
