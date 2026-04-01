@@ -13,9 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Optional
 
-import click
 import typer
-from click.core import ParameterSource
+from pydantic import ValidationError
 from rich import print
 
 from meshagent.cli import async_typer
@@ -29,17 +28,23 @@ from meshagent.cli.helper import resolve_room
 from meshagent.cli.helper import (
     resolve_project_id,
     split_container_mount,
+    split_empty_dir_mount,
     split_image_mount,
 )
-from meshagent.api import RoomClient
+from meshagent.api import ApiScope, RoomClient
 from meshagent.api.client import ConflictError
 from meshagent.api.specs.service import (
     ANNOTATION_SERVICE_ID,
     ContainerMountSpec,
     ContainerSpec,
-    PortSpec,
+    EmptyDirMountSpec,
+    EnvironmentVariable,
+    ImageStorageMountSpec,
+    ProjectStorageMountSpec,
+    RoomStorageMountSpec,
     ServiceMetadata,
     ServiceSpec,
+    TokenValue,
 )
 from meshagent.cli.oci_archive import (
     DEFAULT_ARCHITECTURE,
@@ -59,7 +64,6 @@ _TEMP_BUILD_PACK_ROOM_PATH_PREFIX = "/temp/build/packs"
 _IMAGE_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 _REPOSITORY_COMPONENT_RE = re.compile(r"^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$")
 _REGISTRY_COMPONENT_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
-_EXPOSED_PORT_RE = re.compile(r"^(?P<port>\d+)(?:/(?P<protocol>[A-Za-z]+))?$")
 ImageProjectIdOption = Annotated[
     Optional[str],
     typer.Option(
@@ -578,83 +582,227 @@ def _resolve_local_packed_dockerfile(
     return pack_spec.source_dir.expanduser().resolve().joinpath(*relative_path.parts)
 
 
-def _parse_exposed_ports_from_dockerfile(*, dockerfile_path: Path) -> list[int]:
-    instructions: list[str] = []
-    current_instruction = ""
-    for raw_line in dockerfile_path.read_text(encoding="utf-8").splitlines():
-        stripped = raw_line.strip()
-        if stripped == "" or stripped.startswith("#"):
-            continue
-        if stripped.endswith("\\"):
-            current_instruction += stripped[:-1].rstrip() + " "
-            continue
-        current_instruction += stripped
-        instructions.append(current_instruction)
-        current_instruction = ""
-
-    if current_instruction != "":
-        instructions.append(current_instruction)
-
-    exposed_ports: list[int] = []
-    seen_ports: set[int] = set()
-    for instruction in instructions:
-        keyword, separator, value = instruction.partition(" ")
-        if separator == "" or keyword.upper() != "EXPOSE":
-            continue
-
-        for token in value.split():
-            if token.startswith("#"):
-                break
-            match = _EXPOSED_PORT_RE.fullmatch(token)
-            if match is None:
-                continue
-            port = int(match.group("port"))
-            protocol = (match.group("protocol") or "tcp").lower()
-            if protocol not in {"tcp", ""}:
-                continue
-            if port < 1 or port > 65535 or port in seen_ports:
-                continue
-            seen_ports.add(port)
-            exposed_ports.append(port)
-
-    return exposed_ports
-
-
-def _build_service_ports(
-    *,
-    exposed_ports: list[int],
-    public: bool,
-) -> list[PortSpec]:
-    return [
-        PortSpec(
-            num=port,
-            type="http",
-            published=True,
-            public=True if public else None,
-        )
-        for port in exposed_ports
-    ]
-
-
 def _derive_service_name(*, parsed_tag: _ParsedImageTag) -> str:
     return parsed_tag.repository.replace("/", "-")
 
 
-def _deploy_ports_are_public(*, private: bool) -> bool:
-    context = click.get_current_context(silent=True)
-    if context is None:
-        return False
-    if context.get_parameter_source("private") == ParameterSource.DEFAULT:
-        return False
-    return not private
+def _parse_environment_variables(*, values: list[str]) -> list[EnvironmentVariable]:
+    environment: list[EnvironmentVariable] = []
+    for value in values:
+        if "=" not in value:
+            raise typer.BadParameter("--env must be in the form 'KEY=VALUE'")
+        name, env_value = value.split("=", 1)
+        resolved_name = name.strip()
+        if resolved_name == "":
+            raise typer.BadParameter("--env must include a non-empty variable name")
+        environment.append(EnvironmentVariable(name=resolved_name, value=env_value))
+    return environment
+
+
+def _parse_env_token_scope(*, value: str) -> ApiScope:
+    cleaned = value.strip()
+    if cleaned == "":
+        raise typer.BadParameter("--env-token cannot be empty")
+    if cleaned == "userDefault":
+        return ApiScope.user_default()
+    if cleaned == "agentDefault":
+        return ApiScope.agent_default()
+    if cleaned == "full":
+        return ApiScope.full()
+    try:
+        return ApiScope.model_validate_json(cleaned)
+    except (ValidationError, ValueError) as exc:
+        raise typer.BadParameter(
+            "--env-token must be one of userDefault, agentDefault, full, "
+            "or a JSON ApiScope object"
+        ) from exc
+
+
+def _upsert_environment_variable(
+    *,
+    environment: list[EnvironmentVariable],
+    env_var: EnvironmentVariable,
+) -> None:
+    for index, existing in enumerate(environment):
+        if existing.name != env_var.name:
+            continue
+        environment[index] = env_var
+        return
+    environment.append(env_var)
+
+
+def _resolve_meshagent_token_value(
+    *,
+    existing_environment: list[EnvironmentVariable] | None,
+    default_identity: str,
+    api_scope: ApiScope,
+) -> TokenValue:
+    identity = default_identity
+    role = "agent"
+
+    for env_var in existing_environment or []:
+        if env_var.name != "MESHAGENT_TOKEN" or env_var.token is None:
+            continue
+        if env_var.token.identity.strip() != "":
+            identity = env_var.token.identity.strip()
+        if env_var.token.role is not None and env_var.token.role.strip() != "":
+            role = env_var.token.role.strip()
+        break
+
+    return TokenValue(identity=identity, api=api_scope, role=role)
+
+
+def _merge_deploy_environment(
+    *,
+    existing_environment: list[EnvironmentVariable] | None,
+    parsed_environment: list[EnvironmentVariable],
+    env_token_scope: ApiScope | None,
+    token_identity: str,
+) -> list[EnvironmentVariable] | None:
+    environment = [
+        env_var.model_copy(deep=True) for env_var in (existing_environment or [])
+    ]
+
+    for env_var in parsed_environment:
+        _upsert_environment_variable(
+            environment=environment,
+            env_var=env_var,
+        )
+
+    if env_token_scope is not None:
+        _upsert_environment_variable(
+            environment=environment,
+            env_var=EnvironmentVariable(
+                name="MESHAGENT_TOKEN",
+                token=_resolve_meshagent_token_value(
+                    existing_environment=existing_environment,
+                    default_identity=token_identity,
+                    api_scope=env_token_scope,
+                ),
+            ),
+        )
+
+    return environment or None
+
+
+def _parse_deploy_storage(
+    *,
+    room_mounts: list[str],
+    project_mounts: list[str],
+    image_mounts: list[str],
+    empty_dir_mounts: list[str],
+) -> ContainerMountSpec | None:
+    room_specs: list[RoomStorageMountSpec] = []
+    project_specs: list[ProjectStorageMountSpec] = []
+    image_specs: list[ImageStorageMountSpec] = []
+    empty_dir_specs: list[EmptyDirMountSpec] = []
+
+    for value in room_mounts:
+        source, mount, read_only = split_container_mount(value, "--room-mount", False)
+        subpath = source if source not in {"", ".", "/"} else None
+        room_specs.append(
+            RoomStorageMountSpec(path=mount, subpath=subpath, read_only=read_only)
+        )
+
+    for value in project_mounts:
+        source, mount, read_only = split_container_mount(value, "--project-mount", True)
+        subpath = source if source not in {"", ".", "/"} else None
+        project_specs.append(
+            ProjectStorageMountSpec(path=mount, subpath=subpath, read_only=read_only)
+        )
+
+    for value in image_mounts:
+        image_ref, mount, subpath, read_only = split_image_mount(value, "--image-mount")
+        image_specs.append(
+            ImageStorageMountSpec(
+                image=image_ref,
+                path=mount,
+                subpath=subpath,
+                read_only=read_only,
+            )
+        )
+
+    for value in empty_dir_mounts:
+        mount, read_only = split_empty_dir_mount(value, "--empty-dir-mount")
+        empty_dir_specs.append(EmptyDirMountSpec(path=mount, read_only=read_only))
+
+    if not room_specs and not project_specs and not image_specs and not empty_dir_specs:
+        return None
+
+    return ContainerMountSpec(
+        room=room_specs or None,
+        project=project_specs or None,
+        images=image_specs or None,
+        empty_dirs=empty_dir_specs or None,
+    )
+
+
+def _merge_deploy_storage(
+    *,
+    existing_storage: ContainerMountSpec | None,
+    parsed_storage: ContainerMountSpec | None,
+    replace_room_mounts: bool,
+    replace_project_mounts: bool,
+    replace_image_mounts: bool,
+    replace_empty_dir_mounts: bool,
+) -> ContainerMountSpec | None:
+    if parsed_storage is None:
+        return existing_storage.model_copy(deep=True) if existing_storage else None
+
+    preserved_storage = (
+        existing_storage.model_copy(deep=True) if existing_storage else None
+    )
+    merged_storage = ContainerMountSpec(
+        room=(
+            parsed_storage.room
+            if replace_room_mounts
+            else preserved_storage.room
+            if preserved_storage
+            else None
+        ),
+        project=(
+            parsed_storage.project
+            if replace_project_mounts
+            else preserved_storage.project
+            if preserved_storage
+            else None
+        ),
+        images=(
+            parsed_storage.images
+            if replace_image_mounts
+            else preserved_storage.images
+            if preserved_storage
+            else None
+        ),
+        files=preserved_storage.files if preserved_storage else None,
+        empty_dirs=(
+            parsed_storage.empty_dirs
+            if replace_empty_dir_mounts
+            else preserved_storage.empty_dirs
+            if preserved_storage
+            else None
+        ),
+    )
+
+    if (
+        merged_storage.room is None
+        and merged_storage.project is None
+        and merged_storage.images is None
+        and merged_storage.files is None
+        and merged_storage.empty_dirs is None
+    ):
+        return None
+
+    return merged_storage
 
 
 def _build_deploy_service_spec(
     *,
     existing_service: ServiceSpec | None,
     parsed_tag: _ParsedImageTag,
-    exposed_ports: list[int] | None,
-    public: bool,
+    public: bool | None,
+    environment: list[EnvironmentVariable] | None = None,
+    storage: ContainerMountSpec | None = None,
 ) -> _ServiceDeployPlan:
     service_name = _derive_service_name(parsed_tag=parsed_tag)
     annotations = (
@@ -684,10 +832,19 @@ def _build_deploy_service_spec(
         if existing_service is not None and existing_service.container is not None
         else ContainerSpec(image=parsed_tag.value)
     )
+    if environment is not None:
+        container = container.model_copy(update={"environment": environment})
+    if storage is not None:
+        container = container.model_copy(update={"storage": storage})
 
-    ports = existing_service.ports if existing_service is not None else []
-    if exposed_ports:
-        ports = _build_service_ports(exposed_ports=exposed_ports, public=public)
+    ports = list(existing_service.ports or []) if existing_service is not None else []
+    if public is not None and len(ports) > 0:
+        ports = [
+            port.model_copy(update={"public": True if public else None})
+            if port.published
+            else port.model_copy(deep=True)
+            for port in ports
+        ]
 
     spec = (
         existing_service.model_copy(
@@ -718,11 +875,11 @@ def _resolve_domain_route_target(*, service_spec: ServiceSpec) -> _RoomRouteTarg
     ]
     if len(published_ports) == 0:
         raise typer.BadParameter(
-            "--domain requires exactly one published service port; none were inferred from the Dockerfile"
+            "--domain requires exactly one published service port; the service has none"
         )
     if len(published_ports) > 1:
         raise typer.BadParameter(
-            "--domain requires exactly one published service port; multiple published ports were inferred from the Dockerfile"
+            "--domain requires exactly one published service port; the service has multiple published ports"
         )
     return _RoomRouteTarget(port=str(published_ports[0].num))
 
@@ -819,6 +976,47 @@ async def _upsert_domain_route(
         print(f"[green]Updated route:[/] {domain} -> {room_name}:{port}")
     else:
         print(f"[green]Created route:[/] {domain} -> {room_name}:{port}")
+
+
+async def _apply_deploy_plan(
+    *,
+    account_client,
+    client: RoomClient,
+    project_id: str,
+    room_name: str,
+    deploy_plan: _ServiceDeployPlan,
+    domain: str | None,
+) -> None:
+    route_target = (
+        _resolve_domain_route_target(service_spec=deploy_plan.spec)
+        if domain is not None
+        else None
+    )
+    deploy_result = await _upsert_room_service(
+        account_client=account_client,
+        project_id=project_id,
+        room_name=room_name,
+        service_spec=deploy_plan.spec,
+    )
+    print(
+        f"[green]Deployed service:[/] {deploy_plan.spec.metadata.name} "
+        f"({deploy_result.service_id})"
+    )
+    if not deploy_result.created:
+        await client.services.restart(service_id=deploy_result.service_id)
+        print(
+            f"[green]Restarted service:[/] {deploy_plan.spec.metadata.name} "
+            f"({deploy_result.service_id})"
+        )
+    if domain is not None and route_target is not None:
+        await _upsert_domain_route(
+            account_client=account_client,
+            project_id=project_id,
+            room_name=room_name,
+            domain=domain,
+            port=route_target.port,
+            service_id=deploy_plan.service_id_annotation,
+        )
 
 
 async def _upload_oci_archive_to_room(
@@ -1025,27 +1223,6 @@ async def build_image(
             ),
         ),
     ] = [],
-    deploy: Annotated[
-        bool,
-        typer.Option(
-            "--deploy",
-            help=(
-                "Create or update a room service that references the built image. "
-                "When a local packed Dockerfile exposes ports, they are added as "
-                "published service ports."
-            ),
-        ),
-    ] = False,
-    domain: Annotated[
-        Optional[str],
-        typer.Option(
-            "--domain",
-            help=(
-                "Create or update a room route for the deployed service. Requires "
-                "--deploy and exactly one published service port."
-            ),
-        ),
-    ] = None,
     private: Annotated[
         bool,
         typer.Option(
@@ -1099,12 +1276,6 @@ async def build_image(
     resolved_room = resolve_room(room)
     if resolved_room is None:
         raise typer.BadParameter("--room is required unless MESHAGENT_ROOM is set")
-    if domain is not None:
-        domain = domain.strip()
-        if domain == "":
-            raise typer.BadParameter("--domain cannot be empty")
-    if domain is not None and not deploy:
-        raise typer.BadParameter("--domain requires --deploy")
     resolved_project_id = await resolve_project_id(project_id=project_id)
     local_packed_dockerfile = _resolve_local_packed_dockerfile(
         pack_spec=pack_spec,
@@ -1193,55 +1364,6 @@ async def build_image(
         )
         if exit_code != 0:
             raise typer.Exit(code=exit_code)
-        if deploy:
-            exposed_ports = (
-                _parse_exposed_ports_from_dockerfile(
-                    dockerfile_path=local_packed_dockerfile
-                )
-                if local_packed_dockerfile is not None
-                else None
-            )
-            deploy_plan = _build_deploy_service_spec(
-                existing_service=await _find_room_service_by_name(
-                    account_client=account_client,
-                    project_id=resolved_project_id,
-                    room_name=resolved_room,
-                    service_name=_derive_service_name(parsed_tag=parsed_tag),
-                ),
-                parsed_tag=parsed_tag,
-                exposed_ports=exposed_ports,
-                public=_deploy_ports_are_public(private=private),
-            )
-            route_target = (
-                _resolve_domain_route_target(service_spec=deploy_plan.spec)
-                if domain is not None
-                else None
-            )
-            deploy_result = await _upsert_room_service(
-                account_client=account_client,
-                project_id=resolved_project_id,
-                room_name=resolved_room,
-                service_spec=deploy_plan.spec,
-            )
-            print(
-                f"[green]Deployed service:[/] {deploy_plan.spec.metadata.name} "
-                f"({deploy_result.service_id})"
-            )
-            if not deploy_result.created:
-                await client.services.restart(service_id=deploy_result.service_id)
-                print(
-                    f"[green]Restarted service:[/] {deploy_plan.spec.metadata.name} "
-                    f"({deploy_result.service_id})"
-                )
-            if domain is not None and route_target is not None:
-                await _upsert_domain_route(
-                    account_client=account_client,
-                    project_id=resolved_project_id,
-                    room_name=resolved_room,
-                    domain=domain,
-                    port=route_target.port,
-                    service_id=deploy_plan.service_id_annotation,
-                )
     finally:
         if should_delete_packed_room_path and packed_room_path is not None:
             try:
@@ -1251,6 +1373,156 @@ async def build_image(
                     "[yellow]Unable to delete temporary packed build context:[/yellow] "
                     f"{packed_room_path} ({exc})"
                 )
+        await client.__aexit__(None, None, None)
+        await account_client.close()
+
+
+@app.async_command("deploy", help="Create or update a room service from an image.")
+async def deploy_image(
+    *,
+    project_id: ImageProjectIdOption = None,
+    room: ImageRoomOption = None,
+    tag: Annotated[
+        str,
+        typer.Option(
+            ...,
+            help="Image tag to deploy, e.g. repo/name:tag.",
+        ),
+    ],
+    domain: Annotated[
+        Optional[str],
+        typer.Option(
+            "--domain",
+            help=(
+                "Create or update a room route for the deployed service. "
+                "Requires exactly one published service port."
+            ),
+        ),
+    ] = None,
+    room_mount: Annotated[
+        list[str],
+        typer.Option(
+            "--room-mount",
+            help="Mount room storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    project_mount: Annotated[
+        list[str],
+        typer.Option(
+            "--project-mount",
+            help="Mount project storage as <source>:<mount>[:ro|rw]",
+        ),
+    ] = [],
+    empty_dir_mount: Annotated[
+        list[str],
+        typer.Option(
+            "--empty-dir-mount",
+            help="Mount empty dir at <mount>[:ro|rw]",
+        ),
+    ] = [],
+    image_mount: Annotated[
+        list[str],
+        typer.Option(
+            "--image-mount",
+            help="Mount image as <image>=<mount>[:ro|rw]",
+        ),
+    ] = [],
+    env: Annotated[
+        list[str],
+        typer.Option(
+            "--env",
+            "-e",
+            help="Set environment variable as KEY=VALUE",
+        ),
+    ] = [],
+    env_token: Annotated[
+        Optional[str],
+        typer.Option(
+            "--env-token",
+            help=(
+                "Inject MESHAGENT_TOKEN using userDefault, agentDefault, full, "
+                "or a JSON ApiScope object."
+            ),
+        ),
+    ] = None,
+    private: Annotated[
+        Optional[bool],
+        typer.Option(
+            "--private/--public",
+            help=(
+                "Whether published service ports should stay private or be "
+                "public when they are created or updated."
+            ),
+        ),
+    ] = None,
+) -> None:
+    parsed_tag = _parse_build_tag(tag)
+    parsed_environment = _parse_environment_variables(values=env)
+    parsed_storage = _parse_deploy_storage(
+        room_mounts=room_mount,
+        project_mounts=project_mount,
+        image_mounts=image_mount,
+        empty_dir_mounts=empty_dir_mount,
+    )
+    env_token_scope = (
+        _parse_env_token_scope(value=env_token) if env_token is not None else None
+    )
+
+    resolved_room = resolve_room(room)
+    if resolved_room is None:
+        raise typer.BadParameter("--room is required unless MESHAGENT_ROOM is set")
+    if domain is not None:
+        domain = domain.strip()
+        if domain == "":
+            raise typer.BadParameter("--domain cannot be empty")
+
+    resolved_project_id = await resolve_project_id(project_id=project_id)
+    account_client, client = await _with_client(
+        project_id=resolved_project_id,
+        room=resolved_room,
+    )
+    try:
+        existing_service = await _find_room_service_by_name(
+            account_client=account_client,
+            project_id=resolved_project_id,
+            room_name=resolved_room,
+            service_name=_derive_service_name(parsed_tag=parsed_tag),
+        )
+        existing_container = (
+            existing_service.container if existing_service is not None else None
+        )
+        environment = _merge_deploy_environment(
+            existing_environment=(
+                existing_container.environment if existing_container else None
+            ),
+            parsed_environment=parsed_environment,
+            env_token_scope=env_token_scope,
+            token_identity=_derive_service_name(parsed_tag=parsed_tag),
+        )
+        storage = _merge_deploy_storage(
+            existing_storage=existing_container.storage if existing_container else None,
+            parsed_storage=parsed_storage,
+            replace_room_mounts=len(room_mount) > 0,
+            replace_project_mounts=len(project_mount) > 0,
+            replace_image_mounts=len(image_mount) > 0,
+            replace_empty_dir_mounts=len(empty_dir_mount) > 0,
+        )
+        deploy_plan = _build_deploy_service_spec(
+            existing_service=existing_service,
+            parsed_tag=parsed_tag,
+            public=None if private is None else not private,
+            environment=environment,
+            storage=storage,
+        )
+        await _apply_deploy_plan(
+            account_client=account_client,
+            client=client,
+            project_id=resolved_project_id,
+            room_name=resolved_room,
+            deploy_plan=deploy_plan,
+            domain=domain,
+        )
+    finally:
         await client.__aexit__(None, None, None)
         await account_client.close()
 
