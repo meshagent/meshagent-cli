@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from meshagent.cli import containers
+from meshagent.api.room_server_client import ImportedImage
 
 
 class _FakeLogStream:
@@ -69,6 +70,40 @@ class _FakeBuildContainers:
 class _FakeBuildClient:
     def __init__(self, *, stream: _FakeBuildStream) -> None:
         self.containers = _FakeBuildContainers(stream=stream)
+
+
+class _FakeLoadContainers:
+    def __init__(self) -> None:
+        self.load_calls: list[str] = []
+
+    async def load(self, *, archive_path: str) -> ImportedImage:
+        self.load_calls.append(archive_path)
+        return ImportedImage(
+            resolved_ref="room.meshagent.com/images/example.tar:latest",
+            refs=["room.meshagent.com/images/example.tar:latest"],
+        )
+
+
+class _FakeLoadClient:
+    def __init__(self) -> None:
+        self.containers = _FakeLoadContainers()
+        self.exit_calls: list[tuple[object | None, object | None, object | None]] = []
+
+    async def __aexit__(
+        self,
+        exc_type: object | None,
+        exc: object | None,
+        tb: object | None,
+    ) -> None:
+        self.exit_calls.append((exc_type, exc, tb))
+
+
+class _FakeAccountClient:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def close(self) -> None:
+        self.close_calls += 1
 
 
 @pytest.mark.asyncio
@@ -178,3 +213,33 @@ async def test_stream_build_job_logs_and_wait_for_exit_uses_build_log_stream(
 
     assert exit_code == 0
     assert client.containers.build_log_calls == [("build-1", True)]
+
+
+@pytest.mark.asyncio
+async def test_images_load_uses_room_storage_load_path(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    account_client = _FakeAccountClient()
+    client = _FakeLoadClient()
+
+    async def _fake_with_client(*, project_id, room):
+        assert project_id == "project-1"
+        assert room == "room-1"
+        return account_client, client
+
+    monkeypatch.setattr(containers, "_with_client", _fake_with_client)
+
+    await containers.images_load(
+        project_id="project-1",
+        room="room-1",
+        archive_path="/images/example.tar",
+    )
+
+    assert client.containers.load_calls == ["/images/example.tar"]
+    assert client.exit_calls == [(None, None, None)]
+    assert account_client.close_calls == 1
+    assert (
+        capsys.readouterr().out
+        == "Image loaded: room.meshagent.com/images/example.tar:latest\n"
+    )

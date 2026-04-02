@@ -863,7 +863,10 @@ async def images_push(
         await account_client.close()
 
 
-@images_app.async_command("load", help="Load an OCI image archive into a room.")
+@images_app.async_command(
+    "load",
+    help="Load an OCI image archive from room storage into a room.",
+)
 async def images_load(
     *,
     project_id: ProjectIdOption,
@@ -873,70 +876,22 @@ async def images_load(
         typer.Option(
             ...,
             "--archive-path",
-            help="Path to OCI archive inside one of the mounted paths (absolute path)",
+            "--image",
+            "-i",
+            help="Absolute room storage path to the OCI image archive file",
         ),
     ],
-    mount_room_path: Annotated[
-        List[str],
-        typer.Option(
-            "--mount-room-path",
-            help=(
-                "Room storage mount '<source>:<mount>[:ro|rw]'. "
-                "Example '/images:/workspace'"
-            ),
-        ),
-    ] = [],
-    mount_project_path: Annotated[
-        List[str],
-        typer.Option(
-            "--mount-project-path",
-            help=(
-                "Project storage mount '<source>:<mount>[:ro|rw]'. "
-                "Example '/shared:/project:ro'"
-            ),
-        ),
-    ] = [],
-    mount_image: Annotated[
-        List[str],
-        typer.Option(
-            "--mount-image",
-            help=(
-                "Image mount '<image>=<mount>[:ro|rw]'. "
-                "Example 'alpine:latest=/toolchain:ro'"
-            ),
-        ),
-    ] = [],
-    private: Annotated[
-        bool,
-        typer.Option(
-            "--private/--public",
-            help="Whether the load container is private to the participant",
-        ),
-    ] = False,
 ):
-    mount_spec = _parse_image_operation_mounts(
-        mount_room_path=mount_room_path,
-        mount_project_path=mount_project_path,
-        mount_image=mount_image,
-    )
     if not archive_path.startswith("/"):
-        raise typer.BadParameter("--archive-path must be an absolute path")
+        raise typer.BadParameter("--archive-path/--image must be an absolute path")
 
     account_client, client = await _with_client(
         project_id=project_id,
         room=room,
     )
     try:
-        container_id = await client.containers.load_image(
-            mounts=[mount_spec],
-            archive_path=archive_path,
-            private=private,
-        )
-        exit_code = await _stream_container_job_logs_and_wait_for_exit(
-            client=client, container_id=container_id
-        )
-        if exit_code != 0:
-            raise typer.Exit(code=exit_code)
+        imported_image = await client.containers.load(archive_path=archive_path)
+        print(f"Image loaded: {imported_image.resolved_ref}")
     finally:
         await client.__aexit__(None, None, None)
         await account_client.close()
