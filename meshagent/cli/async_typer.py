@@ -152,6 +152,60 @@ def get_command(
     return click_command
 
 
+def collect_lazy_command_modules(root: "LazyTyper") -> list[str]:
+    modules: set[str] = set()
+    pending: list[LazyTyper] = [root]
+    seen_apps: set[int] = set()
+    seen_targets: set[tuple[str, str]] = set()
+
+    while pending:
+        app = pending.pop()
+        app_id = id(app)
+        if app_id in seen_apps:
+            continue
+        seen_apps.add(app_id)
+
+        for registration in app.registered_lazy_commands:
+            modules.add(registration.module)
+
+            target_key = (registration.module, registration.attribute)
+            if target_key in seen_targets:
+                continue
+            seen_targets.add(target_key)
+
+            module = importlib.import_module(registration.module)
+            try:
+                target = module.__dict__[registration.attribute]
+            except KeyError as exc:
+                raise RuntimeError(
+                    f"{registration.module} has no attribute {registration.attribute}"
+                ) from exc
+
+            if isinstance(target, LazyTyper):
+                pending.append(target)
+
+    return sorted(modules)
+
+
+def collect_lazy_command_modules_from_entrypoint(
+    module_name: str,
+    *,
+    attribute: str = "app",
+) -> list[str]:
+    module = importlib.import_module(module_name)
+    try:
+        target = module.__dict__[attribute]
+    except KeyError as exc:
+        raise RuntimeError(f"{module_name} has no attribute {attribute}") from exc
+
+    if not isinstance(target, LazyTyper):
+        raise TypeError(
+            f"{module_name}.{attribute} must be a LazyTyper, got {type(target)!r}"
+        )
+
+    return collect_lazy_command_modules(target)
+
+
 def _run_coroutine_sync(
     coro: "asyncio.Future[T] | asyncio.coroutines.Coroutine[Any, Any, T]",
 ) -> T:

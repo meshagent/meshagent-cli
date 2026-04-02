@@ -112,3 +112,17 @@ def test_lazy_command_path_loads_leaf_command(monkeypatch) -> None:
     assert result.exit_code == 0
     assert result.output == "hello\n"
     assert recorded_imports == ["tests.fake_leaf"]
+
+
+def test_collect_lazy_command_modules_from_entrypoint_includes_nested_modules() -> None:
+    modules = async_typer.collect_lazy_command_modules_from_entrypoint(
+        "meshagent.cli.cli"
+    )
+
+    assert "meshagent.cli.root_commands" in modules
+    assert "meshagent.cli.process" in modules
+    assert "meshagent.cli.multi" in modules
+    assert "meshagent.cli.room" in modules
+    assert "meshagent.cli.containers" in modules
+    assert "meshagent.cli.storage" in modules
+    assert "meshagent.cli.chatbot" in modules
