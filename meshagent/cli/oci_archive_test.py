@@ -4,10 +4,12 @@ import tarfile
 from pathlib import Path
 
 import pytest
+import zstandard
 
 from meshagent.cli.oci_archive import (
     BaseImageSource,
     BlobDescriptor,
+    _normalize_layer_media_type,
     build_oci_archive,
     build_oci_archive_to_writer,
 )
@@ -24,6 +26,11 @@ def _sha256_digest(data: bytes) -> str:
     import hashlib
 
     return f"sha256:{hashlib.sha256(data).hexdigest()}"
+
+
+def _zstd_decompress(data: bytes) -> bytes:
+    with zstandard.ZstdDecompressor().stream_reader(io.BytesIO(data)) as reader:
+        return reader.read()
 
 
 @pytest.mark.asyncio
@@ -71,11 +78,15 @@ async def test_build_oci_archive_writes_oci_layout_and_respects_dockerignore(
         config_json = json.loads(_read_member_bytes(archive, config_path))
         layer_descriptor = manifest_json["layers"][0]
         layer_path = f"blobs/sha256/{layer_descriptor['digest'].split(':', 1)[1]}"
-        layer_bytes = _read_member_bytes(archive, layer_path)
+        layer_blob_bytes = _read_member_bytes(archive, layer_path)
 
-    assert config_json["rootfs"]["diff_ids"] == [layer_descriptor["digest"]]
+    assert (
+        layer_descriptor["mediaType"] == "application/vnd.oci.image.layer.v1.tar+zstd"
+    )
+    layer_tar_bytes = _zstd_decompress(layer_blob_bytes)
+    assert config_json["rootfs"]["diff_ids"] == [_sha256_digest(layer_tar_bytes)]
 
-    with tarfile.open(fileobj=io.BytesIO(layer_bytes), mode="r:") as layer_archive:
+    with tarfile.open(fileobj=io.BytesIO(layer_tar_bytes), mode="r:") as layer_archive:
         layer_names = set(layer_archive.getnames())
 
     assert "keep.txt" in layer_names
@@ -154,20 +165,36 @@ async def test_build_oci_archive_appends_local_layer_to_base_image(
 
         base_blob_path = f"blobs/sha256/{base_layer_descriptor.digest.split(':', 1)[1]}"
         assert _read_member_bytes(archive, base_blob_path) == base_layer_bytes
+        local_layer_descriptor = manifest_json["layers"][1]
+        local_blob_path = (
+            f"blobs/sha256/{local_layer_descriptor['digest'].split(':', 1)[1]}"
+        )
+        local_blob_bytes = _read_member_bytes(archive, local_blob_path)
 
     assert [layer["digest"] for layer in manifest_json["layers"]] == [
         base_layer_descriptor.digest,
-        config_json["rootfs"]["diff_ids"][1],
+        local_layer_descriptor["digest"],
     ]
+    assert (
+        local_layer_descriptor["mediaType"]
+        == "application/vnd.oci.image.layer.v1.tar+zstd"
+    )
     assert config_json["config"] == {
         "Entrypoint": ["/bin/sh"],
         "Env": ["BASE=1"],
     }
     assert config_json["rootfs"]["diff_ids"] == [
         "sha256:" + ("1" * 64),
-        manifest_json["layers"][1]["digest"],
+        _sha256_digest(_zstd_decompress(local_blob_bytes)),
     ]
     assert len(config_json["history"]) == 2
+
+
+def test_normalize_layer_media_type_accepts_oci_zstd() -> None:
+    assert (
+        _normalize_layer_media_type("application/vnd.oci.image.layer.v1.tar+zstd")
+        == "application/vnd.oci.image.layer.v1.tar+zstd"
+    )
 
 
 @pytest.mark.asyncio

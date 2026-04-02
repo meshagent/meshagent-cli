@@ -16,6 +16,7 @@ from typing import BinaryIO
 
 import aiohttp
 import pathspec
+import zstandard
 
 
 DEFAULT_ARCHITECTURE = "amd64"
@@ -26,6 +27,7 @@ _OCI_MANIFEST_MEDIA_TYPE = "application/vnd.oci.image.manifest.v1+json"
 _OCI_CONFIG_MEDIA_TYPE = "application/vnd.oci.image.config.v1+json"
 _OCI_LAYER_TAR_MEDIA_TYPE = "application/vnd.oci.image.layer.v1.tar"
 _OCI_LAYER_GZIP_MEDIA_TYPE = "application/vnd.oci.image.layer.v1.tar+gzip"
+_OCI_LAYER_ZSTD_MEDIA_TYPE = "application/vnd.oci.image.layer.v1.tar+zstd"
 _DOCKER_MANIFEST_MEDIA_TYPE = "application/vnd.docker.distribution.manifest.v2+json"
 _DOCKER_MANIFEST_LIST_MEDIA_TYPE = (
     "application/vnd.docker.distribution.manifest.list.v2+json"
@@ -57,6 +59,7 @@ _MANIFEST_ACCEPT_HEADER = ", ".join(
     ]
 )
 _CHUNK_SIZE = 1024 * 1024
+_ZSTD_COMPRESSION_LEVEL = 3
 
 
 class ImagePackError(Exception):
@@ -110,6 +113,13 @@ class _ArchiveFileEntry:
     archive_path: str
     file_path: Path
     size: int
+
+
+@dataclass(frozen=True)
+class _PreparedLayerBlob:
+    descriptor: BlobDescriptor
+    diff_id: str
+    file_path: Path
 
 
 @dataclass
@@ -232,7 +242,11 @@ def _parse_blob_descriptor(
 
 
 def _normalize_layer_media_type(media_type: str) -> str:
-    if media_type in {_OCI_LAYER_TAR_MEDIA_TYPE, _OCI_LAYER_GZIP_MEDIA_TYPE}:
+    if media_type in {
+        _OCI_LAYER_TAR_MEDIA_TYPE,
+        _OCI_LAYER_GZIP_MEDIA_TYPE,
+        _OCI_LAYER_ZSTD_MEDIA_TYPE,
+    }:
         return media_type
     if media_type == _DOCKER_LAYER_TAR_MEDIA_TYPE:
         return _OCI_LAYER_TAR_MEDIA_TYPE
@@ -387,7 +401,7 @@ def _write_layer_tar(
     source_dir: Path,
     layer_path: Path,
     excluded_paths: set[Path],
-) -> BlobDescriptor:
+) -> str:
     dockerignore_path = source_dir / ".dockerignore"
     docker_ignore = (
         DockerIgnore(dockerignore_path) if dockerignore_path.exists() else None
@@ -443,11 +457,48 @@ def _write_layer_tar(
                     relative_path=relative_path,
                 )
 
-    digest, size = _sha256_file(layer_path)
-    return BlobDescriptor(
-        digest=digest,
-        size=size,
-        media_type=_OCI_LAYER_TAR_MEDIA_TYPE,
+    digest, _size = _sha256_file(layer_path)
+    return digest
+
+
+def _compress_zstd_to_path(*, source_path: Path, destination_path: Path) -> None:
+    compressor = zstandard.ZstdCompressor(level=_ZSTD_COMPRESSION_LEVEL)
+    with source_path.open("rb") as source, destination_path.open("wb") as destination:
+        with compressor.stream_writer(destination) as writer:
+            while True:
+                chunk = source.read(_CHUNK_SIZE)
+                if chunk == b"":
+                    break
+                writer.write(chunk)
+
+
+def _prepare_layer_blob(
+    *,
+    source_dir: Path,
+    temp_path: Path,
+    excluded_paths: set[Path],
+) -> _PreparedLayerBlob:
+    uncompressed_layer_path = temp_path / "layer.tar"
+    diff_id = _write_layer_tar(
+        source_dir=source_dir,
+        layer_path=uncompressed_layer_path,
+        excluded_paths=excluded_paths,
+    )
+
+    compressed_layer_path = temp_path / "layer.tar.zst"
+    _compress_zstd_to_path(
+        source_path=uncompressed_layer_path,
+        destination_path=compressed_layer_path,
+    )
+    digest, size = _sha256_file(compressed_layer_path)
+    return _PreparedLayerBlob(
+        descriptor=BlobDescriptor(
+            digest=digest,
+            size=size,
+            media_type=_OCI_LAYER_ZSTD_MEDIA_TYPE,
+        ),
+        diff_id=diff_id,
+        file_path=compressed_layer_path,
     )
 
 
@@ -487,10 +538,9 @@ async def _prepare_oci_archive_with_base(
 
     temp_dir = tempfile.TemporaryDirectory(prefix="meshagent-oci-pack-")
     temp_path = Path(temp_dir.name)
-    layer_path = temp_path / "layer.tar"
-    layer_descriptor = _write_layer_tar(
+    local_layer = _prepare_layer_blob(
         source_dir=source_dir,
-        layer_path=layer_path,
+        temp_path=temp_path,
         excluded_paths=excluded_paths,
     )
 
@@ -502,7 +552,7 @@ async def _prepare_oci_archive_with_base(
         config_json = _build_config_from_scratch(
             architecture=image_architecture,
             os_name=image_os,
-            layer_diff_id=layer_descriptor.digest,
+            layer_diff_id=local_layer.diff_id,
             created_at=created_at,
             source_dir=source_dir,
         )
@@ -513,12 +563,12 @@ async def _prepare_oci_archive_with_base(
         layers = list(base_source.layers)
         config_json = _build_config_from_base(
             base_config=base_source.config,
-            layer_diff_id=layer_descriptor.digest,
+            layer_diff_id=local_layer.diff_id,
             created_at=created_at,
             source_dir=source_dir,
         )
 
-    layers.append(layer_descriptor)
+    layers.append(local_layer.descriptor)
 
     config_bytes = _json_bytes(config_json)
     config_descriptor = BlobDescriptor(
@@ -605,9 +655,9 @@ async def _prepare_oci_archive_with_base(
 
     entries.append(
         _ArchiveFileEntry(
-            archive_path=f"blobs/sha256/{layer_descriptor.digest_hex}",
-            file_path=layer_path,
-            size=layer_descriptor.size,
+            archive_path=f"blobs/sha256/{local_layer.descriptor.digest_hex}",
+            file_path=local_layer.file_path,
+            size=local_layer.descriptor.size,
         )
     )
 
