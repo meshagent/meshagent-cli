@@ -44,7 +44,7 @@ from meshagent.api.specs.service import (
 
 import sys
 
-app = async_typer.AsyncTyper(help="Manage containers and images inside a room")
+app = async_typer.LazyTyper(help="Manage containers and images inside a room")
 _LOG_STREAM_SETTLE_TIMEOUT_SECONDS = 1.0
 _CRI_LOG_LINE_PATTERN = re.compile(
     r"^(?P<timestamp>\S+)\s+(?P<stream>stdout|stderr)\s+(?P<flags>[FP])\s(?P<message>.*)$"
@@ -755,8 +755,19 @@ async def run_container(
 # -------------------------
 
 images_app = async_typer.AsyncTyper(help="Image operations")
-app.add_typer(images_app, name="image")
-app.add_typer(images_app, name="images", hidden=True)
+app.add_lazy_command(
+    name="image",
+    module="meshagent.cli.containers",
+    attribute="images_app",
+    help="Image operations",
+)
+app.add_lazy_command(
+    name="images",
+    module="meshagent.cli.containers",
+    attribute="images_app",
+    help="Image operations",
+    hidden=True,
+)
 
 
 @images_app.async_command("list", help="List container images available in a room.")

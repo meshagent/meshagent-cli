@@ -2,41 +2,7 @@ import asyncio
 
 from meshagent.cli import async_typer
 
-from meshagent.cli import multi
-
-from meshagent.cli import auth
-from meshagent.cli import auth_async
-from meshagent.cli import api_keys
-from meshagent.cli import projects
-from meshagent.cli import sessions
-from meshagent.cli import participant_token
-from meshagent.cli import webhook
-from meshagent.cli import services
-from meshagent.cli import mailboxes
-from meshagent.cli import routes
-
-from meshagent.cli import call
-from meshagent.cli import cli_mcp
-from meshagent.cli import chatbot
-from meshagent.cli import process
-from meshagent.cli import voicebot
-from meshagent.cli import mailbot
-from meshagent.cli import worker
-from meshagent.cli import task_runner
-from meshagent.cli import scheduled_tasks
-from meshagent.cli import cli_secrets
-from meshagent.cli import helpers
-from meshagent.cli import meeting_transcriber
-from meshagent.cli import rooms
-from meshagent.cli import room
-from meshagent.cli import image
-from meshagent.cli import port
-from meshagent.cli import webserver
-from meshagent.cli import codex
-from meshagent.cli import test
 from meshagent.cli.version import __version__
-from meshagent.cli.helper import get_active_api_key, get_active_project, get_client
-from meshagent.otel import otel_config
 
 import logging
 
@@ -44,16 +10,6 @@ import os
 import sys
 import warnings
 from pathlib import Path
-
-otel_config(service_name="meshagent-cli")
-
-# Turn down OpenAI logs, they are a bit noisy
-logging.getLogger("openai").setLevel(logging.ERROR)
-logging.getLogger("httpx").setLevel(logging.ERROR)
-logging.getLogger("textual").setLevel(logging.WARNING)
-logging.getLogger("textual.events").setLevel(logging.WARNING)
-logging.getLogger("textual.message_pump").setLevel(logging.WARNING)
-logging.getLogger("textual.screen").setLevel(logging.WARNING)
 
 
 def _configure_warning_filters() -> None:
@@ -67,40 +23,198 @@ def _configure_warning_filters() -> None:
 
 _configure_warning_filters()
 
-app = async_typer.AsyncTyper(no_args_is_help=True, name="meshagent")
-app.add_typer(call.app, name="call")
-app.add_typer(auth.app, name="auth")
-app.add_typer(projects.app, name="project")
-app.add_typer(api_keys.app, name="api-key")
-app.add_typer(sessions.app, name="session")
-app.add_typer(participant_token.app, name="token")
-app.add_typer(webhook.app, name="webhook")
-app.add_typer(services.app, name="service")
-app.add_typer(cli_mcp.app, name="mcp")
-app.add_typer(cli_secrets.app, name="secret")
-app.add_typer(helpers.app, name="helper")
-app.add_typer(helpers.app, name="helpers", hidden=True)
-app.add_typer(rooms.app, name="rooms")
-app.add_typer(mailboxes.app, name="mailbox")
-app.add_typer(routes.app, name="route")
-app.add_typer(scheduled_tasks.app, name="scheduled-task")
-app.add_typer(meeting_transcriber.app, name="meeting-transcriber")
-app.add_typer(port.app, name="port")
-app.add_typer(webserver.app, name="webserver", hidden=True)
-app.add_typer(codex.app, name="codex", hidden=True)
+_runtime_configured = False
+
+
+def _configure_runtime() -> None:
+    global _runtime_configured
+    if _runtime_configured:
+        return
+
+    from meshagent.otel import otel_config
+
+    otel_config(service_name="meshagent-cli")
+
+    # Turn down noisy dependencies after OTEL installs the root handler.
+    logging.getLogger("openai").setLevel(logging.ERROR)
+    logging.getLogger("httpx").setLevel(logging.ERROR)
+    logging.getLogger("textual").setLevel(logging.WARNING)
+    logging.getLogger("textual.events").setLevel(logging.WARNING)
+    logging.getLogger("textual.message_pump").setLevel(logging.WARNING)
+    logging.getLogger("textual.screen").setLevel(logging.WARNING)
+
+    _runtime_configured = True
+
+
+app = async_typer.LazyTyper(no_args_is_help=True, name="meshagent")
+
+
+@app.callback()
+def _root_callback() -> None:
+    _configure_runtime()
+
+
+app.add_lazy_command(
+    name="call",
+    module="meshagent.cli.call",
+    help="Trigger agent/tool calls via URL",
+)
+app.add_lazy_command(
+    name="auth",
+    module="meshagent.cli.auth",
+    help="Authenticate to meshagent",
+)
+app.add_lazy_command(
+    name="project",
+    module="meshagent.cli.projects",
+    help="Manage or activate your meshagent projects",
+)
+app.add_lazy_command(
+    name="api-key",
+    module="meshagent.cli.api_keys",
+    help="Manage or activate api-keys for your project",
+)
+app.add_lazy_command(
+    name="session",
+    module="meshagent.cli.sessions",
+    help="Inspect recent sessions and events",
+)
+app.add_lazy_command(
+    name="token",
+    module="meshagent.cli.participant_token",
+    help="Generate participant tokens (JWTs)",
+)
+app.add_lazy_command(
+    name="webhook",
+    module="meshagent.cli.webhook",
+    help="Manage project webhooks",
+)
+app.add_lazy_command(
+    name="service",
+    module="meshagent.cli.services",
+    help="Manage services for your project",
+)
+app.add_lazy_command(
+    name="mcp",
+    module="meshagent.cli.cli_mcp",
+    help="Bridge MCP servers into MeshAgent rooms",
+)
+app.add_lazy_command(
+    name="secret",
+    module="meshagent.cli.cli_secrets",
+    help="Manage secrets for your project.",
+)
+app.add_lazy_command(
+    name="helper",
+    module="meshagent.cli.helpers",
+    help="Developer helper services",
+)
+app.add_lazy_command(
+    name="helpers",
+    module="meshagent.cli.helpers",
+    help="Developer helper services",
+    hidden=True,
+)
+app.add_lazy_command(
+    name="rooms",
+    module="meshagent.cli.rooms",
+    help="Create, list, and manage rooms in a project",
+)
+app.add_lazy_command(
+    name="mailbox",
+    module="meshagent.cli.mailboxes",
+    help="Manage mailboxes for your project",
+)
+app.add_lazy_command(
+    name="route",
+    module="meshagent.cli.routes",
+    help="Manage routes for your project",
+)
+app.add_lazy_command(
+    name="scheduled-task",
+    module="meshagent.cli.scheduled_tasks",
+    help="Manage scheduled tasks for your project",
+)
+app.add_lazy_command(
+    name="meeting-transcriber",
+    module="meshagent.cli.meeting_transcriber",
+    help="Join a meeting transcriber to a room",
+)
+app.add_lazy_command(
+    name="port",
+    module="meshagent.cli.port",
+    help="Port forwarding into room containers",
+)
+app.add_lazy_command(
+    name="webserver",
+    module="meshagent.cli.webserver",
+    help="Run a webserver agent in a room",
+    hidden=True,
+)
+app.add_lazy_command(
+    name="codex",
+    module="meshagent.cli.codex",
+    help="Codex-backed agents",
+    hidden=True,
+)
 if not os.getenv("MESHAGENT_CLI_BUILD"):
-    app.add_typer(test.app, name="test", hidden=True)
+    app.add_lazy_command(
+        name="test",
+        module="meshagent.cli.test",
+        help="Hidden test tools",
+        hidden=True,
+    )
 
-app.add_typer(multi.app, name="multi")
-app.add_typer(voicebot.app, name="voicebot")
-app.add_typer(chatbot.app, name="chatbot", hidden=True)
-app.add_typer(process.app, name="process")
-app.add_typer(mailbot.app, name="mailbot", hidden=True)
-app.add_typer(task_runner.app, name="task-runner", hidden=True)
-app.add_typer(worker.app, name="worker", hidden=True)
+app.add_lazy_command(
+    name="multi",
+    module="meshagent.cli.multi",
+    help="Connect agents and tools to a room",
+)
+app.add_lazy_command(
+    name="voicebot",
+    module="meshagent.cli.voicebot",
+    help="Join a voicebot to a room",
+)
+app.add_lazy_command(
+    name="chatbot",
+    module="meshagent.cli.chatbot",
+    help="Join a chatbot to a room",
+    hidden=True,
+)
+app.add_lazy_command(
+    name="process",
+    module="meshagent.cli.process",
+    help="Join a process-backed agent to a room",
+)
+app.add_lazy_command(
+    name="mailbot",
+    module="meshagent.cli.mailbot",
+    help="Join a mailbot to a room",
+    hidden=True,
+)
+app.add_lazy_command(
+    name="task-runner",
+    module="meshagent.cli.task_runner",
+    help="Join a taskrunner to a room",
+    hidden=True,
+)
+app.add_lazy_command(
+    name="worker",
+    module="meshagent.cli.worker",
+    help="Join a worker agent to a room",
+    hidden=True,
+)
 
-app.add_typer(room.app, name="room")
-app.add_typer(image.app, name="image")
+app.add_lazy_command(
+    name="room",
+    module="meshagent.cli.room",
+    help="Operate within a room",
+)
+app.add_lazy_command(
+    name="image",
+    module="meshagent.cli.image",
+    help="Build and pack OCI images",
+)
 
 
 def _run_async(coro):
@@ -184,6 +298,12 @@ def setup_command():
     """Perform initial login and project/api key activation."""
 
     async def runner():
+        from meshagent.cli import api_keys, auth_async, projects
+        from meshagent.cli.helper import (
+            get_active_api_key,
+            get_active_project,
+            get_client,
+        )
         from meshagent.cli.tui.setup import (
             SetupProject,
             run_setup_wizard_tui,

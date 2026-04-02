@@ -19,9 +19,14 @@ from meshagent.cli import async_typer
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.cli.helper import get_client, resolve_project_id, resolve_room
 
-app = async_typer.AsyncTyper(help="Inspect and update mesh documents in a room")
+app = async_typer.LazyTyper(help="Inspect and update mesh documents in a room")
 import_app = async_typer.AsyncTyper(help="Import external exports into room documents")
-app.add_typer(import_app, name="import")
+app.add_lazy_command(
+    name="import",
+    module="meshagent.cli.sync",
+    attribute="import_app",
+    help="Import external exports into room documents",
+)
 
 
 def _parse_json_arg(json_str: Optional[str], *, name: str) -> Any:

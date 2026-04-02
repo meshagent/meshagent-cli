@@ -17,7 +17,7 @@ from meshagent.api.client import (
 # --------------------------------------------------------------------------
 #  App Definition
 # --------------------------------------------------------------------------
-secrets_app = async_typer.AsyncTyper(help="Manage secrets for your project.")
+secrets_app = async_typer.LazyTyper(help="Manage secrets for your project.")
 
 
 # --------------------------------------------------------------------------
@@ -399,11 +399,37 @@ async def secret_delete(
 # --------------------------------------------------------------------------
 #  Wire up sub-apps
 # --------------------------------------------------------------------------
-secrets_app.add_typer(keys_app, name="key")
-secrets_app.add_typer(keys_app, name="keys", hidden=True)
-secrets_app.add_typer(docker_app, name="docker")
-secrets_app.add_typer(acr_app, name="acr")
-secrets_app.add_typer(gar_app, name="gar")
+secrets_app.add_lazy_command(
+    name="key",
+    module="meshagent.cli.cli_secrets",
+    attribute="keys_app",
+    help="Create or update environment-based key-value secrets.",
+)
+secrets_app.add_lazy_command(
+    name="keys",
+    module="meshagent.cli.cli_secrets",
+    attribute="keys_app",
+    help="Create or update environment-based key-value secrets.",
+    hidden=True,
+)
+secrets_app.add_lazy_command(
+    name="docker",
+    module="meshagent.cli.cli_secrets",
+    attribute="docker_app",
+    help="Create or update docker registry pull secrets.",
+)
+secrets_app.add_lazy_command(
+    name="acr",
+    module="meshagent.cli.cli_secrets",
+    attribute="acr_app",
+    help="Create or update Azure Container Registry pull secrets.",
+)
+secrets_app.add_lazy_command(
+    name="gar",
+    module="meshagent.cli.cli_secrets",
+    attribute="gar_app",
+    help="Create or update Google Artifact Registry pull secrets.",
+)
 
 app = secrets_app
 

@@ -1,16 +1,155 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import inspect
+import sys
 import threading
+from dataclasses import dataclass
 from functools import partial, wraps
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Sequence, TypeVar
 
 import click
 import typer
 from typer import Typer
+from typer.main import DeveloperExceptionConfig
+from typer.main import _typer_developer_exception_attr_name
+from typer.main import except_hook
+from typer.main import get_command as get_typer_command
+from typer.main import get_group as get_typer_group
+from typer.main import get_install_completion_arguments
 
 T = TypeVar("T")
+
+
+@dataclass(frozen=True)
+class LazyCommandRegistration:
+    name: str
+    module: str
+    attribute: str = "app"
+    help: str | None = None
+    short_help: str | None = None
+    hidden: bool = False
+    deprecated: bool = False
+    command_path: tuple[str, ...] = ()
+
+
+class LazyLoadedCommand(click.Command):
+    def __init__(
+        self,
+        *,
+        registration: LazyCommandRegistration,
+    ) -> None:
+        super().__init__(
+            name=registration.name,
+            help=registration.help,
+            short_help=registration.short_help,
+            hidden=registration.hidden,
+            deprecated=registration.deprecated,
+        )
+        self._registration = registration
+        self._loaded_command: click.Command | None = None
+
+    def _load_command(self) -> click.Command:
+        if self._loaded_command is not None:
+            return self._loaded_command
+
+        module = importlib.import_module(self._registration.module)
+        try:
+            target = module.__dict__[self._registration.attribute]
+        except KeyError as exc:
+            raise RuntimeError(
+                f"{self._registration.module} has no attribute {self._registration.attribute}"
+            ) from exc
+
+        command = _coerce_to_click_command(target)
+        for segment in self._registration.command_path:
+            if not isinstance(command, click.Group):
+                raise RuntimeError(
+                    f"{self._registration.module}.{self._registration.attribute} does not expose subcommand path "
+                    f"{' '.join(self._registration.command_path)}"
+                )
+            resolved = command.get_command(click.Context(command), segment)
+            if resolved is None:
+                raise RuntimeError(
+                    f"{self._registration.module}.{self._registration.attribute} has no subcommand {segment}"
+                )
+            command = resolved
+
+        self._loaded_command = command
+        return command
+
+    def make_context(
+        self,
+        info_name: str | None,
+        args: list[str],
+        parent: click.Context | None = None,
+        **extra: Any,
+    ) -> click.Context:
+        return self._load_command().make_context(
+            info_name,
+            args,
+            parent=parent,
+            **extra,
+        )
+
+    def shell_complete(
+        self, ctx: click.Context, incomplete: str
+    ) -> list[click.shell_completion.CompletionItem]:
+        return self._load_command().shell_complete(ctx, incomplete)
+
+    def get_help(self, ctx: click.Context) -> str:
+        return self._load_command().get_help(ctx)
+
+
+def _coerce_to_click_command(target: Any) -> click.Command:
+    if isinstance(target, click.Command):
+        return target
+    if isinstance(target, Typer):
+        return get_command(target)
+    raise TypeError(f"Unsupported lazy command target: {target!r}")
+
+
+def _materialize_command(command: click.Command) -> click.Command:
+    if isinstance(command, LazyLoadedCommand):
+        return _materialize_command(command._load_command())
+
+    if isinstance(command, click.Group):
+        command.commands = {
+            name: _materialize_command(subcommand)
+            for name, subcommand in command.commands.items()
+        }
+    return command
+
+
+def get_command(
+    typer_instance: Typer | click.Command,
+    *,
+    materialize_lazy: bool = False,
+) -> click.Command:
+    if isinstance(typer_instance, click.Command):
+        click_command = typer_instance
+    elif isinstance(typer_instance, LazyTyper):
+        if len(typer_instance.registered_lazy_commands) > 0:
+            click_command = get_typer_group(typer_instance)
+            for registration in typer_instance.registered_lazy_commands:
+                click_command.commands[registration.name] = LazyLoadedCommand(
+                    registration=registration,
+                )
+            if typer_instance._add_completion:
+                click_install_param, click_show_param = (
+                    get_install_completion_arguments()
+                )
+                click_command.params.append(click_install_param)
+                click_command.params.append(click_show_param)
+        else:
+            click_command = get_typer_command(typer_instance)
+    else:
+        click_command = get_typer_command(typer_instance)
+
+    if materialize_lazy:
+        return _materialize_command(click_command)
+    return click_command
 
 
 def _run_coroutine_sync(
@@ -88,8 +227,11 @@ class AsyncTyper(Typer):
         if not explicit_standalone_mode:
             kwargs["standalone_mode"] = False
 
+        if sys.excepthook != except_hook:
+            sys.excepthook = except_hook
+
         try:
-            return super().__call__(*args, **kwargs)
+            return get_command(self)(*args, **kwargs)
         except click.MissingParameter as e:
             if explicit_standalone_mode:
                 raise
@@ -115,6 +257,17 @@ class AsyncTyper(Typer):
             if explicit_standalone_mode:
                 raise
             raise SystemExit(e.exit_code)
+        except Exception as e:
+            setattr(
+                e,
+                _typer_developer_exception_attr_name,
+                DeveloperExceptionConfig(
+                    pretty_exceptions_enable=self.pretty_exceptions_enable,
+                    pretty_exceptions_show_locals=self.pretty_exceptions_show_locals,
+                    pretty_exceptions_short=self.pretty_exceptions_short,
+                ),
+            )
+            raise
 
     @staticmethod
     def maybe_run_async(decorator: Callable[..., Any], func: Callable[..., Any]) -> Any:
@@ -140,3 +293,34 @@ class AsyncTyper(Typer):
     # keep your existing name if you prefer
     def async_command(self, *args: Any, **kwargs: Any) -> Any:
         return self.command(*args, **kwargs)
+
+
+class LazyTyper(AsyncTyper):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.registered_lazy_commands: list[LazyCommandRegistration] = []
+
+    def add_lazy_command(
+        self,
+        *,
+        name: str,
+        module: str,
+        attribute: str = "app",
+        help: str | None = None,
+        short_help: str | None = None,
+        hidden: bool = False,
+        deprecated: bool = False,
+        command_path: Sequence[str] = (),
+    ) -> None:
+        self.registered_lazy_commands.append(
+            LazyCommandRegistration(
+                name=name,
+                module=module,
+                attribute=attribute,
+                help=help,
+                short_help=short_help,
+                hidden=hidden,
+                deprecated=deprecated,
+                command_path=tuple(command_path),
+            )
+        )

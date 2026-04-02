@@ -2,7 +2,6 @@ import asyncio
 
 import click
 import pytest
-from typer.main import get_command
 
 from meshagent.agents.context import AgentSessionContext
 from meshagent.agents.messages import (
@@ -14,6 +13,7 @@ from meshagent.agents.messages import (
 )
 from meshagent.agents.process import Message
 from meshagent.api.specs.service import ContainerSpec, ServiceMetadata, ServiceSpec
+from meshagent.cli.async_typer import get_command
 from meshagent.cli import chatbot
 from meshagent.cli import codex
 from meshagent.cli import cli as root_cli

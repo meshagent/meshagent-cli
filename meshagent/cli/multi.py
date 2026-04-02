@@ -1,6 +1,5 @@
 import typer
 from meshagent.cli import async_typer
-from meshagent.cli.host import run_services, set_deferred, service_specs, get_service
 from meshagent.cli.common_options import ProjectIdOption
 from typing import Annotated, Optional
 import os
@@ -11,52 +10,71 @@ import shlex
 
 from rich import print
 
-from meshagent.agents import Agent
-
-from typer.main import get_command
-
 from meshagent.cli.common_options import RoomOption
-from meshagent.cli.helper import (
-    get_client,
-    resolve_project_id,
-)
-from aiohttp import ClientResponseError
 import asyncio
-
-from meshagent.api import RoomClient
-
-from meshagent.api.helpers import websocket_room_url
-from meshagent.api.websocket_protocol import WebSocketClientProtocol
-
-from meshagent.cli.chatbot import service as chatbot_service
-from meshagent.cli.worker import service as worker_service
-from meshagent.cli.mailbot import service as mailbot_service
-from meshagent.cli.voicebot import service as voicebot_service
-
-from meshagent.cli.chatbot import join as chatbot_join
-from meshagent.cli.worker import join as worker_join
-from meshagent.cli.mailbot import join as mailbot_join
-from meshagent.cli.voicebot import join as voicebot_join
-from meshagent.cli.webserver import join as webserver_join
 
 import yaml
 
 
-app = async_typer.AsyncTyper(help="Connect agents and tools to a room")
+app = async_typer.LazyTyper(help="Connect agents and tools to a room")
 
-cli_service = async_typer.AsyncTyper(help="Add agents to a team")
+cli_service = async_typer.LazyTyper(help="Add agents to a team")
+cli_service.add_lazy_command(
+    name="chatbot",
+    module="meshagent.cli.chatbot",
+    command_path=("service",),
+    help="Deploy a chatbot-backed service.",
+)
+cli_service.add_lazy_command(
+    name="worker",
+    module="meshagent.cli.worker",
+    command_path=("service",),
+    help="Deploy a worker-backed service.",
+)
+cli_service.add_lazy_command(
+    name="mailbot",
+    module="meshagent.cli.mailbot",
+    command_path=("service",),
+    help="Deploy a mailbot-backed service.",
+)
+cli_service.add_lazy_command(
+    name="voicebot",
+    module="meshagent.cli.voicebot",
+    command_path=("service",),
+    help="Deploy a voicebot-backed service.",
+)
 
-cli_service.command("chatbot")(chatbot_service)
-cli_service.command("worker")(worker_service)
-cli_service.command("mailbot")(mailbot_service)
-cli_service.command("voicebot")(voicebot_service)
-
-cli_join = async_typer.AsyncTyper(help="Add agents to a team")
-cli_join.command("chatbot")(chatbot_join)
-cli_join.command("worker")(worker_join)
-cli_join.command("mailbot")(mailbot_join)
-cli_join.command("voicebot")(voicebot_join)
-cli_join.command("webserver")(webserver_join)
+cli_join = async_typer.LazyTyper(help="Add agents to a team")
+cli_join.add_lazy_command(
+    name="chatbot",
+    module="meshagent.cli.chatbot",
+    command_path=("join",),
+    help="Join a room and run a chatbot agent.",
+)
+cli_join.add_lazy_command(
+    name="worker",
+    module="meshagent.cli.worker",
+    command_path=("join",),
+    help="Join a room and run a worker agent.",
+)
+cli_join.add_lazy_command(
+    name="mailbot",
+    module="meshagent.cli.mailbot",
+    command_path=("join",),
+    help="Join a room and run a mailbot agent.",
+)
+cli_join.add_lazy_command(
+    name="voicebot",
+    module="meshagent.cli.voicebot",
+    command_path=("join",),
+    help="Join a room and run a voicebot agent.",
+)
+cli_join.add_lazy_command(
+    name="webserver",
+    module="meshagent.cli.webserver",
+    command_path=("join",),
+    help="Join a room and run a webserver agent.",
+)
 
 
 @cli_service.async_command("python")
@@ -81,6 +99,8 @@ async def python(
         str, typer.Option(help="Entry-point name in the Python module")
     ] = "main",
 ):
+    from meshagent.cli.host import get_service
+
     service = get_service(host=host, port=port)
 
     if path is None:
@@ -90,12 +110,18 @@ async def python(
             i += 1
             path = f"/agent{i}"
 
-    module = import_from_path(module)
-    service.add_path(path=path, identity=identity, cls=getattr(module, name or "main"))
+    imported_module = import_from_path(module)
+    export_name = name or "main"
+    try:
+        entrypoint = imported_module.__dict__[export_name]
+    except KeyError as exc:
+        raise ImportError(f"{module} does not define {export_name}") from exc
+
+    service.add_path(path=path, identity=identity, cls=entrypoint)
 
 
 def execute_via_root(app, line: str, *, prog_name="meshagent") -> int:
-    cmd = get_command(app)
+    cmd = async_typer.get_command(app)
     try:
         cmd.main(args=shlex.split(line), prog_name=prog_name, standalone_mode=False)
         return 0
@@ -132,6 +158,8 @@ def build_spec(
         typer.Option("--service-title", help="a display name for the service"),
     ] = None,
 ):
+    from meshagent.cli.host import service_specs
+
     for c in command.split(";"):
         if execute_via_root(cli_service, c, prog_name="meshagent") != 0:
             print(f"[red]{c} failed[/red]")
@@ -181,6 +209,8 @@ async def spec(
         typer.Option("--service-title", help="a display name for the service"),
     ] = None,
 ):
+    from meshagent.cli.host import set_deferred
+
     set_deferred(True)
 
     spec = build_spec(
@@ -217,6 +247,11 @@ async def deploy(
         typer.Option("--room", help="The name of a room to create the service for"),
     ] = os.getenv("MESHAGENT_ROOM"),
 ):
+    from aiohttp import ClientResponseError
+
+    from meshagent.cli.helper import get_client, resolve_project_id
+    from meshagent.cli.host import set_deferred
+
     project_id = await resolve_project_id(project_id)
 
     client = await get_client()
@@ -293,6 +328,8 @@ async def host(
     ] = None,
     command: Annotated[str, typer.Option("-c", help=subcommand_help)] = [],
 ):
+    from meshagent.cli.host import run_services, set_deferred
+
     set_deferred(True)
 
     for c in command.split(";"):
@@ -340,6 +377,12 @@ async def join(
         Optional[str], typer.Option(..., help="Name of the agent to call")
     ] = None,
 ):
+    from meshagent.agents import Agent
+    from meshagent.api import RoomClient
+    from meshagent.api.helpers import websocket_room_url
+    from meshagent.api.websocket_protocol import WebSocketClientProtocol
+    from meshagent.cli.host import agents, set_deferred
+
     set_deferred(True)
 
     if room is None:
@@ -352,8 +395,6 @@ async def join(
         if agent_name and "--agent-name" not in c:
             command_args += f" --agent-name={agent_name}"
         execute_via_root(cli_join, command_args, prog_name="meshagent")
-
-    from meshagent.cli.host import agents
 
     try:
 

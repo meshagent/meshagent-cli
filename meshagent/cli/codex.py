@@ -50,13 +50,28 @@ from meshagent.cli.host import (
     service_specs,
 )
 
-app = async_typer.AsyncTyper(help="Codex-backed agents")
+app = async_typer.LazyTyper(help="Codex-backed agents")
 chatbot_app = async_typer.AsyncTyper(help="Run codex chatbot agents")
 task_runner_app = async_typer.AsyncTyper(help="Run codex task-runner agents")
 worker_app = async_typer.AsyncTyper(help="Run codex worker agents")
-app.add_typer(chatbot_app, name="chatbot")
-app.add_typer(task_runner_app, name="task-runner")
-app.add_typer(worker_app, name="worker")
+app.add_lazy_command(
+    name="chatbot",
+    module="meshagent.cli.codex",
+    attribute="chatbot_app",
+    help="Run codex chatbot agents",
+)
+app.add_lazy_command(
+    name="task-runner",
+    module="meshagent.cli.codex",
+    attribute="task_runner_app",
+    help="Run codex task-runner agents",
+)
+app.add_lazy_command(
+    name="worker",
+    module="meshagent.cli.codex",
+    attribute="worker_app",
+    help="Run codex worker agents",
+)
 
 DelegateShellTokenOption = Annotated[
     bool,

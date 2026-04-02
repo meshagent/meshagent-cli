@@ -1,48 +1,78 @@
 from meshagent.cli import async_typer
-from meshagent.cli import database
-from meshagent.cli import queue
-from meshagent.cli import agent
-from meshagent.cli import messaging
-from meshagent.cli import storage
-from meshagent.cli import developer
-from meshagent.cli import oauth2
-from meshagent.cli import containers
-from meshagent.cli import room_services
-from meshagent.cli import memory
-
-from meshagent.cli import sync
 
 
-app = async_typer.AsyncTyper(help="Operate within a room")
+app = async_typer.LazyTyper(help="Operate within a room")
 
-app.add_typer(agent.app, name="agent", help="Interact with agents and toolkits")
-app.add_typer(
-    agent.app,
+app.add_lazy_command(
+    name="agent",
+    module="meshagent.cli.agent",
+    help="Interact with agents and toolkits",
+)
+app.add_lazy_command(
     name="agents",
+    module="meshagent.cli.agent",
     help="Interact with agents and toolkits",
     hidden=True,
 )
-app.add_typer(oauth2.app, name="secret", help="Manage secrets in a room")
-app.add_typer(
-    oauth2.app,
+app.add_lazy_command(
+    name="secret",
+    module="meshagent.cli.oauth2",
+    help="Manage secrets in a room",
+)
+app.add_lazy_command(
     name="secrets",
+    module="meshagent.cli.oauth2",
     help="Manage secrets in a room",
     hidden=True,
 )
-app.add_typer(queue.app, name="queue", help="Use queues in a room")
-app.add_typer(messaging.app, name="messaging", help="Send and receive messages")
-app.add_typer(storage.app, name="storage", help="Manage storage for a room")
-app.add_typer(room_services.app, name="service", help="Manage services in a room")
-app.add_typer(
-    room_services.app,
+app.add_lazy_command(
+    name="queue",
+    module="meshagent.cli.queue",
+    help="Use queues in a room",
+)
+app.add_lazy_command(
+    name="messaging",
+    module="meshagent.cli.messaging",
+    help="Send and receive messages",
+)
+app.add_lazy_command(
+    name="storage",
+    module="meshagent.cli.storage",
+    help="Manage storage for a room",
+)
+app.add_lazy_command(
+    name="service",
+    module="meshagent.cli.room_services",
+    help="Manage services in a room",
+)
+app.add_lazy_command(
     name="services",
+    module="meshagent.cli.room_services",
     help="Manage services in a room",
     hidden=True,
 )
-app.add_typer(developer.app, name="developer", help="Developer utilities for a room")
-app.add_typer(database.app, name="database", help="Manage database tables in a room")
-app.add_typer(memory.app, name="memory", help="Manage memories in a room")
-app.add_typer(
-    containers.app, name="container", help="Manage containers and images in a room"
+app.add_lazy_command(
+    name="developer",
+    module="meshagent.cli.developer",
+    help="Developer utilities for a room",
 )
-app.add_typer(sync.app, name="sync")
+app.add_lazy_command(
+    name="database",
+    module="meshagent.cli.database",
+    help="Manage database tables in a room",
+)
+app.add_lazy_command(
+    name="memory",
+    module="meshagent.cli.memory",
+    help="Manage memories in a room",
+)
+app.add_lazy_command(
+    name="container",
+    module="meshagent.cli.containers",
+    help="Manage containers and images in a room",
+)
+app.add_lazy_command(
+    name="sync",
+    module="meshagent.cli.sync",
+    help="Inspect and update mesh documents in a room",
+)
