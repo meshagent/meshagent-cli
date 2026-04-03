@@ -3,6 +3,7 @@ import click
 from rich import print
 from typing import Annotated, Any, Optional, List, Literal, Awaitable, Callable
 from meshagent.tools import (
+    BaseTool,
     Toolkit,
     ToolkitConfig,
     ToolkitBuilder,
@@ -1238,9 +1239,70 @@ def build_process_agent(
             self._toolkit_channels: list[ToolkitChannel] = []
             self._shell_env: dict[str, str] = dict(base_shell_env)
             self._advanced_shell_toolkit: ContainerToolkit | None = None
+            self._required_shell_tools: dict[str, BaseTool] = {}
+            self._optional_shell_toolkits: dict[str, Toolkit] = {}
             self._resolved_threading_mode: str | None = None
             if threading_mode != "none":
                 self._resolved_threading_mode = threading_mode
+
+        def _get_required_shell_tool(self, *, model: str) -> BaseTool:
+            shell_tool = self._required_shell_tools.get(model)
+            if shell_tool is None:
+                shell_tool = build_shell_tool(
+                    model=model,
+                    llm_participant=llm_participant,
+                    config=ShellConfig(name="shell"),
+                    working_dir=working_dir,
+                    image=resolved_shell_image,
+                    mounts=shell_tool_mounts,
+                    env=self._shell_env,
+                )
+                self._required_shell_tools[model] = shell_tool
+            return shell_tool
+
+        def _get_optional_shell_toolkit(self, *, model: str) -> Toolkit:
+            shell_toolkit = self._optional_shell_toolkits.get(model)
+            if shell_toolkit is None:
+                shell_toolkit = Toolkit(
+                    name="shell",
+                    tools=[
+                        build_shell_tool(
+                            model=model,
+                            llm_participant=llm_participant,
+                            config=ShellConfig(name="shell"),
+                            working_dir=working_dir,
+                            image=resolved_shell_image,
+                            mounts=shell_tool_mounts,
+                            env=base_shell_env or None,
+                        )
+                    ],
+                )
+                self._optional_shell_toolkits[model] = shell_toolkit
+            return shell_toolkit
+
+        async def _stop_cached_shell_tools(self) -> None:
+            room = self._room
+            cached_required_shell_tools = [*self._required_shell_tools.values()]
+            cached_optional_shell_tools = [
+                tool
+                for toolkit in self._optional_shell_toolkits.values()
+                for tool in toolkit.tools
+            ]
+            self._required_shell_tools = {}
+            self._optional_shell_toolkits = {}
+
+            if room is None:
+                return
+
+            stopped_tool_ids: set[int] = set()
+            for tool in [*cached_required_shell_tools, *cached_optional_shell_tools]:
+                if not isinstance(tool, ContainerShellTool):
+                    continue
+                tool_id = id(tool)
+                if tool_id in stopped_tool_ids:
+                    continue
+                stopped_tool_ids.add(tool_id)
+                await tool.stop(room=room)
 
         async def get_exposed_toolkits(self) -> list[RemoteToolkit]:
             exposed_toolkits = await super().get_exposed_toolkits()
@@ -1382,6 +1444,7 @@ def build_process_agent(
             try:
                 if self._advanced_shell_toolkit is not None and room is not None:
                     await self._advanced_shell_toolkit.stop_all(room=room)
+                await self._stop_cached_shell_tools()
             finally:
                 self._advanced_shell_toolkit = None
                 self._shell_env = dict(base_shell_env)
@@ -1568,18 +1631,9 @@ def build_process_agent(
                 )
 
             if require_shell:
-                shell_config = ShellConfig(name="shell")
                 add_tool(
-                    toolkit_name=shell_config.name,
-                    tool=build_shell_tool(
-                        model=model,
-                        llm_participant=llm_participant,
-                        config=shell_config,
-                        working_dir=working_dir,
-                        image=resolved_shell_image,
-                        mounts=shell_tool_mounts,
-                        env=self._shell_env,
-                    ),
+                    toolkit_name="shell",
+                    tool=self._get_required_shell_tool(model=model),
                 )
             if self._advanced_shell_toolkit is not None:
                 add_toolkit(self._advanced_shell_toolkit)
@@ -1710,11 +1764,24 @@ def build_process_agent(
                 if turn.toolkits is not None and len(turn.toolkits) > 0:
                     requested_toolkits.extend(turn.toolkits)
 
-            optional_toolkits = await make_toolkits(
-                room=self.room,
-                model=model,
-                providers=self.get_toolkit_builders(),
-                tools=requested_toolkits,
+            requested_shell_toolkit = False
+            configured_toolkits: list[dict[str, Any]] = []
+            for requested_toolkit in requested_toolkits:
+                if shell and requested_toolkit.get("name") == "shell":
+                    requested_shell_toolkit = True
+                    continue
+                configured_toolkits.append(requested_toolkit)
+
+            optional_toolkits: list[Toolkit] = []
+            if requested_shell_toolkit:
+                optional_toolkits.append(self._get_optional_shell_toolkit(model=model))
+            optional_toolkits.extend(
+                await make_toolkits(
+                    room=self.room,
+                    model=model,
+                    providers=self.get_toolkit_builders(),
+                    tools=configured_toolkits,
+                )
             )
 
             combined_toolkits: list[Toolkit] = [*toolkits]

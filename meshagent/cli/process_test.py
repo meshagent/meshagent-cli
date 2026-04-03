@@ -1067,6 +1067,126 @@ async def test_process_agent_require_shell_uses_process_shell_for_selected_claud
 
 
 @pytest.mark.asyncio
+async def test_process_agent_require_shell_reuses_container_shell_tool_across_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    custom_process_agent = chatbot.build_process_agent(
+        model="claude-3-7-sonnet",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_shell=True,
+        working_dir="/workspace",
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+    )
+    agent = custom_process_agent()
+    agent._room = _FakeProcessRoom()
+
+    async def _fake_get_required_toolkits(*, context):
+        del context
+        return []
+
+    monkeypatch.setattr(agent, "get_required_toolkits", _fake_get_required_toolkits)
+
+    turns = [
+        TurnStart(
+            type="meshagent.agent.turn.start",
+            thread_id="threads/example",
+            content=[AgentTextContent(type="text", text="hello")],
+        )
+    ]
+
+    first_toolkits = await agent.get_process_turn_toolkits(
+        process=_FakeProcessState(),
+        sender=None,
+        model="claude-3-7-sonnet",
+        turns=turns,
+    )
+    second_toolkits = await agent.get_process_turn_toolkits(
+        process=_FakeProcessState(),
+        sender=None,
+        model="claude-3-7-sonnet",
+        turns=turns,
+    )
+
+    first_shell_toolkit = next(
+        toolkit
+        for toolkit in first_toolkits
+        if isinstance(toolkit, Toolkit) and toolkit.name == "shell"
+    )
+    second_shell_toolkit = next(
+        toolkit
+        for toolkit in second_toolkits
+        if isinstance(toolkit, Toolkit) and toolkit.name == "shell"
+    )
+
+    assert isinstance(first_shell_toolkit.tools[0], ContainerShellTool)
+    assert first_shell_toolkit.tools[0] is second_shell_toolkit.tools[0]
+
+
+@pytest.mark.asyncio
+async def test_process_agent_optional_shell_reuses_container_shell_toolkit_across_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    custom_process_agent = chatbot.build_process_agent(
+        model="claude-3-7-sonnet",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        shell="enabled",
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+    )
+    agent = custom_process_agent()
+    agent._room = _FakeProcessRoom()
+
+    async def _fake_get_required_toolkits(*, context):
+        del context
+        return []
+
+    monkeypatch.setattr(agent, "get_required_toolkits", _fake_get_required_toolkits)
+
+    turns = [
+        TurnStart(
+            type="meshagent.agent.turn.start",
+            thread_id="threads/example",
+            content=[AgentTextContent(type="text", text="hello")],
+            toolkits=[{"name": "shell"}],
+        )
+    ]
+
+    first_toolkits = await agent.get_process_turn_toolkits(
+        process=_FakeProcessState(),
+        sender=None,
+        model="claude-3-7-sonnet",
+        turns=turns,
+    )
+    second_toolkits = await agent.get_process_turn_toolkits(
+        process=_FakeProcessState(),
+        sender=None,
+        model="claude-3-7-sonnet",
+        turns=turns,
+    )
+
+    first_shell_toolkit = next(
+        toolkit
+        for toolkit in first_toolkits
+        if isinstance(toolkit, Toolkit) and toolkit.name == "shell"
+    )
+    second_shell_toolkit = next(
+        toolkit
+        for toolkit in second_toolkits
+        if isinstance(toolkit, Toolkit) and toolkit.name == "shell"
+    )
+
+    assert isinstance(first_shell_toolkit.tools[0], ContainerShellTool)
+    assert first_shell_toolkit is second_shell_toolkit
+
+
+@pytest.mark.asyncio
 async def test_chatbot_require_shell_uses_none_sentinel(monkeypatch) -> None:
     custom_chatbot = chatbot.build_chatbot(
         model="gpt-5",
@@ -1202,5 +1322,83 @@ async def test_process_agent_require_advanced_shell_uses_container_toolkit_with_
             "OPENAI_API_KEY": "token",
             "ANTHROPIC_API_KEY": "token",
         }
+    finally:
+        await agent.stop()
+
+
+@pytest.mark.asyncio
+async def test_process_agent_require_advanced_shell_reuses_container_toolkit_across_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import meshagent.agents.process as process_module
+
+    custom_process_agent = chatbot.build_process_agent(
+        model="gpt-5.4",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_advanced_shell=True,
+        working_dir="/workspace",
+        shell_image="python:3.13",
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+    )
+    agent = custom_process_agent()
+
+    async def fake_install_requirements() -> None:
+        return None
+
+    async def fake_supervisor_start(self) -> None:
+        return None
+
+    async def fake_supervisor_stop(self) -> None:
+        return None
+
+    async def _fake_get_required_toolkits(*, context):
+        del context
+        return []
+
+    monkeypatch.setattr(agent, "install_requirements", fake_install_requirements)
+    monkeypatch.setattr(agent, "get_required_toolkits", _fake_get_required_toolkits)
+    monkeypatch.setattr(process_module.AgentSupervisor, "start", fake_supervisor_start)
+    monkeypatch.setattr(process_module.AgentSupervisor, "stop", fake_supervisor_stop)
+
+    await agent.start(room=_FakeProcessRoomClient())
+    try:
+        turns = [
+            TurnStart(
+                type="meshagent.agent.turn.start",
+                thread_id="threads/example",
+                content=[AgentTextContent(type="text", text="hello")],
+            )
+        ]
+
+        first_toolkits = await agent.get_process_turn_toolkits(
+            process=_FakeProcessState(),
+            sender=None,
+            model="gpt-5.4",
+            turns=turns,
+        )
+        second_toolkits = await agent.get_process_turn_toolkits(
+            process=_FakeProcessState(),
+            sender=None,
+            model="gpt-5.4",
+            turns=turns,
+        )
+
+        first_advanced_toolkit = next(
+            toolkit
+            for toolkit in first_toolkits
+            if isinstance(toolkit, ContainerToolkit)
+        )
+        second_advanced_toolkit = next(
+            toolkit
+            for toolkit in second_toolkits
+            if isinstance(toolkit, ContainerToolkit)
+        )
+
+        assert first_advanced_toolkit is agent._advanced_shell_toolkit
+        assert second_advanced_toolkit is agent._advanced_shell_toolkit
     finally:
         await agent.stop()
