@@ -509,6 +509,8 @@ def _service_spec_to_template_spec(spec: ServiceSpec) -> ServiceTemplateSpec:
                 project=spec.container.storage.project,
                 images=spec.container.storage.images,
                 files=spec.container.storage.files,
+                empty_dirs=spec.container.storage.empty_dirs,
+                configs=spec.container.storage.configs,
             )
 
         container_template = ContainerTemplateSpec(
