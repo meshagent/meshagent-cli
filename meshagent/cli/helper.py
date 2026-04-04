@@ -11,6 +11,7 @@ from meshagent.api import RoomClient
 from meshagent.api.helpers import meshagent_base_url
 from meshagent.api.specs.service import (
     ANNOTATION_SERVICE_README,
+    ConfigMountSpec,
     ContainerMountSpec,
     EmptyDirMountSpec,
     ImageStorageMountSpec,
@@ -449,6 +450,15 @@ def split_empty_dir_mount(value: str, option_name: str) -> tuple[str, bool]:
     return mount, read_only
 
 
+def split_config_mount(value: str, option_name: str) -> str:
+    cleaned = value.strip()
+    if cleaned == "":
+        raise typer.BadParameter(f"{option_name} cannot be empty")
+    if ":" in cleaned:
+        raise typer.BadParameter(f"{option_name} must be in the form '<mount>'")
+    return cleaned
+
+
 def split_image_mount(
     value: str, option_name: str
 ) -> tuple[str, str, Optional[str], bool]:
@@ -525,16 +535,20 @@ def parse_shell_tool_mounts(
     project_paths: list[str],
     image_paths: Optional[list[str]] = None,
     empty_dir_paths: Optional[list[str]] = None,
+    config_paths: Optional[list[str]] = None,
 ) -> Optional[ContainerMountSpec]:
     room_mounts: list[RoomStorageMountSpec] = []
     project_mounts: list[ProjectStorageMountSpec] = []
     image_mounts: list[ImageStorageMountSpec] = []
     empty_dir_mounts: list[EmptyDirMountSpec] = []
+    config_mounts: list[ConfigMountSpec] = []
 
     if image_paths is None:
         image_paths = []
     if empty_dir_paths is None:
         empty_dir_paths = []
+    if config_paths is None:
+        config_paths = []
 
     for value in room_paths:
         source, mount, read_only = split_container_mount(
@@ -577,11 +591,16 @@ def parse_shell_tool_mounts(
             )
         )
 
+    for value in config_paths:
+        mount = split_config_mount(value, "--shell-tool-config-mount")
+        config_mounts.append(ConfigMountSpec(path=mount))
+
     if (
         not room_mounts
         and not project_mounts
         and not image_mounts
         and not empty_dir_mounts
+        and not config_mounts
     ):
         return None
 
@@ -590,6 +609,7 @@ def parse_shell_tool_mounts(
         project=project_mounts or None,
         images=image_mounts or None,
         empty_dirs=empty_dir_mounts or None,
+        configs=config_mounts or None,
     )
 
 

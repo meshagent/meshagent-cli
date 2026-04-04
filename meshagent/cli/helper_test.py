@@ -148,6 +148,21 @@ def test_parse_shell_tool_mounts_parses_empty_dir_mounts() -> None:
     ]
 
 
+def test_parse_shell_tool_mounts_parses_config_mounts() -> None:
+    mounts = parse_shell_tool_mounts(
+        room_paths=[],
+        project_paths=[],
+        config_paths=["/var/run/meshagent", "/tmp/meshagent-config"],
+    )
+
+    assert mounts is not None
+    assert mounts.configs is not None
+    assert [mount.model_dump(mode="json") for mount in mounts.configs] == [
+        {"path": "/var/run/meshagent"},
+        {"path": "/tmp/meshagent-config"},
+    ]
+
+
 @pytest.mark.parametrize(
     "value",
     [
@@ -163,6 +178,23 @@ def test_parse_shell_tool_mounts_rejects_empty_dir_bind_syntax(value: str) -> No
             room_paths=[],
             project_paths=[],
             empty_dir_paths=[value],
+        )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        " ",
+        "/var/run/meshagent:ro",
+    ],
+)
+def test_parse_shell_tool_mounts_rejects_invalid_config_mounts(value: str) -> None:
+    with pytest.raises(typer.BadParameter, match="--shell-tool-config-mount"):
+        parse_shell_tool_mounts(
+            room_paths=[],
+            project_paths=[],
+            config_paths=[value],
         )
 
 

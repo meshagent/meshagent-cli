@@ -17,6 +17,7 @@ from meshagent.cli.async_typer import get_command
 from meshagent.cli import chatbot
 from meshagent.cli import codex
 from meshagent.cli import cli as root_cli
+from meshagent.cli import process
 from meshagent.computers.agent import ComputerToolkit
 from meshagent.openai.tools.responses_adapter import ShellTool
 from meshagent.tools import Toolkit
@@ -55,6 +56,16 @@ def _service_spec() -> ServiceSpec:
 def test_root_cli_registers_process_group() -> None:
     command = get_command(root_cli.app)
     assert "process" in command.commands
+
+
+def test_process_join_help_lists_shell_tool_config_mount_option() -> None:
+    join_command = get_command(process.app).commands["join"]
+
+    assert any(
+        "--shell-tool-config-mount" in param.opts
+        for param in join_command.params
+        if isinstance(param, click.Option)
+    )
 
 
 def test_resolved_channels_accept_mail_channel() -> None:

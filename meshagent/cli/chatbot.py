@@ -33,6 +33,7 @@ from meshagent.agents.widget_schema import widget_schema
 from meshagent.cli.common_options import (
     AllowGotoUrlOption,
     ProjectIdOption,
+    ShellConfigMountOption,
     RoomOption,
     ShellEmptyDirMountLegacyOption,
     ShellEmptyDirMountOption,
@@ -1925,6 +1926,7 @@ async def join(
     shell_tool_project_path: ShellProjectMountLegacyOption = [],
     shell_empty_dir_mount: ShellEmptyDirMountOption = [],
     shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
+    shell_tool_config_mount: ShellConfigMountOption = [],
     shell_image_mount: Annotated[
         List[str],
         typer.Option(
@@ -2128,6 +2130,7 @@ async def join(
                 shell_empty_dir_mount,
                 shell_tool_empty_dir,
             ),
+            config_paths=shell_tool_config_mount,
             image_paths=shell_image_mount,
         )
 
@@ -2320,6 +2323,7 @@ async def service(
     shell_tool_project_path: ShellProjectMountLegacyOption = [],
     shell_empty_dir_mount: ShellEmptyDirMountOption = [],
     shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
+    shell_tool_config_mount: ShellConfigMountOption = [],
     shell_image_mount: Annotated[
         List[str],
         typer.Option(
@@ -2487,6 +2491,7 @@ async def service(
             shell_empty_dir_mount,
             shell_tool_empty_dir,
         ),
+        config_paths=shell_tool_config_mount,
         image_paths=shell_image_mount,
     )
 
@@ -2681,6 +2686,7 @@ async def spec(
     shell_tool_project_path: ShellProjectMountLegacyOption = [],
     shell_empty_dir_mount: ShellEmptyDirMountOption = [],
     shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
+    shell_tool_config_mount: ShellConfigMountOption = [],
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -2833,6 +2839,7 @@ async def spec(
             shell_empty_dir_mount,
             shell_tool_empty_dir,
         ),
+        config_paths=shell_tool_config_mount,
     )
 
     path = "/agent"
@@ -3045,6 +3052,7 @@ async def deploy(
     shell_tool_project_path: ShellProjectMountLegacyOption = [],
     shell_empty_dir_mount: ShellEmptyDirMountOption = [],
     shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
+    shell_tool_config_mount: ShellConfigMountOption = [],
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -3204,6 +3212,7 @@ async def deploy(
             shell_empty_dir_mount,
             shell_tool_empty_dir,
         ),
+        config_paths=shell_tool_config_mount,
     )
 
     path = "/agent"
@@ -4913,6 +4922,7 @@ async def run(
     shell_tool_project_path: ShellProjectMountLegacyOption = [],
     shell_empty_dir_mount: ShellEmptyDirMountOption = [],
     shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
+    shell_tool_config_mount: ShellConfigMountOption = [],
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -5128,6 +5138,7 @@ async def run(
                 shell_empty_dir_mount,
                 shell_tool_empty_dir,
             ),
+            config_paths=shell_tool_config_mount,
         )
 
         client = RoomClient(

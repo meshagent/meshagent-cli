@@ -97,6 +97,14 @@ ShellEmptyDirMountLegacyOption = Annotated[
     ),
 ]
 
+ShellConfigMountOption = Annotated[
+    list[str],
+    typer.Option(
+        "--shell-tool-config-mount",
+        help="Mount meshagent runtime config files into <mount>",
+    ),
+]
+
 AllowGotoUrlOption = Annotated[
     bool,
     typer.Option(
