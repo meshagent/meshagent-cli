@@ -68,7 +68,6 @@ from meshagent.cli.helper import (
     resolve_project_id,
     resolve_room,
     supports_openai_shell_tool,
-    upload_room_bytes_stream,
 )
 
 from meshagent.openai import OpenAIResponsesAdapter
@@ -823,17 +822,6 @@ def build_chatbot(
                             rules.extend(cr)
 
             except RoomException:
-                try:
-                    logger.info("attempting to initialize rules file")
-                    await upload_room_bytes_stream(
-                        room=self.room,
-                        path=path,
-                        data="# Add rules to this file to customize your agent's behavior, lines starting with # will be ignored.\n\n".encode(),
-                        overwrite=False,
-                    )
-
-                except RoomException:
-                    pass
                 logger.info(
                     f"unable to load rules from {path}, continuing with default rules"
                 )
@@ -1480,16 +1468,6 @@ def build_process_agent(
                         if selected_rules is not None:
                             rules.extend(selected_rules)
             except RoomException:
-                try:
-                    logger.info("attempting to initialize rules file")
-                    await upload_room_bytes_stream(
-                        room=self.room,
-                        path=path,
-                        data="# Add rules to this file to customize your agent's behavior, lines starting with # will be ignored.\n\n".encode(),
-                        overwrite=False,
-                    )
-                except RoomException:
-                    pass
                 logger.info(
                     f"unable to load rules from {path}, continuing with default rules"
                 )
