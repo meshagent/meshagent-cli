@@ -101,7 +101,7 @@ ShellConfigMountOption = Annotated[
     list[str],
     typer.Option(
         "--shell-tool-config-mount",
-        help="Mount meshagent runtime config files into <mount>",
+        help="Mount meshagent runtime config files read-only into <mount>",
     ),
 ]
 

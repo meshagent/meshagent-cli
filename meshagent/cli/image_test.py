@@ -505,6 +505,12 @@ async def test_build_image_pack_uploads_archive_and_defaults_context_path(
             captured["build_kwargs"] = kwargs
             return "build-1"
 
+        async def load(self, *, archive_path: str):
+            captured["loaded_archive_path"] = archive_path
+            return SimpleNamespace(
+                resolved_ref="room.meshagent.com/temp/build/packs/pack-123:latest"
+            )
+
         async def pull_image(self, *, tag: str, credentials=None) -> None:
             del credentials
             captured["pulled_image"] = tag
@@ -611,6 +617,7 @@ async def test_build_image_pack_uploads_archive_and_defaults_context_path(
         "ref_name": "room.meshagent.com/temp/build/packs/pack-123:latest",
     }
     assert parse_mount_args == {}
+    assert captured["loaded_archive_path"] == temporary_pack_path
     assert captured["build_kwargs"] == {
         "tag": "room.meshagent.com/website:1",
         "mounts": [],
@@ -643,6 +650,12 @@ async def test_build_image_pack_defaults_architecture_to_amd64(
         async def build(self, **kwargs) -> str:
             captured["build_kwargs"] = kwargs
             return "build-1"
+
+        async def load(self, *, archive_path: str):
+            captured["loaded_archive_path"] = archive_path
+            return SimpleNamespace(
+                resolved_ref="room.meshagent.com/temp/build/packs/pack-123:latest"
+            )
 
     class _FakeStorage:
         async def delete(self, path: str) -> None:
@@ -723,6 +736,7 @@ async def test_build_image_pack_defaults_architecture_to_amd64(
     )
 
     assert captured["upload_kwargs"]["architecture"] == "amd64"
+    assert captured["loaded_archive_path"] == "/temp/build/packs/pack-123"
 
 
 def test_resolve_build_pack_room_path_defaults_to_repository_path() -> None:

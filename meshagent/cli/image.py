@@ -1358,8 +1358,11 @@ async def build_image(
                 ref_name=packed_ref_name,
             )
             packed_room_path = uploaded_packed_archive.remote_path
+            loaded_packed_archive = await client.containers.load(
+                archive_path=packed_room_path
+            )
             context_archive_path = packed_room_path
-            context_archive_ref = packed_ref_name
+            context_archive_ref = loaded_packed_archive.resolved_ref
             context_archive_mount_path = pack_spec.mount_path
             context_archive_arch = resolved_pack_architecture
             upload_label = (
