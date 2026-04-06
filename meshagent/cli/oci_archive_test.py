@@ -97,6 +97,42 @@ async def test_build_oci_archive_writes_oci_layout_and_respects_dockerignore(
 
 
 @pytest.mark.asyncio
+async def test_build_oci_archive_preserves_selected_build_files_when_requested(
+    tmp_path: Path,
+) -> None:
+    source_dir = tmp_path / "sample"
+    source_dir.mkdir()
+    (source_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    (source_dir / ".dockerignore").write_text("Dockerfile\n", encoding="utf-8")
+    (source_dir / "app.txt").write_text("app", encoding="utf-8")
+
+    output_path = tmp_path / "dist" / "sample.oci.tar"
+
+    packed_archive = await build_oci_archive(
+        source_dir=source_dir,
+        output_path=output_path,
+        preserved_paths=frozenset({".dockerignore", "Dockerfile"}),
+    )
+
+    with tarfile.open(packed_archive.output_path, mode="r") as archive:
+        index_json = json.loads(_read_member_bytes(archive, "index.json"))
+        manifest_descriptor = index_json["manifests"][0]
+        manifest_path = f"blobs/sha256/{manifest_descriptor['digest'].split(':', 1)[1]}"
+        manifest_json = json.loads(_read_member_bytes(archive, manifest_path))
+        layer_descriptor = manifest_json["layers"][0]
+        layer_path = f"blobs/sha256/{layer_descriptor['digest'].split(':', 1)[1]}"
+        layer_blob_bytes = _read_member_bytes(archive, layer_path)
+
+    layer_tar_bytes = _zstd_decompress(layer_blob_bytes)
+    with tarfile.open(fileobj=io.BytesIO(layer_tar_bytes), mode="r:") as layer_archive:
+        layer_names = set(layer_archive.getnames())
+
+    assert ".dockerignore" in layer_names
+    assert "Dockerfile" in layer_names
+    assert "app.txt" in layer_names
+
+
+@pytest.mark.asyncio
 async def test_build_oci_archive_appends_local_layer_to_base_image(
     tmp_path: Path,
 ) -> None:

@@ -351,6 +351,7 @@ def _should_skip_path(
     relative_path: Path,
     docker_ignore: DockerIgnore | None,
     excluded_paths: set[Path],
+    preserved_paths: frozenset[str],
     is_dir: bool,
 ) -> bool:
     if absolute_path.resolve() in excluded_paths:
@@ -361,6 +362,13 @@ def _should_skip_path(
         return True
 
     relative_posix = relative_path.as_posix()
+    if relative_posix in preserved_paths:
+        return False
+    if is_dir and any(
+        preserved_path.startswith(f"{relative_posix}/")
+        for preserved_path in preserved_paths
+    ):
+        return False
     if relative_posix == ".dockerignore":
         return True
 
@@ -401,6 +409,7 @@ def _write_layer_tar(
     source_dir: Path,
     layer_path: Path,
     excluded_paths: set[Path],
+    preserved_paths: frozenset[str],
 ) -> str:
     dockerignore_path = source_dir / ".dockerignore"
     docker_ignore = (
@@ -426,6 +435,7 @@ def _write_layer_tar(
                     relative_path=relative_path,
                     docker_ignore=docker_ignore,
                     excluded_paths=excluded_paths,
+                    preserved_paths=preserved_paths,
                     is_dir=True,
                 ):
                     continue
@@ -447,6 +457,7 @@ def _write_layer_tar(
                     relative_path=relative_path,
                     docker_ignore=docker_ignore,
                     excluded_paths=excluded_paths,
+                    preserved_paths=preserved_paths,
                     is_dir=False,
                 ):
                     continue
@@ -477,12 +488,14 @@ def _prepare_layer_blob(
     source_dir: Path,
     temp_path: Path,
     excluded_paths: set[Path],
+    preserved_paths: frozenset[str],
 ) -> _PreparedLayerBlob:
     uncompressed_layer_path = temp_path / "layer.tar"
     diff_id = _write_layer_tar(
         source_dir=source_dir,
         layer_path=uncompressed_layer_path,
         excluded_paths=excluded_paths,
+        preserved_paths=preserved_paths,
     )
 
     compressed_layer_path = temp_path / "layer.tar.zst"
@@ -532,6 +545,7 @@ async def _prepare_oci_archive_with_base(
     architecture: str,
     ref_name: str,
     base_source: BaseImageSource | None,
+    preserved_paths: frozenset[str],
 ) -> _PreparedOciArchive:
     created_at = _now_rfc3339()
     excluded_paths = {output_path.resolve()}
@@ -542,6 +556,7 @@ async def _prepare_oci_archive_with_base(
         source_dir=source_dir,
         temp_path=temp_path,
         excluded_paths=excluded_paths,
+        preserved_paths=preserved_paths,
     )
 
     if base_source is None:
@@ -704,6 +719,7 @@ async def _build_oci_archive_with_base(
     architecture: str,
     ref_name: str,
     base_source: BaseImageSource | None,
+    preserved_paths: frozenset[str],
     on_packed_archive_ready: Callable[[PackedOciArchive], Awaitable[None]]
     | None = None,
 ) -> PackedOciArchive:
@@ -713,6 +729,7 @@ async def _build_oci_archive_with_base(
         architecture=architecture,
         ref_name=ref_name,
         base_source=base_source,
+        preserved_paths=preserved_paths,
     )
     try:
         if on_packed_archive_ready is not None:
@@ -1158,6 +1175,7 @@ async def _build_oci_archive_resolved(
     architecture: str,
     ref_name: str,
     base_source: BaseImageSource | None,
+    preserved_paths: frozenset[str],
     on_packed_archive_ready: Callable[[PackedOciArchive], Awaitable[None]]
     | None = None,
 ) -> PackedOciArchive:
@@ -1169,6 +1187,7 @@ async def _build_oci_archive_resolved(
             architecture=architecture,
             ref_name=ref_name,
             base_source=base_source,
+            preserved_paths=preserved_paths,
             on_packed_archive_ready=on_packed_archive_ready,
         )
 
@@ -1180,6 +1199,7 @@ async def _build_oci_archive_resolved(
             architecture=architecture,
             ref_name=ref_name,
             base_source=base_source,
+            preserved_paths=preserved_paths,
             on_packed_archive_ready=on_packed_archive_ready,
         )
 
@@ -1195,6 +1215,7 @@ async def _build_oci_archive_resolved(
             architecture=architecture,
             ref_name=ref_name,
             base_source=resolved_base_source,
+            preserved_paths=preserved_paths,
             on_packed_archive_ready=on_packed_archive_ready,
         )
 
@@ -1207,6 +1228,7 @@ async def build_oci_archive(
     architecture: str = DEFAULT_ARCHITECTURE,
     ref_name: str | None = None,
     base_source: BaseImageSource | None = None,
+    preserved_paths: frozenset[str] | None = None,
 ) -> PackedOciArchive:
     resolved_source_dir, resolved_output_path, resolved_ref_name = (
         _resolve_build_oci_archive_inputs(
@@ -1225,6 +1247,7 @@ async def build_oci_archive(
             architecture=architecture,
             ref_name=resolved_ref_name,
             base_source=base_source,
+            preserved_paths=preserved_paths or frozenset(),
         )
 
 
@@ -1237,6 +1260,7 @@ async def build_oci_archive_to_writer(
     architecture: str = DEFAULT_ARCHITECTURE,
     ref_name: str | None = None,
     base_source: BaseImageSource | None = None,
+    preserved_paths: frozenset[str] | None = None,
     on_packed_archive_ready: Callable[[PackedOciArchive], Awaitable[None]]
     | None = None,
 ) -> PackedOciArchive:
@@ -1255,5 +1279,6 @@ async def build_oci_archive_to_writer(
         architecture=architecture,
         ref_name=resolved_ref_name,
         base_source=base_source,
+        preserved_paths=preserved_paths or frozenset(),
         on_packed_archive_ready=on_packed_archive_ready,
     )

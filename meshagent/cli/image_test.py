@@ -517,6 +517,9 @@ async def test_build_image_pack_uploads_archive_and_defaults_context_path(
             del credentials
             captured["pulled_image"] = tag
 
+        async def delete_image(self, *, image: str) -> None:
+            captured["deleted_image"] = image
+
     class _FakeStorage:
         async def delete(self, path: str) -> None:
             captured["deleted_path"] = path
@@ -618,9 +621,14 @@ async def test_build_image_pack_uploads_archive_and_defaults_context_path(
         "base_image": None,
         "architecture": "arm64",
         "ref_name": "room.meshagent.com/temp/build/packs/pack-123:latest",
+        "preserved_paths": frozenset(),
     }
     assert parse_mount_args == {}
     assert captured["loaded_archive_path"] == temporary_pack_path
+    assert (
+        captured["deleted_image"]
+        == "room.meshagent.com/temp/build/packs/pack-123:latest"
+    )
     assert captured["build_kwargs"] == {
         "tag": "room.meshagent.com/website:1",
         "mounts": [],
@@ -660,6 +668,9 @@ async def test_build_image_pack_defaults_architecture_to_amd64(
             return SimpleNamespace(
                 resolved_ref="room.meshagent.com/temp/build/packs/pack-123:latest"
             )
+
+        async def delete_image(self, *, image: str) -> None:
+            captured["deleted_image"] = image
 
     class _FakeStorage:
         async def delete(self, path: str) -> None:
@@ -741,6 +752,231 @@ async def test_build_image_pack_defaults_architecture_to_amd64(
 
     assert captured["upload_kwargs"]["architecture"] == "amd64"
     assert captured["loaded_archive_path"] == "/temp/build/packs/pack-123"
+    assert (
+        captured["deleted_image"]
+        == "room.meshagent.com/temp/build/packs/pack-123:latest"
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_image_pack_preserves_ignored_dockerfile_and_dockerignore(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    source_dir = tmp_path / "website"
+    source_dir.mkdir()
+    (source_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    (source_dir / ".dockerignore").write_text("Dockerfile\n", encoding="utf-8")
+
+    class _FakeContainers:
+        async def build(self, **kwargs) -> str:
+            captured["build_kwargs"] = kwargs
+            return "build-1"
+
+        async def load(self, *, archive_path: str):
+            del archive_path
+            return SimpleNamespace(
+                resolved_ref="room.meshagent.com/temp/build/packs/pack-123:latest"
+            )
+
+        async def delete_image(self, *, image: str) -> None:
+            del image
+
+    class _FakeStorage:
+        async def delete(self, path: str) -> None:
+            del path
+
+    class _FakeRoomClient:
+        def __init__(self) -> None:
+            self.containers = _FakeContainers()
+            self.storage = _FakeStorage()
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+
+    class _FakeAccountClient:
+        async def close(self) -> None:
+            return None
+
+    async def _fake_with_client(*, project_id, room):
+        del project_id, room
+        return _FakeAccountClient(), _FakeRoomClient()
+
+    async def _fake_stream_build_job_logs_and_wait_for_exit(
+        *,
+        client,
+        build_id: str,
+    ) -> int:
+        del client, build_id
+        return 0
+
+    async def _fake_upload_oci_archive_to_room(**kwargs) -> SimpleNamespace:
+        captured["upload_kwargs"] = kwargs
+        return SimpleNamespace(
+            packed_archive=SimpleNamespace(
+                output_path=Path("/tmp/ignored.tar"),
+                ref_name="room.meshagent.com/temp/build/packs/pack-123:latest",
+            ),
+            remote_path="/temp/build/packs/pack-123",
+        )
+
+    monkeypatch.setattr(image, "_with_client", _fake_with_client)
+    monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(
+        image,
+        "_upload_oci_archive_to_room",
+        _fake_upload_oci_archive_to_room,
+    )
+    monkeypatch.setattr(
+        image,
+        "_parse_image_operation_mounts",
+        lambda **kwargs: object(),
+    )
+    monkeypatch.setattr(image, "_parse_creds", lambda values: [])
+    monkeypatch.setattr(
+        image,
+        "_stream_build_job_logs_and_wait_for_exit",
+        _fake_stream_build_job_logs_and_wait_for_exit,
+    )
+    monkeypatch.setattr(
+        image.uuid,
+        "uuid4",
+        lambda: SimpleNamespace(hex="pack-123"),
+    )
+    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
+
+    await image.build_image(
+        project_id=None,
+        room="room-1",
+        tag="room.meshagent.com/website:1",
+        context_path=None,
+        dockerfile_path=None,
+        pack=str(source_dir),
+        pack_room_path=None,
+        mount_room_path=[],
+        mount_project_path=[],
+        mount_image=[],
+        private=False,
+        optimize=True,
+        cred=[],
+    )
+
+    assert captured["upload_kwargs"]["preserved_paths"] == frozenset(
+        {".dockerignore", "Dockerfile"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_image_pack_deletes_temporary_loaded_image_after_failed_build(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    source_dir = tmp_path / "website"
+    source_dir.mkdir()
+    (source_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+
+    class _FakeContainers:
+        async def build(self, **kwargs) -> str:
+            captured["build_kwargs"] = kwargs
+            return "build-1"
+
+        async def load(self, *, archive_path: str):
+            captured["loaded_archive_path"] = archive_path
+            return SimpleNamespace(
+                resolved_ref="room.meshagent.com/temp/build/packs/pack-123:latest"
+            )
+
+        async def delete_image(self, *, image: str) -> None:
+            captured["deleted_image"] = image
+
+    class _FakeStorage:
+        async def delete(self, path: str) -> None:
+            captured["deleted_path"] = path
+
+    class _FakeRoomClient:
+        def __init__(self) -> None:
+            self.containers = _FakeContainers()
+            self.storage = _FakeStorage()
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+
+    class _FakeAccountClient:
+        async def close(self) -> None:
+            return None
+
+    async def _fake_with_client(*, project_id, room):
+        del project_id, room
+        return _FakeAccountClient(), _FakeRoomClient()
+
+    async def _fake_stream_build_job_logs_and_wait_for_exit(
+        *,
+        client,
+        build_id: str,
+    ) -> int:
+        del client, build_id
+        return 17
+
+    async def _fake_upload_oci_archive_to_room(**kwargs) -> SimpleNamespace:
+        captured["upload_kwargs"] = kwargs
+        return SimpleNamespace(
+            packed_archive=SimpleNamespace(
+                output_path=Path("/tmp/ignored.tar"),
+                ref_name="room.meshagent.com/temp/build/packs/pack-123:latest",
+            ),
+            remote_path="/temp/build/packs/pack-123",
+        )
+
+    monkeypatch.setattr(image, "_with_client", _fake_with_client)
+    monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(
+        image,
+        "_upload_oci_archive_to_room",
+        _fake_upload_oci_archive_to_room,
+    )
+    monkeypatch.setattr(
+        image,
+        "_parse_image_operation_mounts",
+        lambda **kwargs: object(),
+    )
+    monkeypatch.setattr(image, "_parse_creds", lambda values: [])
+    monkeypatch.setattr(
+        image,
+        "_stream_build_job_logs_and_wait_for_exit",
+        _fake_stream_build_job_logs_and_wait_for_exit,
+    )
+    monkeypatch.setattr(
+        image.uuid,
+        "uuid4",
+        lambda: SimpleNamespace(hex="pack-123"),
+    )
+    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        await image.build_image(
+            project_id=None,
+            room="room-1",
+            tag="room.meshagent.com/website:1",
+            context_path=None,
+            dockerfile_path=None,
+            pack=str(source_dir),
+            pack_room_path=None,
+            mount_room_path=[],
+            mount_project_path=[],
+            mount_image=[],
+            private=False,
+            optimize=True,
+            cred=[],
+        )
+
+    assert exc_info.value.exit_code == 17
+    assert (
+        captured["deleted_image"]
+        == "room.meshagent.com/temp/build/packs/pack-123:latest"
+    )
+    assert captured["deleted_path"] == "/temp/build/packs/pack-123"
 
 
 def test_resolve_build_pack_room_path_defaults_to_repository_path() -> None:

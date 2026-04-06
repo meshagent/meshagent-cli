@@ -50,6 +50,7 @@ from meshagent.api.specs.service import (
 )
 from meshagent.cli.oci_archive import (
     DEFAULT_ARCHITECTURE,
+    DockerIgnore,
     ImagePackError,
     PackedOciArchive,
     build_oci_archive,
@@ -231,6 +232,7 @@ async def _build_oci_archive_to_streaming_output(
     base_image: str | None,
     architecture: str,
     ref_name: str | None = None,
+    preserved_paths: frozenset[str] | None = None,
     on_packed_archive_ready=None,
 ) -> PackedOciArchive:
     try:
@@ -242,6 +244,8 @@ async def _build_oci_archive_to_streaming_output(
             "architecture": architecture,
             "ref_name": ref_name,
         }
+        if preserved_paths is not None:
+            build_kwargs["preserved_paths"] = preserved_paths
         if on_packed_archive_ready is not None:
             build_kwargs["on_packed_archive_ready"] = on_packed_archive_ready
         packed_archive = await build_oci_archive_to_writer(
@@ -583,6 +587,67 @@ def _resolve_local_packed_dockerfile(
         return None
 
     return pack_spec.source_dir.expanduser().resolve().joinpath(*relative_path.parts)
+
+
+def _resolve_local_packed_path(
+    *,
+    pack_spec: _BuildPackSpec | None,
+    mounted_path: str | None,
+) -> Path | None:
+    if pack_spec is None or mounted_path is None:
+        return None
+
+    mounted_root = PurePosixPath(pack_spec.mount_path)
+    mounted_candidate = PurePosixPath(mounted_path)
+    try:
+        relative_path = mounted_candidate.relative_to(mounted_root)
+    except ValueError:
+        return None
+
+    resolved_source_dir = pack_spec.source_dir.expanduser().resolve()
+    if len(relative_path.parts) == 0:
+        return resolved_source_dir
+    return resolved_source_dir.joinpath(*relative_path.parts)
+
+
+def _preserved_packed_build_paths(
+    *,
+    pack_spec: _BuildPackSpec | None,
+    context_path: str,
+    dockerfile_path: str | None,
+) -> frozenset[str]:
+    if pack_spec is None:
+        return frozenset()
+
+    resolved_source_dir = pack_spec.source_dir.expanduser().resolve()
+    preserved_paths: set[str] = set()
+
+    local_context_path = _resolve_local_packed_path(
+        pack_spec=pack_spec,
+        mounted_path=context_path,
+    )
+    if local_context_path is not None:
+        dockerignore_path = local_context_path / ".dockerignore"
+        if dockerignore_path.is_file():
+            preserved_paths.add(
+                dockerignore_path.relative_to(resolved_source_dir).as_posix()
+            )
+
+    local_dockerfile_path = _resolve_local_packed_dockerfile(
+        pack_spec=pack_spec,
+        dockerfile_path=dockerfile_path,
+    )
+    if local_dockerfile_path is not None:
+        relative_dockerfile_path = local_dockerfile_path.relative_to(
+            resolved_source_dir
+        ).as_posix()
+        dockerignore_path = resolved_source_dir / ".dockerignore"
+        if dockerignore_path.is_file():
+            docker_ignore = DockerIgnore(dockerignore_path)
+            if docker_ignore.matches(relative_dockerfile_path):
+                preserved_paths.add(relative_dockerfile_path)
+
+    return frozenset(preserved_paths)
 
 
 def _derive_service_name(*, parsed_tag: _ParsedImageTag) -> str:
@@ -1065,6 +1130,7 @@ async def _upload_oci_archive_to_room(
     base_image: str | None,
     architecture: str,
     ref_name: str | None = None,
+    preserved_paths: frozenset[str] | None = None,
 ) -> _UploadedPackedArchive:
     archive_output = _StreamingArchiveOutput(output_path=output_path)
     with tempfile.TemporaryDirectory(prefix="meshagent-oci-upload-") as temp_dir:
@@ -1086,6 +1152,7 @@ async def _upload_oci_archive_to_room(
                 base_image=base_image,
                 architecture=architecture,
                 ref_name=ref_name,
+                preserved_paths=preserved_paths,
                 on_packed_archive_ready=_on_packed_archive_ready,
             )
         )
@@ -1328,6 +1395,11 @@ async def build_image(
         pack_spec=pack_spec,
         dockerfile_path=dockerfile_path,
     )
+    preserved_packed_build_paths = _preserved_packed_build_paths(
+        pack_spec=pack_spec,
+        context_path=context_path,
+        dockerfile_path=dockerfile_path,
+    )
     if local_packed_dockerfile is not None and not local_packed_dockerfile.is_file():
         raise typer.BadParameter(
             f"packed Dockerfile does not exist locally: {local_packed_dockerfile}"
@@ -1343,6 +1415,7 @@ async def build_image(
     context_archive_ref: str | None = None
     context_archive_mount_path: str | None = None
     context_archive_arch: str | None = None
+    loaded_packed_archive_ref: str | None = None
     try:
         if pack_spec is not None:
             _require_room_pack_tag(parsed_tag=parsed_tag)
@@ -1366,6 +1439,7 @@ async def build_image(
                 base_image=None,
                 architecture=resolved_pack_architecture,
                 ref_name=packed_ref_name,
+                preserved_paths=preserved_packed_build_paths,
             )
             packed_room_path = uploaded_packed_archive.remote_path
             loaded_packed_archive = await client.containers.load(
@@ -1373,6 +1447,7 @@ async def build_image(
             )
             context_archive_path = packed_room_path
             context_archive_ref = loaded_packed_archive.resolved_ref
+            loaded_packed_archive_ref = loaded_packed_archive.resolved_ref
             context_archive_mount_path = pack_spec.mount_path
             context_archive_arch = resolved_pack_architecture
             upload_label = (
@@ -1416,6 +1491,14 @@ async def build_image(
         if exit_code != 0:
             raise typer.Exit(code=exit_code)
     finally:
+        if loaded_packed_archive_ref is not None:
+            try:
+                await client.containers.delete_image(image=loaded_packed_archive_ref)
+            except Exception as exc:
+                print(
+                    "[yellow]Unable to delete temporary packed build image:[/yellow] "
+                    f"{loaded_packed_archive_ref} ({exc})"
+                )
         if should_delete_packed_room_path and packed_room_path is not None:
             try:
                 await client.storage.delete(path=packed_room_path)
