@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -101,6 +102,20 @@ class _FakeLoadClient:
 class _FakeAccountClient:
     def __init__(self) -> None:
         self.close_calls = 0
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+class _FakeConnectAccountClient:
+    def __init__(self, *, connection: SimpleNamespace) -> None:
+        self._connection = connection
+        self.close_calls = 0
+        self.connect_calls: list[dict[str, str]] = []
+
+    async def connect_room(self, *, project_id: str, room: str) -> SimpleNamespace:
+        self.connect_calls.append({"project_id": project_id, "room": room})
+        return self._connection
 
     async def close(self) -> None:
         self.close_calls += 1
@@ -243,3 +258,61 @@ async def test_images_load_uses_room_storage_load_path(
         capsys.readouterr().out
         == "Image loaded: room.meshagent.com/images/example.tar:latest\n"
     )
+
+
+@pytest.mark.asyncio
+async def test_with_client_uses_room_url_from_connection_info(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = SimpleNamespace(
+        jwt="jwt-token",
+        room_url="wss://room-router.meshagent.dev/custom/room-endpoint",
+    )
+    account_client = _FakeConnectAccountClient(connection=connection)
+    protocol_calls: list[dict[str, str]] = []
+
+    class _FakeProtocol:
+        def __init__(self, *, url: str, token: str) -> None:
+            protocol_calls.append({"url": url, "token": token})
+            self.url = url
+            self.token = token
+
+    class _FakeRoomClient:
+        def __init__(self, *, protocol: _FakeProtocol) -> None:
+            self.protocol = protocol
+            self.enter_calls = 0
+
+        async def __aenter__(self) -> "_FakeRoomClient":
+            self.enter_calls += 1
+            return self
+
+    async def _fake_get_client() -> _FakeConnectAccountClient:
+        return account_client
+
+    async def _fake_resolve_project_id(*, project_id):
+        assert project_id == "project-1"
+        return "resolved-project"
+
+    monkeypatch.setattr(containers, "get_client", _fake_get_client)
+    monkeypatch.setattr(containers, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(containers, "resolve_room", lambda room: f"{room}-resolved")
+    monkeypatch.setattr(containers, "WebSocketClientProtocol", _FakeProtocol)
+    monkeypatch.setattr(containers, "RoomClient", _FakeRoomClient)
+
+    returned_account_client, client = await containers._with_client(
+        project_id="project-1",
+        room="room-1",
+    )
+
+    assert returned_account_client is account_client
+    assert account_client.connect_calls == [
+        {"project_id": "resolved-project", "room": "room-1-resolved"}
+    ]
+    assert protocol_calls == [
+        {
+            "url": "wss://room-router.meshagent.dev/custom/room-endpoint",
+            "token": "jwt-token",
+        }
+    ]
+    assert isinstance(client, _FakeRoomClient)
+    assert client.enter_calls == 1

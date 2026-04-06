@@ -6,6 +6,7 @@ import pytest
 import typer
 
 from meshagent.api import ApiScope
+from meshagent.api.room_ports import ROOM_INTERNAL_API_PORT
 from meshagent.cli import image
 from meshagent.api.specs.service import (
     ContainerMountSpec,
@@ -1010,6 +1011,43 @@ def test_build_pack_ref_name_uses_room_storage_path_latest() -> None:
     )
 
 
+def test_infer_deploy_ports_from_packed_dockerfile_reads_expose_lines(
+    tmp_path: Path,
+) -> None:
+    dockerfile_path = tmp_path / "Dockerfile"
+    dockerfile_path.write_text(
+        "FROM node:22-alpine\nEXPOSE 8080\nEXPOSE 8443/tcp 5353/udp \\\n  9000\n",
+        encoding="utf-8",
+    )
+
+    ports = image._infer_deploy_ports_from_packed_dockerfile(
+        local_packed_dockerfile=dockerfile_path
+    )
+
+    assert ports is not None
+    assert [port.num for port in ports] == [8080, 8443, 9000]
+    assert [port.type for port in ports] == ["http", "http", "http"]
+    assert [port.published for port in ports] == [True, True, True]
+
+
+def test_infer_deploy_ports_from_packed_dockerfile_rejects_reserved_port(
+    tmp_path: Path,
+) -> None:
+    dockerfile_path = tmp_path / "Dockerfile"
+    dockerfile_path.write_text(
+        f"FROM node:22-alpine\nEXPOSE {ROOM_INTERNAL_API_PORT}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        typer.BadParameter,
+        match="reserved MeshAgent room infrastructure port",
+    ):
+        image._infer_deploy_ports_from_packed_dockerfile(
+            local_packed_dockerfile=dockerfile_path
+        )
+
+
 @pytest.mark.asyncio
 async def test_build_image_defaults_context_path_from_mount_room_path(
     monkeypatch: pytest.MonkeyPatch,
@@ -1369,7 +1407,7 @@ async def test_deploy_image_creates_room_service_with_mounts_env_and_token(
         image_mount=["busybox=/opt/base:rw"],
         env=["FOO=bar"],
         env_token="agentDefault",
-        private=None,
+        private=True,
     )
 
     created_service = captured["created_service"]
@@ -1408,6 +1446,265 @@ async def test_deploy_image_creates_room_service_with_mounts_env_and_token(
     assert "restarted_service_id" not in captured
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_deploy_image_pack_builds_before_deploying(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {"events": []}
+    source_dir = tmp_path / "website"
+    source_dir.mkdir()
+    (source_dir / "Dockerfile").write_text(
+        "FROM scratch\nEXPOSE 8080\n",
+        encoding="utf-8",
+    )
+
+    async def _fake_run_image_build_stage(**kwargs) -> None:
+        captured["build_kwargs"] = kwargs
+        captured["events"].append("build")
+
+    class _FakeRoomClient:
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+            captured["room_client_closed"] = True
+
+    class _FakeAccountClient:
+        async def list_room_services(self, *, project_id: str, room_name: str):
+            captured.setdefault("list_room_services", []).append(
+                (project_id, room_name)
+            )
+            return []
+
+        async def create_room_service(
+            self, *, project_id: str, room_name: str, service
+        ):
+            captured["events"].append("create")
+            captured["created_service"] = (project_id, room_name, service)
+            return "service-1"
+
+        async def close(self) -> None:
+            captured["account_client_closed"] = True
+
+    async def _fake_with_client(*, project_id, room):
+        captured["project_id"] = project_id
+        captured["room"] = room
+        return _FakeAccountClient(), _FakeRoomClient()
+
+    async def _fake_resolve_project_id(*, project_id):
+        del project_id
+        return "project-1"
+
+    monkeypatch.setattr(image, "_run_image_build_stage", _fake_run_image_build_stage)
+    monkeypatch.setattr(image, "_with_client", _fake_with_client)
+    monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
+
+    await image.deploy_image(
+        project_id="project-1",
+        room="room-1",
+        tag="room.meshagent.com/repo/web:1",
+        pack=str(source_dir),
+        context_path="/context",
+        dockerfile_path="/context/Dockerfile",
+        arch="arm64",
+        pack_room_path="/packed/context",
+        optimize=False,
+        domain=None,
+        room_mount=[],
+        project_mount=[],
+        empty_dir_mount=[],
+        image_mount=[],
+        env=[],
+        env_token=None,
+    )
+
+    build_kwargs = captured["build_kwargs"]
+    assert build_kwargs["resolved_project_id"] == "project-1"
+    assert build_kwargs["resolved_room"] == "room-1"
+    assert build_kwargs["parsed_tag"].value == "room.meshagent.com/repo/web:1"
+    assert build_kwargs["context_path"] == "/context"
+    assert build_kwargs["dockerfile_path"] == "/context/Dockerfile"
+    assert build_kwargs["pack"] == str(source_dir)
+    assert build_kwargs["arch"] == "arm64"
+    assert build_kwargs["pack_room_path"] == "/packed/context"
+    assert build_kwargs["mount_room_path"] == []
+    assert build_kwargs["mount_project_path"] == []
+    assert build_kwargs["mount_image"] == []
+    assert build_kwargs["private"] is False
+    assert build_kwargs["optimize"] is False
+    assert build_kwargs["cred"] == []
+    assert captured["events"] == ["build", "create"]
+    created_service = captured["created_service"]
+    assert isinstance(created_service, tuple)
+    service_spec = created_service[2]
+    assert service_spec.container is not None
+    assert service_spec.container.image == "room.meshagent.com/repo/web:1"
+    assert service_spec.metadata.annotations is not None
+    assert (
+        service_spec.metadata.annotations[image.ANNOTATION_REQUEST_VALIDATION_METHOD]
+        == "cookie"
+    )
+    assert service_spec.ports is not None
+    assert service_spec.ports[0].num == 8080
+    assert service_spec.ports[0].published is True
+    assert service_spec.ports[0].public is None
+    assert service_spec.ports[0].annotations == {
+        image.ANNOTATION_REQUEST_VALIDATION_METHOD: "cookie"
+    }
+    assert captured["room_client_closed"] is True
+    assert captured["account_client_closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    source_dir = tmp_path / "website"
+    source_dir.mkdir()
+    (source_dir / "Dockerfile").write_text(
+        "FROM node:22-alpine\nEXPOSE 8080\n",
+        encoding="utf-8",
+    )
+
+    async def _fake_run_image_build_stage(**kwargs) -> None:
+        captured["build_kwargs"] = kwargs
+
+    class _FakeRoomClient:
+        def __init__(self) -> None:
+            self.services = SimpleNamespace(restart=self._restart)
+
+        async def _restart(self, *, service_id: str) -> None:
+            captured["restarted_service_id"] = service_id
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+            captured["room_client_closed"] = True
+
+    class _FakeAccountClient:
+        async def list_room_services(self, *, project_id: str, room_name: str):
+            captured.setdefault("list_room_services", []).append(
+                (project_id, room_name)
+            )
+            return []
+
+        async def create_room_service(
+            self, *, project_id: str, room_name: str, service
+        ):
+            captured["created_service"] = (project_id, room_name, service)
+            return "service-1"
+
+        async def create_route(
+            self,
+            *,
+            project_id: str,
+            domain: str,
+            room_name: str,
+            port: str,
+            annotations: dict[str, str] | None = None,
+        ) -> None:
+            captured["created_route"] = (
+                project_id,
+                domain,
+                room_name,
+                port,
+                annotations,
+            )
+
+        async def close(self) -> None:
+            captured["account_client_closed"] = True
+
+    async def _fake_with_client(*, project_id, room):
+        captured["project_id"] = project_id
+        captured["room"] = room
+        return _FakeAccountClient(), _FakeRoomClient()
+
+    async def _fake_resolve_project_id(*, project_id):
+        del project_id
+        return "project-1"
+
+    monkeypatch.setattr(image, "_run_image_build_stage", _fake_run_image_build_stage)
+    monkeypatch.setattr(image, "_with_client", _fake_with_client)
+    monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
+
+    await image.deploy_image(
+        project_id="project-1",
+        room="room-1",
+        tag="room.meshagent.com/repo/web:1",
+        pack=str(source_dir),
+        context_path="/context",
+        dockerfile_path="/context/Dockerfile",
+        arch="amd64",
+        pack_room_path=None,
+        optimize=True,
+        domain="node.meshagent.dev",
+        room_mount=[],
+        project_mount=[],
+        empty_dir_mount=[],
+        image_mount=[],
+        env=[],
+        env_token=None,
+    )
+
+    created_service = captured["created_service"]
+    assert isinstance(created_service, tuple)
+    service_spec = created_service[2]
+    assert service_spec.ports is not None
+    assert len(service_spec.ports) == 1
+    assert service_spec.ports[0].num == 8080
+    assert service_spec.ports[0].published is True
+    assert service_spec.ports[0].public is None
+    assert service_spec.metadata.annotations is not None
+    assert (
+        service_spec.metadata.annotations[image.ANNOTATION_REQUEST_VALIDATION_METHOD]
+        == "cookie"
+    )
+    assert service_spec.ports[0].annotations == {
+        image.ANNOTATION_REQUEST_VALIDATION_METHOD: "cookie"
+    }
+    assert captured["created_route"] == (
+        "project-1",
+        "node.meshagent.dev",
+        "room-1",
+        "8080",
+        {image.ANNOTATION_SERVICE_ID: "repo-web"},
+    )
+    assert "restarted_service_id" not in captured
+    assert captured["room_client_closed"] is True
+    assert captured["account_client_closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_deploy_image_build_options_require_pack() -> None:
+    with pytest.raises(
+        typer.BadParameter,
+        match="--context-path requires --pack",
+    ):
+        await image.deploy_image(
+            project_id="project-1",
+            room="room-1",
+            tag="repo/web:1",
+            pack=None,
+            context_path="/context",
+            dockerfile_path=None,
+            arch=image.DEFAULT_ARCHITECTURE,
+            pack_room_path=None,
+            optimize=True,
+            domain=None,
+            room_mount=[],
+            project_mount=[],
+            empty_dir_mount=[],
+            image_mount=[],
+            env=[],
+            env_token=None,
+            private=True,
+        )
 
 
 @pytest.mark.asyncio
@@ -1832,7 +2129,7 @@ async def test_deploy_image_domain_requires_exactly_one_published_port(
             image_mount=[],
             env=[],
             env_token=None,
-            private=None,
+            private=True,
         )
 
     assert "update_room_service_called" not in captured
