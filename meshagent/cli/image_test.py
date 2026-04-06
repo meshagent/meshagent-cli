@@ -461,6 +461,7 @@ async def test_build_image_starts_room_build_and_waits_for_exit(
         mount_project_path=[],
         mount_image=[],
         private=True,
+        optimize=True,
         cred=["registry,user,password"],
     )
 
@@ -476,6 +477,7 @@ async def test_build_image_starts_room_build_and_waits_for_exit(
         "mounts": [mount_spec],
         "context_path": "/workspace",
         "dockerfile_path": "/workspace/Dockerfile",
+        "optimize_image": True,
         "private": True,
         "credentials": credentials,
         "context_archive_path": None,
@@ -602,6 +604,7 @@ async def test_build_image_pack_uploads_archive_and_defaults_context_path(
         mount_project_path=[],
         mount_image=[],
         private=False,
+        optimize=True,
         cred=[],
     )
 
@@ -623,6 +626,7 @@ async def test_build_image_pack_uploads_archive_and_defaults_context_path(
         "mounts": [],
         "context_path": "/context",
         "dockerfile_path": "/context/Dockerfile",
+        "optimize_image": True,
         "private": False,
         "credentials": [],
         "context_archive_path": temporary_pack_path,
@@ -836,6 +840,7 @@ async def test_build_image_defaults_context_path_from_mount_room_path(
         mount_project_path=[],
         mount_image=[],
         private=False,
+        optimize=True,
         cred=[],
     )
 
@@ -849,6 +854,81 @@ async def test_build_image_defaults_context_path_from_mount_room_path(
         "mounts": [mount_spec],
         "context_path": "/context",
         "dockerfile_path": None,
+        "optimize_image": True,
+        "private": False,
+        "credentials": [],
+        "context_archive_path": None,
+        "context_archive_ref": None,
+        "context_archive_mount_path": None,
+        "context_archive_arch": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_build_image_can_disable_room_image_optimization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeContainers:
+        async def build(self, **kwargs) -> str:
+            captured["build_kwargs"] = kwargs
+            return "build-1"
+
+    class _FakeRoomClient:
+        def __init__(self) -> None:
+            self.containers = _FakeContainers()
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+
+    class _FakeAccountClient:
+        async def close(self) -> None:
+            return None
+
+    async def _fake_with_client(*, project_id, room):
+        del project_id, room
+        return _FakeAccountClient(), _FakeRoomClient()
+
+    async def _fake_stream_build_job_logs_and_wait_for_exit(
+        *,
+        client,
+        build_id: str,
+    ) -> int:
+        del client, build_id
+        return 0
+
+    monkeypatch.setattr(image, "_with_client", _fake_with_client)
+    monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(image, "_parse_creds", lambda values: [])
+    monkeypatch.setattr(
+        image,
+        "_stream_build_job_logs_and_wait_for_exit",
+        _fake_stream_build_job_logs_and_wait_for_exit,
+    )
+
+    await image.build_image(
+        project_id=None,
+        room="room-1",
+        tag="room.meshagent.com/website:1",
+        context_path="/context",
+        dockerfile_path="/context/Dockerfile",
+        pack=None,
+        pack_room_path=None,
+        mount_room_path=[],
+        mount_project_path=[],
+        mount_image=[],
+        private=False,
+        optimize=False,
+        cred=[],
+    )
+
+    assert captured["build_kwargs"] == {
+        "tag": "room.meshagent.com/website:1",
+        "mounts": [],
+        "context_path": "/context",
+        "dockerfile_path": "/context/Dockerfile",
+        "optimize_image": False,
         "private": False,
         "credentials": [],
         "context_archive_path": None,

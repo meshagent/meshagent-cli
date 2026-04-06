@@ -1267,6 +1267,16 @@ async def build_image(
             help="Whether the build container is private to the participant",
         ),
     ] = False,
+    optimize: Annotated[
+        bool,
+        typer.Option(
+            "--optimize/--no-optimize",
+            help=(
+                "Whether to optimize room image outputs to eStargz before publishing. "
+                "Enabled by default."
+            ),
+        ),
+    ] = True,
     cred: Annotated[
         list[str],
         typer.Option(
@@ -1392,6 +1402,7 @@ async def build_image(
             mounts=mounts,
             context_path=context_path,
             dockerfile_path=dockerfile_path,
+            optimize_image=optimize,
             private=private,
             credentials=_parse_creds(cred),
             context_archive_path=context_archive_path,
