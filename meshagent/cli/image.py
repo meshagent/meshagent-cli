@@ -840,6 +840,18 @@ def _parse_environment_variables(*, values: list[str]) -> list[EnvironmentVariab
     return environment
 
 
+def _normalize_deploy_liveness(*, liveness: str | None) -> str | None:
+    if liveness is None:
+        return None
+
+    normalized_liveness = liveness.strip()
+    if normalized_liveness == "":
+        raise typer.BadParameter("--liveness cannot be empty")
+    if not normalized_liveness.startswith("/"):
+        raise typer.BadParameter("--liveness must start with '/'")
+    return normalized_liveness
+
+
 def _parse_env_token_scope(*, value: str) -> ApiScope:
     cleaned = value.strip()
     if cleaned == "":
@@ -1042,6 +1054,7 @@ def _build_deploy_service_spec(
     existing_service: ServiceSpec | None,
     parsed_tag: _ParsedImageTag,
     public: bool,
+    liveness: str | None,
     environment: list[EnvironmentVariable] | None = None,
     storage: ContainerMountSpec | None = None,
     default_ports: list[PortSpec] | None = None,
@@ -1097,7 +1110,14 @@ def _build_deploy_service_spec(
             ports=ports,
             source=_build_reserved_port_error_source(existing_service=existing_service),
         )
-        ports = [_update_deploy_port(port=port, public=public) for port in ports]
+        ports = [
+            _update_deploy_port(
+                port=port,
+                public=public,
+                liveness=liveness,
+            )
+            for port in ports
+        ]
 
     spec = (
         existing_service.model_copy(
@@ -1139,15 +1159,27 @@ def _update_request_validation_annotations(
     return updated_annotations
 
 
-def _update_deploy_port(*, port: PortSpec, public: bool) -> PortSpec:
-    if not port.published:
-        return port.model_copy(deep=True)
+def _update_deploy_port(
+    *,
+    port: PortSpec,
+    public: bool,
+    liveness: str | None,
+) -> PortSpec:
+    updated_port = port.model_copy(deep=True)
+    if updated_port.type != "tcp":
+        if liveness is not None:
+            updated_port = updated_port.model_copy(update={"liveness": liveness})
+        elif updated_port.liveness is None:
+            updated_port = updated_port.model_copy(update={"liveness": "/"})
+
+    if not updated_port.published:
+        return updated_port
 
     annotations = _update_request_validation_annotations(
-        annotations=dict(port.annotations or {}),
+        annotations=dict(updated_port.annotations or {}),
         public=public,
     )
-    return port.model_copy(
+    return updated_port.model_copy(
         update={
             "public": True if public else None,
             "annotations": annotations or None,
@@ -1813,6 +1845,16 @@ async def deploy_image(
             ),
         ),
     ] = None,
+    liveness: Annotated[
+        Optional[str],
+        typer.Option(
+            "--liveness",
+            help=(
+                "HTTP path to use for service liveness checks. Defaults to / for "
+                "new or missing HTTP liveness paths."
+            ),
+        ),
+    ] = None,
     room_mount: Annotated[
         list[str],
         typer.Option(
@@ -1897,6 +1939,7 @@ async def deploy_image(
         domain = domain.strip()
         if domain == "":
             raise typer.BadParameter("--domain cannot be empty")
+    normalized_liveness = _normalize_deploy_liveness(liveness=liveness)
 
     resolved_project_id = await resolve_project_id(project_id=project_id)
     packed_default_ports: list[PortSpec] | None = None
@@ -1962,6 +2005,7 @@ async def deploy_image(
             existing_service=existing_service,
             parsed_tag=parsed_tag,
             public=not private,
+            liveness=normalized_liveness,
             environment=environment,
             storage=storage,
             default_ports=packed_default_ports,
