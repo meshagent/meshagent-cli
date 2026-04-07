@@ -116,6 +116,7 @@ app.add_lazy_command(
     name="helper",
     module="meshagent.cli.helpers",
     help="Developer helper services",
+    hidden=True,
 )
 app.add_lazy_command(
     name="helpers",

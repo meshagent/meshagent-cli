@@ -76,3 +76,9 @@ app.add_lazy_command(
     module="meshagent.cli.sync",
     help="Inspect and update mesh documents in a room",
 )
+app.add_lazy_command(
+    name="connect",
+    module="meshagent.cli.room_connect",
+    attribute="connect_command",
+    help="Connect to a room and run a local command with room auth env",
+)
