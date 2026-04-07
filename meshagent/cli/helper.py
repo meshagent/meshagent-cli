@@ -43,7 +43,7 @@ import json
 from rich import print
 
 SETTINGS_FILE = Path.home() / ".meshagent" / "project.json"
-DEFAULT_SHELL_IMAGE = "python:3.13"
+DEFAULT_SHELL_IMAGE = "meshagent/python:default"
 
 
 def _ensure_cache_dir():

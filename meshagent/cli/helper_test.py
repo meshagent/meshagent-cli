@@ -34,9 +34,9 @@ def test_parse_memory_selector_with_namespace() -> None:
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        (None, "python:3.13"),
-        ("", "python:3.13"),
-        ("  ", "python:3.13"),
+        (None, DEFAULT_SHELL_IMAGE),
+        ("", DEFAULT_SHELL_IMAGE),
+        ("  ", DEFAULT_SHELL_IMAGE),
         ("python:3.12", "python:3.12"),
         (" none ", None),
         ("NONE", None),

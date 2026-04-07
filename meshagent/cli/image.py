@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import posixpath
 import queue
 import re
@@ -10,7 +11,7 @@ import tempfile
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Optional
 
@@ -34,6 +35,13 @@ from meshagent.cli.helper import (
 )
 from meshagent.api import ApiScope, RoomClient
 from meshagent.api.client import ConflictError
+from meshagent.api.image_runtime import (
+    IMAGE_RUNTIME_BASES,
+    IMAGE_RUNTIME_LABEL,
+    IMAGE_RUNTIME_MOUNT_PATH,
+    IMAGE_RUNTIME_MOUNT_SUBPATH,
+    ImageRuntimeDefinition,
+)
 from meshagent.api.room_ports import RESERVED_ROOM_SERVICE_PORTS
 from meshagent.api.specs.service import (
     ANNOTATION_REQUEST_VALIDATION_METHOD,
@@ -136,6 +144,25 @@ class _ResolvedBuildStageInputs:
     pack_spec: _BuildPackSpec | None
     local_packed_dockerfile: Path | None
     preserved_packed_build_paths: frozenset[str]
+
+
+@dataclass(frozen=True)
+class _PackedDockerfileMetadata:
+    exposed_ports: tuple[int, ...] = ()
+    labels: dict[str, str] = field(default_factory=dict)
+    entrypoint: tuple[str, ...] | None = None
+    command: tuple[str, ...] | None = None
+    environment: tuple[tuple[str, str], ...] = ()
+    working_dir: str | None = None
+
+
+@dataclass(frozen=True)
+class _RuntimeContainerOverride:
+    image: str
+    command: str
+    working_dir: str
+    image_mount: ImageStorageMountSpec
+    default_environment: tuple[EnvironmentVariable, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -696,21 +723,23 @@ def _resolve_build_stage_inputs(
     )
 
 
-def _infer_deploy_ports_from_packed_dockerfile(
-    *,
-    local_packed_dockerfile: Path | None,
-) -> list[PortSpec] | None:
+def _read_packed_dockerfile_text(*, local_packed_dockerfile: Path | None) -> str | None:
     if local_packed_dockerfile is None:
         return None
 
     try:
-        dockerfile_text = local_packed_dockerfile.read_text(encoding="utf-8")
+        return local_packed_dockerfile.read_text(encoding="utf-8")
     except OSError as exc:
         raise typer.BadParameter(
-            f"unable to read packed Dockerfile for port inference: {local_packed_dockerfile} ({exc})"
+            "unable to read packed Dockerfile metadata: "
+            f"{local_packed_dockerfile} ({exc})"
         ) from exc
 
-    exposed_ports: list[int] = []
+
+def _iter_dockerfile_instruction_lines(
+    *, dockerfile_text: str
+) -> list[tuple[str, str]]:
+    instructions: list[tuple[str, str]] = []
     logical_line_parts: list[str] = []
     for raw_line in dockerfile_text.splitlines():
         stripped_line = raw_line.strip()
@@ -733,21 +762,163 @@ def _infer_deploy_ports_from_packed_dockerfile(
             continue
 
         instruction, _, args = logical_line.partition(" ")
-        if instruction.upper() != "EXPOSE":
+        instructions.append((instruction.upper(), args.strip()))
+    return instructions
+
+
+def _parse_dockerfile_assignment_args(*, args: str) -> list[tuple[str, str]]:
+    tokens = shlex.split(args, comments=False, posix=True)
+    if len(tokens) == 2 and "=" not in tokens[0]:
+        key = tokens[0].strip()
+        if key == "":
+            return []
+        return [(key, tokens[1])]
+
+    pairs: list[tuple[str, str]] = []
+    for token in tokens:
+        key, separator, value = token.partition("=")
+        if separator == "" or key.strip() == "":
+            continue
+        pairs.append((key.strip(), value))
+    return pairs
+
+
+def _parse_dockerfile_command_tokens(*, args: str) -> tuple[str, ...] | None:
+    stripped_args = args.strip()
+    if stripped_args == "":
+        return None
+    if stripped_args.startswith("["):
+        try:
+            parsed_args = json.loads(stripped_args)
+        except json.JSONDecodeError:
+            parsed_args = None
+        if isinstance(parsed_args, list) and all(
+            isinstance(value, str) for value in parsed_args
+        ):
+            return tuple(parsed_args)
+    tokens = tuple(shlex.split(stripped_args, comments=False, posix=True))
+    return tokens or None
+
+
+def _parse_dockerfile_workdir(
+    *,
+    args: str,
+    current_working_dir: str | None,
+) -> str | None:
+    tokens = shlex.split(args, comments=False, posix=True)
+    if len(tokens) == 0:
+        return current_working_dir
+
+    next_working_dir = tokens[0]
+    if next_working_dir.startswith("/"):
+        return posixpath.normpath(next_working_dir)
+
+    base_working_dir = current_working_dir or "/"
+    return posixpath.normpath(posixpath.join(base_working_dir, next_working_dir))
+
+
+def _parse_packed_dockerfile_metadata(
+    *,
+    local_packed_dockerfile: Path | None,
+) -> _PackedDockerfileMetadata | None:
+    dockerfile_text = _read_packed_dockerfile_text(
+        local_packed_dockerfile=local_packed_dockerfile
+    )
+    if dockerfile_text is None:
+        return None
+
+    exposed_ports: list[int] = []
+    labels: dict[str, str] = {}
+    entrypoint: tuple[str, ...] | None = None
+    command: tuple[str, ...] | None = None
+    environment: dict[str, str] = {}
+    working_dir: str | None = None
+    saw_from = False
+
+    for instruction, args in _iter_dockerfile_instruction_lines(
+        dockerfile_text=dockerfile_text
+    ):
+        if instruction == "FROM":
+            saw_from = True
+            exposed_ports = []
+            labels = {}
+            entrypoint = None
+            command = None
+            environment = {}
+            working_dir = None
             continue
 
-        for token in shlex.split(args, comments=False, posix=True):
-            port_text, _, protocol = token.partition("/")
-            if protocol != "" and protocol.lower() == "udp":
-                continue
-            if not port_text.isdigit():
-                continue
-            port = int(port_text)
-            if port < 1 or port > 65535 or port in exposed_ports:
-                continue
-            exposed_ports.append(port)
+        if not saw_from:
+            continue
 
-    if len(exposed_ports) == 0:
+        if instruction == "EXPOSE":
+            for token in shlex.split(args, comments=False, posix=True):
+                port_text, _, protocol = token.partition("/")
+                if protocol != "" and protocol.lower() == "udp":
+                    continue
+                if not port_text.isdigit():
+                    continue
+                port = int(port_text)
+                if port < 1 or port > 65535 or port in exposed_ports:
+                    continue
+                exposed_ports.append(port)
+            continue
+
+        if instruction == "LABEL":
+            for key, value in _parse_dockerfile_assignment_args(args=args):
+                labels[key] = value
+            continue
+
+        if instruction == "ENV":
+            for key, value in _parse_dockerfile_assignment_args(args=args):
+                environment[key] = value
+            continue
+
+        if instruction == "WORKDIR":
+            working_dir = _parse_dockerfile_workdir(
+                args=args,
+                current_working_dir=working_dir,
+            )
+            continue
+
+        if instruction == "ENTRYPOINT":
+            entrypoint = _parse_dockerfile_command_tokens(args=args)
+            continue
+
+        if instruction == "CMD":
+            command = _parse_dockerfile_command_tokens(args=args)
+            continue
+
+    return _PackedDockerfileMetadata(
+        exposed_ports=tuple(exposed_ports),
+        labels=labels,
+        entrypoint=entrypoint,
+        command=command,
+        environment=tuple(environment.items()),
+        working_dir=working_dir,
+    )
+
+
+def _infer_deploy_ports_from_packed_dockerfile(
+    *,
+    local_packed_dockerfile: Path | None,
+) -> list[PortSpec] | None:
+    dockerfile_metadata = _parse_packed_dockerfile_metadata(
+        local_packed_dockerfile=local_packed_dockerfile
+    )
+    return _infer_deploy_ports_from_packed_dockerfile_metadata(
+        dockerfile_metadata=dockerfile_metadata
+    )
+
+
+def _infer_deploy_ports_from_packed_dockerfile_metadata(
+    *,
+    dockerfile_metadata: _PackedDockerfileMetadata | None,
+) -> list[PortSpec] | None:
+    if dockerfile_metadata is None:
+        return None
+
+    if len(dockerfile_metadata.exposed_ports) == 0:
         return None
 
     try:
@@ -757,13 +928,93 @@ def _infer_deploy_ports_from_packed_dockerfile(
                 type="http",
                 published=True,
             )
-            for port in exposed_ports
+            for port in dockerfile_metadata.exposed_ports
         ]
     except ValidationError as exc:
         raise typer.BadParameter(
             "packed Dockerfile exposed a reserved MeshAgent room infrastructure "
             f"port; reserved ports: {_RESERVED_ROOM_SERVICE_PORTS_TEXT}"
         ) from exc
+
+
+def _command_has_runtime_launcher(
+    *,
+    command_tokens: tuple[str, ...],
+    runtime: ImageRuntimeDefinition,
+) -> bool:
+    if len(command_tokens) == 0 or len(runtime.launcher) == 0:
+        return False
+    if len(command_tokens) < len(runtime.launcher):
+        return False
+
+    first_token = PurePosixPath(command_tokens[0]).name
+    expected_first_token = PurePosixPath(runtime.launcher[0]).name
+    if first_token != expected_first_token:
+        return False
+
+    return command_tokens[1 : len(runtime.launcher)] == runtime.launcher[1:]
+
+
+def _format_service_command(*, command_tokens: tuple[str, ...]) -> str:
+    return " ".join(shlex.quote(token) for token in command_tokens)
+
+
+def _resolve_runtime_container_override(
+    *,
+    parsed_tag: _ParsedImageTag,
+    dockerfile_metadata: _PackedDockerfileMetadata | None,
+) -> _RuntimeContainerOverride | None:
+    if dockerfile_metadata is None:
+        return None
+
+    runtime_label = dockerfile_metadata.labels.get(IMAGE_RUNTIME_LABEL)
+    if runtime_label is None:
+        return None
+
+    runtime = IMAGE_RUNTIME_BASES.get(runtime_label.strip().lower())
+    if runtime is None:
+        return None
+
+    startup_command = dockerfile_metadata.entrypoint
+    command_arguments: tuple[str, ...] = ()
+    if startup_command is None:
+        startup_command = dockerfile_metadata.command
+    elif dockerfile_metadata.command is not None:
+        command_arguments = dockerfile_metadata.command
+
+    if startup_command is None:
+        raise typer.BadParameter(
+            "packed Dockerfile final stage uses "
+            f"{IMAGE_RUNTIME_LABEL}={runtime.name} but does not define "
+            "CMD or ENTRYPOINT"
+        )
+
+    if _command_has_runtime_launcher(
+        command_tokens=startup_command,
+        runtime=runtime,
+    ):
+        command_tokens = startup_command + command_arguments
+    else:
+        command_tokens = runtime.launcher + startup_command + command_arguments
+
+    default_environment = tuple(
+        EnvironmentVariable(name=name, value=value)
+        for name, value in dockerfile_metadata.environment
+    )
+    working_dir = dockerfile_metadata.working_dir or IMAGE_RUNTIME_MOUNT_PATH
+
+    return _RuntimeContainerOverride(
+        image=runtime.base_image,
+        command=_format_service_command(command_tokens=command_tokens),
+        working_dir=working_dir,
+        image_mount=ImageStorageMountSpec(
+            image=parsed_tag.value,
+            path=IMAGE_RUNTIME_MOUNT_PATH,
+            subpath=IMAGE_RUNTIME_MOUNT_SUBPATH,
+            read_only=True,
+        ),
+        default_environment=default_environment,
+    )
 
 
 def _validate_deploy_ports(*, ports: list[PortSpec], source: str) -> None:
@@ -907,14 +1158,21 @@ def _resolve_meshagent_token_value(
 
 def _merge_deploy_environment(
     *,
+    default_environment: list[EnvironmentVariable] | None,
     existing_environment: list[EnvironmentVariable] | None,
     parsed_environment: list[EnvironmentVariable],
     env_token_scope: ApiScope | None,
     token_identity: str,
 ) -> list[EnvironmentVariable] | None:
     environment = [
-        env_var.model_copy(deep=True) for env_var in (existing_environment or [])
+        env_var.model_copy(deep=True) for env_var in (default_environment or [])
     ]
+
+    for env_var in existing_environment or []:
+        _upsert_environment_variable(
+            environment=environment,
+            env_var=env_var.model_copy(deep=True),
+        )
 
     for env_var in parsed_environment:
         _upsert_environment_variable(
@@ -936,6 +1194,55 @@ def _merge_deploy_environment(
         )
 
     return environment or None
+
+
+def _apply_runtime_image_mount(
+    *,
+    storage: ContainerMountSpec | None,
+    runtime_image_mount: ImageStorageMountSpec,
+) -> ContainerMountSpec:
+    if storage is not None:
+        for room_mount in storage.room or []:
+            if room_mount.path == runtime_image_mount.path:
+                raise typer.BadParameter(
+                    "packed Dockerfile runtime injection requires "
+                    f"{runtime_image_mount.path} to be free of room mounts"
+                )
+        for project_mount in storage.project or []:
+            if project_mount.path == runtime_image_mount.path:
+                raise typer.BadParameter(
+                    "packed Dockerfile runtime injection requires "
+                    f"{runtime_image_mount.path} to be free of project mounts"
+                )
+        for file_mount in storage.files or []:
+            if file_mount.path == runtime_image_mount.path:
+                raise typer.BadParameter(
+                    "packed Dockerfile runtime injection requires "
+                    f"{runtime_image_mount.path} to be free of file mounts"
+                )
+        for empty_dir_mount in storage.empty_dirs or []:
+            if empty_dir_mount.path == runtime_image_mount.path:
+                raise typer.BadParameter(
+                    "packed Dockerfile runtime injection requires "
+                    f"{runtime_image_mount.path} to be free of empty-dir mounts"
+                )
+
+    image_mounts: list[ImageStorageMountSpec] = []
+    for image_mount in storage.images if storage is not None and storage.images else []:
+        if image_mount.path == runtime_image_mount.path:
+            if image_mount.subpath not in (None, runtime_image_mount.subpath):
+                raise typer.BadParameter(
+                    "packed Dockerfile runtime injection requires "
+                    f"{runtime_image_mount.path} to be free of conflicting image mounts"
+                )
+            continue
+        image_mounts.append(image_mount.model_copy(deep=True))
+
+    image_mounts.append(runtime_image_mount)
+    if storage is None:
+        return ContainerMountSpec(images=image_mounts)
+
+    return storage.model_copy(update={"images": image_mounts})
 
 
 def _parse_deploy_storage(
@@ -1058,6 +1365,7 @@ def _build_deploy_service_spec(
     environment: list[EnvironmentVariable] | None = None,
     storage: ContainerMountSpec | None = None,
     default_ports: list[PortSpec] | None = None,
+    runtime_container: _RuntimeContainerOverride | None = None,
 ) -> _ServiceDeployPlan:
     service_name = _derive_service_name(parsed_tag=parsed_tag)
     annotations = _update_request_validation_annotations(
@@ -1086,14 +1394,35 @@ def _build_deploy_service_spec(
         )
     )
     container = (
-        existing_service.container.model_copy(update={"image": parsed_tag.value})
+        existing_service.container.model_copy(
+            update={
+                "image": (
+                    runtime_container.image
+                    if runtime_container is not None
+                    else parsed_tag.value
+                )
+            }
+        )
         if existing_service is not None and existing_service.container is not None
-        else ContainerSpec(image=parsed_tag.value)
+        else ContainerSpec(
+            image=(
+                runtime_container.image
+                if runtime_container is not None
+                else parsed_tag.value
+            )
+        )
     )
     if environment is not None:
         container = container.model_copy(update={"environment": environment})
     if storage is not None:
         container = container.model_copy(update={"storage": storage})
+    if runtime_container is not None:
+        container = container.model_copy(
+            update={
+                "command": runtime_container.command,
+                "working_dir": runtime_container.working_dir,
+            }
+        )
 
     if existing_service is not None:
         ports = list(existing_service.ports or [])
@@ -1943,6 +2272,8 @@ async def deploy_image(
 
     resolved_project_id = await resolve_project_id(project_id=project_id)
     packed_default_ports: list[PortSpec] | None = None
+    packed_dockerfile_metadata: _PackedDockerfileMetadata | None = None
+    runtime_container: _RuntimeContainerOverride | None = None
     if pack is not None:
         build_inputs = _resolve_build_stage_inputs(
             context_path=context_path,
@@ -1952,8 +2283,15 @@ async def deploy_image(
             mount_project_path=[],
             mount_image=[],
         )
-        packed_default_ports = _infer_deploy_ports_from_packed_dockerfile(
+        packed_dockerfile_metadata = _parse_packed_dockerfile_metadata(
             local_packed_dockerfile=build_inputs.local_packed_dockerfile
+        )
+        packed_default_ports = _infer_deploy_ports_from_packed_dockerfile_metadata(
+            dockerfile_metadata=packed_dockerfile_metadata
+        )
+        runtime_container = _resolve_runtime_container_override(
+            parsed_tag=parsed_tag,
+            dockerfile_metadata=packed_dockerfile_metadata,
         )
         await _run_image_build_stage(
             resolved_project_id=resolved_project_id,
@@ -1986,6 +2324,11 @@ async def deploy_image(
             existing_service.container if existing_service is not None else None
         )
         environment = _merge_deploy_environment(
+            default_environment=(
+                list(runtime_container.default_environment)
+                if runtime_container is not None
+                else None
+            ),
             existing_environment=(
                 existing_container.environment if existing_container else None
             ),
@@ -2001,6 +2344,11 @@ async def deploy_image(
             replace_image_mounts=len(image_mount) > 0,
             replace_empty_dir_mounts=len(empty_dir_mount) > 0,
         )
+        if runtime_container is not None:
+            storage = _apply_runtime_image_mount(
+                storage=storage,
+                runtime_image_mount=runtime_container.image_mount,
+            )
         deploy_plan = _build_deploy_service_spec(
             existing_service=existing_service,
             parsed_tag=parsed_tag,
@@ -2009,6 +2357,7 @@ async def deploy_image(
             environment=environment,
             storage=storage,
             default_ports=packed_default_ports,
+            runtime_container=runtime_container,
         )
         await _apply_deploy_plan(
             account_client=account_client,

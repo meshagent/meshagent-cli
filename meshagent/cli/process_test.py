@@ -932,7 +932,7 @@ def test_process_agent_shell_toolkit_builder_defaults_image() -> None:
     builders = agent.get_toolkit_builders()
 
     assert len(builders) == 1
-    assert builders[0].image == "python:3.13"
+    assert builders[0].image == "meshagent/python:default"
 
 
 def test_process_agent_shell_toolkit_builder_uses_none_sentinel() -> None:

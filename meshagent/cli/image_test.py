@@ -6,6 +6,11 @@ import pytest
 import typer
 
 from meshagent.api import ApiScope
+from meshagent.api.image_runtime import (
+    IMAGE_RUNTIME_BASES,
+    IMAGE_RUNTIME_MOUNT_PATH,
+    IMAGE_RUNTIME_MOUNT_SUBPATH,
+)
 from meshagent.api.room_ports import ROOM_INTERNAL_API_PORT
 from meshagent.cli import image
 from meshagent.api.specs.service import (
@@ -1030,6 +1035,48 @@ def test_infer_deploy_ports_from_packed_dockerfile_reads_expose_lines(
     assert [port.published for port in ports] == [True, True, True]
 
 
+def test_parse_packed_dockerfile_metadata_uses_final_stage_runtime_config(
+    tmp_path: Path,
+) -> None:
+    dockerfile_path = tmp_path / "Dockerfile"
+    dockerfile_path.write_text(
+        """
+FROM python:3.13 AS build
+LABEL meshagent.runtime=python
+EXPOSE 9999
+
+FROM scratch
+LABEL meshagent.runtime=node other.label="enabled"
+WORKDIR /srv
+WORKDIR app
+ENV NODE_ENV=production PORT=8111
+ENTRYPOINT ["/app/dist/index.js"]
+CMD ["--port", "8111"]
+EXPOSE 8111 8443/tcp 5353/udp
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    metadata = image._parse_packed_dockerfile_metadata(
+        local_packed_dockerfile=dockerfile_path
+    )
+
+    assert metadata is not None
+    assert metadata.exposed_ports == (8111, 8443)
+    assert metadata.labels == {
+        "meshagent.runtime": "node",
+        "other.label": "enabled",
+    }
+    assert metadata.entrypoint == ("/app/dist/index.js",)
+    assert metadata.command == ("--port", "8111")
+    assert dict(metadata.environment) == {
+        "NODE_ENV": "production",
+        "PORT": "8111",
+    }
+    assert metadata.working_dir == "/srv/app"
+
+
 def test_infer_deploy_ports_from_packed_dockerfile_rejects_reserved_port(
     tmp_path: Path,
 ) -> None:
@@ -1046,6 +1093,25 @@ def test_infer_deploy_ports_from_packed_dockerfile_rejects_reserved_port(
         image._infer_deploy_ports_from_packed_dockerfile(
             local_packed_dockerfile=dockerfile_path
         )
+
+
+def test_resolve_runtime_container_override_supports_python_runtime() -> None:
+    override = image._resolve_runtime_container_override(
+        parsed_tag=image._parse_build_tag("room.meshagent.com/repo/app:1"),
+        dockerfile_metadata=image._PackedDockerfileMetadata(
+            labels={"meshagent.runtime": "python"},
+            command=("main.py",),
+            working_dir="/app",
+        ),
+    )
+
+    assert override is not None
+    assert override.image == IMAGE_RUNTIME_BASES["python"].base_image
+    assert override.command == "python main.py"
+    assert override.working_dir == "/app"
+    assert override.image_mount.image == "room.meshagent.com/repo/app:1"
+    assert override.image_mount.path == IMAGE_RUNTIME_MOUNT_PATH
+    assert override.image_mount.subpath == IMAGE_RUNTIME_MOUNT_SUBPATH
 
 
 @pytest.mark.asyncio
@@ -1555,6 +1621,116 @@ async def test_deploy_image_pack_builds_before_deploying(
     assert service_spec.ports[0].annotations == {
         image.ANNOTATION_REQUEST_VALIDATION_METHOD: "cookie"
     }
+    assert captured["room_client_closed"] is True
+    assert captured["account_client_closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_deploy_image_pack_runtime_label_uses_cached_runtime_base(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {"events": []}
+    source_dir = tmp_path / "website"
+    source_dir.mkdir()
+    (source_dir / "Dockerfile").write_text(
+        """
+FROM scratch
+LABEL meshagent.runtime=node
+WORKDIR /app
+ENV NODE_ENV=production PORT=8111
+EXPOSE 8111
+CMD ["/app/dist/index.js"]
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    async def _fake_run_image_build_stage(**kwargs) -> None:
+        captured["build_kwargs"] = kwargs
+        captured["events"].append("build")
+
+    class _FakeRoomClient:
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+            captured["room_client_closed"] = True
+
+    class _FakeAccountClient:
+        async def list_room_services(self, *, project_id: str, room_name: str):
+            captured.setdefault("list_room_services", []).append(
+                (project_id, room_name)
+            )
+            return []
+
+        async def create_room_service(
+            self, *, project_id: str, room_name: str, service
+        ):
+            captured["events"].append("create")
+            captured["created_service"] = (project_id, room_name, service)
+            return "service-1"
+
+        async def close(self) -> None:
+            captured["account_client_closed"] = True
+
+    async def _fake_with_client(*, project_id, room):
+        captured["project_id"] = project_id
+        captured["room"] = room
+        return _FakeAccountClient(), _FakeRoomClient()
+
+    async def _fake_resolve_project_id(*, project_id):
+        del project_id
+        return "project-1"
+
+    monkeypatch.setattr(image, "_run_image_build_stage", _fake_run_image_build_stage)
+    monkeypatch.setattr(image, "_with_client", _fake_with_client)
+    monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
+
+    await image.deploy_image(
+        project_id="project-1",
+        room="room-1",
+        tag="room.meshagent.com/repo/web:1",
+        pack=str(source_dir),
+        context_path="/context",
+        dockerfile_path="/context/Dockerfile",
+        arch="amd64",
+        pack_room_path=None,
+        optimize=True,
+        domain=None,
+        room_mount=[],
+        project_mount=[],
+        empty_dir_mount=[],
+        image_mount=[],
+        env=[],
+        env_token=None,
+    )
+
+    created_service = captured["created_service"]
+    assert isinstance(created_service, tuple)
+    service_spec = created_service[2]
+    assert service_spec.container is not None
+    assert service_spec.container.image == IMAGE_RUNTIME_BASES["node"].base_image
+    assert service_spec.container.command == "node /app/dist/index.js"
+    assert service_spec.container.working_dir == "/app"
+    assert service_spec.container.storage is not None
+    assert service_spec.container.storage.images is not None
+    assert service_spec.container.storage.images == [
+        ImageStorageMountSpec(
+            image="room.meshagent.com/repo/web:1",
+            path=IMAGE_RUNTIME_MOUNT_PATH,
+            subpath=IMAGE_RUNTIME_MOUNT_SUBPATH,
+            read_only=True,
+        )
+    ]
+    env_by_name = {
+        env_var.name: env_var for env_var in (service_spec.container.environment or [])
+    }
+    assert env_by_name["NODE_ENV"].value == "production"
+    assert env_by_name["PORT"].value == "8111"
+    assert service_spec.ports is not None
+    assert service_spec.ports[0].num == 8111
+    assert captured["events"] == ["build", "create"]
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
 
