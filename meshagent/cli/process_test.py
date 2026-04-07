@@ -1259,7 +1259,7 @@ async def test_chatbot_require_advanced_shell_uses_container_toolkit_with_shell_
         schema=[],
         require_advanced_shell=True,
         working_dir="/workspace",
-        shell_image="python:3.13",
+        shell_image="meshagent/python:default",
         shell_copy_env=["COPIED_ENV"],
         shell_set_env=["SET_ENV=set"],
         delegate_shell_token=True,
@@ -1276,7 +1276,7 @@ async def test_chatbot_require_advanced_shell_uses_container_toolkit_with_shell_
 
     assert isinstance(agent.advanced_shell_toolkit, ContainerToolkit)
     assert agent.advanced_shell_toolkit.default_working_dir == "/workspace"
-    assert agent.advanced_shell_toolkit.default_image == "python:3.13"
+    assert agent.advanced_shell_toolkit.default_image == "meshagent/python:default"
     assert agent.advanced_shell_toolkit.default_env == {
         "COPIED_ENV": "copied",
         "SET_ENV": "set",
@@ -1300,7 +1300,7 @@ async def test_process_agent_require_advanced_shell_uses_container_toolkit_with_
         schema=[],
         require_advanced_shell=True,
         working_dir="/workspace",
-        shell_image="python:3.13",
+        shell_image="meshagent/python:default",
         shell_copy_env=["COPIED_ENV"],
         shell_set_env=["SET_ENV=set"],
         delegate_shell_token=True,
@@ -1325,7 +1325,7 @@ async def test_process_agent_require_advanced_shell_uses_container_toolkit_with_
     try:
         assert isinstance(agent._advanced_shell_toolkit, ContainerToolkit)
         assert agent._advanced_shell_toolkit.default_working_dir == "/workspace"
-        assert agent._advanced_shell_toolkit.default_image == "python:3.13"
+        assert agent._advanced_shell_toolkit.default_image == "meshagent/python:default"
         assert agent._advanced_shell_toolkit.default_env == {
             "COPIED_ENV": "copied",
             "SET_ENV": "set",
@@ -1350,7 +1350,7 @@ async def test_process_agent_require_advanced_shell_reuses_container_toolkit_acr
         schema=[],
         require_advanced_shell=True,
         working_dir="/workspace",
-        shell_image="python:3.13",
+        shell_image="meshagent/python:default",
         require_table_read=[],
         require_table_write=[],
         channels=[],

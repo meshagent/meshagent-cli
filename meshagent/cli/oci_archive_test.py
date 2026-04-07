@@ -184,7 +184,7 @@ async def test_build_oci_archive_appends_local_layer_to_base_image(
     packed_archive = await build_oci_archive(
         source_dir=source_dir,
         output_path=output_path,
-        base_image="python:3.13",
+        base_image="meshagent/python:default",
         architecture="amd64",
         base_source=base_source,
     )
