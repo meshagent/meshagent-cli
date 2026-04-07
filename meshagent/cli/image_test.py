@@ -135,14 +135,14 @@ async def test_pack_image_uploads_archive_to_room_storage(
         path=str(source_dir),
         tag="room.meshagent.com/sample/app:1",
         output=str(output_path),
-        base="meshagent/python:default",
+        base="python:3.13",
         arch="arm64",
         room_path=None,
     )
 
     assert captured["source_dir"] == source_dir
     assert captured["output_path"] == output_path.resolve()
-    assert captured["base_image"] == "meshagent/python:default"
+    assert captured["base_image"] == "python:3.13"
     assert captured["architecture"] == "arm64"
     assert captured["ref_name"] == "room.meshagent.com/sample/app:1"
     assert captured["on_packed_archive_ready"] is True
@@ -1041,7 +1041,7 @@ def test_parse_packed_dockerfile_metadata_uses_final_stage_runtime_config(
     dockerfile_path = tmp_path / "Dockerfile"
     dockerfile_path.write_text(
         """
-FROM meshagent/python:default AS build
+FROM python:3.13 AS build
 LABEL meshagent.runtime=python
 EXPOSE 9999
 
