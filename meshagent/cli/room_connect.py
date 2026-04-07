@@ -8,6 +8,7 @@ from typing import Sequence
 import click
 from rich import print
 
+from meshagent.api.helpers import meshagent_base_url
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client, resolve_project_id, resolve_room
 
@@ -16,7 +17,17 @@ from meshagent.cli.helper import get_client, resolve_project_id, resolve_room
 class _ConnectedRoomEnv:
     api_url: str
     room_name: str
+    room_url: str
     token: str
+
+
+def _normalize_room_url(*, room_url: str) -> str:
+    normalized = room_url.strip().rstrip("/")
+    if normalized.startswith("wss:"):
+        return "https:" + normalized.removeprefix("wss:")
+    if normalized.startswith("ws:"):
+        return "http:" + normalized.removeprefix("ws:")
+    return normalized
 
 
 async def _connect_room_env(
@@ -37,8 +48,9 @@ async def _connect_room_env(
             room=resolved_room,
         )
         return _ConnectedRoomEnv(
-            api_url=account_client.base_url,
+            api_url=os.getenv("MESHAGENT_API_URL") or meshagent_base_url(),
             room_name=connection.room_name,
+            room_url=_normalize_room_url(room_url=connection.room_url),
             token=connection.jwt,
         )
     finally:
@@ -54,6 +66,10 @@ def _run_connected_command(
     child_env["MESHAGENT_API_URL"] = room_env.api_url
     child_env["MESHAGENT_TOKEN"] = room_env.token
     child_env["MESHAGENT_ROOM"] = room_env.room_name
+    child_env["OPENAI_BASE_URL"] = f"{room_env.room_url}/openai/v1"
+    child_env["ANTHROPIC_BASE_URL"] = f"{room_env.room_url}/anthropic"
+    child_env["OPENAI_API_KEY"] = room_env.token
+    child_env["ANTHROPIC_API_KEY"] = room_env.token
 
     try:
         result = subprocess.run(
