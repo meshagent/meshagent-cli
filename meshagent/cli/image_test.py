@@ -1077,6 +1077,31 @@ EXPOSE 8111 8443/tcp 5353/udp
     assert metadata.working_dir == "/srv/app"
 
 
+def test_parse_packed_dockerfile_metadata_tracks_final_stage_volumes(
+    tmp_path: Path,
+) -> None:
+    dockerfile_path = tmp_path / "Dockerfile"
+    dockerfile_path.write_text(
+        """
+FROM python:3.13 AS build
+VOLUME /ignored
+
+FROM scratch
+VOLUME ["/data", "/cache"]
+VOLUME /data /logs/
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    metadata = image._parse_packed_dockerfile_metadata(
+        local_packed_dockerfile=dockerfile_path
+    )
+
+    assert metadata is not None
+    assert metadata.volumes == ("/data", "/cache", "/logs")
+
+
 def test_infer_deploy_ports_from_packed_dockerfile_rejects_reserved_port(
     tmp_path: Path,
 ) -> None:
@@ -1621,6 +1646,155 @@ async def test_deploy_image_pack_builds_before_deploying(
     assert service_spec.ports[0].annotations == {
         image.ANNOTATION_REQUEST_VALIDATION_METHOD: "cookie"
     }
+    assert captured["room_client_closed"] is True
+    assert captured["account_client_closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_deploy_image_pack_requires_matching_volume_mount(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    source_dir = tmp_path / "website"
+    source_dir.mkdir()
+    (source_dir / "Dockerfile").write_text(
+        'FROM scratch\nVOLUME ["/data"]\n',
+        encoding="utf-8",
+    )
+
+    async def _fake_run_image_build_stage(**kwargs) -> None:
+        captured["build_kwargs"] = kwargs
+
+    class _FakeRoomClient:
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+            captured["room_client_closed"] = True
+
+    class _FakeAccountClient:
+        async def list_room_services(self, *, project_id: str, room_name: str):
+            captured.setdefault("list_room_services", []).append(
+                (project_id, room_name)
+            )
+            return []
+
+        async def close(self) -> None:
+            captured["account_client_closed"] = True
+
+    async def _fake_with_client(*, project_id, room):
+        captured["project_id"] = project_id
+        captured["room"] = room
+        return _FakeAccountClient(), _FakeRoomClient()
+
+    async def _fake_resolve_project_id(*, project_id):
+        del project_id
+        return "project-1"
+
+    monkeypatch.setattr(image, "_run_image_build_stage", _fake_run_image_build_stage)
+    monkeypatch.setattr(image, "_with_client", _fake_with_client)
+    monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
+
+    with pytest.raises(
+        typer.BadParameter,
+        match="declares VOLUME path /data",
+    ):
+        await image.deploy_image(
+            project_id="project-1",
+            room="room-1",
+            tag="room.meshagent.com/repo/web:1",
+            pack=str(source_dir),
+            domain=None,
+            room_mount=[],
+            project_mount=[],
+            empty_dir_mount=[],
+            image_mount=[],
+            env=[],
+            env_token=None,
+        )
+
+    assert "build_kwargs" not in captured
+    assert captured["room_client_closed"] is True
+    assert captured["account_client_closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_deploy_image_pack_allows_matching_volume_mount(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {"events": []}
+    source_dir = tmp_path / "website"
+    source_dir.mkdir()
+    (source_dir / "Dockerfile").write_text(
+        'FROM scratch\nVOLUME ["/data"]\n',
+        encoding="utf-8",
+    )
+
+    async def _fake_run_image_build_stage(**kwargs) -> None:
+        captured["build_kwargs"] = kwargs
+        captured["events"].append("build")
+
+    class _FakeRoomClient:
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+            captured["room_client_closed"] = True
+
+    class _FakeAccountClient:
+        async def list_room_services(self, *, project_id: str, room_name: str):
+            captured.setdefault("list_room_services", []).append(
+                (project_id, room_name)
+            )
+            return []
+
+        async def create_room_service(
+            self, *, project_id: str, room_name: str, service
+        ):
+            captured["events"].append("create")
+            captured["created_service"] = (project_id, room_name, service)
+            return "service-1"
+
+        async def close(self) -> None:
+            captured["account_client_closed"] = True
+
+    async def _fake_with_client(*, project_id, room):
+        captured["project_id"] = project_id
+        captured["room"] = room
+        return _FakeAccountClient(), _FakeRoomClient()
+
+    async def _fake_resolve_project_id(*, project_id):
+        del project_id
+        return "project-1"
+
+    monkeypatch.setattr(image, "_run_image_build_stage", _fake_run_image_build_stage)
+    monkeypatch.setattr(image, "_with_client", _fake_with_client)
+    monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
+
+    await image.deploy_image(
+        project_id="project-1",
+        room="room-1",
+        tag="room.meshagent.com/repo/web:1",
+        pack=str(source_dir),
+        domain=None,
+        room_mount=[],
+        project_mount=[],
+        empty_dir_mount=["/data"],
+        image_mount=[],
+        env=[],
+        env_token=None,
+    )
+
+    created_service = captured["created_service"]
+    assert isinstance(created_service, tuple)
+    service_spec = created_service[2]
+    assert service_spec.container is not None
+    assert service_spec.container.storage is not None
+    assert service_spec.container.storage.empty_dirs is not None
+    assert service_spec.container.storage.empty_dirs[0].path == "/data"
+    assert captured["events"] == ["build", "create"]
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
 

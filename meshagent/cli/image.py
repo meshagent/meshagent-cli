@@ -149,6 +149,7 @@ class _ResolvedBuildStageInputs:
 @dataclass(frozen=True)
 class _PackedDockerfileMetadata:
     exposed_ports: tuple[int, ...] = ()
+    volumes: tuple[str, ...] = ()
     labels: dict[str, str] = field(default_factory=dict)
     entrypoint: tuple[str, ...] | None = None
     command: tuple[str, ...] | None = None
@@ -800,6 +801,43 @@ def _parse_dockerfile_command_tokens(*, args: str) -> tuple[str, ...] | None:
     return tokens or None
 
 
+def _normalize_container_path(*, path: str) -> str:
+    cleaned_path = path.strip()
+    if cleaned_path == "":
+        return ""
+    return posixpath.normpath(cleaned_path)
+
+
+def _parse_dockerfile_volume_paths(*, args: str) -> tuple[str, ...]:
+    stripped_args = args.strip()
+    if stripped_args == "":
+        return ()
+
+    parsed_json_paths: list[str] | None = None
+    if stripped_args.startswith("["):
+        try:
+            parsed_args = json.loads(stripped_args)
+        except json.JSONDecodeError:
+            parsed_args = None
+        if isinstance(parsed_args, list) and all(
+            isinstance(value, str) for value in parsed_args
+        ):
+            parsed_json_paths = parsed_args
+
+    volume_paths: list[str] = []
+    for raw_path in (
+        parsed_json_paths
+        if parsed_json_paths is not None
+        else shlex.split(stripped_args, comments=False, posix=True)
+    ):
+        normalized_path = _normalize_container_path(path=raw_path)
+        if normalized_path == "" or normalized_path in volume_paths:
+            continue
+        volume_paths.append(normalized_path)
+
+    return tuple(volume_paths)
+
+
 def _parse_dockerfile_workdir(
     *,
     args: str,
@@ -828,6 +866,7 @@ def _parse_packed_dockerfile_metadata(
         return None
 
     exposed_ports: list[int] = []
+    volumes: list[str] = []
     labels: dict[str, str] = {}
     entrypoint: tuple[str, ...] | None = None
     command: tuple[str, ...] | None = None
@@ -841,6 +880,7 @@ def _parse_packed_dockerfile_metadata(
         if instruction == "FROM":
             saw_from = True
             exposed_ports = []
+            volumes = []
             labels = {}
             entrypoint = None
             command = None
@@ -862,6 +902,13 @@ def _parse_packed_dockerfile_metadata(
                 if port < 1 or port > 65535 or port in exposed_ports:
                     continue
                 exposed_ports.append(port)
+            continue
+
+        if instruction == "VOLUME":
+            for volume_path in _parse_dockerfile_volume_paths(args=args):
+                if volume_path in volumes:
+                    continue
+                volumes.append(volume_path)
             continue
 
         if instruction == "LABEL":
@@ -891,6 +938,7 @@ def _parse_packed_dockerfile_metadata(
 
     return _PackedDockerfileMetadata(
         exposed_ports=tuple(exposed_ports),
+        volumes=tuple(volumes),
         labels=labels,
         entrypoint=entrypoint,
         command=command,
@@ -1245,6 +1293,80 @@ def _apply_runtime_image_mount(
     return storage.model_copy(update={"images": image_mounts})
 
 
+def _iter_deploy_storage_mount_paths(
+    *, storage: ContainerMountSpec | None
+) -> tuple[str, ...]:
+    if storage is None:
+        return ()
+
+    mount_paths: list[str] = []
+    for room_mount in storage.room or []:
+        normalized_path = _normalize_container_path(path=room_mount.path)
+        if normalized_path != "" and normalized_path not in mount_paths:
+            mount_paths.append(normalized_path)
+    for project_mount in storage.project or []:
+        normalized_path = _normalize_container_path(path=project_mount.path)
+        if normalized_path != "" and normalized_path not in mount_paths:
+            mount_paths.append(normalized_path)
+    for image_mount in storage.images or []:
+        normalized_path = _normalize_container_path(path=image_mount.path)
+        if normalized_path != "" and normalized_path not in mount_paths:
+            mount_paths.append(normalized_path)
+    for empty_dir_mount in storage.empty_dirs or []:
+        normalized_path = _normalize_container_path(path=empty_dir_mount.path)
+        if normalized_path != "" and normalized_path not in mount_paths:
+            mount_paths.append(normalized_path)
+    for config_mount in storage.configs or []:
+        normalized_path = _normalize_container_path(path=config_mount.path)
+        if normalized_path != "" and normalized_path not in mount_paths:
+            mount_paths.append(normalized_path)
+
+    return tuple(mount_paths)
+
+
+def _build_missing_volume_mount_error(*, missing_volume_paths: tuple[str, ...]) -> str:
+    if len(missing_volume_paths) == 1:
+        missing_paths_text = missing_volume_paths[0]
+    else:
+        missing_paths_text = ", ".join(missing_volume_paths)
+
+    example_path = missing_volume_paths[0]
+    return (
+        "packed Dockerfile final stage declares VOLUME path"
+        f"{'' if len(missing_volume_paths) == 1 else 's'} {missing_paths_text}, "
+        "but the deployed service does not mount "
+        f"{'it' if len(missing_volume_paths) == 1 else 'them'}. "
+        "Add a matching mount for each Dockerfile volume path, for example:\n"
+        f"  --empty-dir-mount {example_path}\n"
+        f"  --room-mount .:{example_path}\n"
+        f"  --project-mount .:{example_path}:rw\n"
+        f"  --image-mount some/image:tag={example_path}:rw\n"
+        "Repeat one of those flags for every missing Dockerfile volume path."
+    )
+
+
+def _validate_packed_dockerfile_volume_mounts(
+    *,
+    dockerfile_metadata: _PackedDockerfileMetadata | None,
+    storage: ContainerMountSpec | None,
+) -> None:
+    if dockerfile_metadata is None or len(dockerfile_metadata.volumes) == 0:
+        return
+
+    mounted_paths = set(_iter_deploy_storage_mount_paths(storage=storage))
+    missing_volume_paths = tuple(
+        volume_path
+        for volume_path in dockerfile_metadata.volumes
+        if volume_path not in mounted_paths
+    )
+    if len(missing_volume_paths) == 0:
+        return
+
+    raise typer.BadParameter(
+        _build_missing_volume_mount_error(missing_volume_paths=missing_volume_paths)
+    )
+
+
 def _parse_deploy_storage(
     *,
     room_mounts: list[str],
@@ -1354,6 +1476,35 @@ def _merge_deploy_storage(
         return None
 
     return merged_storage
+
+
+def _resolve_deploy_storage(
+    *,
+    existing_service: ServiceSpec | None,
+    parsed_storage: ContainerMountSpec | None,
+    replace_room_mounts: bool,
+    replace_project_mounts: bool,
+    replace_image_mounts: bool,
+    replace_empty_dir_mounts: bool,
+    runtime_container: _RuntimeContainerOverride | None,
+) -> ContainerMountSpec | None:
+    existing_container = (
+        existing_service.container if existing_service is not None else None
+    )
+    storage = _merge_deploy_storage(
+        existing_storage=existing_container.storage if existing_container else None,
+        parsed_storage=parsed_storage,
+        replace_room_mounts=replace_room_mounts,
+        replace_project_mounts=replace_project_mounts,
+        replace_image_mounts=replace_image_mounts,
+        replace_empty_dir_mounts=replace_empty_dir_mounts,
+    )
+    if runtime_container is not None:
+        storage = _apply_runtime_image_mount(
+            storage=storage,
+            runtime_image_mount=runtime_container.image_mount,
+        )
+    return storage
 
 
 def _build_deploy_service_spec(
@@ -2293,22 +2444,6 @@ async def deploy_image(
             parsed_tag=parsed_tag,
             dockerfile_metadata=packed_dockerfile_metadata,
         )
-        await _run_image_build_stage(
-            resolved_project_id=resolved_project_id,
-            resolved_room=resolved_room,
-            parsed_tag=parsed_tag,
-            context_path=context_path,
-            dockerfile_path=dockerfile_path,
-            pack=pack,
-            arch=arch,
-            pack_room_path=pack_room_path,
-            mount_room_path=[],
-            mount_project_path=[],
-            mount_image=[],
-            private=False,
-            optimize=optimize,
-            cred=[],
-        )
     account_client, client = await _with_client(
         project_id=resolved_project_id,
         room=resolved_room,
@@ -2320,6 +2455,42 @@ async def deploy_image(
             room_name=resolved_room,
             service_name=_derive_service_name(parsed_tag=parsed_tag),
         )
+        storage = _resolve_deploy_storage(
+            existing_service=existing_service,
+            parsed_storage=parsed_storage,
+            replace_room_mounts=len(room_mount) > 0,
+            replace_project_mounts=len(project_mount) > 0,
+            replace_image_mounts=len(image_mount) > 0,
+            replace_empty_dir_mounts=len(empty_dir_mount) > 0,
+            runtime_container=runtime_container,
+        )
+        _validate_packed_dockerfile_volume_mounts(
+            dockerfile_metadata=packed_dockerfile_metadata,
+            storage=storage,
+        )
+        if pack is not None:
+            await _run_image_build_stage(
+                resolved_project_id=resolved_project_id,
+                resolved_room=resolved_room,
+                parsed_tag=parsed_tag,
+                context_path=context_path,
+                dockerfile_path=dockerfile_path,
+                pack=pack,
+                arch=arch,
+                pack_room_path=pack_room_path,
+                mount_room_path=[],
+                mount_project_path=[],
+                mount_image=[],
+                private=False,
+                optimize=optimize,
+                cred=[],
+            )
+            existing_service = await _find_room_service_by_name(
+                account_client=account_client,
+                project_id=resolved_project_id,
+                room_name=resolved_room,
+                service_name=_derive_service_name(parsed_tag=parsed_tag),
+            )
         existing_container = (
             existing_service.container if existing_service is not None else None
         )
@@ -2336,19 +2507,19 @@ async def deploy_image(
             env_token_scope=env_token_scope,
             token_identity=_derive_service_name(parsed_tag=parsed_tag),
         )
-        storage = _merge_deploy_storage(
-            existing_storage=existing_container.storage if existing_container else None,
+        storage = _resolve_deploy_storage(
+            existing_service=existing_service,
             parsed_storage=parsed_storage,
             replace_room_mounts=len(room_mount) > 0,
             replace_project_mounts=len(project_mount) > 0,
             replace_image_mounts=len(image_mount) > 0,
             replace_empty_dir_mounts=len(empty_dir_mount) > 0,
+            runtime_container=runtime_container,
         )
-        if runtime_container is not None:
-            storage = _apply_runtime_image_mount(
-                storage=storage,
-                runtime_image_mount=runtime_container.image_mount,
-            )
+        _validate_packed_dockerfile_volume_mounts(
+            dockerfile_metadata=packed_dockerfile_metadata,
+            storage=storage,
+        )
         deploy_plan = _build_deploy_service_spec(
             existing_service=existing_service,
             parsed_tag=parsed_tag,
