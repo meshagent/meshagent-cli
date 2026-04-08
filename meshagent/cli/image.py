@@ -54,6 +54,7 @@ from meshagent.api.specs.service import (
     PortSpec,
     ProjectStorageMountSpec,
     RoomStorageMountSpec,
+    SecretValue,
     ServiceMetadata,
     ServiceSpec,
     TokenValue,
@@ -108,6 +109,18 @@ _ARCHIVE_STREAM_END = _ArchiveStreamEnd()
 class _BuildPackSpec:
     source_dir: Path
     mount_path: str
+
+
+@dataclass(frozen=True)
+class _ParsedEnvironmentSecretVariable:
+    name: str
+    source: str
+
+
+@dataclass(frozen=True)
+class _ResolvedDeployEnvironment:
+    environment: list[EnvironmentVariable] | None
+    identity: str
 
 
 @dataclass(frozen=True)
@@ -1139,6 +1152,52 @@ def _parse_environment_variables(*, values: list[str]) -> list[EnvironmentVariab
     return environment
 
 
+def _format_env_secret_reference(*, env_var: EnvironmentVariable) -> str:
+    secret = env_var.secret
+    if secret is None:
+        return env_var.name
+    return f"{env_var.name}={secret.id}"
+
+
+def _parse_environment_secret_variables(
+    *, values: list[str]
+) -> list[_ParsedEnvironmentSecretVariable]:
+    environment: list[_ParsedEnvironmentSecretVariable] = []
+    for value in values:
+        if "=" not in value:
+            raise typer.BadParameter(
+                "--env-secret must be in the form 'NAME=SECRET_ID'"
+            )
+        name, secret_source = value.split("=", 1)
+        resolved_name = name.strip()
+        if resolved_name == "":
+            raise typer.BadParameter(
+                "--env-secret must include a non-empty variable name"
+            )
+        resolved_source = secret_source.strip()
+        if resolved_source == "":
+            raise typer.BadParameter(
+                "--env-secret must include a non-empty secret source"
+            )
+        environment.append(
+            _ParsedEnvironmentSecretVariable(
+                name=resolved_name,
+                source=resolved_source,
+            )
+        )
+    return environment
+
+
+def _normalize_deploy_identity(*, identity: str | None) -> str | None:
+    if identity is None:
+        return None
+
+    normalized_identity = identity.strip()
+    if normalized_identity == "":
+        raise typer.BadParameter("--identity cannot be empty")
+    return normalized_identity
+
+
 def _normalize_deploy_liveness(*, liveness: str | None) -> str | None:
     if liveness is None:
         return None
@@ -1151,10 +1210,10 @@ def _normalize_deploy_liveness(*, liveness: str | None) -> str | None:
     return normalized_liveness
 
 
-def _parse_env_token_scope(*, value: str) -> ApiScope:
+def _parse_meshagent_token_scope(*, value: str) -> ApiScope:
     cleaned = value.strip()
     if cleaned == "":
-        raise typer.BadParameter("--env-token cannot be empty")
+        raise typer.BadParameter("--meshagent-token cannot be empty")
     if cleaned == "userDefault":
         return ApiScope.user_default()
     if cleaned == "agentDefault":
@@ -1165,7 +1224,7 @@ def _parse_env_token_scope(*, value: str) -> ApiScope:
         return ApiScope.model_validate_json(cleaned)
     except (ValidationError, ValueError) as exc:
         raise typer.BadParameter(
-            "--env-token must be one of userDefault, agentDefault, full, "
+            "--meshagent-token must be one of userDefault, agentDefault, full, "
             "or a JSON ApiScope object"
         ) from exc
 
@@ -1188,14 +1247,15 @@ def _resolve_meshagent_token_value(
     existing_environment: list[EnvironmentVariable] | None,
     default_identity: str,
     api_scope: ApiScope,
+    identity_override: str | None,
 ) -> TokenValue:
-    identity = default_identity
+    identity = identity_override if identity_override is not None else default_identity
     role = "agent"
 
     for env_var in existing_environment or []:
         if env_var.name != "MESHAGENT_TOKEN" or env_var.token is None:
             continue
-        if env_var.token.identity.strip() != "":
+        if identity_override is None and env_var.token.identity.strip() != "":
             identity = env_var.token.identity.strip()
         if env_var.token.role is not None and env_var.token.role.strip() != "":
             role = env_var.token.role.strip()
@@ -1204,14 +1264,85 @@ def _resolve_meshagent_token_value(
     return TokenValue(identity=identity, api=api_scope, role=role)
 
 
+def _resolve_deploy_identity(
+    *,
+    existing_environment: list[EnvironmentVariable] | None,
+    default_identity: str,
+    identity_override: str | None,
+) -> str:
+    if identity_override is not None:
+        return identity_override
+
+    for env_var in existing_environment or []:
+        if env_var.name != "MESHAGENT_TOKEN" or env_var.token is None:
+            continue
+        resolved_identity = env_var.token.identity.strip()
+        if resolved_identity != "":
+            return resolved_identity
+        break
+
+    return default_identity
+
+
+def _override_environment_token_identity(
+    *,
+    environment: list[EnvironmentVariable],
+    identity: str,
+) -> None:
+    for index, env_var in enumerate(environment):
+        if env_var.name != "MESHAGENT_TOKEN" or env_var.token is None:
+            continue
+        environment[index] = env_var.model_copy(
+            update={
+                "token": env_var.token.model_copy(
+                    update={"identity": identity},
+                )
+            }
+        )
+        return
+
+
+def _resolve_environment_secret_variables(
+    *,
+    values: list[_ParsedEnvironmentSecretVariable],
+    identity: str,
+) -> list[EnvironmentVariable]:
+    return [
+        EnvironmentVariable(
+            name=value.name,
+            secret=SecretValue(identity=identity, id=value.source),
+        )
+        for value in values
+    ]
+
+
+def _validate_deploy_environment_tokens(
+    *,
+    environment: list[EnvironmentVariable] | None,
+) -> None:
+    for env_var in environment or []:
+        if env_var.token is None:
+            continue
+        token_identity = env_var.token.identity.strip()
+        if token_identity == "" or "@" not in token_identity:
+            continue
+        raise typer.BadParameter(
+            f"environment variable '{env_var.name}' uses token identity "
+            f"'{token_identity}', but service environment tokens must use an "
+            "agent identity"
+        )
+
+
 def _merge_deploy_environment(
     *,
     default_environment: list[EnvironmentVariable] | None,
     existing_environment: list[EnvironmentVariable] | None,
     parsed_environment: list[EnvironmentVariable],
-    env_token_scope: ApiScope | None,
+    parsed_secret_environment: list[_ParsedEnvironmentSecretVariable],
+    meshagent_token_scope: ApiScope | None,
     token_identity: str,
-) -> list[EnvironmentVariable] | None:
+    identity_override: str | None,
+) -> _ResolvedDeployEnvironment:
     environment = [
         env_var.model_copy(deep=True) for env_var in (default_environment or [])
     ]
@@ -1222,26 +1353,137 @@ def _merge_deploy_environment(
             env_var=env_var.model_copy(deep=True),
         )
 
+    resolved_identity = _resolve_deploy_identity(
+        existing_environment=environment,
+        default_identity=token_identity,
+        identity_override=identity_override,
+    )
+    if identity_override is not None:
+        _override_environment_token_identity(
+            environment=environment,
+            identity=identity_override,
+        )
+
     for env_var in parsed_environment:
         _upsert_environment_variable(
             environment=environment,
             env_var=env_var,
         )
 
-    if env_token_scope is not None:
+    for env_var in _resolve_environment_secret_variables(
+        values=parsed_secret_environment,
+        identity=resolved_identity,
+    ):
+        _upsert_environment_variable(
+            environment=environment,
+            env_var=env_var,
+        )
+
+    if meshagent_token_scope is not None:
         _upsert_environment_variable(
             environment=environment,
             env_var=EnvironmentVariable(
                 name="MESHAGENT_TOKEN",
                 token=_resolve_meshagent_token_value(
-                    existing_environment=existing_environment,
+                    existing_environment=environment,
                     default_identity=token_identity,
-                    api_scope=env_token_scope,
+                    api_scope=meshagent_token_scope,
+                    identity_override=identity_override,
                 ),
             ),
         )
 
-    return environment or None
+    return _ResolvedDeployEnvironment(
+        environment=environment or None,
+        identity=resolved_identity,
+    )
+
+
+def _resolve_deploy_environment(
+    *,
+    existing_service: ServiceSpec | None,
+    default_environment: list[EnvironmentVariable] | None,
+    parsed_environment: list[EnvironmentVariable],
+    parsed_secret_environment: list[_ParsedEnvironmentSecretVariable],
+    meshagent_token_scope: ApiScope | None,
+    token_identity: str,
+    identity_override: str | None,
+) -> _ResolvedDeployEnvironment:
+    existing_container = (
+        existing_service.container if existing_service is not None else None
+    )
+    return _merge_deploy_environment(
+        default_environment=default_environment,
+        existing_environment=(
+            existing_container.environment if existing_container is not None else None
+        ),
+        parsed_environment=parsed_environment,
+        parsed_secret_environment=parsed_secret_environment,
+        meshagent_token_scope=meshagent_token_scope,
+        token_identity=token_identity,
+        identity_override=identity_override,
+    )
+
+
+def _collect_environment_token_identities(
+    *,
+    environment: list[EnvironmentVariable] | None,
+) -> set[str]:
+    identities: set[str] = set()
+    for env_var in environment or []:
+        if env_var.token is None:
+            continue
+        identity = env_var.token.identity.strip()
+        if identity != "":
+            identities.add(identity)
+    return identities
+
+
+async def _validate_deploy_environment_secrets(
+    *,
+    client: RoomClient,
+    environment: list[EnvironmentVariable] | None,
+    resolved_identity: str,
+) -> None:
+    _validate_deploy_environment_tokens(environment=environment)
+    token_identities = _collect_environment_token_identities(environment=environment)
+    for env_var in environment or []:
+        secret = env_var.secret
+        if secret is None:
+            continue
+
+        secret_reference = _format_env_secret_reference(env_var=env_var)
+        if "@" in secret.identity:
+            raise typer.BadParameter(
+                f"--env-secret {secret_reference} is invalid because service "
+                "environment secrets must use an agent identity"
+            )
+
+        if secret.identity not in token_identities:
+            if secret.identity == resolved_identity:
+                raise typer.BadParameter(
+                    f"environment variable '{env_var.name}' references secret "
+                    f"'{secret.identity}/{secret.id}' but no environment token is "
+                    f"defined for identity '{secret.identity}'. Add "
+                    "--meshagent-token to inject MESHAGENT_TOKEN for that identity."
+                )
+            raise typer.BadParameter(
+                f"environment variable '{env_var.name}' references secret "
+                f"'{secret.identity}/{secret.id}' but no environment token is "
+                f"defined for identity '{secret.identity}'. Add --identity "
+                f"'{secret.identity}' together with --meshagent-token, or use an "
+                "existing token-backed identity."
+            )
+
+        if not await client.secrets.exists(
+            secret_id=secret.id,
+            for_identity=secret.identity,
+        ):
+            raise typer.BadParameter(
+                f"environment variable '{env_var.name}' references missing secret "
+                f"'{secret.identity}/{secret.id}'. Save the room secret first, then "
+                "retry deploy."
+            )
 
 
 def _apply_runtime_image_mount(
@@ -2371,10 +2613,27 @@ async def deploy_image(
             help="Set environment variable as KEY=VALUE",
         ),
     ] = [],
-    env_token: Annotated[
+    env_secret: Annotated[
+        list[str],
+        typer.Option(
+            "--env-secret",
+            help="Set environment variable from a room secret as NAME=SECRET_ID",
+        ),
+    ] = [],
+    identity: Annotated[
         Optional[str],
         typer.Option(
-            "--env-token",
+            "--identity",
+            help=(
+                "Identity name to use for --meshagent-token and --env-secret. "
+                "Defaults to the current token identity or the derived service name."
+            ),
+        ),
+    ] = None,
+    meshagent_token: Annotated[
+        Optional[str],
+        typer.Option(
+            "--meshagent-token",
             help=(
                 "Inject MESHAGENT_TOKEN using userDefault, agentDefault, full, "
                 "or a JSON ApiScope object."
@@ -2402,15 +2661,19 @@ async def deploy_image(
         optimize=optimize,
     )
     parsed_environment = _parse_environment_variables(values=env)
+    parsed_secret_environment = _parse_environment_secret_variables(values=env_secret)
     parsed_storage = _parse_deploy_storage(
         room_mounts=room_mount,
         project_mounts=project_mount,
         image_mounts=image_mount,
         empty_dir_mounts=empty_dir_mount,
     )
-    env_token_scope = (
-        _parse_env_token_scope(value=env_token) if env_token is not None else None
+    meshagent_token_scope = (
+        _parse_meshagent_token_scope(value=meshagent_token)
+        if meshagent_token is not None
+        else None
     )
+    identity_override = _normalize_deploy_identity(identity=identity)
 
     resolved_room = resolve_room(room)
     if resolved_room is None:
@@ -2444,6 +2707,7 @@ async def deploy_image(
             parsed_tag=parsed_tag,
             dockerfile_metadata=packed_dockerfile_metadata,
         )
+    meshagent_token_identity = _derive_service_name(parsed_tag=parsed_tag)
     account_client, client = await _with_client(
         project_id=resolved_project_id,
         room=resolved_room,
@@ -2468,6 +2732,25 @@ async def deploy_image(
             dockerfile_metadata=packed_dockerfile_metadata,
             storage=storage,
         )
+        resolved_environment = _resolve_deploy_environment(
+            existing_service=existing_service,
+            default_environment=(
+                list(runtime_container.default_environment)
+                if runtime_container is not None
+                else None
+            ),
+            parsed_environment=parsed_environment,
+            parsed_secret_environment=parsed_secret_environment,
+            meshagent_token_scope=meshagent_token_scope,
+            token_identity=meshagent_token_identity,
+            identity_override=identity_override,
+        )
+        environment = resolved_environment.environment
+        await _validate_deploy_environment_secrets(
+            client=client,
+            environment=environment,
+            resolved_identity=resolved_environment.identity,
+        )
         if pack is not None:
             await _run_image_build_stage(
                 resolved_project_id=resolved_project_id,
@@ -2491,22 +2774,20 @@ async def deploy_image(
                 room_name=resolved_room,
                 service_name=_derive_service_name(parsed_tag=parsed_tag),
             )
-        existing_container = (
-            existing_service.container if existing_service is not None else None
-        )
-        environment = _merge_deploy_environment(
+        resolved_environment = _resolve_deploy_environment(
+            existing_service=existing_service,
             default_environment=(
                 list(runtime_container.default_environment)
                 if runtime_container is not None
                 else None
             ),
-            existing_environment=(
-                existing_container.environment if existing_container else None
-            ),
             parsed_environment=parsed_environment,
-            env_token_scope=env_token_scope,
-            token_identity=_derive_service_name(parsed_tag=parsed_tag),
+            parsed_secret_environment=parsed_secret_environment,
+            meshagent_token_scope=meshagent_token_scope,
+            token_identity=meshagent_token_identity,
+            identity_override=identity_override,
         )
+        environment = resolved_environment.environment
         storage = _resolve_deploy_storage(
             existing_service=existing_service,
             parsed_storage=parsed_storage,
@@ -2520,6 +2801,12 @@ async def deploy_image(
             dockerfile_metadata=packed_dockerfile_metadata,
             storage=storage,
         )
+        if pack is not None:
+            await _validate_deploy_environment_secrets(
+                client=client,
+                environment=environment,
+                resolved_identity=resolved_environment.identity,
+            )
         deploy_plan = _build_deploy_service_spec(
             existing_service=existing_service,
             parsed_tag=parsed_tag,

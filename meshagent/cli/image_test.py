@@ -19,6 +19,7 @@ from meshagent.api.specs.service import (
     EnvironmentVariable,
     ImageStorageMountSpec,
     PortSpec,
+    SecretValue,
     ServiceMetadata,
     ServiceSpec,
     TokenValue,
@@ -1429,9 +1430,9 @@ def test_parse_build_tag_rejects_invalid_oci_reference() -> None:
         image._parse_build_tag("Bad/Name:latest")
 
 
-def test_parse_env_token_scope_supports_presets_and_json() -> None:
-    user_default = image._parse_env_token_scope(value="userDefault")
-    custom = image._parse_env_token_scope(value='{"queues":{"send":["jobs"]}}')
+def test_parse_meshagent_token_scope_supports_presets_and_json() -> None:
+    user_default = image._parse_meshagent_token_scope(value="userDefault")
+    custom = image._parse_meshagent_token_scope(value='{"queues":{"send":["jobs"]}}')
 
     assert user_default.secrets is not None
     assert user_default.admin is None
@@ -1439,8 +1440,27 @@ def test_parse_env_token_scope_supports_presets_and_json() -> None:
     assert custom.queues.send == ["jobs"]
 
 
+def test_parse_environment_secret_variables_parses_secret_values() -> None:
+    environment = image._parse_environment_secret_variables(values=["API_KEY=secret-1"])
+
+    assert environment == [
+        image._ParsedEnvironmentSecretVariable(
+            name="API_KEY",
+            source="secret-1",
+        )
+    ]
+
+
+def test_parse_environment_secret_variables_rejects_invalid_format() -> None:
+    with pytest.raises(
+        typer.BadParameter,
+        match="--env-secret must be in the form 'NAME=SECRET_ID'",
+    ):
+        image._parse_environment_secret_variables(values=["API_KEY:secret-1"])
+
+
 @pytest.mark.asyncio
-async def test_deploy_image_creates_room_service_with_mounts_env_and_token(
+async def test_deploy_image_creates_room_service_with_mounts_env_secret_and_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
@@ -1449,9 +1469,27 @@ async def test_deploy_image_creates_room_service_with_mounts_env_and_token(
         async def restart(self, *, service_id: str) -> None:
             captured["restarted_service_id"] = service_id
 
+    class _FakeSecrets:
+        async def exists(
+            self,
+            *,
+            secret_id: str,
+            delegated_to: str | None = None,
+            for_identity: str | None = None,
+        ) -> bool:
+            captured.setdefault("secret_checks", []).append(
+                {
+                    "secret_id": secret_id,
+                    "delegated_to": delegated_to,
+                    "for_identity": for_identity,
+                }
+            )
+            return True
+
     class _FakeRoomClient:
         def __init__(self) -> None:
             self.services = _FakeServices()
+            self.secrets = _FakeSecrets()
 
         async def __aexit__(self, exc_type, exc, tb) -> None:
             del exc_type, exc, tb
@@ -1497,7 +1535,8 @@ async def test_deploy_image_creates_room_service_with_mounts_env_and_token(
         empty_dir_mount=["/tmp/cache"],
         image_mount=["busybox=/opt/base:rw"],
         env=["FOO=bar"],
-        env_token="agentDefault",
+        env_secret=["APP_SECRET=secret-1"],
+        meshagent_token="agentDefault",
         private=True,
     )
 
@@ -1528,13 +1567,208 @@ async def test_deploy_image_creates_room_service_with_mounts_env_and_token(
         env_var.name: env_var for env_var in (service_spec.container.environment or [])
     }
     assert env_by_name["FOO"].value == "bar"
+    assert env_by_name["APP_SECRET"].secret == SecretValue(
+        identity="repo-web",
+        id="secret-1",
+    )
     assert env_by_name["MESHAGENT_TOKEN"].token is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.identity == "repo-web"
     assert env_by_name["MESHAGENT_TOKEN"].token.api is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.api.secrets is None
     assert env_by_name["MESHAGENT_TOKEN"].token.api.services is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.role == "agent"
+    assert captured["secret_checks"] == [
+        {
+            "secret_id": "secret-1",
+            "delegated_to": None,
+            "for_identity": "repo-web",
+        }
+    ]
     assert "restarted_service_id" not in captured
+    assert captured["room_client_closed"] is True
+    assert captured["account_client_closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_deploy_image_identity_overrides_env_secret_and_token_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeSecrets:
+        async def exists(
+            self,
+            *,
+            secret_id: str,
+            delegated_to: str | None = None,
+            for_identity: str | None = None,
+        ) -> bool:
+            captured.setdefault("secret_checks", []).append(
+                {
+                    "secret_id": secret_id,
+                    "delegated_to": delegated_to,
+                    "for_identity": for_identity,
+                }
+            )
+            return True
+
+    class _FakeRoomClient:
+        def __init__(self) -> None:
+            self.secrets = _FakeSecrets()
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+            captured["room_client_closed"] = True
+
+    class _FakeAccountClient:
+        async def list_room_services(self, *, project_id: str, room_name: str):
+            captured.setdefault("list_room_services", []).append(
+                (project_id, room_name)
+            )
+            return []
+
+        async def create_room_service(
+            self, *, project_id: str, room_name: str, service
+        ) -> str:
+            captured["created_service"] = (project_id, room_name, service)
+            return "service-1"
+
+        async def close(self) -> None:
+            captured["account_client_closed"] = True
+
+    async def _fake_with_client(*, project_id, room):
+        captured["project_id"] = project_id
+        captured["room"] = room
+        return _FakeAccountClient(), _FakeRoomClient()
+
+    async def _fake_resolve_project_id(*, project_id):
+        del project_id
+        return "project-1"
+
+    monkeypatch.setattr(image, "_with_client", _fake_with_client)
+    monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
+
+    await image.deploy_image(
+        project_id="project-1",
+        room="room-1",
+        tag="repo/web:1",
+        domain=None,
+        room_mount=[],
+        project_mount=[],
+        empty_dir_mount=[],
+        image_mount=[],
+        env=[],
+        env_secret=["APP_SECRET=secret-1"],
+        identity="custom-agent",
+        meshagent_token="agentDefault",
+        private=True,
+    )
+
+    created_service = captured["created_service"]
+    assert isinstance(created_service, tuple)
+    service_spec = created_service[2]
+    assert service_spec.container is not None
+    env_by_name = {
+        env_var.name: env_var for env_var in (service_spec.container.environment or [])
+    }
+    assert env_by_name["APP_SECRET"].secret == SecretValue(
+        identity="custom-agent",
+        id="secret-1",
+    )
+    assert env_by_name["MESHAGENT_TOKEN"].token is not None
+    assert env_by_name["MESHAGENT_TOKEN"].token.identity == "custom-agent"
+    assert captured["secret_checks"] == [
+        {
+            "secret_id": "secret-1",
+            "delegated_to": None,
+            "for_identity": "custom-agent",
+        }
+    ]
+    assert captured["room_client_closed"] is True
+    assert captured["account_client_closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_deploy_image_env_secret_requires_matching_token_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeSecrets:
+        async def exists(
+            self,
+            *,
+            secret_id: str,
+            delegated_to: str | None = None,
+            for_identity: str | None = None,
+        ) -> bool:
+            del secret_id, delegated_to, for_identity
+            captured["exists_called"] = True
+            return True
+
+    class _FakeRoomClient:
+        def __init__(self) -> None:
+            self.secrets = _FakeSecrets()
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+            captured["room_client_closed"] = True
+
+    class _FakeAccountClient:
+        async def list_room_services(self, *, project_id: str, room_name: str):
+            captured.setdefault("list_room_services", []).append(
+                (project_id, room_name)
+            )
+            return []
+
+        async def create_room_service(
+            self, *, project_id: str, room_name: str, service
+        ) -> str:
+            del project_id, room_name, service
+            captured["create_room_service_called"] = True
+            return "service-1"
+
+        async def close(self) -> None:
+            captured["account_client_closed"] = True
+
+    async def _fake_with_client(*, project_id, room):
+        captured["project_id"] = project_id
+        captured["room"] = room
+        return _FakeAccountClient(), _FakeRoomClient()
+
+    async def _fake_resolve_project_id(*, project_id):
+        del project_id
+        return "project-1"
+
+    monkeypatch.setattr(image, "_with_client", _fake_with_client)
+    monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
+
+    with pytest.raises(
+        typer.BadParameter,
+        match="no environment token is defined for identity 'other-agent'",
+    ):
+        await image.deploy_image(
+            project_id="project-1",
+            room="room-1",
+            tag="repo/web:1",
+            domain=None,
+            room_mount=[],
+            project_mount=[],
+            empty_dir_mount=[],
+            image_mount=[],
+            env=[],
+            env_secret=["APP_SECRET=secret-1"],
+            identity="other-agent",
+            meshagent_token=None,
+            private=True,
+        )
+
+    assert "exists_called" not in captured
+    assert "create_room_service_called" not in captured
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
 
@@ -1609,7 +1843,7 @@ async def test_deploy_image_pack_builds_before_deploying(
         empty_dir_mount=[],
         image_mount=[],
         env=[],
-        env_token=None,
+        meshagent_token=None,
     )
 
     build_kwargs = captured["build_kwargs"]
@@ -1646,6 +1880,105 @@ async def test_deploy_image_pack_builds_before_deploying(
     assert service_spec.ports[0].annotations == {
         image.ANNOTATION_REQUEST_VALIDATION_METHOD: "cookie"
     }
+    assert captured["room_client_closed"] is True
+    assert captured["account_client_closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_deploy_image_pack_fails_before_build_when_env_secret_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    source_dir = tmp_path / "website"
+    source_dir.mkdir()
+    (source_dir / "Dockerfile").write_text(
+        "FROM scratch\nEXPOSE 8080\n",
+        encoding="utf-8",
+    )
+
+    async def _fake_run_image_build_stage(**kwargs) -> None:
+        del kwargs
+        captured["build_called"] = True
+
+    class _FakeSecrets:
+        async def exists(
+            self,
+            *,
+            secret_id: str,
+            delegated_to: str | None = None,
+            for_identity: str | None = None,
+        ) -> bool:
+            captured["secret_check"] = {
+                "secret_id": secret_id,
+                "delegated_to": delegated_to,
+                "for_identity": for_identity,
+            }
+            return False
+
+    class _FakeRoomClient:
+        def __init__(self) -> None:
+            self.secrets = _FakeSecrets()
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+            captured["room_client_closed"] = True
+
+    class _FakeAccountClient:
+        async def list_room_services(self, *, project_id: str, room_name: str):
+            captured.setdefault("list_room_services", []).append(
+                (project_id, room_name)
+            )
+            return []
+
+        async def close(self) -> None:
+            captured["account_client_closed"] = True
+
+    async def _fake_with_client(*, project_id, room):
+        captured["project_id"] = project_id
+        captured["room"] = room
+        return _FakeAccountClient(), _FakeRoomClient()
+
+    async def _fake_resolve_project_id(*, project_id):
+        del project_id
+        return "project-1"
+
+    monkeypatch.setattr(image, "_run_image_build_stage", _fake_run_image_build_stage)
+    monkeypatch.setattr(image, "_with_client", _fake_with_client)
+    monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
+
+    with pytest.raises(
+        typer.BadParameter,
+        match="references missing secret 'repo-web/secret-1'",
+    ):
+        await image.deploy_image(
+            project_id="project-1",
+            room="room-1",
+            tag="room.meshagent.com/repo/web:1",
+            pack=str(source_dir),
+            context_path="/context",
+            dockerfile_path="/context/Dockerfile",
+            arch="arm64",
+            pack_room_path="/packed/context",
+            optimize=False,
+            domain=None,
+            room_mount=[],
+            project_mount=[],
+            empty_dir_mount=[],
+            image_mount=[],
+            env=[],
+            env_secret=["APP_SECRET=secret-1"],
+            meshagent_token="agentDefault",
+        )
+
+    assert captured["secret_check"] == {
+        "secret_id": "secret-1",
+        "delegated_to": None,
+        "for_identity": "repo-web",
+    }
+    assert "build_called" not in captured
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
 
@@ -1711,7 +2044,7 @@ async def test_deploy_image_pack_requires_matching_volume_mount(
             empty_dir_mount=[],
             image_mount=[],
             env=[],
-            env_token=None,
+            meshagent_token=None,
         )
 
     assert "build_kwargs" not in captured
@@ -1784,7 +2117,7 @@ async def test_deploy_image_pack_allows_matching_volume_mount(
         empty_dir_mount=["/data"],
         image_mount=[],
         env=[],
-        env_token=None,
+        meshagent_token=None,
     )
 
     created_service = captured["created_service"]
@@ -1877,7 +2210,7 @@ CMD ["/app/dist/index.js"]
         empty_dir_mount=[],
         image_mount=[],
         env=[],
-        env_token=None,
+        meshagent_token=None,
     )
 
     created_service = captured["created_service"]
@@ -2000,7 +2333,7 @@ async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
         empty_dir_mount=[],
         image_mount=[],
         env=[],
-        env_token=None,
+        meshagent_token=None,
     )
 
     created_service = captured["created_service"]
@@ -2054,7 +2387,7 @@ async def test_deploy_image_build_options_require_pack() -> None:
             empty_dir_mount=[],
             image_mount=[],
             env=[],
-            env_token=None,
+            meshagent_token=None,
             private=True,
         )
 
@@ -2110,7 +2443,7 @@ async def test_deploy_image_sets_cookie_validation_when_private(
         empty_dir_mount=[],
         image_mount=[],
         env=[],
-        env_token=None,
+        meshagent_token=None,
         private=True,
     )
 
@@ -2243,7 +2576,7 @@ async def test_deploy_image_updates_existing_service_route_and_preserves_token_i
         empty_dir_mount=[],
         image_mount=[],
         env=["FOO=bar"],
-        env_token="full",
+        meshagent_token="full",
         private=False,
     )
 
@@ -2375,7 +2708,7 @@ async def test_deploy_image_sets_cookie_validation_on_private_published_ports(
         empty_dir_mount=[],
         image_mount=[],
         env=[],
-        env_token=None,
+        meshagent_token=None,
         private=True,
     )
 
@@ -2487,7 +2820,7 @@ async def test_deploy_image_preserves_existing_liveness_when_default_is_used(
         empty_dir_mount=[],
         image_mount=[],
         env=[],
-        env_token=None,
+        meshagent_token=None,
         private=True,
     )
 
@@ -2580,7 +2913,7 @@ async def test_deploy_image_liveness_flag_overrides_http_ports_only(
         empty_dir_mount=[],
         image_mount=[],
         env=[],
-        env_token=None,
+        meshagent_token=None,
         private=True,
     )
 
@@ -2663,7 +2996,7 @@ async def test_deploy_image_domain_requires_exactly_one_published_port(
             empty_dir_mount=[],
             image_mount=[],
             env=[],
-            env_token=None,
+            meshagent_token=None,
             private=True,
         )
 

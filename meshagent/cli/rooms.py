@@ -1,14 +1,16 @@
 # rooms_cli.py (add to the same module or import into your CLI package)
 
+import json
+from typing import Annotated, Optional
+
 import typer
 from rich import print
-from typing import Annotated, Optional
-import json
 
 from meshagent.cli import async_typer
-from meshagent.cli.common_options import ProjectIdOption
+from meshagent.cli.common_options import OutputFormatOption, ProjectIdOption
 from meshagent.cli.helper import (
     get_client,
+    print_json_table,
     resolve_project_id,
     resolve_room,
 )
@@ -206,6 +208,7 @@ async def room_update_command(
 async def room_list_command(
     *,
     project_id: ProjectIdOption,
+    o: OutputFormatOption = "table",
     limit: Annotated[
         int, typer.Option(help="Max rooms to return", min=1, max=500)
     ] = 50,
@@ -220,8 +223,6 @@ async def room_list_command(
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        print("[bold green]Fetching rooms...[/bold green]")
-
         rooms = await account_client.list_rooms(
             project_id=project_id,
             limit=limit,
@@ -237,7 +238,12 @@ async def room_list_command(
             }
             for r in rooms
         ]
-        print(json.dumps(output, indent=2))
+        if o == "json":
+            print(json.dumps(output, indent=2))
+        elif output:
+            print_json_table(output, "id", "name")
+        else:
+            print("No rooms found.")
     except RoomException as ex:
         print(f"[red]{ex}[/red]")
         raise typer.Exit(1)

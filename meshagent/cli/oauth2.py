@@ -238,6 +238,47 @@ async def secret_get(
         await account_client.close()
 
 
+@app.async_command("exists", help="Check whether a stored secret exists by ID.")
+async def secret_exists(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    id: Annotated[str, typer.Option(..., help="Secret ID")],
+    delegated_to: Annotated[
+        Optional[str],
+        typer.Option(help="Check a secret delegated to this participant name"),
+    ] = None,
+    for_identity: Annotated[
+        Optional[str],
+        typer.Option(help="Check a secret for a specific identity"),
+    ] = None,
+):
+    """Check whether a stored secret exists."""
+
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        jwt_consumer = await account_client.connect_room(
+            project_id=project_id, room=room
+        )
+
+        async with RoomClient(
+            protocol=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room),
+                token=jwt_consumer.jwt,
+            )
+        ) as consumer:
+            secret_exists = await consumer.secrets.exists(
+                secret_id=id,
+                delegated_to=delegated_to,
+                for_identity=for_identity,
+            )
+            typer.echo("true" if secret_exists else "false")
+
+    finally:
+        await account_client.close()
+
+
 @app.async_command("set", help="Store a secret by ID.")
 async def secret_set(
     *,
