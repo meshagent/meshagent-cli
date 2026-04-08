@@ -1,26 +1,66 @@
 from types import SimpleNamespace
 
 import pytest
+import click
 from click.testing import CliRunner
 
+from meshagent.api import ApiScope, ParticipantToken
+from meshagent.api.client import NotFoundError
 from meshagent.cli import room_connect
 from meshagent.cli import cli as root_cli
 from meshagent.cli.async_typer import get_command
 
+_LOCAL_SIGNING_SECRET = "local-room-signing-secret-1234567890"
+
 
 class _FakeAccountClient:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        room_token: str = "room-jwt",
+        room_name: str = "connected-room",
+        room_url: str = "wss://room-proxy.meshagent.test/rooms/connected-room",
+        secret_values: dict[tuple[str | None, str], bytes] | None = None,
+    ) -> None:
         self.base_url = "https://api.example.meshagent.test"
         self.closed = False
+        self.room_token = room_token
+        self.room_name = room_name
+        self.room_url = room_url
+        self.secret_values = secret_values or {}
         self.connect_calls: list[dict[str, str]] = []
+        self.secret_calls: list[dict[str, str | None]] = []
 
     async def connect_room(self, *, project_id: str, room: str) -> SimpleNamespace:
         self.connect_calls.append({"project_id": project_id, "room": room})
         return SimpleNamespace(
-            jwt="room-jwt",
-            room_name="connected-room",
-            room_url="wss://room-proxy.meshagent.test/rooms/connected-room",
+            jwt=self.room_token,
+            room_name=self.room_name,
+            room_url=self.room_url,
         )
+
+    async def get_room_secret(
+        self,
+        *,
+        project_id: str,
+        room_name: str,
+        secret_id: str,
+        delegated_to: str | None = None,
+        for_identity: str | None = None,
+    ) -> SimpleNamespace:
+        del delegated_to
+        self.secret_calls.append(
+            {
+                "project_id": project_id,
+                "room_name": room_name,
+                "secret_id": secret_id,
+                "for_identity": for_identity,
+            }
+        )
+        secret_key = (for_identity, secret_id)
+        if secret_key not in self.secret_values:
+            raise NotFoundError(f"missing secret {secret_key}")
+        return SimpleNamespace(data=self.secret_values[secret_key])
 
     async def close(self) -> None:
         self.closed = True
@@ -70,6 +110,8 @@ def test_room_connect_runs_command_with_connected_room_env(
             "project-input",
             "--room",
             "room-input",
+            "--env",
+            "EXTRA_ENV=extra-value",
             "--",
             "python",
             "-c",
@@ -87,6 +129,7 @@ def test_room_connect_runs_command_with_connected_room_env(
     captured_env = captured_run["env"]
     assert isinstance(captured_env, dict)
     assert captured_env["UNCHANGED_ENV"] == "keep-me"
+    assert captured_env["EXTRA_ENV"] == "extra-value"
     assert captured_env["MESHAGENT_API_URL"] == "https://env.meshagent.test"
     assert captured_env["MESHAGENT_TOKEN"] == "room-jwt"
     assert captured_env["MESHAGENT_ROOM"] == "connected-room"
@@ -138,6 +181,248 @@ async def test_room_connect_uses_default_api_url_when_env_is_unset(
     assert room_env.room_name == "connected-room"
     assert room_env.room_url == "https://room-proxy.meshagent.test/rooms/connected-room"
     assert room_env.token == "room-jwt"
+    assert account_client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_room_connect_build_env_requires_identity_for_secret_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-input"
+        return "project-1"
+
+    def _fake_resolve_room(room: str | None) -> str | None:
+        assert room == "room-input"
+        return room
+
+    monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
+    with pytest.raises(
+        click.BadParameter, match="--identity is required when using --env-secret"
+    ):
+        await room_connect._build_connected_command_env(
+            project_id="project-input",
+            room="room-input",
+            env=("PLAIN_ENV=plain-value",),
+            env_secret=("DB_PASSWORD=db-password",),
+            identity=None,
+            meshagent_token=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_room_connect_build_env_requires_identity_for_meshagent_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-input"
+        return "project-1"
+
+    def _fake_resolve_room(room: str | None) -> str | None:
+        assert room == "room-input"
+        return room
+
+    monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
+    with pytest.raises(
+        click.BadParameter,
+        match="--identity is required when using --meshagent-token",
+    ):
+        await room_connect._build_connected_command_env(
+            project_id="project-input",
+            room="room-input",
+            env=(),
+            env_secret=(),
+            identity=None,
+            meshagent_token="full",
+        )
+
+
+@pytest.mark.asyncio
+async def test_room_connect_build_env_with_identity_mints_local_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _unexpected_get_client() -> _FakeAccountClient:
+        raise AssertionError("get_client should not be called without --env-secret")
+
+    async def _fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-input"
+        return "project-1"
+
+    async def _fake_resolve_key(*, project_id: str | None, key: str | None) -> None:
+        assert project_id == "project-1"
+        assert key is None
+        return None
+
+    def _fake_resolve_room(room: str | None) -> str | None:
+        assert room == "room-input"
+        return room
+
+    monkeypatch.setattr(room_connect, "get_client", _unexpected_get_client)
+    monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(room_connect, "resolve_key", _fake_resolve_key)
+    monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
+    monkeypatch.setattr(
+        room_connect,
+        "meshagent_base_url",
+        lambda: "https://default.meshagent.test",
+    )
+    monkeypatch.setattr(
+        room_connect,
+        "websocket_room_url",
+        lambda *, room_name: f"wss://room-proxy.meshagent.test/rooms/{room_name}",
+    )
+    monkeypatch.setenv("MESHAGENT_SECRET", _LOCAL_SIGNING_SECRET)
+
+    child_env = await room_connect._build_connected_command_env(
+        project_id="project-input",
+        room="room-input",
+        env=(),
+        env_secret=(),
+        identity="agent-name",
+        meshagent_token=None,
+    )
+
+    minted_token = ParticipantToken.from_jwt(
+        child_env["MESHAGENT_TOKEN"],
+        token=_LOCAL_SIGNING_SECRET,
+    )
+    assert minted_token.name == "agent-name"
+    assert minted_token.role == "agent"
+    assert minted_token.grant_scope("room") == "room-input"
+    assert minted_token.get_api_grant() == ApiScope.agent_default()
+    assert child_env["MESHAGENT_ROOM"] == "room-input"
+    assert (
+        child_env["OPENAI_BASE_URL"]
+        == "https://room-proxy.meshagent.test/rooms/room-input/openai/v1"
+    )
+    assert (
+        child_env["ANTHROPIC_BASE_URL"]
+        == "https://room-proxy.meshagent.test/rooms/room-input/anthropic"
+    )
+    assert child_env["OPENAI_API_KEY"] == child_env["MESHAGENT_TOKEN"]
+    assert child_env["ANTHROPIC_API_KEY"] == child_env["MESHAGENT_TOKEN"]
+
+
+@pytest.mark.asyncio
+async def test_room_connect_build_env_with_identity_and_meshagent_token_mints_local_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _unexpected_get_client() -> _FakeAccountClient:
+        raise AssertionError("get_client should not be called without --env-secret")
+
+    async def _fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-input"
+        return "project-1"
+
+    async def _fake_resolve_key(*, project_id: str | None, key: str | None) -> None:
+        assert project_id == "project-1"
+        assert key is None
+        return None
+
+    def _fake_resolve_room(room: str | None) -> str | None:
+        assert room == "room-input"
+        return room
+
+    monkeypatch.setattr(room_connect, "get_client", _unexpected_get_client)
+    monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(room_connect, "resolve_key", _fake_resolve_key)
+    monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
+    monkeypatch.setattr(
+        room_connect,
+        "meshagent_base_url",
+        lambda: "https://default.meshagent.test",
+    )
+    monkeypatch.setattr(
+        room_connect,
+        "websocket_room_url",
+        lambda *, room_name: f"wss://room-proxy.meshagent.test/rooms/{room_name}",
+    )
+    monkeypatch.setenv("MESHAGENT_SECRET", _LOCAL_SIGNING_SECRET)
+
+    child_env = await room_connect._build_connected_command_env(
+        project_id="project-input",
+        room="room-input",
+        env=(),
+        env_secret=(),
+        identity="agent-name",
+        meshagent_token="full",
+    )
+
+    minted_token = ParticipantToken.from_jwt(
+        child_env["MESHAGENT_TOKEN"],
+        token=_LOCAL_SIGNING_SECRET,
+    )
+    assert minted_token.name == "agent-name"
+    assert minted_token.role == "agent"
+    assert minted_token.grant_scope("room") == "room-input"
+    assert minted_token.get_api_grant() == ApiScope.full()
+    assert child_env["OPENAI_API_KEY"] == child_env["MESHAGENT_TOKEN"]
+    assert child_env["ANTHROPIC_API_KEY"] == child_env["MESHAGENT_TOKEN"]
+
+
+@pytest.mark.asyncio
+async def test_room_connect_build_env_with_identity_fetches_secret_without_connect_room(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account_client = _FakeAccountClient(
+        secret_values={
+            ("agent-name", "db-password"): b"topsecret",
+        }
+    )
+
+    async def _fake_get_client() -> _FakeAccountClient:
+        return account_client
+
+    async def _fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-input"
+        return "project-1"
+
+    async def _fake_resolve_key(*, project_id: str | None, key: str | None) -> None:
+        assert project_id == "project-1"
+        assert key is None
+        return None
+
+    def _fake_resolve_room(room: str | None) -> str | None:
+        assert room == "room-input"
+        return room
+
+    monkeypatch.setattr(room_connect, "get_client", _fake_get_client)
+    monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(room_connect, "resolve_key", _fake_resolve_key)
+    monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
+    monkeypatch.setattr(
+        room_connect,
+        "meshagent_base_url",
+        lambda: "https://default.meshagent.test",
+    )
+    monkeypatch.setattr(
+        room_connect,
+        "websocket_room_url",
+        lambda *, room_name: f"wss://room-proxy.meshagent.test/rooms/{room_name}",
+    )
+    monkeypatch.setenv("MESHAGENT_SECRET", _LOCAL_SIGNING_SECRET)
+
+    child_env = await room_connect._build_connected_command_env(
+        project_id="project-input",
+        room="room-input",
+        env=(),
+        env_secret=("DB_PASSWORD=db-password",),
+        identity="agent-name",
+        meshagent_token=None,
+    )
+
+    assert child_env["DB_PASSWORD"] == "topsecret"
+    assert account_client.connect_calls == []
+    assert account_client.secret_calls == [
+        {
+            "project_id": "project-1",
+            "room_name": "room-input",
+            "secret_id": "db-password",
+            "for_identity": "agent-name",
+        }
+    ]
     assert account_client.closed is True
 
 

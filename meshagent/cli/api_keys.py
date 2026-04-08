@@ -1,10 +1,12 @@
 import json
 import shlex
+from binascii import Error as BinasciiError
 from typing import Annotated
 
 import typer
 from rich import print
 
+from meshagent.api.keys import parse_api_key
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import OutputFormatOption, ProjectIdOption
 from meshagent.cli.helper import (
@@ -31,6 +33,22 @@ async def _require_active_api_key(*, project_id: str | None) -> str:
     return key
 
 
+async def _get_active_api_key_id(*, project_id: str) -> str | None:
+    active_key = await get_active_api_key(project_id=project_id)
+    if active_key is None:
+        return None
+
+    try:
+        parsed_key = parse_api_key(active_key)
+    except (BinasciiError, IndexError, ValueError):
+        return None
+
+    if parsed_key.project_id != project_id:
+        return None
+
+    return parsed_key.id
+
+
 @app.async_command("list", help="List API keys for a project.")
 async def list(
     *,
@@ -48,7 +66,15 @@ async def list(
             ]
             print(json.dumps({"api-keys": sanitized_keys}, indent=2))
         else:
-            print_json_table(keys, "id", "name", "description")
+            active_key_id = await _get_active_api_key_id(project_id=project_id)
+            table_keys = [
+                {
+                    "active": "*" if key.get("id") == active_key_id else "",
+                    **key,
+                }
+                for key in keys
+            ]
+            print_json_table(table_keys, "active", "id", "name", "description")
     else:
         print("There are not currently any API keys in the project")
     await client.close()
