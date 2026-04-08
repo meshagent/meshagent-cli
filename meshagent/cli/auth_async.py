@@ -8,9 +8,10 @@ import secrets
 import webbrowser
 import asyncio
 from pathlib import Path
-from typing import Awaitable, Callable, Final, Optional
+from typing import Awaitable, Callable, Optional
 from urllib.parse import urlencode
 from aiohttp import web, ClientSession
+from meshagent.api.oauth_scopes import FULL_OAUTH_SCOPE
 
 # -----------------------------------------------------------------------------
 # Config
@@ -25,20 +26,6 @@ REDIRECT_URL = f"http://localhost:{REDIRECT_PORT}/callback"
 # - MESHAGENT_OAUTH_CLIENT_ID (required)
 # - MESHAGENT_OAUTH_CLIENT_SECRET (optional; only if your server requires it)
 # - MESHAGENT_OAUTH_SCOPES (optional; defaults to the full official scope set)
-
-DEFAULT_OAUTH_SCOPES: Final[tuple[str, ...]] = (
-    "profile",
-    "project/*",
-    "room/*",
-    "create_users",
-    "create_rooms",
-    "admin",
-    "developer",
-    "connect_room",
-    "delete_room",
-    "update_room",
-)
-DEFAULT_OAUTH_SCOPE_STRING: Final[str] = " ".join(DEFAULT_OAUTH_SCOPES)
 
 # -----------------------------------------------------------------------------
 # Helpers
@@ -94,7 +81,7 @@ def _client_secret() -> str | None:
 
 
 def _scopes() -> str:
-    return os.getenv("MESHAGENT_OAUTH_SCOPES", DEFAULT_OAUTH_SCOPE_STRING)
+    return os.getenv("MESHAGENT_OAUTH_SCOPES", FULL_OAUTH_SCOPE)
 
 
 def _save(tokens: dict):
