@@ -59,11 +59,13 @@ from meshagent.cli.helper import (
     build_shell_toolkit_builder,
     cleanup_args,
     cleanup_args_strip_options,
+    DEFAULT_DATABASE_NAMESPACE,
     get_client,
     merge_option_lists,
     parse_shell_tool_mounts,
     parse_memory_selector,
     parse_storage_tool_mounts,
+    resolve_database_namespace,
     resolve_shell_image,
     resolve_key,
     resolve_project_id,
@@ -285,6 +287,21 @@ def _current_command_runtime() -> Literal["chatbot", "process"]:
             return "process"
         context = context.parent
     return "chatbot"
+
+
+def _resolved_database_namespace(
+    *,
+    runtime: Literal["chatbot", "process"],
+    database_namespace: Optional[str],
+) -> Optional[list[str]]:
+    default_namespace: tuple[str, ...] | None = None
+    if runtime == "chatbot":
+        default_namespace = DEFAULT_DATABASE_NAMESPACE
+
+    return resolve_database_namespace(
+        namespace=database_namespace,
+        default_namespace=default_namespace,
+    )
 
 
 def _resolved_channels(
@@ -2078,8 +2095,10 @@ async def join(
         working_dir=working_dir,
         working_directory=working_directory,
     )
-    if database_namespace is not None:
-        database_namespace = database_namespace.split("::")
+    resolved_database_namespace = _resolved_database_namespace(
+        runtime=runtime,
+        database_namespace=database_namespace,
+    )
 
     key = await resolve_key(project_id=project_id, key=key)
     account_client = await get_client()
@@ -2182,7 +2201,7 @@ async def join(
             always_reply=always_reply,
             threading_mode=threading_mode,
             thread_dir=thread_dir,
-            database_namespace=database_namespace,
+            database_namespace=resolved_database_namespace,
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
@@ -2470,8 +2489,10 @@ async def service(
         working_dir=working_dir,
         working_directory=working_directory,
     )
-    if database_namespace is not None:
-        database_namespace = database_namespace.split("::")
+    resolved_database_namespace = _resolved_database_namespace(
+        runtime=runtime,
+        database_namespace=database_namespace,
+    )
 
     service = get_service(host=host, port=port)
     storage_tool_mounts = parse_storage_tool_mounts(
@@ -2540,7 +2561,7 @@ async def service(
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
             shell_tool_mounts=shell_tool_mounts,
-            database_namespace=database_namespace,
+            database_namespace=resolved_database_namespace,
             require_web_search=require_web_search,
             require_web_fetch=require_web_fetch,
             require_shell=require_shell,
@@ -2818,8 +2839,10 @@ async def spec(
         working_dir=working_dir,
         working_directory=working_directory,
     )
-    if database_namespace is not None:
-        database_namespace = database_namespace.split("::")
+    resolved_database_namespace = _resolved_database_namespace(
+        runtime=runtime,
+        database_namespace=database_namespace,
+    )
 
     service = get_service(host=None, port=None)
     storage_tool_mounts = parse_storage_tool_mounts(
@@ -2886,7 +2909,7 @@ async def spec(
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
             shell_tool_mounts=shell_tool_mounts,
-            database_namespace=database_namespace,
+            database_namespace=resolved_database_namespace,
             require_web_search=require_web_search,
             require_web_fetch=require_web_fetch,
             require_shell=require_shell,
@@ -3191,8 +3214,10 @@ async def deploy(
     )
     project_id = await resolve_project_id(project_id=project_id)
 
-    if database_namespace is not None:
-        database_namespace = database_namespace.split("::")
+    resolved_database_namespace = _resolved_database_namespace(
+        runtime=runtime,
+        database_namespace=database_namespace,
+    )
 
     service = get_service(host=None, port=None)
     storage_tool_mounts = parse_storage_tool_mounts(
@@ -3259,7 +3284,7 @@ async def deploy(
             storage=storage,
             storage_tool_mounts=storage_tool_mounts,
             shell_tool_mounts=shell_tool_mounts,
-            database_namespace=database_namespace,
+            database_namespace=resolved_database_namespace,
             require_web_search=require_web_search,
             require_web_fetch=require_web_fetch,
             require_shell=require_shell,
@@ -5093,8 +5118,10 @@ async def run(
         root = logging.getLogger()
         root.setLevel(logging.ERROR)
 
-    if database_namespace is not None:
-        database_namespace = database_namespace.split("::")
+    resolved_database_namespace = _resolved_database_namespace(
+        runtime=runtime,
+        database_namespace=database_namespace,
+    )
 
     key = await resolve_key(project_id=project_id, key=key)
     account_client = await get_client()
@@ -5195,7 +5222,7 @@ async def run(
             always_reply=always_reply,
             threading_mode=threading_mode,
             thread_dir=thread_dir,
-            database_namespace=database_namespace,
+            database_namespace=resolved_database_namespace,
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,

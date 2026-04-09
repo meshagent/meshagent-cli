@@ -44,6 +44,7 @@ from rich import print
 
 SETTINGS_FILE = Path.home() / ".meshagent" / "project.json"
 DEFAULT_SHELL_IMAGE = "meshagent/python:default"
+DEFAULT_DATABASE_NAMESPACE = (".database",)
 
 
 def _ensure_cache_dir():
@@ -377,6 +378,19 @@ def parse_memory_selector(value: str) -> tuple[str, Optional[list[str]]]:
     memory_name = segments[-1]
     namespace = segments[:-1]
     return memory_name, namespace or None
+
+
+def resolve_database_namespace(
+    *,
+    namespace: Optional[str],
+    default_namespace: tuple[str, ...] | None = None,
+) -> Optional[list[str]]:
+    if namespace is None:
+        if default_namespace is None:
+            return None
+        return list(default_namespace)
+
+    return namespace.split("::")
 
 
 def merge_option_lists(*option_lists: list[str]) -> list[str]:

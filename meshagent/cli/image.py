@@ -2313,6 +2313,7 @@ def _validate_deploy_build_stage_options(
     arch: str,
     pack_room_path: str | None,
     optimize: bool,
+    cred: list[str],
 ) -> None:
     if pack is not None:
         return
@@ -2328,6 +2329,8 @@ def _validate_deploy_build_stage_options(
         invalid_options.append("--pack-room-path")
     if not optimize:
         invalid_options.append("--no-optimize")
+    if len(cred) > 0:
+        invalid_options.append("--cred")
 
     if len(invalid_options) == 0:
         return
@@ -2557,6 +2560,13 @@ async def deploy_image(
             ),
         ),
     ] = True,
+    cred: Annotated[
+        list[str],
+        typer.Option(
+            "--cred",
+            help="Docker creds (username,password) or (registry,username,password)",
+        ),
+    ] = [],
     domain: Annotated[
         Optional[str],
         typer.Option(
@@ -2659,6 +2669,7 @@ async def deploy_image(
         arch=arch,
         pack_room_path=pack_room_path,
         optimize=optimize,
+        cred=cred,
     )
     parsed_environment = _parse_environment_variables(values=env)
     parsed_secret_environment = _parse_environment_secret_variables(values=env_secret)
@@ -2766,7 +2777,7 @@ async def deploy_image(
                 mount_image=[],
                 private=False,
                 optimize=optimize,
-                cred=[],
+                cred=cred,
             )
             existing_service = await _find_room_service_by_name(
                 account_client=account_client,

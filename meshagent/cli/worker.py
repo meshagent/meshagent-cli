@@ -27,11 +27,13 @@ from meshagent.cli.helper import (
     build_shell_toolkit_builder,
     cleanup_args,
     cleanup_args_strip_options,
+    DEFAULT_DATABASE_NAMESPACE,
     get_client,
     merge_option_lists,
     parse_shell_tool_mounts,
     parse_memory_selector,
     parse_storage_tool_mounts,
+    resolve_database_namespace,
     resolve_shell_image,
     resolve_key,
     resolve_project_id,
@@ -876,9 +878,7 @@ async def join(
     ] = None,
     database_namespace: Annotated[
         Optional[str],
-        typer.Option(
-            ..., help="Use a specific database namespace (JSON list or dotted)"
-        ),
+        typer.Option(..., help="Database namespace (e.g. foo::bar)"),
     ] = None,
     require_table_read: Annotated[
         list[str], typer.Option(..., help="Enable table read tools for these tables")
@@ -931,6 +931,10 @@ async def join(
     working_dir = _resolve_working_dir_option(
         working_dir=working_dir,
         working_directory=working_directory,
+    )
+    resolved_database_namespace = resolve_database_namespace(
+        namespace=database_namespace,
+        default_namespace=DEFAULT_DATABASE_NAMESPACE,
     )
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -1023,7 +1027,7 @@ async def join(
             require_computer_use=require_computer_use,
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
-            database_namespace=[database_namespace] if database_namespace else None,
+            database_namespace=resolved_database_namespace,
             title=title,
             description=description,
             working_dir=working_dir,
@@ -1288,6 +1292,10 @@ async def service(
         working_dir=working_dir,
         working_directory=working_directory,
     )
+    resolved_database_namespace = resolve_database_namespace(
+        namespace=database_namespace,
+        default_namespace=DEFAULT_DATABASE_NAMESPACE,
+    )
     service = get_service(host=host, port=port)
     storage_tool_mounts = parse_storage_tool_mounts(
         local_paths=storage_tool_local_path,
@@ -1365,7 +1373,7 @@ async def service(
             require_computer_use=require_computer_use,
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
-            database_namespace=[database_namespace] if database_namespace else None,
+            database_namespace=resolved_database_namespace,
             title=title,
             description=description,
             working_dir=working_dir,
@@ -1614,6 +1622,10 @@ async def spec(
         working_dir=working_dir,
         working_directory=working_directory,
     )
+    resolved_database_namespace = resolve_database_namespace(
+        namespace=database_namespace,
+        default_namespace=DEFAULT_DATABASE_NAMESPACE,
+    )
     service = get_service(host=None, port=None)
     storage_tool_mounts = parse_storage_tool_mounts(
         local_paths=storage_tool_local_path,
@@ -1690,7 +1702,7 @@ async def spec(
             require_computer_use=require_computer_use,
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
-            database_namespace=[database_namespace] if database_namespace else None,
+            database_namespace=resolved_database_namespace,
             title=title,
             description=description,
             working_dir=working_dir,
@@ -1964,6 +1976,10 @@ async def deploy(
         working_dir=working_dir,
         working_directory=working_directory,
     )
+    resolved_database_namespace = resolve_database_namespace(
+        namespace=database_namespace,
+        default_namespace=DEFAULT_DATABASE_NAMESPACE,
+    )
     project_id = await resolve_project_id(project_id=project_id)
 
     service = get_service(host=None, port=None)
@@ -2042,7 +2058,7 @@ async def deploy(
             require_computer_use=require_computer_use,
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
-            database_namespace=[database_namespace] if database_namespace else None,
+            database_namespace=resolved_database_namespace,
             title=title,
             description=description,
             working_dir=working_dir,

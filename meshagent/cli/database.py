@@ -21,6 +21,14 @@ from meshagent.api.sql import ALLOWED_DATA_TYPES, SchemaParseError, parse_table_
 from meshagent.api import RoomException  # or wherever you defined it
 
 app = async_typer.AsyncTyper(help="Manage database tables in a room")
+branch_app = async_typer.AsyncTyper(
+    help="Manage database branches in a room namespace."
+)
+app.add_typer(
+    branch_app,
+    name="branch",
+    help="Manage database branches in a room namespace.",
+)
 
 COLUMN_DEFINITIONS_HELP = (
     "Comma-separated column definitions. Example: "
@@ -135,6 +143,20 @@ NamespaceOption = Annotated[
     ),
 ]
 
+BranchOption = Annotated[
+    Optional[str],
+    typer.Option("--branch", help="Database branch name (defaults to main)"),
+]
+
+VersionOption = Annotated[
+    Optional[int],
+    typer.Option(
+        "--version",
+        "-v",
+        help="Historical table version to read (defaults to latest on the branch)",
+    ),
+]
+
 
 # ---------------------------
 # Commands
@@ -148,6 +170,7 @@ async def list_tables(
     project_id: ProjectIdOption,
     room: RoomOption,
     namespace: NamespaceOption = None,
+    branch: BranchOption = None,
 ):
     account_client = await get_client()
     try:
@@ -163,7 +186,10 @@ async def list_tables(
                 token=connection.jwt,
             )
         ) as client:
-            tables = await client.database.list_tables(namespace=_ns(namespace))
+            tables = await client.database.list_tables(
+                namespace=_ns(namespace),
+                branch=branch,
+            )
             if not tables:
                 print("[bold yellow]No tables found.[/bold yellow]")
             else:
@@ -184,6 +210,8 @@ async def inspect(
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     namespace: NamespaceOption = None,
+    branch: BranchOption = None,
+    version: VersionOption = None,
     json: Annotated[
         bool, typer.Option("--json", help="Output raw schema JSON")
     ] = False,
@@ -203,7 +231,10 @@ async def inspect(
             )
         ) as client:
             schema = await client.database.inspect(
-                table=table, namespace=_ns(namespace)
+                table=table,
+                namespace=_ns(namespace),
+                branch=branch,
+                version=version,
             )
 
             if json:
@@ -283,6 +314,7 @@ async def create_table(
         str, typer.Option("--mode", help="create | overwrite | create_if_not_exists")
     ] = "create",
     namespace: NamespaceOption = None,
+    branch: BranchOption = None,
     columns: Annotated[
         Optional[str],
         typer.Option(
@@ -372,6 +404,7 @@ async def create_table(
                     schema=schema,
                     mode=mode,  # type: ignore
                     namespace=_ns(namespace),
+                    branch=branch,
                 )
             elif schema is not None:
                 await client.database.create_table_with_schema(
@@ -379,6 +412,7 @@ async def create_table(
                     schema=schema,
                     mode=mode,  # type: ignore
                     namespace=_ns(namespace),
+                    branch=branch,
                 )
             else:
                 await client.database.create_table_from_data_stream(
@@ -386,6 +420,7 @@ async def create_table(
                     chunks=_record_chunks([]),
                     mode=mode,  # type: ignore
                     namespace=_ns(namespace),
+                    branch=branch,
                 )
 
             print(f"[bold green]Created table:[/bold green] {table}")
@@ -404,6 +439,7 @@ async def drop_table(
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     namespace: NamespaceOption = None,
+    branch: BranchOption = None,
     ignore_missing: Annotated[
         bool, typer.Option("--ignore-missing", help="Ignore missing table")
     ] = False,
@@ -423,7 +459,10 @@ async def drop_table(
             )
         ) as client:
             await client.database.drop_table(
-                name=table, ignore_missing=ignore_missing, namespace=_ns(namespace)
+                name=table,
+                ignore_missing=ignore_missing,
+                namespace=_ns(namespace),
+                branch=branch,
             )
             print(f"[bold green]Dropped table:[/bold green] {table}")
 
@@ -441,6 +480,7 @@ async def add_columns(
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     namespace: NamespaceOption = None,
+    branch: BranchOption = None,
     columns: Annotated[
         Optional[str],
         typer.Option(
@@ -513,7 +553,10 @@ async def add_columns(
                         new_cols[k] = v
 
             await client.database.add_columns(
-                table=table, new_columns=new_cols, namespace=_ns(namespace)
+                table=table,
+                new_columns=new_cols,
+                namespace=_ns(namespace),
+                branch=branch,
             )
             print(f"[bold green]Added columns to[/bold green] {table}")
 
@@ -531,6 +574,7 @@ async def drop_columns(
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     namespace: NamespaceOption = None,
+    branch: BranchOption = None,
     columns: Annotated[
         List[str],
         typer.Option(..., "--column", "-c", help="Column to drop (repeatable)"),
@@ -551,7 +595,10 @@ async def drop_columns(
             )
         ) as client:
             await client.database.drop_columns(
-                table=table, columns=columns, namespace=_ns(namespace)
+                table=table,
+                columns=columns,
+                namespace=_ns(namespace),
+                branch=branch,
             )
             print(f"[bold green]Dropped columns from[/bold green] {table}")
 
@@ -569,6 +616,7 @@ async def insert(
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     namespace: NamespaceOption = None,
+    branch: BranchOption = None,
     json: Annotated[
         Optional[str], typer.Option("--json", help="JSON list of records")
     ] = None,
@@ -601,6 +649,7 @@ async def insert(
                 table=table,
                 chunks=_record_chunks(records),
                 namespace=_ns(namespace),
+                branch=branch,
             )
             print(
                 f"[bold green]Inserted[/bold green] {len(records)} record(s) into {table}"
@@ -621,6 +670,7 @@ async def merge(
     table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     on: Annotated[str, typer.Option(..., "--on", help="Column to match for upsert")],
     namespace: NamespaceOption = None,
+    branch: BranchOption = None,
     json: Annotated[
         Optional[str], typer.Option("--json", help="JSON records (list)")
     ] = None,
@@ -653,6 +703,7 @@ async def merge(
                 on=on,
                 chunks=_record_chunks(records),
                 namespace=_ns(namespace),
+                branch=branch,
             )
             print(
                 f"[bold green]Merged[/bold green] {len(records)} record(s) into {table} on {on}"
@@ -675,6 +726,7 @@ async def update(
         str, typer.Option(..., "--where", help='SQL WHERE clause, e.g. "id = 1"')
     ],
     namespace: NamespaceOption = None,
+    branch: BranchOption = None,
     values_json: Annotated[
         Optional[str],
         typer.Option("--values-json", help="JSON object of literal values"),
@@ -709,6 +761,7 @@ async def update(
                 values=values,
                 values_sql=values_sql,
                 namespace=_ns(namespace),
+                branch=branch,
             )
             print(f"[bold green]Updated[/bold green] {table} where {where}")
 
@@ -727,6 +780,7 @@ async def delete(
     table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     where: Annotated[str, typer.Option(..., "--where", help="SQL WHERE clause")],
     namespace: NamespaceOption = None,
+    branch: BranchOption = None,
 ):
     account_client = await get_client()
     try:
@@ -743,7 +797,10 @@ async def delete(
             )
         ) as client:
             await client.database.delete(
-                table=table, where=where, namespace=_ns(namespace)
+                table=table,
+                where=where,
+                namespace=_ns(namespace),
+                branch=branch,
             )
             print(f"[bold green]Deleted[/bold green] from {table} where {where}")
 
@@ -761,6 +818,8 @@ async def search(
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     namespace: NamespaceOption = None,
+    branch: BranchOption = None,
+    version: VersionOption = None,
     text: Annotated[
         Optional[str], typer.Option("--text", help="Full-text query")
     ] = None,
@@ -819,6 +878,8 @@ async def search(
                     limit=limit,
                     offset=offset,
                     namespace=_ns(namespace),
+                    branch=branch,
+                    version=version,
                 ),
                 pretty=pretty,
             )
@@ -884,6 +945,8 @@ async def sql(
             help="Path/URL to JSON object of SQL parameters",
         ),
     ] = None,
+    branch: BranchOption = None,
+    version: VersionOption = None,
     pretty: Annotated[
         bool, typer.Option("--pretty/--no-pretty", help="Pretty-print JSON")
     ] = True,
@@ -932,7 +995,12 @@ async def sql(
         if table is not None:
             for table_name in table:
                 table_refs.append(
-                    SqlTableReference(name=table_name, namespace=resolved_namespace)
+                    SqlTableReference(
+                        name=table_name,
+                        namespace=resolved_namespace,
+                        branch=branch,
+                        version=version,
+                    )
                 )
 
         if tables_obj is not None:
@@ -948,6 +1016,10 @@ async def sql(
                     and "namespace" not in table_ref_payload
                 ):
                     table_ref_payload["namespace"] = resolved_namespace
+                if branch is not None and "branch" not in table_ref_payload:
+                    table_ref_payload["branch"] = branch
+                if version is not None and "version" not in table_ref_payload:
+                    table_ref_payload["version"] = version
 
                 table_refs.append(SqlTableReference.model_validate(table_ref_payload))
 
@@ -991,6 +1063,7 @@ async def optimize(
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     namespace: NamespaceOption = None,
+    branch: BranchOption = None,
 ):
     account_client = await get_client()
     try:
@@ -1006,7 +1079,11 @@ async def optimize(
                 token=connection.jwt,
             )
         ) as client:
-            await client.database.optimize(table=table, namespace=_ns(namespace))
+            await client.database.optimize(
+                table=table,
+                namespace=_ns(namespace),
+                branch=branch,
+            )
             print(f"[bold green]Optimized[/bold green] {table}")
 
     except RoomException as e:
@@ -1028,6 +1105,7 @@ async def list_versions(
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     namespace: NamespaceOption = None,
+    branch: BranchOption = None,
     pretty: Annotated[
         bool, typer.Option("--pretty/--no-pretty", help="Pretty-print JSON")
     ] = True,
@@ -1047,7 +1125,9 @@ async def list_versions(
             )
         ) as client:
             versions = await client.database.list_versions(
-                table=table, namespace=_ns(namespace)
+                table=table,
+                namespace=_ns(namespace),
+                branch=branch,
             )
             out = [v.model_dump(mode="json") for v in versions]
             print(_json.dumps(out, indent=2 if pretty else None))
@@ -1059,15 +1139,51 @@ async def list_versions(
         await account_client.close()
 
 
-@app.async_command(
-    "checkout", help="Check out a room database table at a specific version."
-)
-async def checkout(
+@branch_app.async_command("list", help="List database branches in a room namespace.")
+async def list_branches(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
-    table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
-    version: Annotated[int, typer.Option(..., "--version", "-v", help="Table version")],
+    namespace: NamespaceOption = None,
+    pretty: Annotated[
+        bool, typer.Option("--pretty/--no-pretty", help="Pretty-print JSON")
+    ] = True,
+):
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        room_name = resolve_room(room)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
+
+        async with RoomClient(
+            protocol=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room_name),
+                token=connection.jwt,
+            )
+        ) as client:
+            branches = await client.database.list_branches(namespace=_ns(namespace))
+            out = [branch.model_dump(mode="json") for branch in branches]
+            print(_json.dumps(out, indent=2 if pretty else None))
+
+    except RoomException as e:
+        print(e)
+        raise typer.Exit(1)
+    finally:
+        await account_client.close()
+
+
+@branch_app.async_command("create", help="Create a database branch.")
+async def create_branch(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    branch: Annotated[str, typer.Option(..., "--branch", help="New branch name")],
+    from_branch: Annotated[
+        Optional[str],
+        typer.Option("--from-branch", help="Source branch to branch from"),
+    ] = None,
     namespace: NamespaceOption = None,
 ):
     account_client = await get_client()
@@ -1084,10 +1200,52 @@ async def checkout(
                 token=connection.jwt,
             )
         ) as client:
-            await client.database.checkout(
-                table=table, version=version, namespace=_ns(namespace)
+            await client.database.create_branch(
+                branch=branch,
+                from_branch=from_branch,
+                namespace=_ns(namespace),
             )
-            print(f"[bold green]Checked out[/bold green] {table} @ version {version}")
+            if from_branch is None:
+                print(f"[bold green]Created branch[/bold green] {branch} from main")
+            else:
+                print(
+                    f"[bold green]Created branch[/bold green] {branch} from {from_branch}"
+                )
+
+    except RoomException as e:
+        print(e)
+        raise typer.Exit(1)
+    finally:
+        await account_client.close()
+
+
+@branch_app.async_command("delete", help="Delete a database branch.")
+async def delete_branch(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    branch: Annotated[str, typer.Option(..., "--branch", help="Branch name")],
+    namespace: NamespaceOption = None,
+):
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        room_name = resolve_room(room)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
+
+        async with RoomClient(
+            protocol=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room_name),
+                token=connection.jwt,
+            )
+        ) as client:
+            await client.database.delete_branch(
+                branch=branch,
+                namespace=_ns(namespace),
+            )
+            print(f"[bold green]Deleted branch[/bold green] {branch}")
 
     except RoomException as e:
         print(e)
@@ -1106,6 +1264,7 @@ async def restore(
     table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     version: Annotated[int, typer.Option(..., "--version", "-v", help="Table version")],
     namespace: NamespaceOption = None,
+    branch: BranchOption = None,
 ):
     account_client = await get_client()
     try:
@@ -1122,7 +1281,10 @@ async def restore(
             )
         ) as client:
             await client.database.restore(
-                table=table, version=version, namespace=_ns(namespace)
+                table=table,
+                version=version,
+                namespace=_ns(namespace),
+                branch=branch,
             )
             print(f"[bold green]Restored[/bold green] {table} to version {version}")
 
@@ -1145,6 +1307,8 @@ async def list_indexes(
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     namespace: NamespaceOption = None,
+    branch: BranchOption = None,
+    version: VersionOption = None,
     pretty: Annotated[
         bool, typer.Option("--pretty/--no-pretty", help="Pretty-print JSON")
     ] = True,
@@ -1164,7 +1328,10 @@ async def list_indexes(
             )
         ) as client:
             idxs = await client.database.list_indexes(
-                table=table, namespace=_ns(namespace)
+                table=table,
+                namespace=_ns(namespace),
+                branch=branch,
+                version=version,
             )
             out = [i.model_dump(mode="json") for i in idxs]
             print(_json.dumps(out, indent=2 if pretty else None))
@@ -1194,6 +1361,7 @@ async def create_index(
         ),
     ] = None,
     namespace: NamespaceOption = None,
+    branch: BranchOption = None,
 ):
     account_client = await get_client()
     try:
@@ -1215,6 +1383,7 @@ async def create_index(
                     column=column,
                     replace=replace,
                     namespace=_ns(namespace),
+                    branch=branch,
                 )
             elif kind == "scalar":
                 await client.database.create_scalar_index(
@@ -1222,6 +1391,7 @@ async def create_index(
                     column=column,
                     replace=replace,
                     namespace=_ns(namespace),
+                    branch=branch,
                 )
             elif kind in ("fts", "full_text", "full-text"):
                 await client.database.create_full_text_search_index(
@@ -1229,6 +1399,7 @@ async def create_index(
                     column=column,
                     replace=replace,
                     namespace=_ns(namespace),
+                    branch=branch,
                 )
             else:
                 raise typer.BadParameter("--kind must be one of: vector, scalar, fts")
@@ -1250,6 +1421,7 @@ async def drop_index(
     table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
     name: Annotated[str, typer.Option(..., "--name", help="Index name")],
     namespace: NamespaceOption = None,
+    branch: BranchOption = None,
 ):
     account_client = await get_client()
     try:
@@ -1266,7 +1438,10 @@ async def drop_index(
             )
         ) as client:
             await client.database.drop_index(
-                table=table, name=name, namespace=_ns(namespace)
+                table=table,
+                name=name,
+                namespace=_ns(namespace),
+                branch=branch,
             )
             print(f"[bold green]Dropped index[/bold green] {name} on {table}")
 
