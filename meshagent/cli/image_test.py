@@ -1577,6 +1577,9 @@ async def test_deploy_image_creates_room_service_with_mounts_env_secret_and_toke
     assert env_by_name["MESHAGENT_TOKEN"].token.api.secrets is None
     assert env_by_name["MESHAGENT_TOKEN"].token.api.services is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.role == "agent"
+    for env_name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+        assert env_by_name[env_name].token is not None
+        assert env_by_name[env_name].token == env_by_name["MESHAGENT_TOKEN"].token
     assert captured["secret_checks"] == [
         {
             "secret_id": "secret-1",
@@ -1679,6 +1682,9 @@ async def test_deploy_image_identity_overrides_env_secret_and_token_identity(
     )
     assert env_by_name["MESHAGENT_TOKEN"].token is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.identity == "custom-agent"
+    for env_name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+        assert env_by_name[env_name].token is not None
+        assert env_by_name[env_name].token == env_by_name["MESHAGENT_TOKEN"].token
     assert captured["secret_checks"] == [
         {
             "secret_id": "secret-1",
@@ -2636,6 +2642,9 @@ async def test_deploy_image_updates_existing_service_route_and_preserves_token_i
     assert env_by_name["MESHAGENT_TOKEN"].token.api.admin is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.api.secrets is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.api.tunnels is not None
+    for env_name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+        assert env_by_name[env_name].token is not None
+        assert env_by_name[env_name].token == env_by_name["MESHAGENT_TOKEN"].token
     assert updated_spec.ports is not None
     assert updated_spec.ports[0].liveness == "/"
     assert updated_spec.ports[0].public is True

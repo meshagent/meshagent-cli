@@ -346,7 +346,7 @@ async def create_table(
     Column definitions via --columns/-c use SQL-like syntax:
       names vector(20) null, tags list(text), meta struct(owner text, score float)
 
-    Allowed types: int, bool, date, timestamp, float, text, binary, vector, list, struct.
+    Allowed types: int, bool, date, timestamp, float, text, json, binary, uuid, vector, list, struct.
     Vector syntax: vector(size[, element_type]).
     List syntax: list(element_type).
     Struct syntax: struct(field_name type[, ...]).
@@ -510,7 +510,7 @@ async def add_columns(
     Column definitions via --columns/-c use SQL-like syntax:
       names vector(20) null, tags list(text), meta struct(owner text, score float)
 
-    Allowed types: int, bool, date, timestamp, float, text, binary, vector, list, struct.
+    Allowed types: int, bool, date, timestamp, float, text, json, binary, uuid, vector, list, struct.
     Vector syntax: vector(size[, element_type]).
     List syntax: list(element_type).
     Struct syntax: struct(field_name type[, ...]).
@@ -728,20 +728,16 @@ async def update(
     namespace: NamespaceOption = None,
     branch: BranchOption = None,
     values_json: Annotated[
-        Optional[str],
-        typer.Option("--values-json", help="JSON object of literal values"),
-    ] = None,
-    values_sql_json: Annotated[
-        Optional[str],
-        typer.Option("--values-sql-json", help="JSON object of SQL expressions"),
-    ] = None,
+        str,
+        typer.Option(
+            "--values-json",
+            help='JSON object of update values; use {"column":{"expression":"..."}} for expressions',
+        ),
+    ],
 ):
     account_client = await get_client()
     try:
         values = _parse_json_arg(values_json, name="--values-json")
-        values_sql = _parse_json_arg(values_sql_json, name="--values-sql-json")
-        if values is None and values_sql is None:
-            raise typer.BadParameter("Provide --values-json and/or --values-sql-json")
 
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
@@ -759,7 +755,6 @@ async def update(
                 table=table,
                 where=where,
                 values=values,
-                values_sql=values_sql,
                 namespace=_ns(namespace),
                 branch=branch,
             )
@@ -1393,7 +1388,7 @@ async def create_index(
                     namespace=_ns(namespace),
                     branch=branch,
                 )
-            elif kind in ("fts", "full_text", "full-text"):
+            elif kind in "fts":
                 await client.database.create_full_text_search_index(
                     table=table,
                     column=column,

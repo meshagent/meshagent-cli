@@ -66,6 +66,15 @@ class _FakeAccountClient:
         self.closed = True
 
 
+def test_room_connect_help_mentions_llm_token_aliases() -> None:
+    help_text = room_connect.connect_command.help
+
+    assert isinstance(help_text, str)
+    assert "MESHAGENT_TOKEN" in help_text
+    assert "OPENAI_API_KEY" in help_text
+    assert "ANTHROPIC_API_KEY" in help_text
+
+
 def test_room_connect_runs_command_with_connected_room_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

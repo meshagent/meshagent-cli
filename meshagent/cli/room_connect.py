@@ -21,6 +21,12 @@ from meshagent.cli.helper import (
     resolve_room,
 )
 
+_CONNECTED_TOKEN_ENV_NAMES = (
+    "MESHAGENT_TOKEN",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+)
+
 
 @dataclass(frozen=True)
 class _ConnectedRoomEnv:
@@ -259,6 +265,15 @@ def _run_connected_command(
     return result.returncode
 
 
+def _set_connected_token_environment(
+    *,
+    child_env: dict[str, str],
+    connected_token: str,
+) -> None:
+    for env_name in _CONNECTED_TOKEN_ENV_NAMES:
+        child_env[env_name] = connected_token
+
+
 async def _build_connected_command_env(
     *,
     project_id: str | None,
@@ -326,12 +341,13 @@ async def _build_connected_command_env(
 
         child_env = os.environ.copy()
         child_env["MESHAGENT_API_URL"] = room_env.api_url
-        child_env["MESHAGENT_TOKEN"] = connected_token
         child_env["MESHAGENT_ROOM"] = room_env.room_name
         child_env["OPENAI_BASE_URL"] = f"{room_env.room_url}/openai/v1"
         child_env["ANTHROPIC_BASE_URL"] = f"{room_env.room_url}/anthropic"
-        child_env["OPENAI_API_KEY"] = connected_token
-        child_env["ANTHROPIC_API_KEY"] = connected_token
+        _set_connected_token_environment(
+            child_env=child_env,
+            connected_token=connected_token,
+        )
 
         for name, value in parsed_environment:
             child_env[name] = value
@@ -372,7 +388,8 @@ async def _build_connected_command_env(
     "connect",
     help=(
         "Connect to a room and run a local command with "
-        "MESHAGENT_API_URL, MESHAGENT_TOKEN, and MESHAGENT_ROOM set. "
+        "MESHAGENT_API_URL, MESHAGENT_TOKEN, OPENAI_API_KEY, "
+        "ANTHROPIC_API_KEY, and MESHAGENT_ROOM set. "
         "Use -- before the local command."
     ),
 )
