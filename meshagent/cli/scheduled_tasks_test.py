@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import json
+import os
 
 import pytest
 import typer
@@ -215,6 +216,47 @@ async def test_scheduled_task_list_prints_table_rows(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_scheduled_task_list_defaults_room_from_env(
+    monkeypatch,
+) -> None:
+    fake_client = _FakeScheduledTasksClient()
+
+    async def fake_get_client() -> _FakeScheduledTasksClient:
+        return fake_client
+
+    async def fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-1"
+        return "resolved-project"
+
+    monkeypatch.setattr(scheduled_tasks, "get_client", fake_get_client)
+    monkeypatch.setattr(scheduled_tasks, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setenv("MESHAGENT_ROOM", "room-from-env")
+
+    await scheduled_tasks.scheduled_task_list(
+        project_id="project-1",
+        room=os.getenv("MESHAGENT_ROOM"),
+        task_id=None,
+        active=False,
+        inactive=False,
+        limit=200,
+        offset=0,
+        o="json",
+    )
+
+    assert fake_client.list_calls == [
+        {
+            "project_id": "resolved-project",
+            "room_name": "room-from-env",
+            "task_id": None,
+            "active": None,
+            "limit": 200,
+            "offset": 0,
+        }
+    ]
+    assert fake_client.closed is True
+
+
+@pytest.mark.asyncio
 async def test_scheduled_task_update_sends_partial_patch(monkeypatch) -> None:
     fake_client = _FakeScheduledTasksClient()
     printed: list[str] = []
@@ -234,10 +276,12 @@ async def test_scheduled_task_update_sends_partial_patch(monkeypatch) -> None:
     monkeypatch.setattr(scheduled_tasks, "resolve_project_id", fake_resolve_project_id)
     monkeypatch.setattr(scheduled_tasks, "print", fake_print)
 
+    monkeypatch.setenv("MESHAGENT_ROOM", "room-from-env")
+
     await scheduled_tasks.scheduled_task_update(
         project_id="project-1",
         task_id="task-1",
-        room=None,
+        room=os.getenv("MESHAGENT_ROOM"),
         queue="queue-2",
         schedule="15 * * * *",
         payload='{"action":"refresh"}',
@@ -251,7 +295,7 @@ async def test_scheduled_task_update_sends_partial_patch(monkeypatch) -> None:
         {
             "project_id": "resolved-project",
             "task_id": "task-1",
-            "room_name": None,
+            "room_name": "room-from-env",
             "queue_name": "queue-2",
             "payload": {"action": "refresh"},
             "schedule": "15 * * * *",
