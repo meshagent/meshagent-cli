@@ -341,6 +341,7 @@ async def _build_connected_command_env(
 
         child_env = os.environ.copy()
         child_env["MESHAGENT_API_URL"] = room_env.api_url
+        child_env["MESHAGENT_PROJECT_ID"] = room_env.project_id
         child_env["MESHAGENT_ROOM"] = room_env.room_name
         child_env["OPENAI_BASE_URL"] = f"{room_env.room_url}/openai/v1"
         child_env["ANTHROPIC_BASE_URL"] = f"{room_env.room_url}/anthropic"
@@ -388,8 +389,8 @@ async def _build_connected_command_env(
     "connect",
     help=(
         "Connect to a room and run a local command with "
-        "MESHAGENT_API_URL, MESHAGENT_TOKEN, OPENAI_API_KEY, "
-        "ANTHROPIC_API_KEY, and MESHAGENT_ROOM set. "
+        "MESHAGENT_API_URL, MESHAGENT_PROJECT_ID, MESHAGENT_TOKEN, "
+        "OPENAI_API_KEY, ANTHROPIC_API_KEY, and MESHAGENT_ROOM set. "
         "Use -- before the local command."
     ),
 )
