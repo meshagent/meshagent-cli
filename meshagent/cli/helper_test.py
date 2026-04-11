@@ -5,11 +5,13 @@ import typer
 
 from meshagent.agents.context import AgentSessionContext
 from meshagent.cli.helper import (
+    DEFAULT_DATABASE_NAMESPACE,
     DEFAULT_SHELL_IMAGE,
     build_shell_toolkit_builder,
     init_context_from_spec,
     parse_memory_selector,
     parse_shell_tool_mounts,
+    resolve_database_namespace,
     resolve_shell_image,
     supports_openai_shell_tool,
 )
@@ -29,6 +31,21 @@ def test_parse_memory_selector_with_namespace() -> None:
 
     assert memory_name == "graph"
     assert namespace == ["team", "shared"]
+
+
+def test_resolve_database_namespace_without_default_returns_none() -> None:
+    assert resolve_database_namespace(namespace=None) is None
+
+
+def test_resolve_database_namespace_uses_default_when_omitted() -> None:
+    assert resolve_database_namespace(
+        namespace=None,
+        default_namespace=DEFAULT_DATABASE_NAMESPACE,
+    ) == [".database"]
+
+
+def test_resolve_database_namespace_splits_namespace_segments() -> None:
+    assert resolve_database_namespace(namespace="foo::bar") == ["foo", "bar"]
 
 
 @pytest.mark.parametrize(

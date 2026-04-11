@@ -66,6 +66,16 @@ class _FakeAccountClient:
         self.closed = True
 
 
+def test_room_connect_help_mentions_llm_token_aliases() -> None:
+    help_text = room_connect.connect_command.help
+
+    assert isinstance(help_text, str)
+    assert "MESHAGENT_PROJECT_ID" in help_text
+    assert "MESHAGENT_TOKEN" in help_text
+    assert "OPENAI_API_KEY" in help_text
+    assert "ANTHROPIC_API_KEY" in help_text
+
+
 def test_room_connect_runs_command_with_connected_room_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -131,6 +141,7 @@ def test_room_connect_runs_command_with_connected_room_env(
     assert captured_env["UNCHANGED_ENV"] == "keep-me"
     assert captured_env["EXTRA_ENV"] == "extra-value"
     assert captured_env["MESHAGENT_API_URL"] == "https://env.meshagent.test"
+    assert captured_env["MESHAGENT_PROJECT_ID"] == "project-1"
     assert captured_env["MESHAGENT_TOKEN"] == "room-jwt"
     assert captured_env["MESHAGENT_ROOM"] == "connected-room"
     assert (
@@ -292,6 +303,7 @@ async def test_room_connect_build_env_with_identity_mints_local_token(
     assert minted_token.role == "agent"
     assert minted_token.grant_scope("room") == "room-input"
     assert minted_token.get_api_grant() == ApiScope.agent_default()
+    assert child_env["MESHAGENT_PROJECT_ID"] == "project-1"
     assert child_env["MESHAGENT_ROOM"] == "room-input"
     assert (
         child_env["OPENAI_BASE_URL"]
@@ -358,6 +370,7 @@ async def test_room_connect_build_env_with_identity_and_meshagent_token_mints_lo
     assert minted_token.role == "agent"
     assert minted_token.grant_scope("room") == "room-input"
     assert minted_token.get_api_grant() == ApiScope.full()
+    assert child_env["MESHAGENT_PROJECT_ID"] == "project-1"
     assert child_env["OPENAI_API_KEY"] == child_env["MESHAGENT_TOKEN"]
     assert child_env["ANTHROPIC_API_KEY"] == child_env["MESHAGENT_TOKEN"]
 
@@ -414,6 +427,7 @@ async def test_room_connect_build_env_with_identity_fetches_secret_without_conne
     )
 
     assert child_env["DB_PASSWORD"] == "topsecret"
+    assert child_env["MESHAGENT_PROJECT_ID"] == "project-1"
     assert account_client.connect_calls == []
     assert account_client.secret_calls == [
         {

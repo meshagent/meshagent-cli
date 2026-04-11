@@ -47,11 +47,13 @@ from meshagent.cli.helper import (
     build_shell_toolkit_builder,
     cleanup_args,
     cleanup_args_strip_options,
+    DEFAULT_DATABASE_NAMESPACE,
     get_client,
     merge_option_lists,
     parse_shell_tool_mounts,
     parse_memory_selector,
     parse_storage_tool_mounts,
+    resolve_database_namespace,
     resolve_shell_image,
     resolve_key,
     resolve_project_id,
@@ -312,6 +314,7 @@ def build_task_runner(
     require_uuid: bool = False,
     use_memory: Optional[str] = None,
     memory_model: Optional[str] = None,
+    database_namespace: Optional[list[str]] = None,
     require_computer_use: bool = False,
     starting_url: Optional[str] = None,
     allow_goto_url: bool = False,
@@ -616,7 +619,9 @@ def build_task_runner(
                             room=self.room,
                             model=model,
                             config=DatabaseToolkitConfig(
-                                tables=require_table_read, read_only=True
+                                tables=require_table_read,
+                                read_only=True,
+                                namespace=database_namespace,
                             ),
                         )
                     ).tools
@@ -645,7 +650,9 @@ def build_task_runner(
                             room=self.room,
                             model=model,
                             config=DatabaseToolkitConfig(
-                                tables=require_table_write, read_only=False
+                                tables=require_table_write,
+                                read_only=False,
+                                namespace=database_namespace,
                             ),
                         )
                     ).tools
@@ -905,6 +912,10 @@ async def join(
             help="Model name for memory LLM ingestion",
         ),
     ] = None,
+    database_namespace: Annotated[
+        Optional[str],
+        typer.Option(..., help="Database namespace (e.g. foo::bar)"),
+    ] = None,
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
@@ -980,6 +991,10 @@ async def join(
     working_dir = _resolve_working_dir_option(
         working_dir=working_dir,
         working_directory=working_directory,
+    )
+    resolved_database_namespace = resolve_database_namespace(
+        namespace=database_namespace,
+        default_namespace=DEFAULT_DATABASE_NAMESPACE,
     )
     key = await resolve_key(project_id=project_id, key=key)
     account_client = await get_client()
@@ -1080,6 +1095,7 @@ async def join(
             require_uuid=require_uuid,
             use_memory=use_memory,
             memory_model=memory_model,
+            database_namespace=resolved_database_namespace,
             require_computer_use=require_computer_use,
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
@@ -1270,6 +1286,10 @@ async def run(
             help="Model name for memory LLM ingestion",
         ),
     ] = None,
+    database_namespace: Annotated[
+        Optional[str],
+        typer.Option(..., help="Database namespace (e.g. foo::bar)"),
+    ] = None,
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
@@ -1370,6 +1390,10 @@ async def run(
         root = logging.getLogger()
         root.setLevel(logging.ERROR)
 
+    resolved_database_namespace = resolve_database_namespace(
+        namespace=database_namespace,
+        default_namespace=DEFAULT_DATABASE_NAMESPACE,
+    )
     key = await resolve_key(project_id=project_id, key=key)
     account_client = await get_client()
     try:
@@ -1460,6 +1484,7 @@ async def run(
             require_uuid=require_uuid,
             use_memory=use_memory,
             memory_model=memory_model,
+            database_namespace=resolved_database_namespace,
             require_computer_use=require_computer_use,
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
@@ -1678,6 +1703,10 @@ async def service(
             help="Model name for memory LLM ingestion",
         ),
     ] = None,
+    database_namespace: Annotated[
+        Optional[str],
+        typer.Option(..., help="Database namespace (e.g. foo::bar)"),
+    ] = None,
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
@@ -1760,6 +1789,10 @@ async def service(
         working_directory=working_directory,
     )
     print("[bold green]Connecting to room...[/bold green]", flush=True)
+    resolved_database_namespace = resolve_database_namespace(
+        namespace=database_namespace,
+        default_namespace=DEFAULT_DATABASE_NAMESPACE,
+    )
 
     storage_tool_mounts = parse_storage_tool_mounts(
         local_paths=storage_tool_local_path,
@@ -1834,6 +1867,7 @@ async def service(
             require_uuid=require_uuid,
             use_memory=use_memory,
             memory_model=memory_model,
+            database_namespace=resolved_database_namespace,
             require_computer_use=require_computer_use,
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
@@ -2013,6 +2047,10 @@ async def spec(
             help="Model name for memory LLM ingestion",
         ),
     ] = None,
+    database_namespace: Annotated[
+        Optional[str],
+        typer.Option(..., help="Database namespace (e.g. foo::bar)"),
+    ] = None,
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
@@ -2086,6 +2124,10 @@ async def spec(
         working_dir=working_dir,
         working_directory=working_directory,
     )
+    resolved_database_namespace = resolve_database_namespace(
+        namespace=database_namespace,
+        default_namespace=DEFAULT_DATABASE_NAMESPACE,
+    )
     storage_tool_mounts = parse_storage_tool_mounts(
         local_paths=storage_tool_local_path,
         room_paths=storage_tool_room_path,
@@ -2158,6 +2200,7 @@ async def spec(
             require_uuid=require_uuid,
             use_memory=use_memory,
             memory_model=memory_model,
+            database_namespace=resolved_database_namespace,
             require_computer_use=require_computer_use,
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
@@ -2350,6 +2393,10 @@ async def deploy(
             help="Model name for memory LLM ingestion",
         ),
     ] = None,
+    database_namespace: Annotated[
+        Optional[str],
+        typer.Option(..., help="Database namespace (e.g. foo::bar)"),
+    ] = None,
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
@@ -2429,6 +2476,10 @@ async def deploy(
         working_directory=working_directory,
     )
     project_id = await resolve_project_id(project_id=project_id)
+    resolved_database_namespace = resolve_database_namespace(
+        namespace=database_namespace,
+        default_namespace=DEFAULT_DATABASE_NAMESPACE,
+    )
 
     storage_tool_mounts = parse_storage_tool_mounts(
         local_paths=storage_tool_local_path,
@@ -2501,6 +2552,7 @@ async def deploy(
             require_uuid=require_uuid,
             use_memory=use_memory,
             memory_model=memory_model,
+            database_namespace=resolved_database_namespace,
             require_computer_use=require_computer_use,
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,

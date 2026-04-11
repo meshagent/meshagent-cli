@@ -1577,6 +1577,9 @@ async def test_deploy_image_creates_room_service_with_mounts_env_secret_and_toke
     assert env_by_name["MESHAGENT_TOKEN"].token.api.secrets is None
     assert env_by_name["MESHAGENT_TOKEN"].token.api.services is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.role == "agent"
+    for env_name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+        assert env_by_name[env_name].token is not None
+        assert env_by_name[env_name].token == env_by_name["MESHAGENT_TOKEN"].token
     assert captured["secret_checks"] == [
         {
             "secret_id": "secret-1",
@@ -1679,6 +1682,9 @@ async def test_deploy_image_identity_overrides_env_secret_and_token_identity(
     )
     assert env_by_name["MESHAGENT_TOKEN"].token is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.identity == "custom-agent"
+    for env_name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+        assert env_by_name[env_name].token is not None
+        assert env_by_name[env_name].token == env_by_name["MESHAGENT_TOKEN"].token
     assert captured["secret_checks"] == [
         {
             "secret_id": "secret-1",
@@ -1837,6 +1843,7 @@ async def test_deploy_image_pack_builds_before_deploying(
         arch="arm64",
         pack_room_path="/packed/context",
         optimize=False,
+        cred=["registry,user,password"],
         domain=None,
         room_mount=[],
         project_mount=[],
@@ -1860,7 +1867,7 @@ async def test_deploy_image_pack_builds_before_deploying(
     assert build_kwargs["mount_image"] == []
     assert build_kwargs["private"] is False
     assert build_kwargs["optimize"] is False
-    assert build_kwargs["cred"] == []
+    assert build_kwargs["cred"] == ["registry,user,password"]
     assert captured["events"] == ["build", "create"]
     created_service = captured["created_service"]
     assert isinstance(created_service, tuple)
@@ -2393,6 +2400,34 @@ async def test_deploy_image_build_options_require_pack() -> None:
 
 
 @pytest.mark.asyncio
+async def test_deploy_image_cred_requires_pack() -> None:
+    with pytest.raises(
+        typer.BadParameter,
+        match="--cred requires --pack",
+    ):
+        await image.deploy_image(
+            project_id="project-1",
+            room="room-1",
+            tag="repo/web:1",
+            pack=None,
+            context_path=None,
+            dockerfile_path=None,
+            arch=image.DEFAULT_ARCHITECTURE,
+            pack_room_path=None,
+            optimize=True,
+            cred=["registry,user,password"],
+            domain=None,
+            room_mount=[],
+            project_mount=[],
+            empty_dir_mount=[],
+            image_mount=[],
+            env=[],
+            meshagent_token=None,
+            private=True,
+        )
+
+
+@pytest.mark.asyncio
 async def test_deploy_image_sets_cookie_validation_when_private(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2607,6 +2642,9 @@ async def test_deploy_image_updates_existing_service_route_and_preserves_token_i
     assert env_by_name["MESHAGENT_TOKEN"].token.api.admin is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.api.secrets is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.api.tunnels is not None
+    for env_name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+        assert env_by_name[env_name].token is not None
+        assert env_by_name[env_name].token == env_by_name["MESHAGENT_TOKEN"].token
     assert updated_spec.ports is not None
     assert updated_spec.ports[0].liveness == "/"
     assert updated_spec.ports[0].public is True

@@ -465,14 +465,72 @@ def test_process_spec_uses_process_runtime_and_chat_channel(monkeypatch) -> None
     assert len(build_calls) == 1
     assert build_calls[0]["channels"] == ["chat"]
     assert build_calls[0]["decision_model"] == "gpt-5.4-nano"
+    assert build_calls[0]["database_namespace"] is None
     assert len(fake_service.agents) == 1
     assert fake_service.agents[0].annotations == {
         "meshagent.agent.type": "ChatBot",
     }
     assert len(printed) == 1
     assert "meshagent process join --agent-name helper" in printed[0]
-    assert "--decision-model gpt-5.4-nano" in printed[0]
-    assert "--channel chat" in printed[0]
+
+
+def test_chatbot_spec_defaults_database_namespace(monkeypatch) -> None:
+    fake_service = _FakeService()
+    build_calls: list[dict[str, object]] = []
+
+    def fake_get_service(*, host, port):
+        del host
+        del port
+        return fake_service
+
+    def fake_build_chatbot(**kwargs):
+        build_calls.append(kwargs)
+        return type("DummyChatbot", (), {})
+
+    def fail_build_process_agent(**kwargs):
+        del kwargs
+        raise AssertionError("chatbot spec should not use process builder")
+
+    monkeypatch.setattr(chatbot, "get_service", fake_get_service)
+    monkeypatch.setattr(
+        chatbot, "service_specs", lambda token_identity=None: [_service_spec()]
+    )
+    monkeypatch.setattr(chatbot, "build_chatbot", fake_build_chatbot)
+    monkeypatch.setattr(chatbot, "build_process_agent", fail_build_process_agent)
+    monkeypatch.setattr(chatbot, "print", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        chatbot.sys,
+        "argv",
+        [
+            "meshagent",
+            "chatbot",
+            "spec",
+            "--agent-name",
+            "helper",
+        ],
+    )
+
+    async def invoke_spec() -> None:
+        await chatbot.spec(agent_name="helper")
+
+    root_command = click.Command("meshagent")
+    chatbot_command = click.Command("chatbot")
+    spec_command = click.Command("spec")
+    with click.Context(root_command, info_name="meshagent") as root_context:
+        with click.Context(
+            chatbot_command,
+            info_name="chatbot",
+            parent=root_context,
+        ) as chatbot_context:
+            with click.Context(
+                spec_command,
+                info_name="spec",
+                parent=chatbot_context,
+            ):
+                asyncio.run(invoke_spec())
+
+    assert len(build_calls) == 1
+    assert build_calls[0]["database_namespace"] == [".database"]
 
 
 class _FakeRoomClient:

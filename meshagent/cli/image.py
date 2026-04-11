@@ -75,6 +75,11 @@ _CLIENT_CLOSE_TIMEOUT_SECONDS = 2.0
 _DEFAULT_CONTEXT_MOUNT_PATH = "/context"
 _ROOM_PACK_TAG_REGISTRY = "room.meshagent.com"
 _TEMP_BUILD_PACK_ROOM_PATH_PREFIX = "/temp/build/packs"
+_TOKEN_ENVIRONMENT_NAMES = (
+    "MESHAGENT_TOKEN",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+)
 _IMAGE_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 _REPOSITORY_COMPONENT_RE = re.compile(r"^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$")
 _REGISTRY_COMPONENT_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
@@ -1252,14 +1257,15 @@ def _resolve_meshagent_token_value(
     identity = identity_override if identity_override is not None else default_identity
     role = "agent"
 
-    for env_var in existing_environment or []:
-        if env_var.name != "MESHAGENT_TOKEN" or env_var.token is None:
-            continue
-        if identity_override is None and env_var.token.identity.strip() != "":
-            identity = env_var.token.identity.strip()
-        if env_var.token.role is not None and env_var.token.role.strip() != "":
-            role = env_var.token.role.strip()
-        break
+    for env_name in _TOKEN_ENVIRONMENT_NAMES:
+        for env_var in existing_environment or []:
+            if env_var.name != env_name or env_var.token is None:
+                continue
+            if identity_override is None and env_var.token.identity.strip() != "":
+                identity = env_var.token.identity.strip()
+            if env_var.token.role is not None and env_var.token.role.strip() != "":
+                role = env_var.token.role.strip()
+            return TokenValue(identity=identity, api=api_scope, role=role)
 
     return TokenValue(identity=identity, api=api_scope, role=role)
 
@@ -1273,13 +1279,14 @@ def _resolve_deploy_identity(
     if identity_override is not None:
         return identity_override
 
-    for env_var in existing_environment or []:
-        if env_var.name != "MESHAGENT_TOKEN" or env_var.token is None:
-            continue
-        resolved_identity = env_var.token.identity.strip()
-        if resolved_identity != "":
-            return resolved_identity
-        break
+    for env_name in _TOKEN_ENVIRONMENT_NAMES:
+        for env_var in existing_environment or []:
+            if env_var.name != env_name or env_var.token is None:
+                continue
+            resolved_identity = env_var.token.identity.strip()
+            if resolved_identity != "":
+                return resolved_identity
+            break
 
     return default_identity
 
@@ -1290,7 +1297,7 @@ def _override_environment_token_identity(
     identity: str,
 ) -> None:
     for index, env_var in enumerate(environment):
-        if env_var.name != "MESHAGENT_TOKEN" or env_var.token is None:
+        if env_var.name not in _TOKEN_ENVIRONMENT_NAMES or env_var.token is None:
             continue
         environment[index] = env_var.model_copy(
             update={
@@ -1299,7 +1306,21 @@ def _override_environment_token_identity(
                 )
             }
         )
-        return
+
+
+def _upsert_environment_token_variables(
+    *,
+    environment: list[EnvironmentVariable],
+    token_value: TokenValue,
+) -> None:
+    for env_name in _TOKEN_ENVIRONMENT_NAMES:
+        _upsert_environment_variable(
+            environment=environment,
+            env_var=EnvironmentVariable(
+                name=env_name,
+                token=token_value.model_copy(deep=True),
+            ),
+        )
 
 
 def _resolve_environment_secret_variables(
@@ -1380,16 +1401,13 @@ def _merge_deploy_environment(
         )
 
     if meshagent_token_scope is not None:
-        _upsert_environment_variable(
+        _upsert_environment_token_variables(
             environment=environment,
-            env_var=EnvironmentVariable(
-                name="MESHAGENT_TOKEN",
-                token=_resolve_meshagent_token_value(
-                    existing_environment=environment,
-                    default_identity=token_identity,
-                    api_scope=meshagent_token_scope,
-                    identity_override=identity_override,
-                ),
+            token_value=_resolve_meshagent_token_value(
+                existing_environment=environment,
+                default_identity=token_identity,
+                api_scope=meshagent_token_scope,
+                identity_override=identity_override,
             ),
         )
 
@@ -2313,6 +2331,7 @@ def _validate_deploy_build_stage_options(
     arch: str,
     pack_room_path: str | None,
     optimize: bool,
+    cred: list[str],
 ) -> None:
     if pack is not None:
         return
@@ -2328,6 +2347,8 @@ def _validate_deploy_build_stage_options(
         invalid_options.append("--pack-room-path")
     if not optimize:
         invalid_options.append("--no-optimize")
+    if len(cred) > 0:
+        invalid_options.append("--cred")
 
     if len(invalid_options) == 0:
         return
@@ -2557,6 +2578,13 @@ async def deploy_image(
             ),
         ),
     ] = True,
+    cred: Annotated[
+        list[str],
+        typer.Option(
+            "--cred",
+            help="Docker creds (username,password) or (registry,username,password)",
+        ),
+    ] = [],
     domain: Annotated[
         Optional[str],
         typer.Option(
@@ -2659,6 +2687,7 @@ async def deploy_image(
         arch=arch,
         pack_room_path=pack_room_path,
         optimize=optimize,
+        cred=cred,
     )
     parsed_environment = _parse_environment_variables(values=env)
     parsed_secret_environment = _parse_environment_secret_variables(values=env_secret)
@@ -2766,7 +2795,7 @@ async def deploy_image(
                 mount_image=[],
                 private=False,
                 optimize=optimize,
-                cred=[],
+                cred=cred,
             )
             existing_service = await _find_room_service_by_name(
                 account_client=account_client,
