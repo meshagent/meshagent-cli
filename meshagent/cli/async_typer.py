@@ -136,7 +136,7 @@ def _rewrite_deprecated_option_aliases(
                 updated = new_option
                 break
             if arg.startswith(f"{old_option}="):
-                updated = f"{new_option}{arg[len(old_option):]}"
+                updated = f"{new_option}{arg[len(old_option) :]}"
                 break
 
             if old_option.startswith("--") and new_option.startswith("--"):
@@ -146,7 +146,7 @@ def _rewrite_deprecated_option_aliases(
                     updated = new_negated
                     break
                 if arg.startswith(f"{old_negated}="):
-                    updated = f"{new_negated}{arg[len(old_negated):]}"
+                    updated = f"{new_negated}{arg[len(old_negated) :]}"
                     break
 
         rewritten.append(updated)
