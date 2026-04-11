@@ -104,7 +104,7 @@ from meshagent.openai.tools.responses_adapter import (
     ImageGenerationTool,
 )
 
-from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
+from meshagent.tools.database import DatabaseToolkitConfig, make_database_toolkit
 from meshagent.agents.adapter import LLMAdapter, MessageStreamLLMAdapter
 
 from meshagent.api import RequiredToolkit, RequiredSchema
@@ -938,9 +938,8 @@ def build_chatbot(
 
             if len(require_table_read) > 0:
                 add_toolkit(
-                    await DatabaseToolkitBuilder().make(
+                    await make_database_toolkit(
                         room=self.room,
-                        model=model,
                         config=DatabaseToolkitConfig(
                             tables=require_table_read,
                             read_only=True,
@@ -967,9 +966,8 @@ def build_chatbot(
 
             if len(require_table_write) > 0:
                 add_toolkit(
-                    await DatabaseToolkitBuilder().make(
+                    await make_database_toolkit(
                         room=self.room,
-                        model=model,
                         config=DatabaseToolkitConfig(
                             tables=require_table_write,
                             read_only=False,
@@ -1142,7 +1140,8 @@ def build_process_agent(
     )
     from meshagent.agents.messages import TurnStart, TurnSteer
     from meshagent.agents.process import AgentSupervisor, LLMAgentProcess
-    from meshagent.tools import RemoteToolkit, ToolContext, make_toolkits
+    from meshagent.tools import Toolkit, ToolContext, make_toolkits
+    from meshagent.tools.hosting import _RemoteToolkitWrapper, _start_hosted_toolkit
 
     requirements = []
     toolkits = []
@@ -1310,7 +1309,7 @@ def build_process_agent(
                 stopped_tool_ids.add(tool_id)
                 await tool.stop(room=room)
 
-        async def get_exposed_toolkits(self) -> list[RemoteToolkit]:
+        async def get_exposed_toolkits(self) -> list[Toolkit]:
             exposed_toolkits = await super().get_exposed_toolkits()
             channels = []
             if self._chat_channel is not None:
@@ -1379,7 +1378,7 @@ def build_process_agent(
                         toolkit_builders=self.get_toolkit_builders(),
                     )
                 )
-            started_remote_toolkits: list[RemoteToolkit] = []
+            started_remote_toolkits: list[_RemoteToolkitWrapper] = []
             supervisor: AgentSupervisor | None = None
 
             try:
@@ -1420,11 +1419,16 @@ def build_process_agent(
 
                 self._exposed_toolkits = await self.get_exposed_toolkits()
                 for toolkit in self._exposed_toolkits:
-                    await toolkit.start(room=room)
-                    started_remote_toolkits.append(toolkit)
+                    hosted_toolkit = await _start_hosted_toolkit(
+                        room=room,
+                        toolkit=toolkit,
+                    )
+                    started_remote_toolkits.append(hosted_toolkit)
+                self._hosted_exposed_toolkits = started_remote_toolkits
             except Exception:
                 for toolkit in reversed(started_remote_toolkits):
                     await toolkit.stop()
+                self._hosted_exposed_toolkits = []
                 self._exposed_toolkits = []
                 if supervisor is not None:
                     await supervisor.stop()
@@ -1665,9 +1669,8 @@ def build_process_agent(
 
             if len(require_table_read) > 0:
                 add_toolkit(
-                    await DatabaseToolkitBuilder().make(
+                    await make_database_toolkit(
                         room=self.room,
-                        model=model,
                         config=DatabaseToolkitConfig(
                             tables=require_table_read,
                             read_only=True,
@@ -1694,9 +1697,8 @@ def build_process_agent(
 
             if len(require_table_write) > 0:
                 add_toolkit(
-                    await DatabaseToolkitBuilder().make(
+                    await make_database_toolkit(
                         room=self.room,
-                        model=model,
                         config=DatabaseToolkitConfig(
                             tables=require_table_write,
                             read_only=False,
@@ -1742,9 +1744,6 @@ def build_process_agent(
             caller_context: dict[str, Any] | None = {
                 "thread_id": process.thread_id,
             }
-            if process.session_context is not None:
-                caller_context["chat"] = process.session_context.to_json()
-
             required_toolkits = await self.get_required_toolkits(
                 context=ToolContext(
                     room=self.room,

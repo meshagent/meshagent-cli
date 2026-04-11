@@ -126,10 +126,7 @@ class _RuntimeAwareShellToolkitBuilder(ToolkitBuilder):
         self.mounts = mounts
         self.env = env
 
-    async def make(
-        self, *, room: RoomClient, model: str, config: ShellConfig
-    ) -> Toolkit:
-        del room
+    async def make(self, *, model: str, config: ShellConfig) -> Toolkit:
         return Toolkit(
             name="shell",
             tools=[

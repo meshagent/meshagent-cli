@@ -166,7 +166,6 @@ async def list_toolkits_command(
                                 "input_schema": tool.input_schema,
                                 "thumbnail_url": tool.thumbnail_url,
                                 "defs": tool.defs,
-                                "supports_context": tool.supports_context,
                             }
                             for tool in tk.tools
                         ],

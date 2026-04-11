@@ -93,7 +93,6 @@ async def test_build_shell_toolkit_builder_uses_container_shell_for_non_gpt_mode
     )
 
     toolkit = await builder.make(
-        room=None,  # type: ignore[arg-type]
         model="claude-3-7-sonnet",
         config=builder.type.model_validate({"name": "shell"}),
     )
@@ -109,7 +108,6 @@ async def test_build_shell_toolkit_builder_uses_shell_tool_for_gpt_model() -> No
     )
 
     toolkit = await builder.make(
-        room=None,  # type: ignore[arg-type]
         model="gpt-5",
         config=builder.type.model_validate({"name": "shell"}),
     )
@@ -127,7 +125,6 @@ async def test_build_shell_toolkit_builder_uses_process_shell_for_non_gpt_model_
     )
 
     toolkit = await builder.make(
-        room=None,  # type: ignore[arg-type]
         model="claude-3-7-sonnet",
         config=builder.type.model_validate({"name": "shell"}),
     )

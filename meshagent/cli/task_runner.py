@@ -96,7 +96,7 @@ from meshagent.api.messaging import JsonContent, TextContent
 
 
 from meshagent.cli.host import get_service, run_services, get_deferred, service_specs
-from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
+from meshagent.tools.database import DatabaseToolkitConfig, make_database_toolkit
 from meshagent.tools.datetime import DatetimeToolkit
 from meshagent.tools.script import get_script_tools
 from meshagent.tools.uuid import UUIDToolkit
@@ -615,9 +615,8 @@ def build_task_runner(
             if len(require_table_read) > 0:
                 providers.extend(
                     (
-                        await DatabaseToolkitBuilder().make(
+                        await make_database_toolkit(
                             room=self.room,
-                            model=model,
                             config=DatabaseToolkitConfig(
                                 tables=require_table_read,
                                 read_only=True,
@@ -646,9 +645,8 @@ def build_task_runner(
             if len(require_table_write) > 0:
                 providers.extend(
                     (
-                        await DatabaseToolkitBuilder().make(
+                        await make_database_toolkit(
                             room=self.room,
-                            model=model,
                             config=DatabaseToolkitConfig(
                                 tables=require_table_write,
                                 read_only=False,

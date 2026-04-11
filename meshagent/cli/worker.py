@@ -63,7 +63,7 @@ from meshagent.tools import (
     MemoriesToolkit,
 )
 from meshagent.tools.storage import StorageToolkit
-from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
+from meshagent.tools.database import DatabaseToolkitConfig, make_database_toolkit
 from meshagent.tools.datetime import DatetimeToolkit
 from meshagent.tools.uuid import UUIDToolkit
 from meshagent.tools.script import get_script_tools
@@ -643,9 +643,8 @@ def build_worker(
             if len(require_table_read) > 0:
                 thread_toolkit.tools.extend(
                     (
-                        await DatabaseToolkitBuilder().make(
+                        await make_database_toolkit(
                             room=self.room,
-                            model=model,
                             config=DatabaseToolkitConfig(
                                 tables=require_table_read,
                                 read_only=True,
@@ -658,9 +657,8 @@ def build_worker(
             if len(require_table_write) > 0:
                 thread_toolkit.tools.extend(
                     (
-                        await DatabaseToolkitBuilder().make(
+                        await make_database_toolkit(
                             room=self.room,
-                            model=model,
                             config=DatabaseToolkitConfig(
                                 tables=require_table_write,
                                 read_only=False,

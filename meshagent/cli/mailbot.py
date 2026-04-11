@@ -51,7 +51,7 @@ from meshagent.api import RequiredToolkit, RequiredSchema, RoomException
 
 import logging
 
-from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
+from meshagent.tools.database import DatabaseToolkitConfig, make_database_toolkit
 
 from meshagent.tools.storage import StorageToolMount, StorageToolkit
 from meshagent.tools.datetime import DatetimeToolkit
@@ -497,9 +497,8 @@ def build_mailbot(
             if len(require_table_read) > 0:
                 thread_toolkit.tools.extend(
                     (
-                        await DatabaseToolkitBuilder().make(
+                        await make_database_toolkit(
                             room=self.room,
-                            model=model,
                             config=DatabaseToolkitConfig(
                                 tables=require_table_read,
                                 read_only=True,
@@ -512,9 +511,8 @@ def build_mailbot(
             if len(require_table_write) > 0:
                 thread_toolkit.tools.extend(
                     (
-                        await DatabaseToolkitBuilder().make(
+                        await make_database_toolkit(
                             room=self.room,
-                            model=model,
                             config=DatabaseToolkitConfig(
                                 tables=require_table_write,
                                 read_only=False,
