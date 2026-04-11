@@ -23,6 +23,7 @@ from meshagent.api.helpers import websocket_room_url
 from meshagent.cli.helper import (
     cleanup_args,
     cleanup_args_strip_options,
+    DEPRECATED_REQUIRE_OPTION_ALIASES,
     get_client,
     merge_option_lists,
     parse_shell_tool_mounts,
@@ -32,6 +33,7 @@ from meshagent.cli.helper import (
     resolve_key,
     resolve_project_id,
     resolve_room,
+    strip_command_options,
     supports_openai_shell_tool,
     upload_room_bytes_stream,
 )
@@ -51,21 +53,20 @@ from meshagent.api import RequiredToolkit, RequiredSchema, RoomException
 
 import logging
 
-from meshagent.tools.database import DatabaseToolkitConfig, make_database_toolkit
+from meshagent.tools.database import make_database_toolkit
 
-from meshagent.tools.storage import StorageToolMount, StorageToolkit
+from meshagent.tools.storage import (
+    StorageToolMount,
+    StorageToolkit,
+)
 from meshagent.tools.datetime import DatetimeToolkit
 from meshagent.tools.uuid import UUIDToolkit
 from meshagent.tools.script import get_script_tools
 
 from meshagent.openai.tools.responses_adapter import (
     WebSearchTool,
-    LocalShellConfig,
-    ShellConfig,
-    ApplyPatchConfig,
     ApplyPatchTool,
     ShellTool,
-    LocalShellTool,
     ImageGenerationTool,
 )
 
@@ -87,6 +88,26 @@ from meshagent.agents.adapter import MessageStreamLLMAdapter
 logger = logging.getLogger("mailbot")
 
 app = async_typer.AsyncTyper(help="Join a mailbot to a room")
+app.add_deprecated_option_aliases(DEPRECATED_REQUIRE_OPTION_ALIASES)
+
+
+def _require_storage_tool_mounts(
+    *,
+    room: RoomClient,
+    local_paths: list[str],
+    room_paths: list[str],
+    default_room_mount: bool,
+) -> list[StorageToolMount]:
+    mounts = parse_storage_tool_mounts(
+        room=room,
+        local_paths=local_paths,
+        room_paths=room_paths,
+        default_room_mount=default_room_mount,
+    )
+    if mounts is None:
+        raise RuntimeError("storage toolkit requires at least one configured mount")
+    return mounts
+
 
 ShellCopyEnvOption = Annotated[
     list[str],
@@ -198,12 +219,12 @@ def _resolve_working_dir_option(
 
 def build_mailbot(
     *,
+    client: RoomClient | None = None,
     model: str,
     rule: List[str],
     toolkit: List[str],
     schema: List[str],
     image_generation: Optional[str] = None,
-    local_shell: bool,
     computer_use: bool,
     rules_file: Optional[list[str]] = None,
     web_search: Annotated[
@@ -222,7 +243,9 @@ def build_mailbot(
     require_apply_patch: Optional[bool] = None,
     require_storage: Optional[str] = None,
     require_read_only_storage: Optional[str] = None,
-    storage_tool_mounts: Optional[list[StorageToolMount]] = None,
+    storage_tool_local_paths: list[str] | None = None,
+    storage_tool_room_paths: list[str] | None = None,
+    default_room_storage_mount: bool = False,
     shell_tool_mounts: Optional[ContainerMountSpec] = None,
     require_time: bool = True,
     require_uuid: bool = False,
@@ -256,6 +279,11 @@ def build_mailbot(
 
     toolkits = []
 
+    if storage_tool_local_paths is None:
+        storage_tool_local_paths = []
+    if storage_tool_room_paths is None:
+        storage_tool_room_paths = []
+
     for t in toolkit:
         requirements.append(RequiredToolkit(name=t))
 
@@ -285,9 +313,6 @@ def build_mailbot(
     if not supports_openai_tools:
         if image_generation:
             print("image generation tool is only supported by openai models")
-            raise typer.Exit(1)
-        if local_shell:
-            print("local shell tool is only supported by openai models")
             raise typer.Exit(1)
         if require_apply_patch:
             print("apply patch tool is only supported by openai models")
@@ -372,13 +397,13 @@ def build_mailbot(
                 if supports_openai_shell:
                     shell_kwargs = {
                         "working_dir": working_dir,
-                        "config": ShellConfig(name="shell"),
+                        "name": "shell",
                         "image": resolved_shell_image,
                         "env": env,
                     }
                     if shell_tool_mounts is not None:
                         shell_kwargs["mounts"] = shell_tool_mounts
-                    self.shell_tool = ShellTool(**shell_kwargs)
+                    self.shell_tool = ShellTool(room=room, **shell_kwargs)
                 else:
                     shell_kwargs = {
                         "image": resolved_shell_image,
@@ -387,7 +412,7 @@ def build_mailbot(
                     }
                     if shell_tool_mounts is not None:
                         shell_kwargs["mounts"] = shell_tool_mounts
-                    self.shell_tool = ContainerShellTool(**shell_kwargs)
+                    self.shell_tool = ContainerShellTool(room=room, **shell_kwargs)
 
             if room_rules_paths is not None:
                 for p in room_rules_paths:
@@ -438,19 +463,10 @@ def build_mailbot(
 
         async def get_thread_toolkits(self, *, thread_context):
             toolkits = await super().get_thread_toolkits(thread_context=thread_context)
-
             thread_toolkit = Toolkit(name="thread_toolkit", tools=[])
 
             if discover_script_tools:
                 thread_toolkit.tools.extend(await get_script_tools(self.room))
-
-            if local_shell:
-                thread_toolkit.tools.append(
-                    LocalShellTool(
-                        working_dir=working_dir,
-                        config=LocalShellConfig(name="local_shell"),
-                    )
-                )
 
             if self.shell_tool is not None:
                 thread_toolkit.tools.append(self.shell_tool)
@@ -458,7 +474,14 @@ def build_mailbot(
             if require_apply_patch:
                 thread_toolkit.tools.append(
                     ApplyPatchTool(
-                        config=ApplyPatchConfig(name="apply_patch"),
+                        storage=StorageToolkit(
+                            mounts=_require_storage_tool_mounts(
+                                room=client or self.room,
+                                local_paths=storage_tool_local_paths,
+                                room_paths=storage_tool_room_paths,
+                                default_room_mount=True,
+                            )
+                        )
                     )
                 )
 
@@ -467,7 +490,6 @@ def build_mailbot(
                 thread_toolkit.tools.append(
                     ImageGenerationTool(
                         model=image_generation,
-                        thread_context=thread_context,
                         partial_images=3,
                     )
                 )
@@ -486,12 +508,27 @@ def build_mailbot(
 
             if require_storage:
                 thread_toolkit.tools.extend(
-                    StorageToolkit(mounts=storage_tool_mounts).tools
+                    StorageToolkit(
+                        mounts=_require_storage_tool_mounts(
+                            room=client or self.room,
+                            local_paths=storage_tool_local_paths,
+                            room_paths=storage_tool_room_paths,
+                            default_room_mount=default_room_storage_mount,
+                        ),
+                    ).tools
                 )
 
             if require_read_only_storage:
                 thread_toolkit.tools.extend(
-                    StorageToolkit(read_only=True, mounts=storage_tool_mounts).tools
+                    StorageToolkit(
+                        read_only=True,
+                        mounts=_require_storage_tool_mounts(
+                            room=client or self.room,
+                            local_paths=storage_tool_local_paths,
+                            room_paths=storage_tool_room_paths,
+                            default_room_mount=default_room_storage_mount,
+                        ),
+                    ).tools
                 )
 
             if len(require_table_read) > 0:
@@ -499,11 +536,9 @@ def build_mailbot(
                     (
                         await make_database_toolkit(
                             room=self.room,
-                            config=DatabaseToolkitConfig(
-                                tables=require_table_read,
-                                read_only=True,
-                                namespace=database_namespace,
-                            ),
+                            tables=require_table_read,
+                            read_only=True,
+                            namespace=database_namespace,
                         )
                     ).tools
                 )
@@ -513,11 +548,9 @@ def build_mailbot(
                     (
                         await make_database_toolkit(
                             room=self.room,
-                            config=DatabaseToolkitConfig(
-                                tables=require_table_write,
-                                read_only=False,
-                                namespace=database_namespace,
-                            ),
+                            tables=require_table_write,
+                            read_only=False,
+                            namespace=database_namespace,
                         )
                     ).tools
                 )
@@ -532,6 +565,7 @@ def build_mailbot(
                 memory_name, memory_namespace = memory_selection
                 thread_toolkit.tools.extend(
                     MemoriesToolkit(
+                        room=self.room,
                         memory_name=memory_name,
                         namespace=memory_namespace,
                         llm_model=memory_model,
@@ -594,25 +628,22 @@ async def join(
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option(
-            "--schema", "-s", help="the name or url of a required schema", hidden=True
-        ),
+        typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
     ] = "gpt-5.4",
     require_shell: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable function shell tool calling"),
-    ] = False,
-    require_local_shell: Annotated[
-        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
+        typer.Option("--shell", help="Enable function shell tool calling"),
     ] = False,
     require_web_search: Annotated[
-        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+        Optional[bool],
+        typer.Option("--web-search", help="Enable web search tool calling"),
     ] = False,
     require_web_fetch: Annotated[
-        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
+        Optional[bool],
+        typer.Option("--web-fetch", help="Enable web fetch tool calling"),
     ] = False,
     discover_script_tools: Annotated[
         Optional[bool],
@@ -620,7 +651,7 @@ async def join(
     ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable apply patch tool calling"),
+        typer.Option("--apply-patch", help="Enable apply patch tool calling"),
     ] = False,
     key: Annotated[
         str,
@@ -652,11 +683,11 @@ async def join(
         ),
     ] = [],
     require_storage: Annotated[
-        Optional[bool], typer.Option(..., help="Enable storage toolkit")
+        Optional[bool], typer.Option("--storage", help="Enable storage toolkit")
     ] = False,
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit"),
+        typer.Option("--read-only-storage", help="Enable read only storage toolkit"),
     ] = False,
     storage_tool_local_path: Annotated[
         List[str],
@@ -688,14 +719,14 @@ async def join(
     require_time: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--time",
             help="Enable time/datetime tools",
         ),
     ] = True,
     require_uuid: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--uuid",
             help="Enable UUID generation tools",
         ),
     ] = False,
@@ -719,16 +750,20 @@ async def join(
     ] = None,
     require_table_read: Annotated[
         list[str],
-        typer.Option(..., help="Enable table read tools for a specific table"),
+        typer.Option(
+            "--table-read", help="Enable table read tools for a specific table"
+        ),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(..., help="Enable table write tools for a specific table"),
+        typer.Option(
+            "--table-write", help="Enable table write tools for a specific table"
+        ),
     ] = [],
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
-            ...,
+            "--computer-use",
             help="Enable computer use",
         ),
     ] = False,
@@ -803,10 +838,7 @@ async def join(
             jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
-        storage_tool_mounts = parse_storage_tool_mounts(
-            local_paths=storage_tool_local_path,
-            room_paths=storage_tool_room_path,
-        )
+        default_room_storage_mount = bool(require_storage or require_read_only_storage)
         shell_tool_mounts = parse_shell_tool_mounts(
             room_paths=merge_option_lists(
                 shell_room_mount,
@@ -822,11 +854,17 @@ async def join(
             ),
             image_paths=shell_image_mount,
         )
+        client = RoomClient(
+            protocol=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room),
+                token=jwt,
+            )
+        )
 
         CustomMailbot = build_mailbot(
+            client=client,
             computer_use=None,
             model=model,
-            local_shell=require_local_shell,
             rule=rule,
             schema=require_schema + schema,
             toolkit=require_toolkit + toolkit,
@@ -843,7 +881,9 @@ async def join(
             require_apply_patch=require_apply_patch,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
-            storage_tool_mounts=storage_tool_mounts,
+            storage_tool_local_paths=storage_tool_local_path,
+            storage_tool_room_paths=storage_tool_room_path,
+            default_room_storage_mount=default_room_storage_mount,
             shell_tool_mounts=shell_tool_mounts,
             require_time=require_time,
             require_uuid=require_uuid,
@@ -874,12 +914,7 @@ async def join(
 
             agents.append((bot, jwt))
         else:
-            async with RoomClient(
-                protocol=WebSocketClientProtocol(
-                    url=websocket_room_url(room_name=room),
-                    token=jwt,
-                )
-            ) as client:
+            async with client:
                 await bot.start(room=client)
                 try:
                     print(
@@ -919,25 +954,22 @@ async def service(
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option(
-            "--schema", "-s", help="the name or url of a required schema", hidden=True
-        ),
+        typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
     ] = "gpt-5.4",
     require_shell: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable function shell tool calling"),
-    ] = False,
-    require_local_shell: Annotated[
-        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
+        typer.Option("--shell", help="Enable function shell tool calling"),
     ] = False,
     require_web_search: Annotated[
-        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+        Optional[bool],
+        typer.Option("--web-search", help="Enable web search tool calling"),
     ] = False,
     require_web_fetch: Annotated[
-        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
+        Optional[bool],
+        typer.Option("--web-fetch", help="Enable web fetch tool calling"),
     ] = False,
     discover_script_tools: Annotated[
         Optional[bool],
@@ -945,7 +977,7 @@ async def service(
     ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable apply patch tool calling"),
+        typer.Option("--apply-patch", help="Enable apply patch tool calling"),
     ] = False,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
@@ -982,11 +1014,11 @@ async def service(
         ),
     ] = [],
     require_storage: Annotated[
-        Optional[bool], typer.Option(..., help="Enable storage toolkit")
+        Optional[bool], typer.Option("--storage", help="Enable storage toolkit")
     ] = False,
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit"),
+        typer.Option("--read-only-storage", help="Enable read only storage toolkit"),
     ] = False,
     storage_tool_local_path: Annotated[
         List[str],
@@ -1018,14 +1050,14 @@ async def service(
     require_time: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--time",
             help="Enable time/datetime tools",
         ),
     ] = True,
     require_uuid: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--uuid",
             help="Enable UUID generation tools",
         ),
     ] = False,
@@ -1049,16 +1081,20 @@ async def service(
     ] = None,
     require_table_read: Annotated[
         list[str],
-        typer.Option(..., help="Enable table read tools for a specific table"),
+        typer.Option(
+            "--table-read", help="Enable table read tools for a specific table"
+        ),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(..., help="Enable table write tools for a specific table"),
+        typer.Option(
+            "--table-write", help="Enable table write tools for a specific table"
+        ),
     ] = [],
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
-            ...,
+            "--computer-use",
             help="Enable computer use",
         ),
     ] = False,
@@ -1100,10 +1136,7 @@ async def service(
         working_directory=working_directory,
     )
     service = get_service(host=host, port=port)
-    storage_tool_mounts = parse_storage_tool_mounts(
-        local_paths=storage_tool_local_path,
-        room_paths=storage_tool_room_path,
-    )
+    default_room_storage_mount = bool(require_storage or require_read_only_storage)
     shell_tool_mounts = parse_shell_tool_mounts(
         room_paths=merge_option_lists(
             shell_room_mount,
@@ -1134,10 +1167,10 @@ async def service(
         identity=agent_name,
         path=path,
         cls=build_mailbot(
+            client=None,
             queue=queue,
             computer_use=None,
             model=model,
-            local_shell=require_local_shell,
             web_search=require_web_search,
             web_fetch=require_web_fetch,
             discover_script_tools=discover_script_tools,
@@ -1154,7 +1187,9 @@ async def service(
             require_apply_patch=require_apply_patch,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
-            storage_tool_mounts=storage_tool_mounts,
+            storage_tool_local_paths=storage_tool_local_path,
+            storage_tool_room_paths=storage_tool_room_path,
+            default_room_storage_mount=default_room_storage_mount,
             shell_tool_mounts=shell_tool_mounts,
             require_time=require_time,
             require_uuid=require_uuid,
@@ -1219,25 +1254,22 @@ async def spec(
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option(
-            "--schema", "-s", help="the name or url of a required schema", hidden=True
-        ),
+        typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
     ] = "gpt-5.4",
     require_shell: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable function shell tool calling"),
-    ] = False,
-    require_local_shell: Annotated[
-        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
+        typer.Option("--shell", help="Enable function shell tool calling"),
     ] = False,
     require_web_search: Annotated[
-        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+        Optional[bool],
+        typer.Option("--web-search", help="Enable web search tool calling"),
     ] = False,
     require_web_fetch: Annotated[
-        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
+        Optional[bool],
+        typer.Option("--web-fetch", help="Enable web fetch tool calling"),
     ] = False,
     discover_script_tools: Annotated[
         Optional[bool],
@@ -1245,7 +1277,7 @@ async def spec(
     ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable apply patch tool calling"),
+        typer.Option("--apply-patch", help="Enable apply patch tool calling"),
     ] = False,
     queue: Annotated[
         Optional[str], typer.Option(..., help="the name of the mail queue")
@@ -1273,11 +1305,11 @@ async def spec(
         ),
     ] = [],
     require_storage: Annotated[
-        Optional[bool], typer.Option(..., help="Enable storage toolkit")
+        Optional[bool], typer.Option("--storage", help="Enable storage toolkit")
     ] = False,
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit"),
+        typer.Option("--read-only-storage", help="Enable read only storage toolkit"),
     ] = False,
     storage_tool_local_path: Annotated[
         List[str],
@@ -1309,14 +1341,14 @@ async def spec(
     require_time: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--time",
             help="Enable time/datetime tools",
         ),
     ] = True,
     require_uuid: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--uuid",
             help="Enable UUID generation tools",
         ),
     ] = False,
@@ -1340,16 +1372,20 @@ async def spec(
     ] = None,
     require_table_read: Annotated[
         list[str],
-        typer.Option(..., help="Enable table read tools for a specific table"),
+        typer.Option(
+            "--table-read", help="Enable table read tools for a specific table"
+        ),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(..., help="Enable table write tools for a specific table"),
+        typer.Option(
+            "--table-write", help="Enable table write tools for a specific table"
+        ),
     ] = [],
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
-            ...,
+            "--computer-use",
             help="Enable computer use",
         ),
     ] = False,
@@ -1392,10 +1428,7 @@ async def spec(
         working_directory=working_directory,
     )
     service = get_service(host=None, port=None)
-    storage_tool_mounts = parse_storage_tool_mounts(
-        local_paths=storage_tool_local_path,
-        room_paths=storage_tool_room_path,
-    )
+    default_room_storage_mount = bool(require_storage or require_read_only_storage)
     shell_tool_mounts = parse_shell_tool_mounts(
         room_paths=merge_option_lists(
             shell_room_mount,
@@ -1425,10 +1458,10 @@ async def spec(
         identity=agent_name,
         path=path,
         cls=build_mailbot(
+            client=None,
             queue=queue,
             computer_use=None,
             model=model,
-            local_shell=require_local_shell,
             web_search=require_web_search,
             web_fetch=require_web_fetch,
             discover_script_tools=discover_script_tools,
@@ -1445,7 +1478,9 @@ async def spec(
             require_apply_patch=require_apply_patch,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
-            storage_tool_mounts=storage_tool_mounts,
+            storage_tool_local_paths=storage_tool_local_path,
+            storage_tool_room_paths=storage_tool_room_path,
+            default_room_storage_mount=default_room_storage_mount,
             shell_tool_mounts=shell_tool_mounts,
             require_time=require_time,
             require_uuid=require_uuid,
@@ -1530,25 +1565,22 @@ async def deploy(
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option(
-            "--schema", "-s", help="the name or url of a required schema", hidden=True
-        ),
+        typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
     ] = "gpt-5.4",
     require_shell: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable function shell tool calling"),
-    ] = False,
-    require_local_shell: Annotated[
-        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
+        typer.Option("--shell", help="Enable function shell tool calling"),
     ] = False,
     require_web_search: Annotated[
-        Optional[bool], typer.Option(..., help="Enable web search tool calling")
+        Optional[bool],
+        typer.Option("--web-search", help="Enable web search tool calling"),
     ] = False,
     require_web_fetch: Annotated[
-        Optional[bool], typer.Option(..., help="Enable web fetch tool calling")
+        Optional[bool],
+        typer.Option("--web-fetch", help="Enable web fetch tool calling"),
     ] = False,
     discover_script_tools: Annotated[
         Optional[bool],
@@ -1556,7 +1588,7 @@ async def deploy(
     ] = False,
     require_apply_patch: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable apply patch tool calling"),
+        typer.Option("--apply-patch", help="Enable apply patch tool calling"),
     ] = False,
     queue: Annotated[
         Optional[str], typer.Option(..., help="the name of the mail queue")
@@ -1584,11 +1616,11 @@ async def deploy(
         ),
     ] = [],
     require_storage: Annotated[
-        Optional[bool], typer.Option(..., help="Enable storage toolkit")
+        Optional[bool], typer.Option("--storage", help="Enable storage toolkit")
     ] = False,
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit"),
+        typer.Option("--read-only-storage", help="Enable read only storage toolkit"),
     ] = False,
     storage_tool_local_path: Annotated[
         List[str],
@@ -1620,14 +1652,14 @@ async def deploy(
     require_time: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--time",
             help="Enable time/datetime tools",
         ),
     ] = True,
     require_uuid: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--uuid",
             help="Enable UUID generation tools",
         ),
     ] = False,
@@ -1651,16 +1683,20 @@ async def deploy(
     ] = None,
     require_table_read: Annotated[
         list[str],
-        typer.Option(..., help="Enable table read tools for a specific table"),
+        typer.Option(
+            "--table-read", help="Enable table read tools for a specific table"
+        ),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(..., help="Enable table write tools for a specific table"),
+        typer.Option(
+            "--table-write", help="Enable table write tools for a specific table"
+        ),
     ] = [],
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
-            ...,
+            "--computer-use",
             help="Enable computer use",
         ),
     ] = False,
@@ -1710,10 +1746,7 @@ async def deploy(
     project_id = await resolve_project_id(project_id=project_id)
 
     service = get_service(host=None, port=None)
-    storage_tool_mounts = parse_storage_tool_mounts(
-        local_paths=storage_tool_local_path,
-        room_paths=storage_tool_room_path,
-    )
+    default_room_storage_mount = bool(require_storage or require_read_only_storage)
     shell_tool_mounts = parse_shell_tool_mounts(
         room_paths=merge_option_lists(
             shell_room_mount,
@@ -1743,10 +1776,10 @@ async def deploy(
         identity=agent_name,
         path=path,
         cls=build_mailbot(
+            client=None,
             queue=queue,
             computer_use=None,
             model=model,
-            local_shell=require_local_shell,
             web_search=require_web_search,
             web_fetch=require_web_fetch,
             discover_script_tools=discover_script_tools,
@@ -1763,7 +1796,9 @@ async def deploy(
             require_apply_patch=require_apply_patch,
             require_storage=require_storage,
             require_read_only_storage=require_read_only_storage,
-            storage_tool_mounts=storage_tool_mounts,
+            storage_tool_local_paths=storage_tool_local_path,
+            storage_tool_room_paths=storage_tool_room_path,
+            default_room_storage_mount=default_room_storage_mount,
             shell_tool_mounts=shell_tool_mounts,
             require_time=require_time,
             require_uuid=require_uuid,
@@ -1857,3 +1892,26 @@ async def deploy(
 
     finally:
         await client.close()
+
+
+_REMOVED_TOOLKIT_OPTION_NAMES = {
+    "discover_script_tools",
+    "storage_tool_local_path",
+    "storage_tool_room_path",
+    "shell_room_mount",
+    "shell_tool_room_path",
+    "shell_project_mount",
+    "shell_tool_project_path",
+    "shell_empty_dir_mount",
+    "shell_tool_empty_dir",
+    "shell_image_mount",
+    "require_schema",
+    "working_dir",
+    "working_directory",
+    "shell_image",
+    "delegate_shell_token",
+    "shell_copy_env",
+    "shell_set_env",
+}
+
+strip_command_options(app, option_names=_REMOVED_TOOLKIT_OPTION_NAMES)

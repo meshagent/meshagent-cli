@@ -6,13 +6,11 @@ from typing import Annotated, Literal, Optional
 from meshagent.tools import (
     Toolkit,
     WebFetchTool,
-    WebFetchToolkitBuilder,
     ContainerShellTool,
     MemoriesToolkit,
 )
 from meshagent.tools.storage import (
     StorageToolMount,
-    StorageToolkitBuilder,
 )
 from meshagent.tools.document_tools import (
     DocumentAuthoringToolkit,
@@ -44,12 +42,14 @@ from meshagent.api import (
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.cli import async_typer
 from meshagent.cli.helper import (
-    build_shell_toolkit_builder,
     cleanup_args,
     cleanup_args_strip_options,
+    DEPRECATED_REQUIRE_OPTION_ALIASES,
     DEFAULT_DATABASE_NAMESPACE,
+    DUPLICATE_REQUIRE_OPTION_NAMES,
     get_client,
     merge_option_lists,
+    normalize_required_tool_options,
     parse_shell_tool_mounts,
     parse_memory_selector,
     parse_storage_tool_mounts,
@@ -58,6 +58,7 @@ from meshagent.cli.helper import (
     resolve_key,
     resolve_project_id,
     resolve_room,
+    strip_command_options,
     supports_openai_shell_tool,
     upload_room_bytes_stream,
 )
@@ -66,29 +67,16 @@ from meshagent.openai import OpenAIResponsesAdapter
 from meshagent.anthropic import (
     AnthropicOpenAIResponsesStreamAdapter,
     WebFetchTool as AnthropicWebFetchTool,
-    WebFetchToolkitBuilder as AnthropicWebFetchToolkitBuilder,
     WebSearchTool as AnthropicWebSearchTool,
-    WebSearchToolkitBuilder as AnthropicWebSearchToolkitBuilder,
 )
 
 from typing import List
 from pathlib import Path
 
 from meshagent.openai.tools.responses_adapter import (
-    WebSearchToolkitBuilder,
-    MCPToolkitBuilder,
     WebSearchTool,
-    LocalShellConfig,
-    ShellConfig,
-    WebSearchConfig,
-    ApplyPatchConfig,
     ApplyPatchTool,
-    ApplyPatchToolkitBuilder,
     ShellTool,
-    LocalShellToolkitBuilder,
-    LocalShellTool,
-    ImageGenerationConfig,
-    ImageGenerationToolkitBuilder,
     ImageGenerationTool,
 )
 
@@ -96,7 +84,7 @@ from meshagent.api.messaging import JsonContent, TextContent
 
 
 from meshagent.cli.host import get_service, run_services, get_deferred, service_specs
-from meshagent.tools.database import DatabaseToolkitConfig, make_database_toolkit
+from meshagent.tools.database import make_database_toolkit
 from meshagent.tools.datetime import DatetimeToolkit
 from meshagent.tools.script import get_script_tools
 from meshagent.tools.uuid import UUIDToolkit
@@ -124,6 +112,26 @@ from meshagent.api.client import ConflictError
 logger = logging.getLogger("taskrunner")
 
 app = async_typer.AsyncTyper(help="Join a taskrunner to a room")
+app.add_deprecated_option_aliases(DEPRECATED_REQUIRE_OPTION_ALIASES)
+
+
+def _require_storage_tool_mounts(
+    *,
+    room: RoomClient,
+    local_paths: list[str],
+    room_paths: list[str],
+    default_room_mount: bool,
+) -> list[StorageToolMount]:
+    mounts = parse_storage_tool_mounts(
+        room=room,
+        local_paths=local_paths,
+        room_paths=room_paths,
+        default_room_mount=default_room_mount,
+    )
+    if mounts is None:
+        raise RuntimeError("storage toolkit requires at least one configured mount")
+    return mounts
+
 
 ThreadingMode = Literal["auto", "manual", "none"]
 
@@ -280,12 +288,12 @@ def read_task_runner_input(input_value: Optional[str]) -> str:
 
 def build_task_runner(
     *,
+    client: RoomClient | None = None,
     model: str,
     rule: List[str],
     toolkit: List[str],
     schema: List[str],
     image_generation: Optional[str] = None,
-    local_shell: Optional[str] = None,
     shell: Optional[str] = None,
     apply_patch: Optional[str] = None,
     web_search: Optional[str] = None,
@@ -293,14 +301,15 @@ def build_task_runner(
     discover_script_tools: Optional[bool] = None,
     mcp: Optional[str] = None,
     storage: Optional[str] = None,
-    storage_tool_mounts: Optional[list[StorageToolMount]] = None,
+    storage_tool_local_paths: list[str] | None = None,
+    storage_tool_room_paths: list[str] | None = None,
+    default_room_storage_mount: bool = False,
     shell_tool_mounts: Optional[ContainerMountSpec] = None,
     allow_model_selection: bool = True,
     threading_mode: ThreadingMode = "none",
     thread_dir: str = ".threads",
     thread_name_rules: Optional[list[str]] = None,
     require_image_generation: Optional[str] = None,
-    require_local_shell: Optional[str] = None,
     require_shell: Optional[bool] = None,
     require_apply_patch: Optional[str] = None,
     require_web_search: Optional[str] = None,
@@ -336,6 +345,11 @@ def build_task_runner(
     shell_set_env: Optional[list[str]] = None,
     log_llm_requests: Optional[bool] = False,
 ):
+    if storage_tool_local_paths is None:
+        storage_tool_local_paths = []
+    if storage_tool_room_paths is None:
+        storage_tool_room_paths = []
+
     output_schema = None
     if output_schema_str is not None:
         output_schema = json.loads(output_schema_str)
@@ -356,7 +370,36 @@ def build_task_runner(
     requirements = []
 
     toolkits = []
-    storage_enabled = bool(storage)
+    normalized_tool_options = normalize_required_tool_options(
+        toolkit=toolkit,
+        schema=schema,
+        image_generation=image_generation,
+        require_image_generation=require_image_generation,
+        computer_use=None,
+        require_computer_use=require_computer_use,
+        shell=shell,
+        require_shell=require_shell,
+        apply_patch=apply_patch,
+        require_apply_patch=require_apply_patch,
+        web_search=web_search,
+        require_web_search=require_web_search,
+        web_fetch=web_fetch,
+        require_web_fetch=require_web_fetch,
+        mcp=mcp,
+        require_mcp=require_mcp,
+        storage=storage,
+        require_storage=require_storage,
+    )
+    toolkit = normalized_tool_options["toolkit"]
+    schema = normalized_tool_options["schema"]
+    require_image_generation = normalized_tool_options["require_image_generation"]
+    require_computer_use = normalized_tool_options["require_computer_use"]
+    require_shell = normalized_tool_options["require_shell"]
+    require_apply_patch = normalized_tool_options["require_apply_patch"]
+    require_web_search = normalized_tool_options["require_web_search"]
+    require_web_fetch = normalized_tool_options["require_web_fetch"]
+    require_mcp = normalized_tool_options["mcp"]
+    require_storage = normalized_tool_options["require_storage"]
 
     for t in toolkit:
         requirements.append(RequiredToolkit(name=t))
@@ -394,9 +437,6 @@ def build_task_runner(
     if not supports_openai_tools:
         if image_generation or require_image_generation:
             print("image generation tool is only supported by openai models")
-            raise typer.Exit(1)
-        if local_shell or require_local_shell:
-            print("local shell tool is only supported by openai models")
             raise typer.Exit(1)
         if apply_patch or require_apply_patch:
             print("apply patch tool is only supported by openai models")
@@ -461,13 +501,13 @@ def build_task_runner(
                 if supports_openai_shell:
                     shell_kwargs = {
                         "working_dir": working_dir,
-                        "config": ShellConfig(name="shell"),
+                        "name": "shell",
                         "image": resolved_shell_image,
                         "env": env,
                     }
                     if shell_tool_mounts is not None:
                         shell_kwargs["mounts"] = shell_tool_mounts
-                    self.shell_tool = ShellTool(**shell_kwargs)
+                    self.shell_tool = ShellTool(room=room, **shell_kwargs)
                 else:
                     shell_kwargs = {
                         "image": resolved_shell_image,
@@ -476,7 +516,7 @@ def build_task_runner(
                     }
                     if shell_tool_mounts is not None:
                         shell_kwargs["mounts"] = shell_tool_mounts
-                    self.shell_tool = ContainerShellTool(**shell_kwargs)
+                    self.shell_tool = ContainerShellTool(room=room, **shell_kwargs)
 
             if room_rules_path is not None:
                 for p in room_rules_path:
@@ -562,18 +602,8 @@ def build_task_runner(
             if require_image_generation:
                 providers.append(
                     ImageGenerationTool(
-                        config=ImageGenerationConfig(
-                            name="image_generation",
-                            partial_images=3,
-                        ),
-                    )
-                )
-
-            if require_local_shell:
-                providers.append(
-                    LocalShellTool(
-                        working_dir=working_dir,
-                        config=LocalShellConfig(name="local_shell"),
+                        model=require_image_generation,
+                        partial_images=3,
                     )
                 )
 
@@ -583,7 +613,14 @@ def build_task_runner(
             if require_apply_patch:
                 providers.append(
                     ApplyPatchTool(
-                        config=ApplyPatchConfig(name="apply_patch"),
+                        storage=StorageToolkit(
+                            mounts=_require_storage_tool_mounts(
+                                room=client or self.room,
+                                local_paths=storage_tool_local_paths,
+                                room_paths=storage_tool_room_paths,
+                                default_room_mount=True,
+                            )
+                        )
                     )
                 )
 
@@ -596,9 +633,7 @@ def build_task_runner(
                 if is_claude_model:
                     providers.append(AnthropicWebSearchTool())
                 else:
-                    providers.append(
-                        WebSearchTool(config=WebSearchConfig(name="web_search"))
-                    )
+                    providers.append(WebSearchTool())
 
             if require_web_fetch:
                 if is_claude_model:
@@ -610,18 +645,25 @@ def build_task_runner(
                 providers.extend(await get_script_tools(self.room))
 
             if require_storage:
-                providers.extend(StorageToolkit(mounts=storage_tool_mounts).tools)
+                providers.extend(
+                    StorageToolkit(
+                        mounts=_require_storage_tool_mounts(
+                            room=client or self.room,
+                            local_paths=storage_tool_local_paths,
+                            room_paths=storage_tool_room_paths,
+                            default_room_mount=default_room_storage_mount,
+                        ),
+                    ).tools
+                )
 
             if len(require_table_read) > 0:
                 providers.extend(
                     (
                         await make_database_toolkit(
                             room=self.room,
-                            config=DatabaseToolkitConfig(
-                                tables=require_table_read,
-                                read_only=True,
-                                namespace=database_namespace,
-                            ),
+                            tables=require_table_read,
+                            read_only=True,
+                            namespace=database_namespace,
                         )
                     ).tools
                 )
@@ -636,6 +678,7 @@ def build_task_runner(
                 memory_name, memory_namespace = memory_selection
                 providers.extend(
                     MemoriesToolkit(
+                        room=self.room,
                         memory_name=memory_name,
                         namespace=memory_namespace,
                         llm_model=memory_model,
@@ -647,32 +690,40 @@ def build_task_runner(
                     (
                         await make_database_toolkit(
                             room=self.room,
-                            config=DatabaseToolkitConfig(
-                                tables=require_table_write,
-                                read_only=False,
-                                namespace=database_namespace,
-                            ),
+                            tables=require_table_write,
+                            read_only=False,
+                            namespace=database_namespace,
                         )
                     ).tools
                 )
 
             if require_read_only_storage:
                 providers.extend(
-                    StorageToolkit(read_only=True, mounts=storage_tool_mounts).tools
+                    StorageToolkit(
+                        read_only=True,
+                        mounts=_require_storage_tool_mounts(
+                            room=client or self.room,
+                            local_paths=storage_tool_local_paths,
+                            room_paths=storage_tool_room_paths,
+                            default_room_mount=default_room_storage_mount,
+                        ),
+                    ).tools
                 )
 
             if require_document_authoring:
-                providers.extend(DocumentAuthoringToolkit().tools)
+                providers.extend(DocumentAuthoringToolkit(room=self.room).tools)
                 providers.extend(
                     DocumentTypeAuthoringToolkit(
-                        schema=widget_schema, document_type="widget"
+                        schema=widget_schema,
+                        document_type="widget",
+                        room=self.room,
                     ).tools
                 )
 
             if require_discovery:
                 from meshagent.tools.discovery import DiscoveryToolkit
 
-                providers.extend(DiscoveryToolkit().tools)
+                providers.extend(DiscoveryToolkit(room=self.room).tools)
 
             tk = await super().get_context_toolkits(context=context)
             toolkits_out = [
@@ -696,57 +747,6 @@ def build_task_runner(
                     ),
                 )
             return toolkits_out
-
-        def get_toolkit_builders(self):
-            providers = []
-
-            if image_generation:
-                providers.append(ImageGenerationToolkitBuilder())
-
-            if apply_patch:
-                providers.append(ApplyPatchToolkitBuilder())
-
-            if local_shell:
-                providers.append(
-                    LocalShellToolkitBuilder(
-                        working_dir=working_dir,
-                    )
-                )
-
-            if shell:
-                shell_builder_kwargs = {
-                    "working_dir": working_dir,
-                    "image": resolved_shell_image,
-                    "env": base_shell_env or None,
-                }
-                if shell_tool_mounts is not None:
-                    shell_builder_kwargs["mounts"] = shell_tool_mounts
-                providers.append(
-                    build_shell_toolkit_builder(
-                        llm_participant=llm_participant,
-                        **shell_builder_kwargs,
-                    )
-                )
-
-            if mcp:
-                providers.append(MCPToolkitBuilder())
-
-            if web_search:
-                if is_claude_model:
-                    providers.append(AnthropicWebSearchToolkitBuilder())
-                else:
-                    providers.append(WebSearchToolkitBuilder())
-
-            if web_fetch:
-                if is_claude_model:
-                    providers.append(AnthropicWebFetchToolkitBuilder())
-                else:
-                    providers.append(WebFetchToolkitBuilder())
-
-            if storage_enabled:
-                providers.append(StorageToolkitBuilder(mounts=storage_tool_mounts))
-
-            return providers
 
     return CustomTaskRunner
 
@@ -780,14 +780,12 @@ async def join(
     toolkit: Annotated[
         List[str],
         typer.Option(
-            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
         ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option(
-            "--schema", "-s", help="the name or url of a required schema", hidden=True
-        ),
+        typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the task runner")
@@ -795,9 +793,6 @@ async def join(
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
-    local_shell: Annotated[
-        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
-    ] = False,
     shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable function shell tool calling")
     ] = False,
@@ -850,10 +845,6 @@ async def join(
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
-    require_local_shell: Annotated[
-        Optional[bool],
-        typer.Option(..., help="Enable local shell tool calling"),
-    ] = False,
     require_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
@@ -878,23 +869,27 @@ async def join(
     ] = False,
     require_table_read: Annotated[
         list[str],
-        typer.Option(..., help="Enable table read tools for a specific table"),
+        typer.Option(
+            "--table-read", help="Enable table read tools for a specific table"
+        ),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(..., help="Enable table write tools for a specific table"),
+        typer.Option(
+            "--table-write", help="Enable table write tools for a specific table"
+        ),
     ] = [],
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit"),
+        typer.Option("--read-only-storage", help="Enable read only storage toolkit"),
     ] = False,
     require_time: Annotated[
         bool,
-        typer.Option(..., help="Enable time/datetime tools"),
+        typer.Option("--time", help="Enable time/datetime tools"),
     ] = True,
     require_uuid: Annotated[
         bool,
-        typer.Option(..., help="Enable UUID generation tools"),
+        typer.Option("--uuid", help="Enable UUID generation tools"),
     ] = False,
     use_memory: Annotated[
         Optional[str],
@@ -917,7 +912,7 @@ async def join(
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
-            ...,
+            "--computer-use",
             help="Enable computer use",
         ),
     ] = False,
@@ -925,11 +920,11 @@ async def join(
     allow_goto_url: AllowGotoUrlOption = False,
     require_document_authoring: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable MeshDocument authoring"),
+        typer.Option("--document-authoring", help="Enable MeshDocument authoring"),
     ] = False,
     require_discovery: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable discovery of agents and tools"),
+        typer.Option("--discovery", help="Enable discovery of agents and tools"),
     ] = False,
     working_dir: WorkingDirOption = None,
     working_directory: WorkingDirectoryAliasOption = None,
@@ -1034,9 +1029,8 @@ async def join(
         for t in schema:
             requirements.append(RequiredSchema(name=t))
 
-        storage_tool_mounts = parse_storage_tool_mounts(
-            local_paths=storage_tool_local_path,
-            room_paths=storage_tool_room_path,
+        default_room_storage_mount = bool(
+            storage or require_storage or require_read_only_storage
         )
         shell_tool_mounts = parse_shell_tool_mounts(
             room_paths=merge_option_lists(
@@ -1053,8 +1047,15 @@ async def join(
             ),
             image_paths=shell_image_mount,
         )
+        client = RoomClient(
+            protocol=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room),
+                token=jwt,
+            )
+        )
 
         CustomTaskRunner = build_task_runner(
+            client=client,
             title=title,
             description=description,
             allow_model_selection=allow_model_selection,
@@ -1063,7 +1064,6 @@ async def join(
             thread_name_rules=thread_name_rule if len(thread_name_rule) > 0 else None,
             log_llm_requests=log_llm_requests,
             model=model,
-            local_shell=local_shell,
             shell=shell,
             apply_patch=apply_patch,
             rule=rule,
@@ -1076,12 +1076,13 @@ async def join(
             discover_script_tools=discover_script_tools,
             mcp=mcp,
             storage=storage,
-            storage_tool_mounts=storage_tool_mounts,
+            storage_tool_local_paths=storage_tool_local_path,
+            storage_tool_room_paths=storage_tool_room_path,
+            default_room_storage_mount=default_room_storage_mount,
             shell_tool_mounts=shell_tool_mounts,
             require_apply_patch=require_apply_patch,
             require_web_search=require_web_search,
             require_web_fetch=require_web_fetch,
-            require_local_shell=require_local_shell,
             require_shell=require_shell,
             require_image_generation=require_image_generation,
             require_mcp=require_mcp,
@@ -1119,12 +1120,7 @@ async def join(
 
             agents.append((bot, jwt))
         else:
-            async with RoomClient(
-                protocol=WebSocketClientProtocol(
-                    url=websocket_room_url(room_name=room),
-                    token=jwt,
-                )
-            ) as client:
+            async with client:
                 await bot.start(room=client)
                 try:
                     print(
@@ -1161,14 +1157,12 @@ async def run(
     toolkit: Annotated[
         List[str],
         typer.Option(
-            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
         ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option(
-            "--schema", "-s", help="the name or url of a required schema", hidden=True
-        ),
+        typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the task runner")
@@ -1176,9 +1170,6 @@ async def run(
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
-    local_shell: Annotated[
-        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
-    ] = False,
     shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable function shell tool calling")
     ] = False,
@@ -1228,10 +1219,6 @@ async def run(
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
-    require_local_shell: Annotated[
-        Optional[bool],
-        typer.Option(..., help="Enable local shell tool calling"),
-    ] = False,
     require_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
@@ -1252,23 +1239,27 @@ async def run(
     ] = False,
     require_table_read: Annotated[
         list[str],
-        typer.Option(..., help="Enable table read tools for a specific table"),
+        typer.Option(
+            "--table-read", help="Enable table read tools for a specific table"
+        ),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(..., help="Enable table write tools for a specific table"),
+        typer.Option(
+            "--table-write", help="Enable table write tools for a specific table"
+        ),
     ] = [],
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit"),
+        typer.Option("--read-only-storage", help="Enable read only storage toolkit"),
     ] = False,
     require_time: Annotated[
         bool,
-        typer.Option(..., help="Enable time/datetime tools"),
+        typer.Option("--time", help="Enable time/datetime tools"),
     ] = True,
     require_uuid: Annotated[
         bool,
-        typer.Option(..., help="Enable UUID generation tools"),
+        typer.Option("--uuid", help="Enable UUID generation tools"),
     ] = False,
     use_memory: Annotated[
         Optional[str],
@@ -1291,7 +1282,7 @@ async def run(
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
-            ...,
+            "--computer-use",
             help="Enable computer use",
         ),
     ] = False,
@@ -1299,11 +1290,11 @@ async def run(
     allow_goto_url: AllowGotoUrlOption = False,
     require_document_authoring: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable MeshDocument authoring"),
+        typer.Option("--document-authoring", help="Enable MeshDocument authoring"),
     ] = False,
     require_discovery: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable discovery of agents and tools"),
+        typer.Option("--discovery", help="Enable discovery of agents and tools"),
     ] = False,
     working_dir: WorkingDirOption = None,
     working_directory: WorkingDirectoryAliasOption = None,
@@ -1425,9 +1416,8 @@ async def run(
         for t in schema:
             requirements.append(RequiredSchema(name=t))
 
-        storage_tool_mounts = parse_storage_tool_mounts(
-            local_paths=storage_tool_local_path,
-            room_paths=storage_tool_room_path,
+        default_room_storage_mount = bool(
+            storage or require_storage or require_read_only_storage
         )
         shell_tool_mounts = parse_shell_tool_mounts(
             room_paths=merge_option_lists(
@@ -1444,8 +1434,15 @@ async def run(
             ),
             image_paths=shell_image_mount,
         )
+        client = RoomClient(
+            protocol=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room),
+                token=jwt,
+            )
+        )
 
         CustomTaskRunner = build_task_runner(
+            client=client,
             title=title,
             description=description,
             allow_model_selection=allow_model_selection,
@@ -1454,7 +1451,6 @@ async def run(
             thread_name_rules=thread_name_rule if len(thread_name_rule) > 0 else None,
             log_llm_requests=log_llm_requests,
             model=model,
-            local_shell=local_shell,
             shell=shell,
             apply_patch=apply_patch,
             rule=rule,
@@ -1466,11 +1462,12 @@ async def run(
             discover_script_tools=discover_script_tools,
             mcp=mcp,
             storage=storage,
-            storage_tool_mounts=storage_tool_mounts,
+            storage_tool_local_paths=storage_tool_local_path,
+            storage_tool_room_paths=storage_tool_room_path,
+            default_room_storage_mount=default_room_storage_mount,
             shell_tool_mounts=shell_tool_mounts,
             require_apply_patch=require_apply_patch,
             require_web_search=require_web_search,
-            require_local_shell=require_local_shell,
             require_shell=require_shell,
             require_image_generation=require_image_generation,
             require_mcp=require_mcp,
@@ -1508,12 +1505,7 @@ async def run(
 
             agents.append((bot, jwt))
         else:
-            async with RoomClient(
-                protocol=WebSocketClientProtocol(
-                    url=websocket_room_url(room_name=room),
-                    token=jwt,
-                )
-            ) as client:
+            async with client:
                 try:
                     input_payload = read_task_runner_input(input)
 
@@ -1572,14 +1564,12 @@ async def service(
     toolkit: Annotated[
         List[str],
         typer.Option(
-            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
         ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option(
-            "--schema", "-s", help="the name or url of a required schema", hidden=True
-        ),
+        typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the task runner")
@@ -1587,9 +1577,6 @@ async def service(
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
-    local_shell: Annotated[
-        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
-    ] = False,
     shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable function shell tool calling")
     ] = False,
@@ -1642,10 +1629,6 @@ async def service(
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
-    require_local_shell: Annotated[
-        Optional[bool],
-        typer.Option(..., help="Enable local shell tool calling"),
-    ] = False,
     require_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
@@ -1669,23 +1652,27 @@ async def service(
     ] = False,
     require_table_read: Annotated[
         list[str],
-        typer.Option(..., help="Enable table read tools for a specific table"),
+        typer.Option(
+            "--table-read", help="Enable table read tools for a specific table"
+        ),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(..., help="Enable table write tools for a specific table"),
+        typer.Option(
+            "--table-write", help="Enable table write tools for a specific table"
+        ),
     ] = [],
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit"),
+        typer.Option("--read-only-storage", help="Enable read only storage toolkit"),
     ] = False,
     require_time: Annotated[
         bool,
-        typer.Option(..., help="Enable time/datetime tools"),
+        typer.Option("--time", help="Enable time/datetime tools"),
     ] = True,
     require_uuid: Annotated[
         bool,
-        typer.Option(..., help="Enable UUID generation tools"),
+        typer.Option("--uuid", help="Enable UUID generation tools"),
     ] = False,
     use_memory: Annotated[
         Optional[str],
@@ -1708,7 +1695,7 @@ async def service(
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
-            ...,
+            "--computer-use",
             help="Enable computer use",
         ),
     ] = False,
@@ -1732,11 +1719,11 @@ async def service(
     shell_set_env: ShellSetEnvOption = [],
     require_document_authoring: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable document authoring"),
+        typer.Option("--document-authoring", help="Enable document authoring"),
     ] = False,
     require_discovery: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable discovery of agents and tools"),
+        typer.Option("--discovery", help="Enable discovery of agents and tools"),
     ] = False,
     llm_participant: Annotated[
         Optional[str],
@@ -1792,9 +1779,8 @@ async def service(
         default_namespace=DEFAULT_DATABASE_NAMESPACE,
     )
 
-    storage_tool_mounts = parse_storage_tool_mounts(
-        local_paths=storage_tool_local_path,
-        room_paths=storage_tool_room_path,
+    default_room_storage_mount = bool(
+        storage or require_storage or require_read_only_storage
     )
     shell_tool_mounts = parse_shell_tool_mounts(
         room_paths=merge_option_lists(
@@ -1828,8 +1814,8 @@ async def service(
         identity=agent_name,
         path=path,
         cls=build_task_runner(
+            client=None,
             model=model,
-            local_shell=local_shell,
             shell=shell,
             apply_patch=apply_patch,
             title=title,
@@ -1848,13 +1834,14 @@ async def service(
             image_generation=image_generation,
             mcp=mcp,
             storage=storage,
-            storage_tool_mounts=storage_tool_mounts,
+            storage_tool_local_paths=storage_tool_local_path,
+            storage_tool_room_paths=storage_tool_room_path,
+            default_room_storage_mount=default_room_storage_mount,
             shell_tool_mounts=shell_tool_mounts,
             require_web_search=require_web_search,
             require_web_fetch=require_web_fetch,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
-            require_local_shell=require_local_shell,
             require_image_generation=require_image_generation,
             require_mcp=require_mcp,
             require_storage=require_storage,
@@ -1916,14 +1903,12 @@ async def spec(
     toolkit: Annotated[
         List[str],
         typer.Option(
-            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
         ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option(
-            "--schema", "-s", help="the name or url of a required schema", hidden=True
-        ),
+        typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the task runner")
@@ -1931,9 +1916,6 @@ async def spec(
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
-    local_shell: Annotated[
-        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
-    ] = False,
     shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable function shell tool calling")
     ] = False,
@@ -1986,10 +1968,6 @@ async def spec(
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
-    require_local_shell: Annotated[
-        Optional[bool],
-        typer.Option(..., help="Enable local shell tool calling"),
-    ] = False,
     require_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
@@ -2013,23 +1991,27 @@ async def spec(
     ] = False,
     require_table_read: Annotated[
         list[str],
-        typer.Option(..., help="Enable table read tools for a specific table"),
+        typer.Option(
+            "--table-read", help="Enable table read tools for a specific table"
+        ),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(..., help="Enable table write tools for a specific table"),
+        typer.Option(
+            "--table-write", help="Enable table write tools for a specific table"
+        ),
     ] = [],
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit"),
+        typer.Option("--read-only-storage", help="Enable read only storage toolkit"),
     ] = False,
     require_time: Annotated[
         bool,
-        typer.Option(..., help="Enable time/datetime tools"),
+        typer.Option("--time", help="Enable time/datetime tools"),
     ] = True,
     require_uuid: Annotated[
         bool,
-        typer.Option(..., help="Enable UUID generation tools"),
+        typer.Option("--uuid", help="Enable UUID generation tools"),
     ] = False,
     use_memory: Annotated[
         Optional[str],
@@ -2052,7 +2034,7 @@ async def spec(
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
-            ...,
+            "--computer-use",
             help="Enable computer use",
         ),
     ] = False,
@@ -2076,11 +2058,11 @@ async def spec(
     shell_set_env: ShellSetEnvOption = [],
     require_document_authoring: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable document authoring"),
+        typer.Option("--document-authoring", help="Enable document authoring"),
     ] = False,
     require_discovery: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable discovery of agents and tools"),
+        typer.Option("--discovery", help="Enable discovery of agents and tools"),
     ] = False,
     llm_participant: Annotated[
         Optional[str],
@@ -2126,9 +2108,8 @@ async def spec(
         namespace=database_namespace,
         default_namespace=DEFAULT_DATABASE_NAMESPACE,
     )
-    storage_tool_mounts = parse_storage_tool_mounts(
-        local_paths=storage_tool_local_path,
-        room_paths=storage_tool_room_path,
+    default_room_storage_mount = bool(
+        storage or require_storage or require_read_only_storage
     )
     shell_tool_mounts = parse_shell_tool_mounts(
         room_paths=merge_option_lists(
@@ -2161,8 +2142,8 @@ async def spec(
         identity=agent_name,
         path=path,
         cls=build_task_runner(
+            client=None,
             model=model,
-            local_shell=local_shell,
             shell=shell,
             apply_patch=apply_patch,
             title=title,
@@ -2181,13 +2162,14 @@ async def spec(
             image_generation=image_generation,
             mcp=mcp,
             storage=storage,
-            storage_tool_mounts=storage_tool_mounts,
+            storage_tool_local_paths=storage_tool_local_path,
+            storage_tool_room_paths=storage_tool_room_path,
+            default_room_storage_mount=default_room_storage_mount,
             shell_tool_mounts=shell_tool_mounts,
             require_web_search=require_web_search,
             require_web_fetch=require_web_fetch,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
-            require_local_shell=require_local_shell,
             require_image_generation=require_image_generation,
             require_mcp=require_mcp,
             require_storage=require_storage,
@@ -2269,14 +2251,12 @@ async def deploy(
     toolkit: Annotated[
         List[str],
         typer.Option(
-            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+            "--require-toolkit", "-rt", help="the name or url of a required toolkit"
         ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option(
-            "--schema", "-s", help="the name or url of a required schema", hidden=True
-        ),
+        typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the task runner")
@@ -2284,9 +2264,6 @@ async def deploy(
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
-    local_shell: Annotated[
-        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
-    ] = False,
     shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable function shell tool calling")
     ] = False,
@@ -2332,10 +2309,6 @@ async def deploy(
     require_image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
-    require_local_shell: Annotated[
-        Optional[bool],
-        typer.Option(..., help="Enable local shell tool calling"),
-    ] = False,
     require_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
@@ -2359,23 +2332,27 @@ async def deploy(
     ] = False,
     require_table_read: Annotated[
         list[str],
-        typer.Option(..., help="Enable table read tools for a specific table"),
+        typer.Option(
+            "--table-read", help="Enable table read tools for a specific table"
+        ),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(..., help="Enable table write tools for a specific table"),
+        typer.Option(
+            "--table-write", help="Enable table write tools for a specific table"
+        ),
     ] = [],
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit"),
+        typer.Option("--read-only-storage", help="Enable read only storage toolkit"),
     ] = False,
     require_time: Annotated[
         bool,
-        typer.Option(..., help="Enable time/datetime tools"),
+        typer.Option("--time", help="Enable time/datetime tools"),
     ] = True,
     require_uuid: Annotated[
         bool,
-        typer.Option(..., help="Enable UUID generation tools"),
+        typer.Option("--uuid", help="Enable UUID generation tools"),
     ] = False,
     use_memory: Annotated[
         Optional[str],
@@ -2398,7 +2375,7 @@ async def deploy(
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
-            ...,
+            "--computer-use",
             help="Enable computer use",
         ),
     ] = False,
@@ -2422,11 +2399,11 @@ async def deploy(
     shell_set_env: ShellSetEnvOption = [],
     require_document_authoring: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable document authoring"),
+        typer.Option("--document-authoring", help="Enable document authoring"),
     ] = False,
     require_discovery: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable discovery of agents and tools"),
+        typer.Option("--discovery", help="Enable discovery of agents and tools"),
     ] = False,
     llm_participant: Annotated[
         Optional[str],
@@ -2479,9 +2456,8 @@ async def deploy(
         default_namespace=DEFAULT_DATABASE_NAMESPACE,
     )
 
-    storage_tool_mounts = parse_storage_tool_mounts(
-        local_paths=storage_tool_local_path,
-        room_paths=storage_tool_room_path,
+    default_room_storage_mount = bool(
+        storage or require_storage or require_read_only_storage
     )
     shell_tool_mounts = parse_shell_tool_mounts(
         room_paths=merge_option_lists(
@@ -2513,8 +2489,8 @@ async def deploy(
         identity=agent_name,
         path=path,
         cls=build_task_runner(
+            client=None,
             model=model,
-            local_shell=local_shell,
             shell=shell,
             apply_patch=apply_patch,
             title=title,
@@ -2533,13 +2509,14 @@ async def deploy(
             image_generation=image_generation,
             mcp=mcp,
             storage=storage,
-            storage_tool_mounts=storage_tool_mounts,
+            storage_tool_local_paths=storage_tool_local_path,
+            storage_tool_room_paths=storage_tool_room_path,
+            default_room_storage_mount=default_room_storage_mount,
             shell_tool_mounts=shell_tool_mounts,
             require_web_search=require_web_search,
             require_web_fetch=require_web_fetch,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
-            require_local_shell=require_local_shell,
             require_image_generation=require_image_generation,
             require_mcp=require_mcp,
             require_storage=require_storage,
@@ -2639,3 +2616,25 @@ async def deploy(
 
     finally:
         await client.close()
+
+
+_REMOVED_TOOLKIT_OPTION_NAMES = DUPLICATE_REQUIRE_OPTION_NAMES | {
+    "discover_script_tools",
+    "storage_tool_local_path",
+    "storage_tool_room_path",
+    "shell_room_mount",
+    "shell_tool_room_path",
+    "shell_project_mount",
+    "shell_tool_project_path",
+    "shell_empty_dir_mount",
+    "shell_tool_empty_dir",
+    "shell_image_mount",
+    "working_dir",
+    "working_directory",
+    "shell_image",
+    "delegate_shell_token",
+    "shell_copy_env",
+    "shell_set_env",
+}
+
+strip_command_options(app, option_names=_REMOVED_TOOLKIT_OPTION_NAMES)

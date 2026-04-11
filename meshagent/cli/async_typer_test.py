@@ -126,3 +126,32 @@ def test_collect_lazy_command_modules_from_entrypoint_includes_nested_modules() 
     assert "meshagent.cli.containers" in modules
     assert "meshagent.cli.storage" in modules
     assert "meshagent.cli.chatbot" in modules
+
+
+def test_deprecated_option_aliases_are_rewritten_before_parsing() -> None:
+    app = async_typer.AsyncTyper()
+    app.add_deprecated_option_aliases(
+        {
+            "--toolkit": "--require-toolkit",
+            "--require-web-search": "--web-search",
+            "--require-time": "--time",
+        }
+    )
+
+    @app.command()
+    def command(
+        require_toolkit: list[str] = [],
+        web_search: bool = False,
+        time: bool = True,
+    ) -> None:
+        click.echo(
+            f"require_toolkit={require_toolkit} web_search={web_search} time={time}"
+        )
+
+    result = CliRunner().invoke(
+        async_typer.get_command(app),
+        ["--toolkit", "weather", "--require-web-search", "--no-require-time"],
+    )
+
+    assert result.exit_code == 0
+    assert result.output == "require_toolkit=['weather'] web_search=True time=False\n"

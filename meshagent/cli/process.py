@@ -1,7 +1,12 @@
 from meshagent.cli import async_typer
 from meshagent.cli import chatbot
+from meshagent.cli.helper import (
+    DEPRECATED_REQUIRE_OPTION_ALIASES,
+    strip_command_options,
+)
 
 app = async_typer.AsyncTyper(help="Join a process-backed agent to a room")
+app.add_deprecated_option_aliases(DEPRECATED_REQUIRE_OPTION_ALIASES)
 
 app.async_command("join", help="Join a room and run a process-backed agent.")(
     chatbot.join
@@ -24,3 +29,5 @@ app.async_command(
     "use",
     help="Send a one-shot or interactive message to a running process-backed agent.",
 )(chatbot.use)
+
+strip_command_options(app, option_names=chatbot._HIDDEN_REQUIRE_OPTION_NAMES)
