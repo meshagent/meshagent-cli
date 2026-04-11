@@ -106,7 +106,9 @@ async def test_build_shell_tool_uses_shell_tool_for_gpt_model() -> None:
 
 
 @pytest.mark.asyncio
-async def test_build_shell_tool_uses_process_shell_for_non_gpt_model_without_image() -> None:
+async def test_build_shell_tool_uses_process_shell_for_non_gpt_model_without_image() -> (
+    None
+):
     tool = build_shell_tool(
         model="claude-3-7-sonnet",
         working_dir="/workspace",
