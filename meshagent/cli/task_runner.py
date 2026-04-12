@@ -289,6 +289,7 @@ def read_task_runner_input(input_value: Optional[str]) -> str:
 def build_task_runner(
     *,
     client: RoomClient | None = None,
+    api_key: str | None = None,
     model: str,
     rule: List[str],
     toolkit: List[str],
@@ -449,6 +450,7 @@ def build_task_runner(
         if require_computer_use:
             llm_adapter = OpenAIResponsesAdapter(
                 model=model,
+                api_key=api_key,
                 response_options={
                     "reasoning": {"summary": "concise"},
                 },
@@ -457,11 +459,15 @@ def build_task_runner(
         else:
             if model.startswith("claude-"):
                 llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
-                    model=model, log_requests=log_llm_requests
+                    model=model,
+                    api_key=api_key,
+                    log_requests=log_llm_requests,
                 )
             else:
                 llm_adapter = OpenAIResponsesAdapter(
-                    model=model, log_requests=log_llm_requests
+                    model=model,
+                    api_key=api_key,
+                    log_requests=log_llm_requests,
                 )
 
     class CustomTaskRunner(BaseClass):
@@ -1045,6 +1051,7 @@ async def join(
 
         CustomTaskRunner = build_task_runner(
             client=client,
+            api_key=jwt,
             title=title,
             description=description,
             allow_model_selection=allow_model_selection,
@@ -1424,6 +1431,7 @@ async def run(
 
         CustomTaskRunner = build_task_runner(
             client=client,
+            api_key=jwt,
             title=title,
             description=description,
             allow_model_selection=allow_model_selection,

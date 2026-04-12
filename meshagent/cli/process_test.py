@@ -374,10 +374,12 @@ async def test_process_agent_uses_shared_decision_adapter_for_threaded_channels(
             self,
             *,
             model: str | None = None,
+            api_key: str | None = None,
             response_options=None,
             log_requests=None,
         ) -> None:
             self._model = model if model is not None else "default-model"
+            self.api_key = api_key
             self.response_options = response_options
             self.log_requests = log_requests
             created_adapters.append(self)
@@ -780,6 +782,7 @@ def test_process_join_passes_supported_builder_kwargs(monkeypatch) -> None:
     assert "script_tool" not in build_calls[0]
     assert "mcp" not in build_calls[0]
     assert build_calls[0]["require_mcp"] is False
+    assert build_calls[0]["api_key"] == "test-token"
 
 
 class _FakeRoomClient:

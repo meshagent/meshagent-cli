@@ -220,6 +220,7 @@ def _resolve_working_dir_option(
 def build_mailbot(
     *,
     client: RoomClient | None = None,
+    api_key: str | None = None,
     model: str,
     rule: List[str],
     toolkit: List[str],
@@ -330,6 +331,7 @@ def build_mailbot(
         if computer_use or require_computer_use:
             llm_adapter = OpenAIResponsesAdapter(
                 model=model,
+                api_key=api_key,
                 response_options={
                     "reasoning": {"summary": "concise"},
                 },
@@ -340,11 +342,13 @@ def build_mailbot(
             if model.startswith("claude-"):
                 llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
                     model=model,
+                    api_key=api_key,
                     log_requests=log_llm_requests,
                 )
             else:
                 llm_adapter = OpenAIResponsesAdapter(
                     model=model,
+                    api_key=api_key,
                     log_requests=log_llm_requests,
                 )
 
@@ -863,6 +867,7 @@ async def join(
 
         CustomMailbot = build_mailbot(
             client=client,
+            api_key=jwt,
             computer_use=None,
             model=model,
             rule=rule,

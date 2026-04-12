@@ -418,16 +418,19 @@ def _normalized_decision_model(*, decision_model: Optional[str]) -> Optional[str
 def _build_decision_llm_adapter(
     *,
     decision_model: str,
+    api_key: str | None = None,
     log_llm_requests: Optional[bool],
 ) -> LLMAdapter:
     if decision_model.startswith("claude-"):
         return AnthropicOpenAIResponsesStreamAdapter(
             model=decision_model,
+            api_key=api_key,
             log_requests=log_llm_requests,
         )
 
     return OpenAIResponsesAdapter(
         model=decision_model,
+        api_key=api_key,
         log_requests=log_llm_requests,
     )
 
@@ -511,6 +514,7 @@ def _require_storage_tool_mounts(
 def _build_runtime_agent(
     *,
     client: RoomClient | None,
+    api_key: str | None = None,
     runtime: Literal["chatbot", "process"],
     normalized_tool_options: NormalizedRequiredToolOptions,
     model: str,
@@ -553,6 +557,7 @@ def _build_runtime_agent(
     return builder(
         computer_use=False,
         require_computer_use=normalized_tool_options["require_computer_use"],
+        api_key=api_key,
         starting_url=starting_url,
         allow_goto_url=allow_goto_url,
         model=model,
@@ -687,6 +692,7 @@ def _resolve_working_dir_option(
 def build_chatbot(
     *,
     client: RoomClient | None = None,
+    api_key: str | None = None,
     model: str,
     rule: List[str],
     toolkit: List[str],
@@ -805,6 +811,7 @@ def build_chatbot(
         if computer_use or require_computer_use:
             llm_adapter = OpenAIResponsesAdapter(
                 model=model,
+                api_key=api_key,
                 response_options={
                     "reasoning": {"summary": "concise"},
                 },
@@ -814,6 +821,7 @@ def build_chatbot(
             if is_claude_model:
                 llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
                     model=model,
+                    api_key=api_key,
                     log_requests=log_llm_requests,
                 )
                 if resolved_decision_model is None:
@@ -821,6 +829,7 @@ def build_chatbot(
             else:
                 llm_adapter = OpenAIResponsesAdapter(
                     model=model,
+                    api_key=api_key,
                     log_requests=log_llm_requests,
                 )
 
@@ -1136,6 +1145,7 @@ def build_chatbot(
 def build_process_agent(
     *,
     client: RoomClient | None = None,
+    api_key: str | None = None,
     model: str,
     rule: List[str],
     toolkit: List[str],
@@ -1253,6 +1263,7 @@ def build_process_agent(
     )
     channel_llm_adapter = _build_decision_llm_adapter(
         decision_model=resolved_channel_decision_model,
+        api_key=api_key,
         log_llm_requests=log_llm_requests,
     )
 
@@ -1264,6 +1275,7 @@ def build_process_agent(
         if computer_use or require_computer_use:
             llm_adapter = OpenAIResponsesAdapter(
                 model=model,
+                api_key=api_key,
                 response_options={
                     "reasoning": {"summary": "concise"},
                 },
@@ -1273,11 +1285,13 @@ def build_process_agent(
             if is_claude_model:
                 llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
                     model=model,
+                    api_key=api_key,
                     log_requests=log_llm_requests,
                 )
             else:
                 llm_adapter = OpenAIResponsesAdapter(
                     model=model,
+                    api_key=api_key,
                     log_requests=log_llm_requests,
                 )
 
@@ -2144,6 +2158,7 @@ async def join(
 
         CustomChatbot = _build_runtime_agent(
             client=client,
+            api_key=jwt,
             runtime=runtime,
             normalized_tool_options=normalized_tool_options,
             model=model,
@@ -5163,6 +5178,7 @@ async def run(
         )
         CustomChatbot = _build_runtime_agent(
             client=client,
+            api_key=jwt,
             runtime=runtime,
             normalized_tool_options=normalized_tool_options,
             model=model,

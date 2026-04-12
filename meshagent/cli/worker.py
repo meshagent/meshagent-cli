@@ -285,6 +285,7 @@ def _resolve_working_dir_option(
 def build_worker(
     *,
     client: RoomClient | None = None,
+    api_key: str | None = None,
     WorkerBase: Type[Worker],
     model: str,
     rule: List[str],
@@ -418,6 +419,7 @@ def build_worker(
     if require_computer_use:
         llm_adapter: LLMAdapter = OpenAIResponsesAdapter(
             model=model,
+            api_key=api_key,
             response_options={
                 "reasoning": {"summary": "concise"},
             },
@@ -427,11 +429,13 @@ def build_worker(
         if model.startswith("claude-"):
             llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
                 model=model,
+                api_key=api_key,
                 log_requests=log_llm_requests,
             )
         else:
             llm_adapter = OpenAIResponsesAdapter(
                 model=model,
+                api_key=api_key,
                 log_requests=log_llm_requests,
             )
 
@@ -447,15 +451,18 @@ def build_worker(
         ):
             decision_llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
                 model=resolved_decision_model,
+                api_key=api_key,
                 log_requests=log_llm_requests,
             )
         elif resolved_decision_model is not None:
             decision_llm_adapter = OpenAIResponsesAdapter(
                 model=resolved_decision_model,
+                api_key=api_key,
                 log_requests=log_llm_requests,
             )
         else:
             decision_llm_adapter = OpenAIResponsesAdapter(
+                api_key=api_key,
                 log_requests=log_llm_requests,
             )
 
@@ -982,6 +989,7 @@ async def join(
 
         CustomWorker = build_worker(
             client=client,
+            api_key=jwt,
             WorkerBase=WorkerBase,
             model=model,
             rule=rule,
