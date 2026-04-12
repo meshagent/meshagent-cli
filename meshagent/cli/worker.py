@@ -303,7 +303,6 @@ def build_worker(
     web_search: Optional[str] = None,
     web_fetch: Optional[str] = None,
     discover_script_tools: Optional[bool] = None,
-    mcp: Optional[str] = None,
     storage: Optional[str] = None,
     storage_tool_local_paths: list[str] | None = None,
     storage_tool_room_paths: list[str] | None = None,
@@ -370,7 +369,6 @@ def build_worker(
         require_web_search=require_web_search,
         web_fetch=web_fetch,
         require_web_fetch=require_web_fetch,
-        mcp=mcp,
         storage=storage,
         require_storage=require_storage,
     )
@@ -796,9 +794,6 @@ async def join(
         Optional[bool],
         typer.Option(..., help="Automatically add script tools from the room"),
     ] = False,
-    mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
-    ] = False,
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
@@ -1001,7 +996,6 @@ async def join(
             web_search=web_search,
             web_fetch=web_fetch,
             discover_script_tools=discover_script_tools,
-            mcp=mcp,
             storage=storage,
             storage_tool_local_paths=storage_tool_local_path,
             storage_tool_room_paths=storage_tool_room_path,
@@ -1118,9 +1112,6 @@ async def service(
     discover_script_tools: Annotated[
         Optional[bool],
         typer.Option(..., help="Automatically add script tools from the room"),
-    ] = False,
-    mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
@@ -1339,7 +1330,6 @@ async def service(
             web_search=web_search,
             web_fetch=web_fetch,
             discover_script_tools=discover_script_tools,
-            mcp=mcp,
             storage=storage,
             storage_tool_local_paths=storage_tool_local_path,
             storage_tool_room_paths=storage_tool_room_path,
@@ -1453,9 +1443,6 @@ async def spec(
     discover_script_tools: Annotated[
         Optional[bool],
         typer.Option(..., help="Automatically add script tools from the room"),
-    ] = False,
-    mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
@@ -1665,7 +1652,6 @@ async def spec(
             web_search=web_search,
             web_fetch=web_fetch,
             discover_script_tools=discover_script_tools,
-            mcp=mcp,
             storage=storage,
             storage_tool_local_paths=storage_tool_local_path,
             storage_tool_room_paths=storage_tool_room_path,
@@ -1799,9 +1785,6 @@ async def deploy(
     discover_script_tools: Annotated[
         Optional[bool],
         typer.Option(..., help="Automatically add script tools from the room"),
-    ] = False,
-    mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
@@ -2018,7 +2001,6 @@ async def deploy(
             web_search=web_search,
             web_fetch=web_fetch,
             discover_script_tools=discover_script_tools,
-            mcp=mcp,
             storage=storage,
             storage_tool_local_paths=storage_tool_local_path,
             storage_tool_room_paths=storage_tool_room_path,

@@ -299,7 +299,6 @@ def build_task_runner(
     web_search: Optional[str] = None,
     web_fetch: Optional[str] = None,
     discover_script_tools: Optional[bool] = None,
-    mcp: Optional[str] = None,
     storage: Optional[str] = None,
     storage_tool_local_paths: list[str] | None = None,
     storage_tool_room_paths: list[str] | None = None,
@@ -314,7 +313,6 @@ def build_task_runner(
     require_apply_patch: Optional[str] = None,
     require_web_search: Optional[str] = None,
     require_web_fetch: Optional[str] = None,
-    require_mcp: Optional[str] = None,
     require_storage: Optional[str] = None,
     require_table_read: list[str] = None,
     require_table_write: list[str] = None,
@@ -385,8 +383,6 @@ def build_task_runner(
         require_web_search=require_web_search,
         web_fetch=web_fetch,
         require_web_fetch=require_web_fetch,
-        mcp=mcp,
-        require_mcp=require_mcp,
         storage=storage,
         require_storage=require_storage,
     )
@@ -398,7 +394,6 @@ def build_task_runner(
     require_apply_patch = normalized_tool_options["require_apply_patch"]
     require_web_search = normalized_tool_options["require_web_search"]
     require_web_fetch = normalized_tool_options["require_web_fetch"]
-    require_mcp = normalized_tool_options["mcp"]
     require_storage = normalized_tool_options["require_storage"]
 
     for t in toolkit:
@@ -522,6 +517,12 @@ def build_task_runner(
                 for p in room_rules_path:
                     await self._load_room_rules(path=p)
 
+        async def stop(self) -> None:
+            try:
+                pass
+            finally:
+                await super().stop()
+
         async def init_session(self):
             from meshagent.cli.helper import init_context_from_spec
 
@@ -598,7 +599,6 @@ def build_task_runner(
 
         async def get_context_toolkits(self, *, context: TaskContext):
             providers = []
-
             if require_image_generation:
                 providers.append(
                     ImageGenerationTool(
@@ -622,11 +622,6 @@ def build_task_runner(
                             )
                         )
                     )
-                )
-
-            if require_mcp:
-                raise Exception(
-                    "mcp tool cannot be required by cli currently, use 'optional' instead"
                 )
 
             if require_web_search:
@@ -809,9 +804,6 @@ async def join(
         Optional[bool],
         typer.Option(..., help="Automatically add script tools from the room"),
     ] = False,
-    mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
-    ] = False,
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
@@ -860,9 +852,6 @@ async def join(
     require_web_fetch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable web fetch tool calling"),
-    ] = False,
-    require_mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
@@ -1074,7 +1063,6 @@ async def join(
             web_search=web_search,
             web_fetch=web_fetch,
             discover_script_tools=discover_script_tools,
-            mcp=mcp,
             storage=storage,
             storage_tool_local_paths=storage_tool_local_path,
             storage_tool_room_paths=storage_tool_room_path,
@@ -1085,7 +1073,6 @@ async def join(
             require_web_fetch=require_web_fetch,
             require_shell=require_shell,
             require_image_generation=require_image_generation,
-            require_mcp=require_mcp,
             require_storage=require_storage,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
@@ -1183,9 +1170,6 @@ async def run(
         Optional[bool],
         typer.Option(..., help="Automatically add script tools from the room"),
     ] = False,
-    mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
-    ] = False,
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
@@ -1230,9 +1214,6 @@ async def run(
     require_web_search: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable web search tool calling"),
-    ] = False,
-    require_mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
@@ -1460,7 +1441,6 @@ async def run(
             image_generation=image_generation,
             web_search=web_search,
             discover_script_tools=discover_script_tools,
-            mcp=mcp,
             storage=storage,
             storage_tool_local_paths=storage_tool_local_path,
             storage_tool_room_paths=storage_tool_room_path,
@@ -1470,7 +1450,6 @@ async def run(
             require_web_search=require_web_search,
             require_shell=require_shell,
             require_image_generation=require_image_generation,
-            require_mcp=require_mcp,
             require_storage=require_storage,
             require_table_read=require_table_read,
             require_table_write=require_table_write,
@@ -1593,9 +1572,6 @@ async def service(
         Optional[bool],
         typer.Option(..., help="Automatically add script tools from the room"),
     ] = False,
-    mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
-    ] = False,
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
@@ -1643,9 +1619,6 @@ async def service(
     require_web_fetch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable web fetch tool calling"),
-    ] = False,
-    require_mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
@@ -1832,7 +1805,6 @@ async def service(
             web_search=web_search,
             web_fetch=web_fetch,
             image_generation=image_generation,
-            mcp=mcp,
             storage=storage,
             storage_tool_local_paths=storage_tool_local_path,
             storage_tool_room_paths=storage_tool_room_path,
@@ -1843,7 +1815,6 @@ async def service(
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
             require_image_generation=require_image_generation,
-            require_mcp=require_mcp,
             require_storage=require_storage,
             require_table_write=require_table_write,
             require_table_read=require_table_read,
@@ -1932,9 +1903,6 @@ async def spec(
         Optional[bool],
         typer.Option(..., help="Automatically add script tools from the room"),
     ] = False,
-    mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
-    ] = False,
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
@@ -1982,9 +1950,6 @@ async def spec(
     require_web_fetch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable web fetch tool calling"),
-    ] = False,
-    require_mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
@@ -2160,7 +2125,6 @@ async def spec(
             web_search=web_search,
             web_fetch=web_fetch,
             image_generation=image_generation,
-            mcp=mcp,
             storage=storage,
             storage_tool_local_paths=storage_tool_local_path,
             storage_tool_room_paths=storage_tool_room_path,
@@ -2171,7 +2135,6 @@ async def spec(
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
             require_image_generation=require_image_generation,
-            require_mcp=require_mcp,
             require_storage=require_storage,
             require_table_write=require_table_write,
             require_table_read=require_table_read,
@@ -2280,9 +2243,6 @@ async def deploy(
         Optional[bool],
         typer.Option(..., help="Automatically add script tools from the room"),
     ] = False,
-    mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
-    ] = False,
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
@@ -2323,9 +2283,6 @@ async def deploy(
     require_web_fetch: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable web fetch tool calling"),
-    ] = False,
-    require_mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
@@ -2507,7 +2464,6 @@ async def deploy(
             web_search=web_search,
             web_fetch=web_fetch,
             image_generation=image_generation,
-            mcp=mcp,
             storage=storage,
             storage_tool_local_paths=storage_tool_local_path,
             storage_tool_room_paths=storage_tool_room_path,
@@ -2518,7 +2474,6 @@ async def deploy(
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
             require_image_generation=require_image_generation,
-            require_mcp=require_mcp,
             require_storage=require_storage,
             require_table_write=require_table_write,
             require_table_read=require_table_read,

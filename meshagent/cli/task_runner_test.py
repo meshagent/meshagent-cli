@@ -1,7 +1,9 @@
 import asyncio
 
+from meshagent.cli.async_typer import get_command
 from meshagent.api.specs.service import ContainerSpec, ServiceMetadata, ServiceSpec
 from meshagent.cli import task_runner
+import click
 
 
 class _FakeService:
@@ -73,3 +75,18 @@ def test_task_runner_spec_defaults_database_namespace(monkeypatch) -> None:
 
     assert len(build_calls) == 1
     assert build_calls[0]["database_namespace"] == [".database"]
+    assert "mcp" not in build_calls[0]
+    assert "require_mcp" not in build_calls[0]
+
+
+def test_task_runner_join_help_hides_mcp_flags() -> None:
+    join_command = get_command(task_runner.app).commands["join"]
+    visible_options = {
+        option
+        for param in join_command.params
+        if isinstance(param, click.Option) and not param.hidden
+        for option in param.opts
+    }
+
+    assert "--mcp" not in visible_options
+    assert "--require-mcp" not in visible_options

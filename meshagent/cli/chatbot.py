@@ -72,8 +72,9 @@ from meshagent.cli.helper import (
     supports_openai_shell_tool,
 )
 
-from meshagent.openai import OpenAIResponsesAdapter
+from meshagent.openai import OpenAIResponsesAdapter, OpenAIResponsesMCPToolkit
 from meshagent.anthropic import (
+    AnthropicMessagesMCPToolkit,
     AnthropicOpenAIResponsesStreamAdapter,
     WebFetchTool as AnthropicWebFetchTool,
     WebSearchTool as AnthropicWebSearchTool,
@@ -847,6 +848,8 @@ def build_chatbot(
 
         async def start(self, *, room: RoomClient):
             await super().start(room=room)
+            if require_mcp:
+                await room.local_participant.set_attribute("supports_mcp", True)
 
             env = _build_shell_tool_env(
                 base_env=base_shell_env,
@@ -896,6 +899,8 @@ def build_chatbot(
                 if self.advanced_shell_toolkit is not None and room is not None:
                     await self.advanced_shell_toolkit.stop_all(room=room)
             finally:
+                if require_mcp and room is not None:
+                    await room.local_participant.set_attribute("supports_mcp", None)
                 self.advanced_shell_toolkit = None
                 self.shell_tool = None
                 await super().stop()
@@ -998,9 +1003,10 @@ def build_chatbot(
             if self.advanced_shell_toolkit is not None:
                 add_toolkit(self.advanced_shell_toolkit)
             if require_mcp:
-                raise Exception(
-                    "mcp tool cannot be required by cli currently, use 'optional' instead"
-                )
+                if is_claude_model:
+                    add_toolkit(AnthropicMessagesMCPToolkit())
+                else:
+                    add_toolkit(OpenAIResponsesMCPToolkit())
 
             if require_web_search:
                 if is_claude_model:
@@ -1351,6 +1357,8 @@ def build_process_agent(
                 raise RoomException("agent is already started")
 
             self._room = room
+            if require_mcp:
+                await room.local_participant.set_attribute("supports_mcp", True)
             if _has_chat_channel(channels=resolved_channels):
                 self._chat_channel = ChatChannel(
                     room=room,
@@ -1478,6 +1486,8 @@ def build_process_agent(
                     await self._advanced_shell_toolkit.stop_all(room=room)
                 await self._stop_cached_shell_tools()
             finally:
+                if require_mcp and room is not None:
+                    await room.local_participant.set_attribute("supports_mcp", None)
                 self._advanced_shell_toolkit = None
                 self._shell_env = dict(base_shell_env)
                 await super().stop()
@@ -1603,9 +1613,10 @@ def build_process_agent(
                 add_toolkit(self._advanced_shell_toolkit)
 
             if require_mcp:
-                raise Exception(
-                    "mcp tool cannot be required by cli currently, use 'optional' instead"
-                )
+                if is_claude_model:
+                    add_toolkit(AnthropicMessagesMCPToolkit())
+                else:
+                    add_toolkit(OpenAIResponsesMCPToolkit())
 
             if require_web_search:
                 if is_claude_model:

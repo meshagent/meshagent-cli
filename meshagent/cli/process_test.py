@@ -77,6 +77,7 @@ def test_root_cli_registers_process_group() -> None:
             {
                 "--require-toolkit",
                 "--schema",
+                "--mcp",
                 "--shell",
                 "--web-search",
                 "--read-only-storage",
@@ -88,6 +89,7 @@ def test_root_cli_registers_process_group() -> None:
             },
             {
                 "--toolkit",
+                "--require-mcp",
                 "--require-schema",
                 "--require-shell",
                 "--require-web-search",
@@ -113,6 +115,8 @@ def test_root_cli_registers_process_group() -> None:
             },
             {
                 "--toolkit",
+                "--mcp",
+                "--require-mcp",
                 "--require-schema",
                 "--require-shell",
                 "--require-web-search",
@@ -136,6 +140,8 @@ def test_root_cli_registers_process_group() -> None:
             },
             {
                 "--toolkit",
+                "--mcp",
+                "--require-mcp",
                 "--require-schema",
                 "--require-shell",
                 "--require-web-search",
@@ -161,6 +167,8 @@ def test_root_cli_registers_process_group() -> None:
             },
             {
                 "--toolkit",
+                "--mcp",
+                "--require-mcp",
                 "--require-schema",
                 "--require-shell",
                 "--require-web-search",
@@ -963,6 +971,7 @@ class _SteeringRecordingAdapter:
         model: str | None = None,
         on_behalf_of=None,
         options=None,
+        tool_choice=None,
     ) -> dict[str, object]:
         del caller
         del toolkits
@@ -971,6 +980,7 @@ class _SteeringRecordingAdapter:
         del model
         del on_behalf_of
         del options
+        del tool_choice
 
         call: dict[str, object] = {
             "messages_before_boundary": [*context.messages],
@@ -1369,7 +1379,7 @@ async def test_process_agent_optional_shell_reuses_container_shell_toolkit_acros
             type="meshagent.agent.turn.start",
             thread_id="threads/example",
             content=[AgentTextContent(type="text", text="hello")],
-            toolkits=[{"name": "shell"}],
+            toolkits={"shell": {}},
         )
     ]
 
