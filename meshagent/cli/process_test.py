@@ -1,4 +1,6 @@
 import asyncio
+import inspect
+from pathlib import Path
 
 import click
 import pytest
@@ -12,14 +14,17 @@ from meshagent.agents.messages import (
     TurnSteer,
 )
 from meshagent.agents.process import Message
+from meshagent.api import RoomClient
 from meshagent.api.specs.service import ContainerSpec, ServiceMetadata, ServiceSpec
 from meshagent.cli.async_typer import get_command
 from meshagent.cli import chatbot
 from meshagent.cli import codex
 from meshagent.cli import cli as root_cli
+from meshagent.cli import mailbot
 from meshagent.cli import process
+from meshagent.cli import task_runner
+from meshagent.cli import worker
 from meshagent.computers.agent import ComputerToolkit
-from meshagent.openai.tools.responses_adapter import ShellTool
 from meshagent.tools import Toolkit
 from meshagent.tools import ContainerShellTool, ContainerToolkit, ProcessShellTool
 
@@ -53,17 +58,158 @@ def _service_spec() -> ServiceSpec:
     )
 
 
+def _assert_builder_kwargs_match_signature(
+    *, allowed: set[str], kwargs: dict[str, object]
+) -> None:
+    unexpected = set(kwargs) - allowed
+    assert unexpected == set()
+
+
 def test_root_cli_registers_process_group() -> None:
     command = get_command(root_cli.app)
     assert "process" in command.commands
 
 
-def test_process_join_help_lists_shell_tool_config_mount_option() -> None:
-    join_command = get_command(process.app).commands["join"]
-
-    assert any(
-        "--shell-tool-config-mount" in param.opts
+@pytest.mark.parametrize(
+    ("app", "expected_present", "expected_absent"),
+    [
+        (
+            process.app,
+            {
+                "--require-toolkit",
+                "--schema",
+                "--mcp",
+                "--instructions",
+                "--shell",
+                "--web-search",
+                "--read-only-storage",
+                "--time",
+                "--table-read",
+                "--document-authoring",
+                "--discovery",
+                "--computer-use",
+            },
+            {
+                "--toolkit",
+                "--require-mcp",
+                "--require-schema",
+                "--require-shell",
+                "--require-web-search",
+                "--require-read-only-storage",
+                "--require-time",
+                "--require-table-read",
+                "--require-document-authoring",
+                "--require-discovery",
+                "--require-computer-use",
+            },
+        ),
+        (
+            worker.app,
+            {
+                "--require-toolkit",
+                "--schema",
+                "--shell",
+                "--web-search",
+                "--read-only-storage",
+                "--time",
+                "--table-read",
+                "--computer-use",
+            },
+            {
+                "--toolkit",
+                "--mcp",
+                "--require-mcp",
+                "--require-schema",
+                "--require-shell",
+                "--require-web-search",
+                "--require-read-only-storage",
+                "--require-time",
+                "--require-table-read",
+                "--require-computer-use",
+            },
+        ),
+        (
+            mailbot.app,
+            {
+                "--require-toolkit",
+                "--schema",
+                "--shell",
+                "--web-search",
+                "--read-only-storage",
+                "--time",
+                "--table-read",
+                "--computer-use",
+            },
+            {
+                "--toolkit",
+                "--mcp",
+                "--require-mcp",
+                "--require-schema",
+                "--require-shell",
+                "--require-web-search",
+                "--require-read-only-storage",
+                "--require-time",
+                "--require-table-read",
+                "--require-computer-use",
+            },
+        ),
+        (
+            task_runner.app,
+            {
+                "--require-toolkit",
+                "--schema",
+                "--shell",
+                "--web-search",
+                "--read-only-storage",
+                "--time",
+                "--table-read",
+                "--document-authoring",
+                "--discovery",
+                "--computer-use",
+            },
+            {
+                "--toolkit",
+                "--mcp",
+                "--require-mcp",
+                "--require-schema",
+                "--require-shell",
+                "--require-web-search",
+                "--require-read-only-storage",
+                "--require-time",
+                "--require-table-read",
+                "--require-document-authoring",
+                "--require-discovery",
+                "--require-computer-use",
+            },
+        ),
+    ],
+)
+def test_join_help_uses_canonical_tool_flag_names(
+    app, expected_present: set[str], expected_absent: set[str]
+) -> None:
+    join_command = get_command(app).commands["join"]
+    visible_options = {
+        option
         for param in join_command.params
+        if isinstance(param, click.Option) and not param.hidden
+        for option in param.opts
+    }
+
+    for option in expected_present:
+        assert option in visible_options
+    for option in expected_absent:
+        assert option not in visible_options
+
+
+def test_chatbot_use_help_hides_removed_tool_request_options() -> None:
+    use_command = get_command(chatbot.app).commands["use"]
+
+    assert not any(
+        any(
+            option in {"--use-web-search", "--use-image-gen", "--use-storage"}
+            for option in param.opts
+        )
+        for param in use_command.params
         if isinstance(param, click.Option)
     )
 
@@ -230,10 +376,12 @@ async def test_process_agent_uses_shared_decision_adapter_for_threaded_channels(
             self,
             *,
             model: str | None = None,
+            api_key: str | None = None,
             response_options=None,
             log_requests=None,
         ) -> None:
             self._model = model if model is not None else "default-model"
+            self.api_key = api_key
             self.response_options = response_options
             self.log_requests = log_requests
             created_adapters.append(self)
@@ -256,10 +404,8 @@ async def test_process_agent_uses_shared_decision_adapter_for_threaded_channels(
             threading_mode: str | None = None,
             thread_dir: str | None = None,
             llm_adapter=None,
-            toolkit_builders=None,
         ) -> None:
             super().__init__()
-            del toolkit_builders
             captured_calls.append(
                 {
                     "kind": "chat",
@@ -398,6 +544,9 @@ def test_process_spec_uses_process_runtime_and_chat_channel(monkeypatch) -> None
     fake_service = _FakeService()
     build_calls: list[dict[str, object]] = []
     printed: list[str] = []
+    allowed_build_kwargs = set(
+        inspect.signature(chatbot.build_process_agent).parameters
+    )
 
     def fake_get_service(*, host, port):
         del host
@@ -463,9 +612,15 @@ def test_process_spec_uses_process_runtime_and_chat_channel(monkeypatch) -> None
                 asyncio.run(invoke_spec())
 
     assert len(build_calls) == 1
+    _assert_builder_kwargs_match_signature(
+        allowed=allowed_build_kwargs,
+        kwargs=build_calls[0],
+    )
     assert build_calls[0]["channels"] == ["chat"]
     assert build_calls[0]["decision_model"] == "gpt-5.4-nano"
     assert build_calls[0]["database_namespace"] is None
+    assert "mcp" not in build_calls[0]
+    assert build_calls[0]["require_mcp"] is False
     assert len(fake_service.agents) == 1
     assert fake_service.agents[0].annotations == {
         "meshagent.agent.type": "ChatBot",
@@ -477,6 +632,7 @@ def test_process_spec_uses_process_runtime_and_chat_channel(monkeypatch) -> None
 def test_chatbot_spec_defaults_database_namespace(monkeypatch) -> None:
     fake_service = _FakeService()
     build_calls: list[dict[str, object]] = []
+    allowed_build_kwargs = set(inspect.signature(chatbot.build_chatbot).parameters)
 
     def fake_get_service(*, host, port):
         del host
@@ -530,7 +686,105 @@ def test_chatbot_spec_defaults_database_namespace(monkeypatch) -> None:
                 asyncio.run(invoke_spec())
 
     assert len(build_calls) == 1
+    _assert_builder_kwargs_match_signature(
+        allowed=allowed_build_kwargs,
+        kwargs=build_calls[0],
+    )
     assert build_calls[0]["database_namespace"] == [".database"]
+    assert "mcp" not in build_calls[0]
+    assert build_calls[0]["require_mcp"] is False
+
+
+def test_process_join_passes_supported_builder_kwargs(monkeypatch) -> None:
+    build_calls: list[dict[str, object]] = []
+    allowed_build_kwargs = set(
+        inspect.signature(chatbot.build_process_agent).parameters
+    )
+
+    class _DummyAccountClient:
+        async def close(self) -> None:
+            return None
+
+    async def fake_get_client():
+        return _DummyAccountClient()
+
+    async def fake_resolve_project_id(*, project_id=None):
+        del project_id
+        return "project-123"
+
+    async def fake_resolve_key(*, project_id=None, key=None):
+        del project_id
+        del key
+        return None
+
+    def fake_build_process_agent(**kwargs):
+        build_calls.append(kwargs)
+        return type("DummyProcessAgent", (), {})
+
+    def fail_build_chatbot(**kwargs):
+        del kwargs
+        raise AssertionError("process join should not use chatbot builder")
+
+    monkeypatch.setenv("MESHAGENT_TOKEN", "test-token")
+    monkeypatch.setattr(chatbot, "get_client", fake_get_client)
+    monkeypatch.setattr(chatbot, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(chatbot, "resolve_key", fake_resolve_key)
+    monkeypatch.setattr(chatbot, "resolve_room", lambda room_name=None: room_name)
+    monkeypatch.setattr(chatbot, "build_process_agent", fake_build_process_agent)
+    monkeypatch.setattr(chatbot, "build_chatbot", fail_build_chatbot)
+    monkeypatch.setattr(chatbot, "get_deferred", lambda: True)
+    monkeypatch.setattr(
+        chatbot.sys,
+        "argv",
+        [
+            "meshagent",
+            "process",
+            "join",
+            "--agent-name",
+            "helper",
+            "--room",
+            "quickstart",
+            "--channel",
+            "chat",
+        ],
+    )
+
+    async def invoke_join() -> None:
+        await chatbot.join(
+            project_id=None,
+            room="quickstart",
+            agent_name="helper",
+            channel=["chat"],
+        )
+
+    root_command = click.Command("meshagent")
+    process_command = click.Command("process")
+    join_command = click.Command("join")
+    with click.Context(root_command, info_name="meshagent") as root_context:
+        with click.Context(
+            process_command,
+            info_name="process",
+            parent=root_context,
+        ) as process_context:
+            with click.Context(
+                join_command,
+                info_name="join",
+                parent=process_context,
+            ):
+                asyncio.run(invoke_join())
+
+    assert len(build_calls) == 1
+    _assert_builder_kwargs_match_signature(
+        allowed=allowed_build_kwargs,
+        kwargs=build_calls[0],
+    )
+    assert build_calls[0]["channels"] == ["chat"]
+    assert "local_shell" not in build_calls[0]
+    assert "shell" not in build_calls[0]
+    assert "script_tool" not in build_calls[0]
+    assert "mcp" not in build_calls[0]
+    assert build_calls[0]["require_mcp"] is False
+    assert build_calls[0]["api_key"] == "test-token"
 
 
 class _FakeRoomClient:
@@ -611,9 +865,18 @@ class _FakeParticipant:
         self.id = "participant-1"
 
 
-class _FakeProcessRoom:
+class _FakeProcessRoom(RoomClient):
     def __init__(self) -> None:
-        self.local_participant = _FakeParticipant()
+        self._local_participant = _FakeParticipant()
+        self._protocol = _FakeProcessProtocol()
+
+    @property
+    def local_participant(self):
+        return self._local_participant
+
+    @property
+    def protocol(self):
+        return self._protocol
 
 
 class _FakeProcessState:
@@ -628,10 +891,18 @@ class _FakeProcessProtocol:
     token = "token"
 
 
-class _FakeProcessRoomClient:
+class _FakeProcessRoomClient(RoomClient):
     def __init__(self) -> None:
-        self.local_participant = _FakeParticipant()
-        self.protocol = _FakeProcessProtocol()
+        self._local_participant = _FakeParticipant()
+        self._protocol = _FakeProcessProtocol()
+
+    @property
+    def local_participant(self):
+        return self._local_participant
+
+    @property
+    def protocol(self):
+        return self._protocol
 
 
 class _FakeProcessThreadAdapter:
@@ -697,7 +968,7 @@ class _SteeringRecordingAdapter:
         self,
         *,
         context: AgentSessionContext,
-        room,
+        caller,
         toolkits: list[Toolkit],
         output_schema=None,
         event_handler=None,
@@ -705,14 +976,16 @@ class _SteeringRecordingAdapter:
         model: str | None = None,
         on_behalf_of=None,
         options=None,
+        tool_choice=None,
     ) -> dict[str, object]:
-        del room
+        del caller
         del toolkits
         del output_schema
         del event_handler
         del model
         del on_behalf_of
         del options
+        del tool_choice
 
         call: dict[str, object] = {
             "messages_before_boundary": [*context.messages],
@@ -794,6 +1067,7 @@ async def test_process_turn_toolkits_preserve_required_toolkit_names(
         toolkit=[],
         schema=[],
         require_storage=True,
+        default_room_storage_mount=True,
         require_time=True,
         require_uuid=True,
         require_table_read=[],
@@ -975,119 +1249,6 @@ async def test_build_process_agent_forwards_tool_boundary_steering_callback(
         await agent.stop()
 
 
-def test_process_agent_shell_toolkit_builder_defaults_image() -> None:
-    custom_process_agent = chatbot.build_process_agent(
-        model="gpt-5",
-        rule=[],
-        toolkit=[],
-        schema=[],
-        shell="enabled",
-        channels=[],
-    )
-
-    agent = custom_process_agent()
-
-    builders = agent.get_toolkit_builders()
-
-    assert len(builders) == 1
-    assert builders[0].image == "meshagent/python:default"
-
-
-def test_process_agent_shell_toolkit_builder_uses_none_sentinel() -> None:
-    custom_process_agent = chatbot.build_process_agent(
-        model="gpt-5",
-        rule=[],
-        toolkit=[],
-        schema=[],
-        shell="enabled",
-        shell_image="none",
-        channels=[],
-    )
-
-    agent = custom_process_agent()
-
-    builders = agent.get_toolkit_builders()
-
-    assert len(builders) == 1
-    assert builders[0].image is None
-
-
-@pytest.mark.asyncio
-async def test_process_agent_shell_toolkit_builder_uses_container_shell_for_non_gpt_model() -> (
-    None
-):
-    custom_process_agent = chatbot.build_process_agent(
-        model="claude-3-7-sonnet",
-        rule=[],
-        toolkit=[],
-        schema=[],
-        shell="enabled",
-        channels=[],
-    )
-
-    agent = custom_process_agent()
-    builder = agent.get_toolkit_builders()[0]
-
-    toolkit = await builder.make(
-        room=None,  # type: ignore[arg-type]
-        model="claude-3-7-sonnet",
-        config=builder.type.model_validate({"name": "shell"}),
-    )
-
-    assert isinstance(toolkit.tools[0], ContainerShellTool)
-
-
-@pytest.mark.asyncio
-async def test_process_agent_shell_toolkit_builder_uses_shell_tool_for_gpt_model() -> (
-    None
-):
-    custom_process_agent = chatbot.build_process_agent(
-        model="gpt-5",
-        rule=[],
-        toolkit=[],
-        schema=[],
-        shell="enabled",
-        channels=[],
-    )
-
-    agent = custom_process_agent()
-    builder = agent.get_toolkit_builders()[0]
-
-    toolkit = await builder.make(
-        room=None,  # type: ignore[arg-type]
-        model="gpt-5",
-        config=builder.type.model_validate({"name": "shell"}),
-    )
-
-    assert isinstance(toolkit.tools[0], ShellTool)
-
-
-@pytest.mark.asyncio
-async def test_process_agent_shell_toolkit_builder_uses_process_shell_for_selected_claude_model_without_image() -> (
-    None
-):
-    custom_process_agent = chatbot.build_process_agent(
-        model="gpt-5",
-        rule=[],
-        toolkit=[],
-        schema=[],
-        shell="enabled",
-        shell_image="none",
-        channels=[],
-    )
-
-    agent = custom_process_agent()
-    builder = agent.get_toolkit_builders()[0]
-
-    toolkit = await builder.make(
-        room=None,  # type: ignore[arg-type]
-        model="claude-3-7-sonnet",
-        config=builder.type.model_validate({"name": "shell"}),
-    )
-
-    assert isinstance(toolkit.tools[0], ProcessShellTool)
-
-
 @pytest.mark.asyncio
 async def test_process_agent_require_shell_uses_process_shell_for_selected_claude_model_without_image(
     monkeypatch: pytest.MonkeyPatch,
@@ -1204,7 +1365,7 @@ async def test_process_agent_optional_shell_reuses_container_shell_toolkit_acros
         rule=[],
         toolkit=[],
         schema=[],
-        shell="enabled",
+        require_shell=True,
         require_table_read=[],
         require_table_write=[],
         channels=[],
@@ -1223,7 +1384,7 @@ async def test_process_agent_optional_shell_reuses_container_shell_toolkit_acros
             type="meshagent.agent.turn.start",
             thread_id="threads/example",
             content=[AgentTextContent(type="text", text="hello")],
-            toolkits=[{"name": "shell"}],
+            toolkits={"shell": {}},
         )
     ]
 
@@ -1252,7 +1413,7 @@ async def test_process_agent_optional_shell_reuses_container_shell_toolkit_acros
     )
 
     assert isinstance(first_shell_toolkit.tools[0], ContainerShellTool)
-    assert first_shell_toolkit is second_shell_toolkit
+    assert first_shell_toolkit.tools[0] is second_shell_toolkit.tools[0]
 
 
 @pytest.mark.asyncio
@@ -1303,6 +1464,104 @@ async def test_chatbot_require_shell_uses_container_shell_for_non_gpt_model(
 
     assert isinstance(agent.shell_tool, ContainerShellTool)
     assert agent.shell_tool.working_dir == "/workspace"
+
+
+@pytest.mark.asyncio
+async def test_chatbot_get_rules_loads_instructions_from_configured_storage(
+    tmp_path: Path,
+) -> None:
+    instructions_file = tmp_path / "instructions.txt"
+    instructions_file.write_text(
+        "global instruction\n[web]\nweb instruction\n",
+        encoding="utf-8",
+    )
+
+    class _RulesParticipant:
+        def __init__(self, *, client: str | None) -> None:
+            self._client = client
+
+        def get_attribute(self, name: str) -> str | None:
+            if name == "client":
+                return self._client
+            return None
+
+    custom_chatbot = chatbot.build_chatbot(
+        client=_FakeProcessRoomClient(),
+        model="gpt-5",
+        rule=["base rule"],
+        toolkit=[],
+        schema=[],
+        instructions=["instructions.txt"],
+        require_storage=True,
+        storage_tool_local_paths=[f"{tmp_path}:/:ro"],
+    )
+    agent = custom_chatbot()
+
+    rules = await agent.get_rules(
+        thread_context=None,
+        participant=_RulesParticipant(client="web"),
+    )
+
+    assert "base rule" in rules
+    assert "global instruction" in rules
+    assert "web instruction" in rules
+
+
+@pytest.mark.asyncio
+async def test_process_agent_get_rules_loads_instructions_from_current_working_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    instructions_file = tmp_path / "instructions.txt"
+    instructions_file.write_text(
+        "cwd instruction\n",
+        encoding="utf-8",
+    )
+
+    custom_process_agent = chatbot.build_process_agent(
+        model="gpt-5",
+        rule=["base rule"],
+        toolkit=[],
+        schema=[],
+        instructions=["instructions.txt"],
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+    )
+    agent = custom_process_agent()
+
+    rules = await agent.get_rules(participant=None)
+
+    assert "base rule" in rules
+    assert "cwd instruction" in rules
+
+
+@pytest.mark.asyncio
+async def test_process_agent_get_rules_warns_when_instructions_file_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    caplog.set_level("WARNING")
+
+    custom_process_agent = chatbot.build_process_agent(
+        model="gpt-5",
+        rule=["base rule"],
+        toolkit=[],
+        schema=[],
+        instructions=["missing.txt"],
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+    )
+    agent = custom_process_agent()
+
+    rules = await agent.get_rules(participant=None)
+
+    assert "base rule" in rules
+    assert "unable to load instructions from missing.txt" in caplog.text
 
 
 @pytest.mark.asyncio

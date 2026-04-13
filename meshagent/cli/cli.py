@@ -103,6 +103,11 @@ app.add_lazy_command(
     help="Manage services for your project",
 )
 app.add_lazy_command(
+    name="package",
+    module="meshagent.cli.agent_package_cli",
+    help="Build, run, and deploy packaged services",
+)
+app.add_lazy_command(
     name="mcp",
     module="meshagent.cli.cli_mcp",
     help="Bridge MCP servers into MeshAgent rooms",

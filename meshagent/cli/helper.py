@@ -1,6 +1,7 @@
+import inspect
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TypedDict
 
 import typer
 from pydantic import BaseModel
@@ -22,12 +23,10 @@ from meshagent.api.specs.service import (
 from meshagent.agents.context import AgentSessionContext
 from meshagent.api.client import Meshagent, RoomConnectionInfo
 from meshagent.cli import async_typer, auth_async
-from meshagent.openai.tools.responses_adapter import ShellConfig, ShellTool
+from meshagent.openai.tools.responses_adapter import ShellTool
 from meshagent.tools import (
     ContainerShellTool,
     ProcessShellTool,
-    Toolkit,
-    ToolkitBuilder,
 )
 from meshagent.tools.container_shell import DEFAULT_CONTAINER_MOUNT_SPEC
 from meshagent.tools.storage import (
@@ -45,6 +44,116 @@ from rich import print
 SETTINGS_FILE = Path.home() / ".meshagent" / "project.json"
 DEFAULT_SHELL_IMAGE = "meshagent/python:default"
 DEFAULT_DATABASE_NAMESPACE = (".database",)
+
+
+class NormalizedRequiredToolOptions(TypedDict):
+    toolkit: list[str]
+    schema: list[str]
+    require_image_generation: str | None
+    require_computer_use: bool
+    require_shell: bool
+    require_advanced_shell: bool
+    require_apply_patch: bool
+    require_web_search: bool
+    require_web_fetch: bool
+    mcp: bool
+    require_storage: bool
+
+
+DEPRECATED_REQUIRE_OPTION_ALIASES = {
+    "--toolkit": "--require-toolkit",
+    "--require-schema": "--schema",
+    "--require-image-generation": "--image-generation",
+    "--require-computer-use": "--computer-use",
+    "--require-shell": "--shell",
+    "--require-advanced-shell": "--advanced-shell",
+    "--require-apply-patch": "--apply-patch",
+    "--require-web-search": "--web-search",
+    "--require-web-fetch": "--web-fetch",
+    "--require-mcp": "--mcp",
+    "--require-storage": "--storage",
+    "--require-read-only-storage": "--read-only-storage",
+    "--require-time": "--time",
+    "--require-uuid": "--uuid",
+    "--require-table-read": "--table-read",
+    "--require-table-write": "--table-write",
+    "--require-document-authoring": "--document-authoring",
+    "--require-discovery": "--discovery",
+}
+
+DUPLICATE_REQUIRE_OPTION_NAMES = {
+    "require_schema",
+    "require_image_generation",
+    "require_shell",
+    "require_apply_patch",
+    "require_web_search",
+    "require_web_fetch",
+    "require_mcp",
+    "require_storage",
+}
+
+
+def strip_command_options(
+    app: typer.Typer, *, option_names: set[str], command_names: set[str] | None = None
+) -> None:
+    for command_info in app.registered_commands:
+        command_name = command_info.name
+        if command_names is not None and command_name not in command_names:
+            continue
+
+        callback = command_info.callback
+        if callback is None:
+            continue
+
+        signature = inspect.signature(callback)
+        callback.__signature__ = inspect.Signature(
+            parameters=[
+                parameter
+                for parameter in signature.parameters.values()
+                if parameter.name not in option_names
+            ],
+            return_annotation=signature.return_annotation,
+        )
+
+
+def normalize_required_tool_options(
+    *,
+    toolkit: list[str] | None = None,
+    require_toolkit: list[str] | None = None,
+    schema: list[str] | None = None,
+    require_schema: list[str] | None = None,
+    image_generation: str | None = None,
+    require_image_generation: str | None = None,
+    computer_use: bool | None = None,
+    require_computer_use: bool | None = None,
+    shell: bool | None = None,
+    require_shell: bool | None = None,
+    advanced_shell: bool | None = None,
+    require_advanced_shell: bool | None = None,
+    apply_patch: bool | None = None,
+    require_apply_patch: bool | None = None,
+    web_search: bool | None = None,
+    require_web_search: bool | None = None,
+    web_fetch: bool | None = None,
+    require_web_fetch: bool | None = None,
+    mcp: bool | None = None,
+    require_mcp: bool | None = None,
+    storage: bool | None = None,
+    require_storage: bool | None = None,
+) -> NormalizedRequiredToolOptions:
+    return {
+        "toolkit": [*(require_toolkit or []), *(toolkit or [])],
+        "schema": [*(require_schema or []), *(schema or [])],
+        "require_image_generation": require_image_generation or image_generation,
+        "require_computer_use": bool(require_computer_use or computer_use),
+        "require_shell": bool(require_shell or shell),
+        "require_advanced_shell": bool(require_advanced_shell or advanced_shell),
+        "require_apply_patch": bool(require_apply_patch or apply_patch),
+        "require_web_search": bool(require_web_search or web_search),
+        "require_web_fetch": bool(require_web_fetch or web_fetch),
+        "mcp": bool(mcp or require_mcp),
+        "require_storage": bool(require_storage or storage),
+    }
 
 
 def _ensure_cache_dir():
@@ -73,20 +182,19 @@ def supports_openai_shell_tool(
 
 def build_shell_tool(
     *,
+    room: RoomClient | None = None,
     model: str,
     llm_participant: Optional[str] = None,
-    config: Optional[ShellConfig] = None,
+    name: str = "shell",
     working_dir: Optional[str] = None,
     image: Optional[str] = DEFAULT_SHELL_IMAGE,
     mounts: Optional[ContainerMountSpec] = DEFAULT_CONTAINER_MOUNT_SPEC,
     env: Optional[dict[str, str]] = None,
 ) -> ShellTool | ContainerShellTool | ProcessShellTool:
-    if config is None:
-        config = ShellConfig(name="shell")
-
     if supports_openai_shell_tool(model=model, llm_participant=llm_participant):
         return ShellTool(
-            config=config,
+            room=room,
+            name=name,
             working_dir=working_dir,
             image=image,
             mounts=mounts,
@@ -95,67 +203,14 @@ def build_shell_tool(
 
     if image is None:
         return ProcessShellTool(
-            name=config.name,
+            name=name,
             working_dir=working_dir,
             env=env,
         )
 
     return ContainerShellTool(
-        name=config.name,
-        working_dir=working_dir,
-        image=image,
-        mounts=mounts,
-        env=env,
-    )
-
-
-class _RuntimeAwareShellToolkitBuilder(ToolkitBuilder):
-    def __init__(
-        self,
-        *,
-        llm_participant: Optional[str] = None,
-        working_dir: Optional[str] = None,
-        image: Optional[str] = DEFAULT_SHELL_IMAGE,
-        mounts: Optional[ContainerMountSpec] = DEFAULT_CONTAINER_MOUNT_SPEC,
-        env: Optional[dict[str, str]] = None,
-    ) -> None:
-        super().__init__(name="shell", type=ShellConfig)
-        self.llm_participant = llm_participant
-        self.working_dir = working_dir
-        self.image = image
-        self.mounts = mounts
-        self.env = env
-
-    async def make(
-        self, *, room: RoomClient, model: str, config: ShellConfig
-    ) -> Toolkit:
-        del room
-        return Toolkit(
-            name="shell",
-            tools=[
-                build_shell_tool(
-                    model=model,
-                    llm_participant=self.llm_participant,
-                    config=config,
-                    working_dir=self.working_dir,
-                    image=self.image,
-                    mounts=self.mounts,
-                    env=self.env,
-                )
-            ],
-        )
-
-
-def build_shell_toolkit_builder(
-    *,
-    llm_participant: Optional[str] = None,
-    working_dir: Optional[str] = None,
-    image: Optional[str] = DEFAULT_SHELL_IMAGE,
-    mounts: Optional[ContainerMountSpec] = DEFAULT_CONTAINER_MOUNT_SPEC,
-    env: Optional[dict[str, str]] = None,
-) -> ToolkitBuilder:
-    return _RuntimeAwareShellToolkitBuilder(
-        llm_participant=llm_participant,
+        room=room,
+        name=name,
         working_dir=working_dir,
         image=image,
         mounts=mounts,
@@ -519,8 +574,10 @@ def split_image_mount(
 
 def parse_storage_tool_mounts(
     *,
+    room: RoomClient,
     local_paths: list[str],
     room_paths: list[str],
+    default_room_mount: bool = False,
 ) -> Optional[list[StorageToolMount]]:
     mounts: list[StorageToolMount] = []
 
@@ -538,8 +595,16 @@ def parse_storage_tool_mounts(
         )
         subpath = source if source not in {"", ".", "/"} else None
         mounts.append(
-            StorageToolRoomMount(path=mount, subpath=subpath, read_only=read_only)
+            StorageToolRoomMount(
+                path=mount,
+                subpath=subpath,
+                read_only=read_only,
+                room=room,
+            )
         )
+
+    if len(mounts) == 0 and default_room_mount:
+        mounts.append(StorageToolRoomMount(path="/", room=room))
     return mounts or None
 
 

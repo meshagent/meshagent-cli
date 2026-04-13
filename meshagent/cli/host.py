@@ -6,14 +6,14 @@ from meshagent.api.specs.service import (
 )
 from meshagent.api import ApiScope
 import asyncio
-from meshagent.agents import Agent
+from meshagent.agents import SingleRoomAgent
 
 
 options = {"deferred": False}
 services = {}
 
 
-agents: list[tuple[Agent, str]] = []
+agents: list[tuple[SingleRoomAgent, str]] = []
 
 
 def _default_token_identity(*, spec: ServiceSpec) -> str:

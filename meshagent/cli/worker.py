@@ -7,7 +7,6 @@ import os
 
 from meshagent.tools.storage import (
     StorageToolMount,
-    StorageToolkitBuilder,
 )
 
 from meshagent.cli import async_typer
@@ -24,12 +23,14 @@ from meshagent.cli.common_options import (
     StartingUrlOption,
 )
 from meshagent.cli.helper import (
-    build_shell_toolkit_builder,
     cleanup_args,
     cleanup_args_strip_options,
+    DEPRECATED_REQUIRE_OPTION_ALIASES,
     DEFAULT_DATABASE_NAMESPACE,
+    DUPLICATE_REQUIRE_OPTION_NAMES,
     get_client,
     merge_option_lists,
+    normalize_required_tool_options,
     parse_shell_tool_mounts,
     parse_memory_selector,
     parse_storage_tool_mounts,
@@ -38,6 +39,7 @@ from meshagent.cli.helper import (
     resolve_key,
     resolve_project_id,
     resolve_room,
+    strip_command_options,
     supports_openai_shell_tool,
     upload_room_bytes_stream,
 )
@@ -58,12 +60,11 @@ from meshagent.agents.config import RulesConfig
 from meshagent.tools import (
     Toolkit,
     WebFetchTool,
-    WebFetchToolkitBuilder,
     ContainerShellTool,
     MemoriesToolkit,
 )
 from meshagent.tools.storage import StorageToolkit
-from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
+from meshagent.tools.database import make_database_toolkit
 from meshagent.tools.datetime import DatetimeToolkit
 from meshagent.tools.uuid import UUIDToolkit
 from meshagent.tools.script import get_script_tools
@@ -71,9 +72,7 @@ from meshagent.openai import OpenAIResponsesAdapter
 from meshagent.anthropic import (
     AnthropicOpenAIResponsesStreamAdapter,
     WebFetchTool as AnthropicWebFetchTool,
-    WebFetchToolkitBuilder as AnthropicWebFetchToolkitBuilder,
     WebSearchTool as AnthropicWebSearchTool,
-    WebSearchToolkitBuilder as AnthropicWebSearchToolkitBuilder,
 )
 
 
@@ -82,18 +81,9 @@ from meshagent.agents.worker import Worker  # adjust import
 from meshagent.agents.adapter import LLMAdapter  # adjust import
 
 from meshagent.openai.tools.responses_adapter import (
-    WebSearchToolkitBuilder,
-    MCPToolkitBuilder,
     WebSearchTool,
-    ShellConfig,
-    LocalShellConfig,
-    ApplyPatchConfig,
     ApplyPatchTool,
-    ApplyPatchToolkitBuilder,
     ShellTool,
-    LocalShellToolkitBuilder,
-    LocalShellTool,
-    ImageGenerationToolkitBuilder,
     ImageGenerationTool,
 )
 
@@ -114,6 +104,26 @@ from meshagent.api.client import ConflictError
 logger = logging.getLogger("worker_cli")
 
 app = async_typer.AsyncTyper(help="Join a worker agent to a room")
+app.add_deprecated_option_aliases(DEPRECATED_REQUIRE_OPTION_ALIASES)
+
+
+def _require_storage_tool_mounts(
+    *,
+    room: RoomClient,
+    local_paths: list[str],
+    room_paths: list[str],
+    default_room_mount: bool,
+) -> list[StorageToolMount]:
+    mounts = parse_storage_tool_mounts(
+        room=room,
+        local_paths=local_paths,
+        room_paths=room_paths,
+        default_room_mount=default_room_mount,
+    )
+    if mounts is None:
+        raise RuntimeError("storage toolkit requires at least one configured mount")
+    return mounts
+
 
 ShellCopyEnvOption = Annotated[
     list[str],
@@ -274,6 +284,8 @@ def _resolve_working_dir_option(
 
 def build_worker(
     *,
+    client: RoomClient | None = None,
+    api_key: str | None = None,
     WorkerBase: Type[Worker],
     model: str,
     rule: List[str],
@@ -287,19 +299,18 @@ def build_worker(
     room_rules_paths: list[str] | None = None,
     # thread/tool controls (mirrors mailbot)
     image_generation: Optional[str] = None,
-    local_shell: Optional[str] = None,
     shell: Optional[str] = None,
     apply_patch: Optional[str] = None,
     web_search: Optional[str] = None,
     web_fetch: Optional[str] = None,
     discover_script_tools: Optional[bool] = None,
-    mcp: Optional[str] = None,
     storage: Optional[str] = None,
-    storage_tool_mounts: Optional[list[StorageToolMount]] = None,
+    storage_tool_local_paths: list[str] | None = None,
+    storage_tool_room_paths: list[str] | None = None,
+    default_room_storage_mount: bool = False,
     shell_tool_mounts: Optional[ContainerMountSpec] = None,
     working_dir: Optional[str] = None,
     require_image_generation: Optional[str] = None,
-    require_local_shell: bool = False,
     require_web_search: bool = False,
     require_web_fetch: bool = False,
     require_apply_patch: bool = False,
@@ -341,6 +352,34 @@ def build_worker(
         require_table_write = []
     if toolkits is None:
         toolkits = []
+    if storage_tool_local_paths is None:
+        storage_tool_local_paths = []
+    if storage_tool_room_paths is None:
+        storage_tool_room_paths = []
+
+    normalized_tool_options = normalize_required_tool_options(
+        image_generation=image_generation,
+        require_image_generation=require_image_generation,
+        computer_use=None,
+        require_computer_use=require_computer_use,
+        shell=shell,
+        require_shell=require_shell,
+        apply_patch=apply_patch,
+        require_apply_patch=require_apply_patch,
+        web_search=web_search,
+        require_web_search=require_web_search,
+        web_fetch=web_fetch,
+        require_web_fetch=require_web_fetch,
+        storage=storage,
+        require_storage=require_storage,
+    )
+    require_image_generation = normalized_tool_options["require_image_generation"]
+    require_computer_use = normalized_tool_options["require_computer_use"]
+    require_shell = normalized_tool_options["require_shell"]
+    require_apply_patch = normalized_tool_options["require_apply_patch"]
+    require_web_search = normalized_tool_options["require_web_search"]
+    require_web_fetch = normalized_tool_options["require_web_fetch"]
+    require_storage = normalized_tool_options["require_storage"]
 
     for t in toolkit:
         requirements.append(RequiredToolkit(name=t))
@@ -370,9 +409,6 @@ def build_worker(
         if image_generation or require_image_generation:
             print("image generation tool is only supported by openai models")
             raise typer.Exit(1)
-        if local_shell or require_local_shell:
-            print("local shell tool is only supported by openai models")
-            raise typer.Exit(1)
         if apply_patch or require_apply_patch:
             print("apply patch tool is only supported by openai models")
             raise typer.Exit(1)
@@ -383,6 +419,7 @@ def build_worker(
     if require_computer_use:
         llm_adapter: LLMAdapter = OpenAIResponsesAdapter(
             model=model,
+            api_key=api_key,
             response_options={
                 "reasoning": {"summary": "concise"},
             },
@@ -392,11 +429,13 @@ def build_worker(
         if model.startswith("claude-"):
             llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
                 model=model,
+                api_key=api_key,
                 log_requests=log_llm_requests,
             )
         else:
             llm_adapter = OpenAIResponsesAdapter(
                 model=model,
+                api_key=api_key,
                 log_requests=log_llm_requests,
             )
 
@@ -412,15 +451,18 @@ def build_worker(
         ):
             decision_llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
                 model=resolved_decision_model,
+                api_key=api_key,
                 log_requests=log_llm_requests,
             )
         elif resolved_decision_model is not None:
             decision_llm_adapter = OpenAIResponsesAdapter(
                 model=resolved_decision_model,
+                api_key=api_key,
                 log_requests=log_llm_requests,
             )
         else:
             decision_llm_adapter = OpenAIResponsesAdapter(
+                api_key=api_key,
                 log_requests=log_llm_requests,
             )
 
@@ -473,13 +515,13 @@ def build_worker(
                 if supports_openai_shell:
                     shell_kwargs = {
                         "working_dir": working_dir,
-                        "config": ShellConfig(name="shell"),
+                        "name": "shell",
                         "image": resolved_shell_image,
                         "env": env,
                     }
                     if shell_tool_mounts is not None:
                         shell_kwargs["mounts"] = shell_tool_mounts
-                    self.shell_tool = ShellTool(**shell_kwargs)
+                    self.shell_tool = ShellTool(room=room, **shell_kwargs)
                 else:
                     shell_kwargs = {
                         "image": resolved_shell_image,
@@ -488,11 +530,35 @@ def build_worker(
                     }
                     if shell_tool_mounts is not None:
                         shell_kwargs["mounts"] = shell_tool_mounts
-                    self.shell_tool = ContainerShellTool(**shell_kwargs)
+                    self.shell_tool = ContainerShellTool(room=room, **shell_kwargs)
 
             if room_rules_paths is not None:
                 for p in room_rules_paths:
                     await self._load_room_rules(path=p)
+
+        def get_skills_storage_toolkit(self) -> StorageToolkit | None:
+            if require_storage:
+                return StorageToolkit(
+                    mounts=_require_storage_tool_mounts(
+                        room=client or self.room,
+                        local_paths=storage_tool_local_paths,
+                        room_paths=storage_tool_room_paths,
+                        default_room_mount=default_room_storage_mount,
+                    )
+                )
+
+            if require_read_only_storage:
+                return StorageToolkit(
+                    read_only=True,
+                    mounts=_require_storage_tool_mounts(
+                        room=client or self.room,
+                        local_paths=storage_tool_local_paths,
+                        room_paths=storage_tool_room_paths,
+                        default_room_mount=default_room_storage_mount,
+                    ),
+                )
+
+            return None
 
         async def get_rules(self):
             rules = [*await super().get_rules()]
@@ -530,75 +596,16 @@ def build_worker(
                 )
             return rules
 
-        def get_toolkit_builders(self):
-            providers = []
-
-            if image_generation:
-                providers.append(ImageGenerationToolkitBuilder())
-
-            if apply_patch:
-                providers.append(ApplyPatchToolkitBuilder())
-
-            if local_shell:
-                providers.append(
-                    LocalShellToolkitBuilder(
-                        working_dir=working_dir,
-                    )
-                )
-
-            if shell:
-                shell_builder_kwargs = {
-                    "working_dir": working_dir,
-                    "image": resolved_shell_image,
-                    "env": base_shell_env or None,
-                }
-                if shell_tool_mounts is not None:
-                    shell_builder_kwargs["mounts"] = shell_tool_mounts
-                providers.append(
-                    build_shell_toolkit_builder(
-                        **shell_builder_kwargs,
-                    )
-                )
-
-            if mcp:
-                providers.append(MCPToolkitBuilder())
-
-            if web_search:
-                if is_claude_model:
-                    providers.append(AnthropicWebSearchToolkitBuilder())
-                else:
-                    providers.append(WebSearchToolkitBuilder())
-
-            if web_fetch:
-                if is_claude_model:
-                    providers.append(AnthropicWebFetchToolkitBuilder())
-                else:
-                    providers.append(WebFetchToolkitBuilder())
-
-            if storage:
-                providers.append(StorageToolkitBuilder(mounts=storage_tool_mounts))
-
-            return providers
-
         async def get_message_toolkits(self, *, message: dict):
             """
             Optional hook if your WorkerBase supports thread contexts.
             If not, you can remove this; I left it to mirror mailbot's pattern.
             """
             toolkits_out = await super().get_message_toolkits(message=message)
-
             thread_toolkit = Toolkit(name="thread_toolkit", tools=[])
 
             if discover_script_tools:
                 thread_toolkit.tools.extend(await get_script_tools(self.room))
-
-            if require_local_shell:
-                thread_toolkit.tools.append(
-                    LocalShellTool(
-                        working_dir=working_dir,
-                        config=LocalShellConfig(name="local_shell"),
-                    )
-                )
 
             if self.shell_tool is not None:
                 thread_toolkit.tools.append(self.shell_tool)
@@ -606,7 +613,14 @@ def build_worker(
             if require_apply_patch:
                 thread_toolkit.tools.append(
                     ApplyPatchTool(
-                        config=ApplyPatchConfig(name="apply_patch"),
+                        storage=StorageToolkit(
+                            mounts=_require_storage_tool_mounts(
+                                room=client or self.room,
+                                local_paths=storage_tool_local_paths,
+                                room_paths=storage_tool_room_paths,
+                                default_room_mount=True,
+                            )
+                        )
                     )
                 )
 
@@ -632,25 +646,37 @@ def build_worker(
 
             if require_storage:
                 thread_toolkit.tools.extend(
-                    StorageToolkit(mounts=storage_tool_mounts).tools
+                    StorageToolkit(
+                        mounts=_require_storage_tool_mounts(
+                            room=client or self.room,
+                            local_paths=storage_tool_local_paths,
+                            room_paths=storage_tool_room_paths,
+                            default_room_mount=default_room_storage_mount,
+                        ),
+                    ).tools
                 )
 
             if require_read_only_storage:
                 thread_toolkit.tools.extend(
-                    StorageToolkit(read_only=True, mounts=storage_tool_mounts).tools
+                    StorageToolkit(
+                        read_only=True,
+                        mounts=_require_storage_tool_mounts(
+                            room=client or self.room,
+                            local_paths=storage_tool_local_paths,
+                            room_paths=storage_tool_room_paths,
+                            default_room_mount=default_room_storage_mount,
+                        ),
+                    ).tools
                 )
 
             if len(require_table_read) > 0:
                 thread_toolkit.tools.extend(
                     (
-                        await DatabaseToolkitBuilder().make(
+                        await make_database_toolkit(
                             room=self.room,
-                            model=model,
-                            config=DatabaseToolkitConfig(
-                                tables=require_table_read,
-                                read_only=True,
-                                namespace=database_namespace,
-                            ),
+                            tables=require_table_read,
+                            read_only=True,
+                            namespace=database_namespace,
                         )
                     ).tools
                 )
@@ -658,14 +684,11 @@ def build_worker(
             if len(require_table_write) > 0:
                 thread_toolkit.tools.extend(
                     (
-                        await DatabaseToolkitBuilder().make(
+                        await make_database_toolkit(
                             room=self.room,
-                            model=model,
-                            config=DatabaseToolkitConfig(
-                                tables=require_table_write,
-                                read_only=False,
-                                namespace=database_namespace,
-                            ),
+                            tables=require_table_write,
+                            read_only=False,
+                            namespace=database_namespace,
                         )
                     ).tools
                 )
@@ -680,6 +703,7 @@ def build_worker(
                 memory_name, memory_namespace = memory_selection
                 thread_toolkit.tools.extend(
                     MemoriesToolkit(
+                        room=self.room,
                         memory_name=memory_name,
                         namespace=memory_namespace,
                         llm_model=memory_model,
@@ -742,9 +766,7 @@ async def join(
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option(
-            "--schema", "-s", help="the name or url of a required schema", hidden=True
-        ),
+        typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use")
@@ -757,9 +779,6 @@ async def join(
     require_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
-    ] = False,
-    require_local_shell: Annotated[
-        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
     require_web_search: Annotated[
         Optional[bool], typer.Option(..., help="Require web search tool")
@@ -790,9 +809,6 @@ async def join(
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
-    local_shell: Annotated[
-        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
-    ] = False,
     shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable function shell tool calling")
     ] = False,
@@ -808,9 +824,6 @@ async def join(
     discover_script_tools: Annotated[
         Optional[bool],
         typer.Option(..., help="Automatically add script tools from the room"),
-    ] = False,
-    mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
@@ -846,19 +859,20 @@ async def join(
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
     require_read_only_storage: Annotated[
-        Optional[bool], typer.Option(..., help="Enable read only storage toolkit")
+        Optional[bool],
+        typer.Option("--read-only-storage", help="Enable read only storage toolkit"),
     ] = False,
     require_time: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--time",
             help="Enable time/datetime tools",
         ),
     ] = True,
     require_uuid: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--uuid",
             help="Enable UUID generation tools",
         ),
     ] = False,
@@ -881,15 +895,17 @@ async def join(
         typer.Option(..., help="Database namespace (e.g. foo::bar)"),
     ] = None,
     require_table_read: Annotated[
-        list[str], typer.Option(..., help="Enable table read tools for these tables")
+        list[str],
+        typer.Option("--table-read", help="Enable table read tools for these tables"),
     ] = [],
     require_table_write: Annotated[
-        list[str], typer.Option(..., help="Enable table write tools for these tables")
+        list[str],
+        typer.Option("--table-write", help="Enable table write tools for these tables"),
     ] = [],
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
-            ...,
+            "--computer-use",
             help="Enable computer use",
         ),
     ] = False,
@@ -970,9 +986,8 @@ async def join(
         # WorkerBase = SomeWorker
         from meshagent.agents.worker import Worker as WorkerBase  # default; replace
 
-        storage_tool_mounts = parse_storage_tool_mounts(
-            local_paths=storage_tool_local_path,
-            room_paths=storage_tool_room_path,
+        default_room_storage_mount = bool(
+            storage or require_storage or require_read_only_storage
         )
         shell_tool_mounts = parse_shell_tool_mounts(
             room_paths=merge_option_lists(
@@ -989,8 +1004,16 @@ async def join(
             ),
             image_paths=shell_image_mount,
         )
+        client = RoomClient(
+            protocol=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room_name),
+                token=jwt,
+            )
+        )
 
         CustomWorker = build_worker(
+            client=client,
+            api_key=jwt,
             WorkerBase=WorkerBase,
             model=model,
             rule=rule,
@@ -999,18 +1022,17 @@ async def join(
             rules_file=rules_file,
             room_rules_paths=room_rules,
             queue=queue,
-            local_shell=local_shell,
             shell=shell,
             apply_patch=apply_patch,
             image_generation=image_generation,
             web_search=web_search,
             web_fetch=web_fetch,
             discover_script_tools=discover_script_tools,
-            mcp=mcp,
             storage=storage,
-            storage_tool_mounts=storage_tool_mounts,
+            storage_tool_local_paths=storage_tool_local_path,
+            storage_tool_room_paths=storage_tool_room_path,
+            default_room_storage_mount=default_room_storage_mount,
             shell_tool_mounts=shell_tool_mounts,
-            require_local_shell=require_local_shell,
             require_web_search=require_web_search,
             require_web_fetch=require_web_fetch,
             require_shell=require_shell,
@@ -1052,12 +1074,7 @@ async def join(
 
             agents.append((worker, jwt))
         else:
-            async with RoomClient(
-                protocol=WebSocketClientProtocol(
-                    url=websocket_room_url(room_name=room_name),
-                    token=jwt,
-                )
-            ) as client:
+            async with client:
                 await worker.start(room=client)
                 try:
                     await client.protocol.wait_for_close()
@@ -1094,9 +1111,7 @@ async def service(
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option(
-            "--schema", "-s", help="the name or url of a required schema", hidden=True
-        ),
+        typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
         str,
@@ -1114,9 +1129,6 @@ async def service(
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
     ] = False,
-    local_shell: Annotated[
-        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
-    ] = False,
     shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable function shell tool calling")
     ] = False,
@@ -1132,9 +1144,6 @@ async def service(
     discover_script_tools: Annotated[
         Optional[bool],
         typer.Option(..., help="Automatically add script tools from the room"),
-    ] = False,
-    mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
@@ -1153,9 +1162,6 @@ async def service(
             help="Mount room path as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
-    require_local_shell: Annotated[
-        Optional[bool], typer.Option(..., help="Require local shell tool")
-    ] = False,
     require_web_search: Annotated[
         Optional[bool], typer.Option(..., help="Require web search tool")
     ] = False,
@@ -1204,19 +1210,20 @@ async def service(
         Optional[bool], typer.Option(..., help="Require storage toolkit")
     ] = False,
     require_read_only_storage: Annotated[
-        Optional[bool], typer.Option(..., help="Require read-only storage toolkit")
+        Optional[bool],
+        typer.Option("--read-only-storage", help="Require read-only storage toolkit"),
     ] = False,
     require_time: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--time",
             help="Enable time/datetime tools",
         ),
     ] = True,
     require_uuid: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--uuid",
             help="Enable UUID generation tools",
         ),
     ] = False,
@@ -1240,16 +1247,20 @@ async def service(
     ] = None,
     require_table_read: Annotated[
         list[str],
-        typer.Option(..., help="Require table read tool for table (repeatable)"),
+        typer.Option(
+            "--table-read", help="Require table read tool for table (repeatable)"
+        ),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(..., help="Require table write tool for table (repeatable)"),
+        typer.Option(
+            "--table-write", help="Require table write tool for table (repeatable)"
+        ),
     ] = [],
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
-            ...,
+            "--computer-use",
             help="Enable computer use",
         ),
     ] = False,
@@ -1297,9 +1308,8 @@ async def service(
         default_namespace=DEFAULT_DATABASE_NAMESPACE,
     )
     service = get_service(host=host, port=port)
-    storage_tool_mounts = parse_storage_tool_mounts(
-        local_paths=storage_tool_local_path,
-        room_paths=storage_tool_room_path,
+    default_room_storage_mount = bool(
+        storage or require_storage or require_read_only_storage
     )
     shell_tool_mounts = parse_shell_tool_mounts(
         room_paths=merge_option_lists(
@@ -1337,6 +1347,7 @@ async def service(
         identity=agent_name,
         path=path,
         cls=build_worker(
+            client=None,
             WorkerBase=WorkerBase,
             model=model,
             rule=rule,
@@ -1345,20 +1356,19 @@ async def service(
             rules_file=rules_file,
             room_rules_paths=room_rules,
             queue=queue,
-            local_shell=local_shell,
             shell=shell,
             apply_patch=apply_patch,
             image_generation=image_generation,
             web_search=web_search,
             web_fetch=web_fetch,
             discover_script_tools=discover_script_tools,
-            mcp=mcp,
             storage=storage,
-            storage_tool_mounts=storage_tool_mounts,
+            storage_tool_local_paths=storage_tool_local_path,
+            storage_tool_room_paths=storage_tool_room_path,
+            default_room_storage_mount=default_room_storage_mount,
             shell_tool_mounts=shell_tool_mounts,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
-            require_local_shell=require_local_shell,
             require_web_search=require_web_search,
             require_web_fetch=require_web_fetch,
             toolkit_name=toolkit_name,
@@ -1432,9 +1442,7 @@ async def spec(
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option(
-            "--schema", "-s", help="the name or url of a required schema", hidden=True
-        ),
+        typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
         str,
@@ -1452,9 +1460,6 @@ async def spec(
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
     ] = False,
-    local_shell: Annotated[
-        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
-    ] = False,
     shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable function shell tool calling")
     ] = False,
@@ -1470,9 +1475,6 @@ async def spec(
     discover_script_tools: Annotated[
         Optional[bool],
         typer.Option(..., help="Automatically add script tools from the room"),
-    ] = False,
-    mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
@@ -1491,9 +1493,6 @@ async def spec(
             help="Mount room path as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
-    require_local_shell: Annotated[
-        Optional[bool], typer.Option(..., help="Require local shell tool")
-    ] = False,
     require_web_search: Annotated[
         Optional[bool], typer.Option(..., help="Require web search tool")
     ] = False,
@@ -1533,19 +1532,20 @@ async def spec(
         Optional[bool], typer.Option(..., help="Require storage toolkit")
     ] = False,
     require_read_only_storage: Annotated[
-        Optional[bool], typer.Option(..., help="Require read-only storage toolkit")
+        Optional[bool],
+        typer.Option("--read-only-storage", help="Require read-only storage toolkit"),
     ] = False,
     require_time: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--time",
             help="Enable time/datetime tools",
         ),
     ] = True,
     require_uuid: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--uuid",
             help="Enable UUID generation tools",
         ),
     ] = False,
@@ -1569,16 +1569,20 @@ async def spec(
     ] = None,
     require_table_read: Annotated[
         list[str],
-        typer.Option(..., help="Require table read tool for table (repeatable)"),
+        typer.Option(
+            "--table-read", help="Require table read tool for table (repeatable)"
+        ),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(..., help="Require table write tool for table (repeatable)"),
+        typer.Option(
+            "--table-write", help="Require table write tool for table (repeatable)"
+        ),
     ] = [],
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
-            ...,
+            "--computer-use",
             help="Enable computer use",
         ),
     ] = False,
@@ -1627,9 +1631,8 @@ async def spec(
         default_namespace=DEFAULT_DATABASE_NAMESPACE,
     )
     service = get_service(host=None, port=None)
-    storage_tool_mounts = parse_storage_tool_mounts(
-        local_paths=storage_tool_local_path,
-        room_paths=storage_tool_room_path,
+    default_room_storage_mount = bool(
+        storage or require_storage or require_read_only_storage
     )
     shell_tool_mounts = parse_shell_tool_mounts(
         room_paths=merge_option_lists(
@@ -1666,6 +1669,7 @@ async def spec(
         identity=agent_name,
         path=path,
         cls=build_worker(
+            client=None,
             WorkerBase=WorkerBase,
             model=model,
             rule=rule,
@@ -1674,20 +1678,19 @@ async def spec(
             rules_file=rules_file,
             room_rules_paths=room_rules,
             queue=queue,
-            local_shell=local_shell,
             shell=shell,
             apply_patch=apply_patch,
             image_generation=image_generation,
             web_search=web_search,
             web_fetch=web_fetch,
             discover_script_tools=discover_script_tools,
-            mcp=mcp,
             storage=storage,
-            storage_tool_mounts=storage_tool_mounts,
+            storage_tool_local_paths=storage_tool_local_path,
+            storage_tool_room_paths=storage_tool_room_path,
+            default_room_storage_mount=default_room_storage_mount,
             shell_tool_mounts=shell_tool_mounts,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
-            require_local_shell=require_local_shell,
             require_web_search=require_web_search,
             require_web_fetch=require_web_fetch,
             toolkit_name=toolkit_name,
@@ -1781,9 +1784,7 @@ async def deploy(
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option(
-            "--schema", "-s", help="the name or url of a required schema", hidden=True
-        ),
+        typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
         str,
@@ -1801,9 +1802,6 @@ async def deploy(
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
     ] = False,
-    local_shell: Annotated[
-        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
-    ] = False,
     shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable function shell tool calling")
     ] = False,
@@ -1819,9 +1817,6 @@ async def deploy(
     discover_script_tools: Annotated[
         Optional[bool],
         typer.Option(..., help="Automatically add script tools from the room"),
-    ] = False,
-    mcp: Annotated[
-        Optional[bool], typer.Option(..., help="Enable mcp tool calling")
     ] = False,
     storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
@@ -1840,9 +1835,6 @@ async def deploy(
             help="Mount room path as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
-    require_local_shell: Annotated[
-        Optional[bool], typer.Option(..., help="Require local shell tool")
-    ] = False,
     require_web_search: Annotated[
         Optional[bool], typer.Option(..., help="Require web search tool")
     ] = False,
@@ -1875,19 +1867,20 @@ async def deploy(
         Optional[bool], typer.Option(..., help="Require storage toolkit")
     ] = False,
     require_read_only_storage: Annotated[
-        Optional[bool], typer.Option(..., help="Require read-only storage toolkit")
+        Optional[bool],
+        typer.Option("--read-only-storage", help="Require read-only storage toolkit"),
     ] = False,
     require_time: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--time",
             help="Enable time/datetime tools",
         ),
     ] = True,
     require_uuid: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--uuid",
             help="Enable UUID generation tools",
         ),
     ] = False,
@@ -1911,16 +1904,20 @@ async def deploy(
     ] = None,
     require_table_read: Annotated[
         list[str],
-        typer.Option(..., help="Require table read tool for table (repeatable)"),
+        typer.Option(
+            "--table-read", help="Require table read tool for table (repeatable)"
+        ),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(..., help="Require table write tool for table (repeatable)"),
+        typer.Option(
+            "--table-write", help="Require table write tool for table (repeatable)"
+        ),
     ] = [],
     require_computer_use: Annotated[
         Optional[bool],
         typer.Option(
-            ...,
+            "--computer-use",
             help="Enable computer use",
         ),
     ] = False,
@@ -1983,9 +1980,8 @@ async def deploy(
     project_id = await resolve_project_id(project_id=project_id)
 
     service = get_service(host=None, port=None)
-    storage_tool_mounts = parse_storage_tool_mounts(
-        local_paths=storage_tool_local_path,
-        room_paths=storage_tool_room_path,
+    default_room_storage_mount = bool(
+        storage or require_storage or require_read_only_storage
     )
     shell_tool_mounts = parse_shell_tool_mounts(
         room_paths=merge_option_lists(
@@ -2022,6 +2018,7 @@ async def deploy(
         identity=agent_name,
         path=path,
         cls=build_worker(
+            client=None,
             WorkerBase=WorkerBase,
             model=model,
             rule=rule,
@@ -2030,20 +2027,19 @@ async def deploy(
             rules_file=rules_file,
             room_rules_paths=room_rules,
             queue=queue,
-            local_shell=local_shell,
             shell=shell,
             apply_patch=apply_patch,
             image_generation=image_generation,
             web_search=web_search,
             web_fetch=web_fetch,
             discover_script_tools=discover_script_tools,
-            mcp=mcp,
             storage=storage,
-            storage_tool_mounts=storage_tool_mounts,
+            storage_tool_local_paths=storage_tool_local_path,
+            storage_tool_room_paths=storage_tool_room_path,
+            default_room_storage_mount=default_room_storage_mount,
             shell_tool_mounts=shell_tool_mounts,
             require_shell=require_shell,
             require_apply_patch=require_apply_patch,
-            require_local_shell=require_local_shell,
             require_web_search=require_web_search,
             require_web_fetch=require_web_fetch,
             toolkit_name=toolkit_name,
@@ -2146,3 +2142,25 @@ async def deploy(
 
     finally:
         await client.close()
+
+
+_REMOVED_TOOLKIT_OPTION_NAMES = DUPLICATE_REQUIRE_OPTION_NAMES | {
+    "discover_script_tools",
+    "storage_tool_local_path",
+    "storage_tool_room_path",
+    "shell_room_mount",
+    "shell_tool_room_path",
+    "shell_project_mount",
+    "shell_tool_project_path",
+    "shell_empty_dir_mount",
+    "shell_tool_empty_dir",
+    "shell_image_mount",
+    "working_dir",
+    "working_directory",
+    "shell_image",
+    "delegate_shell_token",
+    "shell_copy_env",
+    "shell_set_env",
+}
+
+strip_command_options(app, option_names=_REMOVED_TOOLKIT_OPTION_NAMES)

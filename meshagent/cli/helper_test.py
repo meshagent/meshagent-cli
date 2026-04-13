@@ -7,7 +7,7 @@ from meshagent.agents.context import AgentSessionContext
 from meshagent.cli.helper import (
     DEFAULT_DATABASE_NAMESPACE,
     DEFAULT_SHELL_IMAGE,
-    build_shell_toolkit_builder,
+    build_shell_tool,
     init_context_from_spec,
     parse_memory_selector,
     parse_shell_tool_mounts,
@@ -84,55 +84,38 @@ def test_supports_openai_shell_tool(
 
 
 @pytest.mark.asyncio
-async def test_build_shell_toolkit_builder_uses_container_shell_for_non_gpt_model() -> (
-    None
-):
-    builder = build_shell_toolkit_builder(
-        working_dir="/workspace",
-        image=DEFAULT_SHELL_IMAGE,
-    )
-
-    toolkit = await builder.make(
-        room=None,  # type: ignore[arg-type]
+async def test_build_shell_tool_uses_container_shell_for_non_gpt_model() -> None:
+    tool = build_shell_tool(
         model="claude-3-7-sonnet",
-        config=builder.type.model_validate({"name": "shell"}),
-    )
-
-    assert isinstance(toolkit.tools[0], ContainerShellTool)
-
-
-@pytest.mark.asyncio
-async def test_build_shell_toolkit_builder_uses_shell_tool_for_gpt_model() -> None:
-    builder = build_shell_toolkit_builder(
         working_dir="/workspace",
         image=DEFAULT_SHELL_IMAGE,
     )
 
-    toolkit = await builder.make(
-        room=None,  # type: ignore[arg-type]
-        model="gpt-5",
-        config=builder.type.model_validate({"name": "shell"}),
-    )
-
-    assert isinstance(toolkit.tools[0], ShellTool)
+    assert isinstance(tool, ContainerShellTool)
 
 
 @pytest.mark.asyncio
-async def test_build_shell_toolkit_builder_uses_process_shell_for_non_gpt_model_without_image() -> (
+async def test_build_shell_tool_uses_shell_tool_for_gpt_model() -> None:
+    tool = build_shell_tool(
+        model="gpt-5",
+        working_dir="/workspace",
+        image=DEFAULT_SHELL_IMAGE,
+    )
+
+    assert isinstance(tool, ShellTool)
+
+
+@pytest.mark.asyncio
+async def test_build_shell_tool_uses_process_shell_for_non_gpt_model_without_image() -> (
     None
 ):
-    builder = build_shell_toolkit_builder(
+    tool = build_shell_tool(
+        model="claude-3-7-sonnet",
         working_dir="/workspace",
         image=None,
     )
 
-    toolkit = await builder.make(
-        room=None,  # type: ignore[arg-type]
-        model="claude-3-7-sonnet",
-        config=builder.type.model_validate({"name": "shell"}),
-    )
-
-    assert isinstance(toolkit.tools[0], ProcessShellTool)
+    assert isinstance(tool, ProcessShellTool)
 
 
 @pytest.mark.parametrize(

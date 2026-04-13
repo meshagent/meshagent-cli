@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import posixpath
 import queue
 import re
 import shlex
 import threading
 import tempfile
-import uuid
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -22,7 +22,6 @@ from rich import print
 from meshagent.cli import async_typer
 from meshagent.cli.containers import (
     _parse_creds,
-    _parse_image_operation_mounts,
     _stream_build_job_logs_and_wait_for_exit,
     _with_client,
 )
@@ -66,20 +65,23 @@ from meshagent.cli.oci_archive import (
     PackedOciArchive,
     build_oci_archive,
     build_oci_archive_to_writer,
+    write_build_context_archive,
 )
+from meshagent.cli.version import __version__
 
 
 app = async_typer.AsyncTyper(help="Build and pack OCI images")
 _ARCHIVE_STREAM_QUEUE_SIZE = 8
+_BUILD_CONTEXT_CHUNK_SIZE = 1024 * 1024
 _CLIENT_CLOSE_TIMEOUT_SECONDS = 2.0
 _DEFAULT_CONTEXT_MOUNT_PATH = "/context"
 _ROOM_PACK_TAG_REGISTRY = "room.meshagent.com"
-_TEMP_BUILD_PACK_ROOM_PATH_PREFIX = "/temp/build/packs"
 _TOKEN_ENVIRONMENT_NAMES = (
     "MESHAGENT_TOKEN",
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
 )
+_DEFAULT_MESHAGENT_IMAGE_PREFIX = "us-central1-docker.pkg.dev/meshagent-public/images/"
 _IMAGE_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 _REPOSITORY_COMPONENT_RE = re.compile(r"^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$")
 _REGISTRY_COMPONENT_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
@@ -108,6 +110,37 @@ class _ArchiveStreamEnd:
 
 
 _ARCHIVE_STREAM_END = _ArchiveStreamEnd()
+
+
+def default_pack_architecture() -> str:
+    configured_arch = os.environ.get("MESHAGENT_ARCH")
+    if configured_arch is None:
+        return DEFAULT_ARCHITECTURE
+    normalized_arch = configured_arch.strip()
+    if normalized_arch == "":
+        return DEFAULT_ARCHITECTURE
+    return normalized_arch
+
+
+def replace_meshagent_image_vars(image: str) -> str:
+    resolved_image = image
+    meshagent_image_prefix = os.environ.get("MESHAGENT_IMAGE_PREFIX")
+    if meshagent_image_prefix is None or meshagent_image_prefix.strip() == "":
+        meshagent_image_prefix = _DEFAULT_MESHAGENT_IMAGE_PREFIX
+    if resolved_image.startswith("meshagent/"):
+        resolved_image = resolved_image.replace(
+            "meshagent/",
+            meshagent_image_prefix,
+            1,
+        )
+        if resolved_image.endswith(":default"):
+            resolved_image = resolved_image.replace(
+                ":default",
+                f":{__version__}",
+            )
+            resolved_image = f"{resolved_image}-esgz"
+
+    return resolved_image.replace("{SERVER_VERSION}", __version__)
 
 
 @dataclass(frozen=True)
@@ -154,12 +187,9 @@ class _UploadedPackedArchive:
 
 @dataclass(frozen=True)
 class _ResolvedBuildStageInputs:
-    normalized_room_mounts: list[str]
-    normalized_project_mounts: list[str]
-    normalized_image_mounts: list[str]
     context_path: str
     dockerfile_path: str | None
-    pack_spec: _BuildPackSpec | None
+    pack_spec: _BuildPackSpec
     local_packed_dockerfile: Path | None
     preserved_packed_build_paths: frozenset[str]
 
@@ -356,134 +386,19 @@ def _parse_build_pack(value: str) -> _BuildPackSpec:
     )
 
 
-def _format_container_mount(
-    *,
-    source: str,
-    mount: str,
-    read_only: bool,
-    default_read_only: bool,
-) -> str:
-    if read_only == default_read_only:
-        return f"{source}:{mount}"
-    suffix = "ro" if read_only else "rw"
-    return f"{source}:{mount}:{suffix}"
-
-
-def _format_image_mount(*, image: str, mount: str, read_only: bool) -> str:
-    if read_only:
-        return f"{image}={mount}"
-    return f"{image}={mount}:rw"
-
-
-def _normalize_build_container_mounts(
-    *,
-    values: list[str],
-    option_name: str,
-    default_read_only: bool,
-) -> tuple[list[str], list[str]]:
-    normalized_values: list[str] = []
-    context_candidates: list[str] = []
-
-    for value in values:
-        cleaned = value.strip()
-        if cleaned == "":
-            raise typer.BadParameter(f"{option_name} cannot be empty")
-
-        if ":" not in cleaned:
-            mount = _DEFAULT_CONTEXT_MOUNT_PATH
-            normalized_values.append(
-                _format_container_mount(
-                    source=cleaned,
-                    mount=mount,
-                    read_only=default_read_only,
-                    default_read_only=default_read_only,
-                )
-            )
-            context_candidates.append(mount)
-            continue
-
-        source, mount, read_only = split_container_mount(
-            value,
-            option_name,
-            default_read_only,
-        )
-        normalized_values.append(
-            _format_container_mount(
-                source=source,
-                mount=mount,
-                read_only=read_only,
-                default_read_only=default_read_only,
-            )
-        )
-        context_candidates.append(mount)
-
-    return normalized_values, context_candidates
-
-
-def _normalize_build_image_mounts(
-    *,
-    values: list[str],
-) -> tuple[list[str], list[str]]:
-    normalized_values: list[str] = []
-    context_candidates: list[str] = []
-
-    for value in values:
-        cleaned = value.strip()
-        if cleaned == "":
-            raise typer.BadParameter("--mount-image cannot be empty")
-
-        if "=" not in cleaned:
-            mount = _DEFAULT_CONTEXT_MOUNT_PATH
-            normalized_values.append(
-                _format_image_mount(image=cleaned, mount=mount, read_only=True)
-            )
-            context_candidates.append(mount)
-            continue
-
-        image_ref, mount, subpath, read_only = split_image_mount(
-            value,
-            "--mount-image",
-        )
-        if subpath is not None:
-            raise typer.BadParameter("--mount-image subpaths are not supported here")
-        normalized_values.append(
-            _format_image_mount(image=image_ref, mount=mount, read_only=read_only)
-        )
-        context_candidates.append(mount)
-
-    return normalized_values, context_candidates
-
-
 def _resolve_build_context_path(
     *,
     context_path: str | None,
-    context_candidates: list[str],
+    mount_path: str,
 ) -> str:
     if context_path is not None:
         if not context_path.startswith("/"):
             raise typer.BadParameter("--context-path must be an absolute path")
         return context_path
 
-    deduped_candidates: list[str] = []
-    for candidate in context_candidates:
-        if candidate not in deduped_candidates:
-            deduped_candidates.append(candidate)
-
-    if len(deduped_candidates) == 0:
-        raise typer.BadParameter(
-            "--context-path is required unless exactly one of --pack, "
-            "--mount-room-path, --mount-project-path, or --mount-image is provided"
-        )
-
-    if len(deduped_candidates) > 1:
-        raise typer.BadParameter(
-            "--context-path is required when multiple mount targets are provided"
-        )
-
-    resolved_context_path = deduped_candidates[0]
-    if not resolved_context_path.startswith("/"):
-        raise typer.BadParameter("--context-path must be an absolute path")
-    return resolved_context_path
+    if not mount_path.startswith("/"):
+        raise typer.BadParameter("--pack mount path must be an absolute path")
+    return mount_path
 
 
 def _parse_build_tag(tag: str) -> _ParsedImageTag:
@@ -571,40 +486,6 @@ def _resolve_build_pack_room_path(
     return cleaned_room_path
 
 
-def _build_pack_ref_name_for_room_path(*, room_path: str) -> str:
-    repository = room_path.lstrip("/")
-    if repository == "":
-        raise typer.BadParameter(
-            "packed build contexts require a non-root room storage path"
-        )
-
-    repository_parts = repository.split("/")
-    if any(
-        _REPOSITORY_COMPONENT_RE.fullmatch(component) is None
-        for component in repository_parts
-    ):
-        raise typer.BadParameter(
-            "--pack-room-path must map to a valid room.meshagent.com repository path"
-        )
-
-    return f"{_ROOM_PACK_TAG_REGISTRY}/{repository}:latest"
-
-
-def _resolve_uploaded_build_pack_room_path(
-    *, parsed_tag: _ParsedImageTag, room_path: str | None
-) -> tuple[str, bool]:
-    if room_path is None or room_path.strip() == "":
-        temporary_room_path = posixpath.join(
-            _TEMP_BUILD_PACK_ROOM_PATH_PREFIX,
-            uuid.uuid4().hex,
-        )
-        return temporary_room_path, True
-
-    return _resolve_build_pack_room_path(
-        parsed_tag=parsed_tag, room_path=room_path
-    ), False
-
-
 def _infer_packed_dockerfile_path(
     *,
     pack_spec: _BuildPackSpec,
@@ -677,44 +558,18 @@ def _resolve_build_stage_inputs(
     *,
     context_path: str | None,
     dockerfile_path: str | None,
-    pack: str | None,
-    mount_room_path: list[str],
-    mount_project_path: list[str],
-    mount_image: list[str],
+    pack: str,
 ) -> _ResolvedBuildStageInputs:
-    normalized_room_mounts, room_context_candidates = _normalize_build_container_mounts(
-        values=mount_room_path,
-        option_name="--mount-room-path",
-        default_read_only=False,
-    )
-    normalized_project_mounts, project_context_candidates = (
-        _normalize_build_container_mounts(
-            values=mount_project_path,
-            option_name="--mount-project-path",
-            default_read_only=True,
-        )
-    )
-    normalized_image_mounts, image_context_candidates = _normalize_build_image_mounts(
-        values=mount_image,
-    )
-    pack_spec = _parse_build_pack(pack) if pack is not None else None
+    pack_spec = _parse_build_pack(pack)
     resolved_context_path = _resolve_build_context_path(
         context_path=context_path,
-        context_candidates=[
-            *room_context_candidates,
-            *project_context_candidates,
-            *image_context_candidates,
-            *([pack_spec.mount_path] if pack_spec is not None else []),
-        ],
+        mount_path=pack_spec.mount_path,
     )
-    if pack_spec is not None:
-        dockerfile_path = _infer_packed_dockerfile_path(
-            pack_spec=pack_spec,
-            context_path=resolved_context_path,
-            dockerfile_path=dockerfile_path,
-        )
-    elif dockerfile_path is not None and not dockerfile_path.startswith("/"):
-        raise typer.BadParameter("--dockerfile-path must be an absolute path")
+    dockerfile_path = _infer_packed_dockerfile_path(
+        pack_spec=pack_spec,
+        context_path=resolved_context_path,
+        dockerfile_path=dockerfile_path,
+    )
 
     local_packed_dockerfile = _resolve_local_packed_dockerfile(
         pack_spec=pack_spec,
@@ -731,15 +586,17 @@ def _resolve_build_stage_inputs(
         )
 
     return _ResolvedBuildStageInputs(
-        normalized_room_mounts=normalized_room_mounts,
-        normalized_project_mounts=normalized_project_mounts,
-        normalized_image_mounts=normalized_image_mounts,
         context_path=resolved_context_path,
         dockerfile_path=dockerfile_path,
         pack_spec=pack_spec,
         local_packed_dockerfile=local_packed_dockerfile,
         preserved_packed_build_paths=preserved_packed_build_paths,
     )
+
+
+def _default_builder_name(*, client: RoomClient) -> str:
+    del client
+    return "builder"
 
 
 def _read_packed_dockerfile_text(*, local_packed_dockerfile: Path | None) -> str | None:
@@ -2191,6 +2048,39 @@ async def _close_pack_clients(
         print("[yellow]Timed out closing account client after upload[/yellow]")
 
 
+async def _iter_file_chunks(path: Path) -> AsyncIterator[bytes]:
+    with path.open("rb") as file_obj:
+        while True:
+            chunk = await asyncio.to_thread(
+                file_obj.read,
+                _BUILD_CONTEXT_CHUNK_SIZE,
+            )
+            if chunk == b"":
+                return
+            yield chunk
+
+
+async def _build_local_context_archive(
+    *,
+    source_dir: Path,
+    preserved_paths: frozenset[str],
+) -> tuple[Path, int, tempfile.TemporaryDirectory[str]]:
+    temp_dir = tempfile.TemporaryDirectory(prefix="meshagent-build-context-")
+    archive_path = Path(temp_dir.name) / "context.tar"
+    try:
+        await asyncio.to_thread(
+            write_build_context_archive,
+            source_dir=source_dir,
+            output_path=archive_path,
+            preserved_paths=preserved_paths,
+        )
+        archive_size = archive_path.stat().st_size
+        return archive_path, archive_size, temp_dir
+    except Exception:
+        temp_dir.cleanup()
+        raise
+
+
 async def _run_image_build_stage(
     *,
     resolved_project_id: str | None,
@@ -2198,104 +2088,51 @@ async def _run_image_build_stage(
     parsed_tag: _ParsedImageTag,
     context_path: str | None,
     dockerfile_path: str | None,
-    pack: str | None,
+    pack: str,
     arch: str,
-    pack_room_path: str | None,
-    mount_room_path: list[str],
-    mount_project_path: list[str],
-    mount_image: list[str],
+    builder_name: str | None,
     private: bool,
     optimize: bool,
     cred: list[str],
 ) -> None:
+    del arch
     build_inputs = _resolve_build_stage_inputs(
         context_path=context_path,
         dockerfile_path=dockerfile_path,
         pack=pack,
-        mount_room_path=mount_room_path,
-        mount_project_path=mount_project_path,
-        mount_image=mount_image,
     )
 
     account_client, client = await _with_client(
         project_id=resolved_project_id,
         room=resolved_room,
     )
-    packed_room_path: str | None = None
-    should_delete_packed_room_path = False
-    context_archive_path: str | None = None
-    context_archive_ref: str | None = None
-    context_archive_mount_path: str | None = None
-    context_archive_arch: str | None = None
-    loaded_packed_archive_ref: str | None = None
+    context_archive_temp_dir: tempfile.TemporaryDirectory[str] | None = None
     try:
-        if build_inputs.pack_spec is not None:
-            _require_room_pack_tag(parsed_tag=parsed_tag)
-            requested_packed_room_path, should_delete_packed_room_path = (
-                _resolve_uploaded_build_pack_room_path(
-                    parsed_tag=parsed_tag,
-                    room_path=pack_room_path,
-                )
-            )
-            packed_ref_name = _build_pack_ref_name_for_room_path(
-                room_path=requested_packed_room_path
-            )
-            resolved_pack_architecture = arch.strip()
-            if resolved_pack_architecture == "":
-                raise typer.BadParameter("--arch cannot be empty")
-            uploaded_packed_archive = await _upload_oci_archive_to_room(
-                client=client,
-                source_dir=build_inputs.pack_spec.source_dir,
-                remote_path=requested_packed_room_path,
-                output_path=None,
-                base_image=None,
-                architecture=resolved_pack_architecture,
-                ref_name=packed_ref_name,
-                preserved_paths=build_inputs.preserved_packed_build_paths,
-            )
-            packed_room_path = uploaded_packed_archive.remote_path
-            loaded_packed_archive = await client.containers.load(
-                archive_path=packed_room_path
-            )
-            context_archive_path = packed_room_path
-            context_archive_ref = loaded_packed_archive.resolved_ref
-            loaded_packed_archive_ref = loaded_packed_archive.resolved_ref
-            context_archive_mount_path = build_inputs.pack_spec.mount_path
-            context_archive_arch = resolved_pack_architecture
-            upload_label = (
-                "Uploaded temporary packed build context"
-                if should_delete_packed_room_path
-                else "Uploaded packed build context"
-            )
-            print(
-                f"[green]{upload_label}[/green] {packed_room_path} ({packed_ref_name})"
-            )
-
-        mounts: list[ContainerMountSpec] = []
-        if (
-            len(build_inputs.normalized_room_mounts) > 0
-            or len(build_inputs.normalized_project_mounts) > 0
-            or len(build_inputs.normalized_image_mounts) > 0
-        ):
-            mounts.append(
-                _parse_image_operation_mounts(
-                    mount_room_path=build_inputs.normalized_room_mounts,
-                    mount_project_path=build_inputs.normalized_project_mounts,
-                    mount_image=build_inputs.normalized_image_mounts,
-                )
-            )
+        credentials = _parse_creds(cred)
+        resolved_builder_name = (
+            builder_name
+            if builder_name is not None
+            else _default_builder_name(client=client)
+        )
+        (
+            archive_path,
+            archive_size,
+            context_archive_temp_dir,
+        ) = await _build_local_context_archive(
+            source_dir=build_inputs.pack_spec.source_dir,
+            preserved_paths=build_inputs.preserved_packed_build_paths,
+        )
         build_id = await client.containers.build(
             tag=parsed_tag.value,
-            mounts=mounts,
+            mount_path=build_inputs.pack_spec.mount_path,
             context_path=build_inputs.context_path,
             dockerfile_path=build_inputs.dockerfile_path,
             optimize_image=optimize,
             private=private,
-            credentials=_parse_creds(cred),
-            context_archive_path=context_archive_path,
-            context_archive_ref=context_archive_ref,
-            context_archive_mount_path=context_archive_mount_path,
-            context_archive_arch=context_archive_arch,
+            credentials=credentials,
+            builder_name=resolved_builder_name,
+            chunks=_iter_file_chunks(archive_path),
+            size=archive_size,
         )
         exit_code = await _stream_build_job_logs_and_wait_for_exit(
             client=client, build_id=build_id
@@ -2303,22 +2140,8 @@ async def _run_image_build_stage(
         if exit_code != 0:
             raise typer.Exit(code=exit_code)
     finally:
-        if loaded_packed_archive_ref is not None:
-            try:
-                await client.containers.delete_image(image=loaded_packed_archive_ref)
-            except Exception as exc:
-                print(
-                    "[yellow]Unable to delete temporary packed build image:[/yellow] "
-                    f"{loaded_packed_archive_ref} ({exc})"
-                )
-        if should_delete_packed_room_path and packed_room_path is not None:
-            try:
-                await client.storage.delete(path=packed_room_path)
-            except Exception as exc:
-                print(
-                    "[yellow]Unable to delete temporary packed build context:[/yellow] "
-                    f"{packed_room_path} ({exc})"
-                )
+        if context_archive_temp_dir is not None:
+            context_archive_temp_dir.cleanup()
         await client.__aexit__(None, None, None)
         await account_client.close()
 
@@ -2328,8 +2151,7 @@ def _validate_deploy_build_stage_options(
     pack: str | None,
     context_path: str | None,
     dockerfile_path: str | None,
-    arch: str,
-    pack_room_path: str | None,
+    builder_name: str | None,
     optimize: bool,
     cred: list[str],
 ) -> None:
@@ -2341,10 +2163,8 @@ def _validate_deploy_build_stage_options(
         invalid_options.append("--context-path")
     if dockerfile_path is not None:
         invalid_options.append("--dockerfile-path")
-    if arch != DEFAULT_ARCHITECTURE:
-        invalid_options.append("--arch")
-    if pack_room_path is not None:
-        invalid_options.append("--pack-room-path")
+    if builder_name is not None:
+        invalid_options.append("--builder-name")
     if not optimize:
         invalid_options.append("--no-optimize")
     if len(cred) > 0:
@@ -2368,9 +2188,17 @@ async def build_image(
         str,
         typer.Option(
             ...,
+            help="Image tag to build, e.g. repo/name:tag.",
+        ),
+    ],
+    pack: Annotated[
+        str,
+        typer.Option(
+            ...,
+            "--pack",
             help=(
-                "Image tag to build, e.g. repo/name:tag. When --pack is used, "
-                "this must start with room.meshagent.com/."
+                "Local directory to stream as the build context. Format "
+                "'<path>[:<mount>]'. Defaults mount to /context."
             ),
         ),
     ],
@@ -2379,8 +2207,8 @@ async def build_image(
         typer.Option(
             "--context-path",
             help=(
-                "Build context path inside one of the mounted paths (absolute path). "
-                "Defaults to the mounted path when there is exactly one context source."
+                "Build context path inside the streamed build context (absolute "
+                "path). Defaults to the pack mount path."
             ),
         ),
     ] = None,
@@ -2388,71 +2216,19 @@ async def build_image(
         Optional[str],
         typer.Option(
             "--dockerfile-path",
-            help="Optional Dockerfile path inside one of the mounted paths (absolute path)",
+            help=(
+                "Optional Dockerfile path inside the streamed build context "
+                "(absolute path)."
+            ),
         ),
     ] = None,
-    pack: Annotated[
+    builder_name: Annotated[
         Optional[str],
         typer.Option(
-            "--pack",
-            help=(
-                "Pack a local directory, upload it to room storage, and mount it as an "
-                "image volume. Format '<path>[:<mount>]'. Defaults mount to /context."
-            ),
+            "--builder-name",
+            help="Optional reusable builder name for streamed local builds.",
         ),
     ] = None,
-    arch: Annotated[
-        str,
-        typer.Option(
-            "--arch",
-            help=(
-                "Architecture metadata for the packed build context image. Defaults "
-                "to amd64 for room runtimes."
-            ),
-        ),
-    ] = DEFAULT_ARCHITECTURE,
-    pack_room_path: Annotated[
-        Optional[str],
-        typer.Option(
-            "--pack-room-path",
-            help=(
-                "Room storage path for the uploaded packed archive. Defaults to "
-                "a temporary path under /temp/build/packs/ that is deleted after "
-                "the build completes. If a directory is provided, the repository "
-                "path from --tag is appended."
-            ),
-        ),
-    ] = None,
-    mount_room_path: Annotated[
-        list[str],
-        typer.Option(
-            "--mount-room-path",
-            help=(
-                "Room storage mount '<source>[:<mount>[:ro|rw]]'. "
-                "If mount is omitted, /context is used."
-            ),
-        ),
-    ] = [],
-    mount_project_path: Annotated[
-        list[str],
-        typer.Option(
-            "--mount-project-path",
-            help=(
-                "Project storage mount '<source>[:<mount>[:ro|rw]]'. "
-                "If mount is omitted, /context is used."
-            ),
-        ),
-    ] = [],
-    mount_image: Annotated[
-        list[str],
-        typer.Option(
-            "--mount-image",
-            help=(
-                "Image mount '<image>[=<mount>[:ro|rw]]'. "
-                "If mount is omitted, /context is used."
-            ),
-        ),
-    ] = [],
     private: Annotated[
         bool,
         typer.Option(
@@ -2490,11 +2266,8 @@ async def build_image(
         context_path=context_path,
         dockerfile_path=dockerfile_path,
         pack=pack,
-        arch=arch,
-        pack_room_path=pack_room_path,
-        mount_room_path=mount_room_path,
-        mount_project_path=mount_project_path,
-        mount_image=mount_image,
+        arch=default_pack_architecture(),
+        builder_name=builder_name,
         private=private,
         optimize=optimize,
         cred=cred,
@@ -2521,7 +2294,7 @@ async def deploy_image(
         typer.Option(
             "--pack",
             help=(
-                "Pack a local directory, upload it to room storage, build the image, "
+                "Stream a local directory as the build context, build the image, "
                 "and then deploy it. Format '<path>[:<mount>]'. Defaults mount to "
                 "/context."
             ),
@@ -2547,27 +2320,6 @@ async def deploy_image(
             ),
         ),
     ] = None,
-    arch: Annotated[
-        str,
-        typer.Option(
-            "--arch",
-            help=(
-                "Architecture metadata for the packed build context image. Only used "
-                "with --pack. Defaults to amd64 for room runtimes."
-            ),
-        ),
-    ] = DEFAULT_ARCHITECTURE,
-    pack_room_path: Annotated[
-        Optional[str],
-        typer.Option(
-            "--pack-room-path",
-            help=(
-                "Room storage path for the uploaded packed archive during the build "
-                "stage. Defaults to a temporary path under /temp/build/packs/ that "
-                "is deleted after the build completes."
-            ),
-        ),
-    ] = None,
     optimize: Annotated[
         bool,
         typer.Option(
@@ -2585,6 +2337,13 @@ async def deploy_image(
             help="Docker creds (username,password) or (registry,username,password)",
         ),
     ] = [],
+    builder_name: Annotated[
+        Optional[str],
+        typer.Option(
+            "--builder-name",
+            help="Optional reusable builder name for streamed local pack builds.",
+        ),
+    ] = None,
     domain: Annotated[
         Optional[str],
         typer.Option(
@@ -2684,8 +2443,7 @@ async def deploy_image(
         pack=pack,
         context_path=context_path,
         dockerfile_path=dockerfile_path,
-        arch=arch,
-        pack_room_path=pack_room_path,
+        builder_name=builder_name,
         optimize=optimize,
         cred=cred,
     )
@@ -2722,9 +2480,6 @@ async def deploy_image(
             context_path=context_path,
             dockerfile_path=dockerfile_path,
             pack=pack,
-            mount_room_path=[],
-            mount_project_path=[],
-            mount_image=[],
         )
         packed_dockerfile_metadata = _parse_packed_dockerfile_metadata(
             local_packed_dockerfile=build_inputs.local_packed_dockerfile
@@ -2788,11 +2543,8 @@ async def deploy_image(
                 context_path=context_path,
                 dockerfile_path=dockerfile_path,
                 pack=pack,
-                arch=arch,
-                pack_room_path=pack_room_path,
-                mount_room_path=[],
-                mount_project_path=[],
-                mount_image=[],
+                arch=default_pack_architecture(),
+                builder_name=builder_name,
                 private=False,
                 optimize=optimize,
                 cred=cred,
@@ -2893,13 +2645,6 @@ async def pack_image(
             help="Optional base image reference. Defaults to scratch semantics.",
         ),
     ] = None,
-    arch: Annotated[
-        str,
-        typer.Option(
-            "--arch",
-            help="Architecture to use when resolving --base",
-        ),
-    ] = DEFAULT_ARCHITECTURE,
     room_path: Annotated[
         Optional[str],
         typer.Option(
@@ -2923,7 +2668,7 @@ async def pack_image(
                 source_dir=source_dir,
                 output_path=output_path,
                 base_image=base,
-                architecture=arch,
+                architecture=default_pack_architecture(),
                 ref_name=parsed_tag.value if parsed_tag is not None else None,
             )
         except ImagePackError as exc:
@@ -2953,7 +2698,7 @@ async def pack_image(
             remote_path=remote_path,
             output_path=output_path,
             base_image=base,
-            architecture=arch,
+            architecture=default_pack_architecture(),
             ref_name=parsed_tag.value,
         )
     except Exception:

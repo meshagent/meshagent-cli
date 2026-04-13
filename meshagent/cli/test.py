@@ -29,7 +29,8 @@ from meshagent.api.messaging import (
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.cli.helper import resolve_key, resolve_project_id, resolve_room
-from meshagent.tools import RemoteToolkit, ContentTool, ToolContext
+from meshagent.tools import Toolkit, ContentTool, ToolContext
+from meshagent.tools.hosting import _start_hosted_toolkit
 
 app = async_typer.AsyncTyper(help="Hidden test tools")
 
@@ -629,13 +630,16 @@ async def stream_tool(
             token=jwt,
         )
     ) as client:
-        remote_toolkit = RemoteToolkit(
+        toolkit_instance = Toolkit(
             name=toolkit,
             tools=[_TestStreamTool(controller=controller, name=tool)],
             title="test stream toolkit",
             description="hidden stream-tool testing toolkit",
         )
-        await remote_toolkit.start(room=client)
+        hosted_toolkit = await _start_hosted_toolkit(
+            room=client,
+            toolkit=toolkit_instance,
+        )
         await controller.log(f"[ready] hosting {toolkit}/{tool} in room '{room_name}'")
         try:
             app_instance = _StreamToolTextualApp(controller=controller)
@@ -647,4 +651,4 @@ async def stream_tool(
                 if "active_app" not in str(ex):
                     raise
         finally:
-            await remote_toolkit.stop()
+            await hosted_toolkit.stop()

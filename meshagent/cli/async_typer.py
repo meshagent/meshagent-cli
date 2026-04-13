@@ -122,6 +122,65 @@ def _materialize_command(command: click.Command) -> click.Command:
     return command
 
 
+def _rewrite_deprecated_option_aliases(
+    args: list[str], aliases: dict[str, str]
+) -> list[str]:
+    if len(aliases) == 0:
+        return args
+
+    rewritten: list[str] = []
+    for arg in args:
+        updated = arg
+        for old_option, new_option in aliases.items():
+            if arg == old_option:
+                updated = new_option
+                break
+            if arg.startswith(f"{old_option}="):
+                updated = f"{new_option}{arg[len(old_option) :]}"
+                break
+
+            if old_option.startswith("--") and new_option.startswith("--"):
+                old_negated = f"--no-{old_option[2:]}"
+                new_negated = f"--no-{new_option[2:]}"
+                if arg == old_negated:
+                    updated = new_negated
+                    break
+                if arg.startswith(f"{old_negated}="):
+                    updated = f"{new_negated}{arg[len(old_negated) :]}"
+                    break
+
+        rewritten.append(updated)
+
+    return rewritten
+
+
+def _attach_deprecated_option_aliases(
+    command: click.Command,
+    aliases: dict[str, str],
+) -> click.Command:
+    if len(aliases) == 0:
+        return command
+
+    original_make_context = command.make_context
+
+    @wraps(original_make_context)
+    def make_context(
+        info_name: str | None,
+        args: list[str],
+        parent: click.Context | None = None,
+        **extra: Any,
+    ) -> click.Context:
+        return original_make_context(
+            info_name,
+            _rewrite_deprecated_option_aliases(args, aliases),
+            parent=parent,
+            **extra,
+        )
+
+    command.make_context = make_context  # type: ignore[method-assign]
+    return command
+
+
 def get_command(
     typer_instance: Typer | click.Command,
     *,
@@ -146,6 +205,12 @@ def get_command(
             click_command = get_typer_command(typer_instance)
     else:
         click_command = get_typer_command(typer_instance)
+
+    if isinstance(typer_instance, AsyncTyper):
+        click_command = _attach_deprecated_option_aliases(
+            click_command,
+            typer_instance.deprecated_option_aliases,
+        )
 
     if materialize_lazy:
         return _materialize_command(click_command)
@@ -275,6 +340,7 @@ class AsyncTyper(Typer):
         if "no_args_is_help" not in kwargs:
             kwargs["no_args_is_help"] = True
         super().__init__(*args, **kwargs)
+        self.deprecated_option_aliases: dict[str, str] = {}
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         explicit_standalone_mode = "standalone_mode" in kwargs
@@ -347,6 +413,9 @@ class AsyncTyper(Typer):
     # keep your existing name if you prefer
     def async_command(self, *args: Any, **kwargs: Any) -> Any:
         return self.command(*args, **kwargs)
+
+    def add_deprecated_option_aliases(self, aliases: dict[str, str]) -> None:
+        self.deprecated_option_aliases.update(aliases)
 
 
 class LazyTyper(AsyncTyper):

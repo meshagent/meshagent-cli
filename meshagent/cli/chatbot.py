@@ -5,19 +5,15 @@ from typing import Annotated, Any, Optional, List, Literal, Awaitable, Callable
 from meshagent.tools import (
     BaseTool,
     Toolkit,
-    ToolkitConfig,
-    ToolkitBuilder,
     WebFetchTool,
-    WebFetchToolkitBuilder,
     ContainerShellTool,
     ContainerToolkit,
     MemoriesToolkit,
 )
 from meshagent.tools.storage import (
+    StorageToolLocalMount,
     StorageToolMount,
     StorageToolkit,
-    StorageToolkitConfig,
-    StorageToolkitBuilder,
 )
 from meshagent.tools.datetime import DatetimeToolkit
 from meshagent.tools.uuid import UUIDToolkit
@@ -55,13 +51,16 @@ from meshagent.api import (
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.cli import async_typer
 from meshagent.cli.helper import (
+    NormalizedRequiredToolOptions,
     build_shell_tool,
-    build_shell_toolkit_builder,
     cleanup_args,
     cleanup_args_strip_options,
+    DEPRECATED_REQUIRE_OPTION_ALIASES,
     DEFAULT_DATABASE_NAMESPACE,
+    DUPLICATE_REQUIRE_OPTION_NAMES,
     get_client,
     merge_option_lists,
+    normalize_required_tool_options,
     parse_shell_tool_mounts,
     parse_memory_selector,
     parse_storage_tool_mounts,
@@ -70,44 +69,36 @@ from meshagent.cli.helper import (
     resolve_key,
     resolve_project_id,
     resolve_room,
+    strip_command_options,
     supports_openai_shell_tool,
 )
 
-from meshagent.openai import OpenAIResponsesAdapter
+from meshagent.openai import OpenAIResponsesAdapter, OpenAIResponsesMCPToolkit
 from meshagent.anthropic import (
+    AnthropicMessagesMCPToolkit,
     AnthropicOpenAIResponsesStreamAdapter,
     WebFetchTool as AnthropicWebFetchTool,
-    WebFetchToolkitBuilder as AnthropicWebFetchToolkitBuilder,
     WebSearchTool as AnthropicWebSearchTool,
-    WebSearchToolkitBuilder as AnthropicWebSearchToolkitBuilder,
 )
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from urllib.parse import urlparse
 
-from meshagent.tools.script import ScriptToolkitBuilder, get_script_tools
+from meshagent.tools.script import get_script_tools
 
 from meshagent.openai.tools.responses_adapter import (
-    WebSearchToolkitBuilder,
-    MCPToolkitBuilder,
     WebSearchTool,
-    LocalShellConfig,
-    ShellConfig,
-    WebSearchConfig,
-    ApplyPatchConfig,
     ApplyPatchTool,
-    ApplyPatchToolkitBuilder,
     ShellTool,
-    LocalShellToolkitBuilder,
-    LocalShellTool,
-    ImageGenerationConfig,
-    ImageGenerationToolkitBuilder,
     ImageGenerationTool,
 )
 
-from meshagent.tools.database import DatabaseToolkitBuilder, DatabaseToolkitConfig
+from meshagent.tools.database import make_database_toolkit
 from meshagent.agents.adapter import LLMAdapter, MessageStreamLLMAdapter
+from meshagent.agents.process import ContentScheme
 
 from meshagent.api import RequiredToolkit, RequiredSchema
+from meshagent.api.messaging import FileContent
 import logging
 import os.path
 import os
@@ -169,6 +160,7 @@ async def _run_agent_room_session(
 
 
 app = async_typer.AsyncTyper(help="Join a chatbot to a room")
+app.add_deprecated_option_aliases(DEPRECATED_REQUIRE_OPTION_ALIASES)
 
 ThreadingMode = Literal["none", "default-new"]
 
@@ -191,10 +183,21 @@ ShellSetEnvOption = Annotated[
     ),
 ]
 
+InstructionsOption = Annotated[
+    list[str],
+    typer.Option(
+        "--instructions",
+        help=(
+            "a path in the configured storage toolkit to a rules file that "
+            "will be loaded at runtime"
+        ),
+    ),
+]
+
 RequireAdvancedShellOption = Annotated[
     Optional[bool],
     typer.Option(
-        "--require-advanced-shell",
+        "--advanced-shell",
         help=("Enable the managed container toolkit with start/list/stop/run tools."),
     ),
 ]
@@ -430,16 +433,19 @@ def _normalized_decision_model(*, decision_model: Optional[str]) -> Optional[str
 def _build_decision_llm_adapter(
     *,
     decision_model: str,
+    api_key: str | None = None,
     log_llm_requests: Optional[bool],
 ) -> LLMAdapter:
     if decision_model.startswith("claude-"):
         return AnthropicOpenAIResponsesStreamAdapter(
             model=decision_model,
+            api_key=api_key,
             log_requests=log_llm_requests,
         )
 
     return OpenAIResponsesAdapter(
         model=decision_model,
+        api_key=api_key,
         log_requests=log_llm_requests,
     )
 
@@ -500,6 +506,202 @@ def _builder_for_runtime(runtime: Literal["chatbot", "process"]):
     if runtime == "process":
         return build_process_agent
     return build_chatbot
+
+
+def _require_storage_tool_mounts(
+    *,
+    room: RoomClient,
+    local_paths: list[str],
+    room_paths: list[str],
+    default_room_mount: bool,
+) -> list[StorageToolMount]:
+    mounts = parse_storage_tool_mounts(
+        room=room,
+        local_paths=local_paths,
+        room_paths=room_paths,
+        default_room_mount=default_room_mount,
+    )
+    if mounts is None:
+        raise RuntimeError("storage toolkit requires at least one configured mount")
+    return mounts
+
+
+def _default_rules_storage_toolkit() -> StorageToolkit:
+    return StorageToolkit(
+        read_only=True,
+        mounts=[
+            StorageToolLocalMount(
+                path="/",
+                local_path=str(Path.cwd()),
+            )
+        ],
+    )
+
+
+def _normalize_storage_rules_path(path: str) -> str:
+    normalized = Path(path)
+    if not normalized.is_absolute():
+        normalized = Path("/") / normalized
+    return normalized.as_posix()
+
+
+def _normalize_room_content_path(*, url: str) -> str:
+    parsed_url = urlparse(url)
+    if parsed_url.scheme != "room":
+        raise ValueError(f"unsupported room file url: {url}")
+
+    raw_path = f"{parsed_url.netloc}{parsed_url.path}".lstrip("/")
+    normalized = PurePosixPath("/" + raw_path).as_posix().strip("/")
+    if normalized == "":
+        raise ValueError("room file url must reference a non-root storage path")
+
+    if any(part in {".", ".."} for part in PurePosixPath(normalized).parts):
+        raise ValueError("room file url cannot contain '.' or '..' segments")
+
+    return normalized
+
+
+def _room_content_scheme(*, room: RoomClient) -> ContentScheme:
+    async def _download(url: str) -> FileContent:
+        path = _normalize_room_content_path(url=url)
+        return await room.storage.download(path=path)
+
+    return ContentScheme(prefix="room://", download=_download)
+
+
+async def _load_storage_rules(
+    *,
+    path: str,
+    storage_toolkit: StorageToolkit | None,
+    participant: Participant | None,
+) -> list[str]:
+    resolved_storage_toolkit = (
+        storage_toolkit
+        if storage_toolkit is not None
+        else _default_rules_storage_toolkit()
+    )
+    normalized_path = _normalize_storage_rules_path(path)
+    rules: list[str] = []
+
+    try:
+        instructions_file = await resolved_storage_toolkit.read_file(
+            path=normalized_path
+        )
+    except RoomException as exc:
+        logger.warning("unable to load instructions from %s: %s", path, exc)
+        return rules
+
+    rules_txt = instructions_file.data.decode()
+    rules_config = RulesConfig.parse(rules_txt)
+
+    if rules_config.rules is not None:
+        rules.extend(rules_config.rules)
+
+    if participant is not None:
+        client = participant.get_attribute("client")
+        if rules_config.client_rules is not None and client is not None:
+            client_rules = rules_config.client_rules.get(client)
+            if client_rules is not None:
+                rules.extend(client_rules)
+
+    return rules
+
+
+def _build_runtime_agent(
+    *,
+    client: RoomClient | None,
+    api_key: str | None = None,
+    runtime: Literal["chatbot", "process"],
+    normalized_tool_options: NormalizedRequiredToolOptions,
+    model: str,
+    rule: list[str],
+    rules_file: Optional[list[str]],
+    instructions: Optional[list[str]],
+    discover_script_tools: Optional[bool],
+    storage_tool_local_paths: list[str],
+    storage_tool_room_paths: list[str],
+    default_room_storage_mount: bool,
+    shell_tool_mounts: Optional[ContainerMountSpec],
+    require_read_only_storage: Optional[str],
+    require_time: bool,
+    require_uuid: bool,
+    use_memory: Optional[str],
+    memory_model: Optional[str],
+    require_table_read: list[str] | None,
+    require_table_write: list[str] | None,
+    require_document_authoring: Optional[str],
+    require_discovery: Optional[str],
+    require_advanced_shell: Optional[bool],
+    llm_participant: Optional[str],
+    decision_model: Optional[str],
+    always_reply: Optional[bool],
+    threading_mode: ThreadingMode,
+    thread_dir: Optional[str],
+    working_dir: Optional[str],
+    database_namespace: Optional[list[str]],
+    skill_dirs: Optional[list[str]],
+    shell_image: Optional[str],
+    delegate_shell_token: Optional[bool],
+    shell_copy_env: Optional[list[str]],
+    shell_set_env: Optional[list[str]],
+    log_llm_requests: Optional[bool],
+    channels: Optional[list[str]],
+    starting_url: Optional[str],
+    allow_goto_url: bool,
+    room_rules_path: Optional[list[str]],
+):
+    builder = _builder_for_runtime(runtime)
+    return builder(
+        computer_use=False,
+        require_computer_use=normalized_tool_options["require_computer_use"],
+        api_key=api_key,
+        starting_url=starting_url,
+        allow_goto_url=allow_goto_url,
+        model=model,
+        rule=rule,
+        toolkit=normalized_tool_options["toolkit"],
+        schema=normalized_tool_options["schema"],
+        rules_file=rules_file,
+        instructions=instructions,
+        discover_script_tools=discover_script_tools,
+        client=client,
+        storage_tool_local_paths=storage_tool_local_paths,
+        storage_tool_room_paths=storage_tool_room_paths,
+        default_room_storage_mount=default_room_storage_mount,
+        shell_tool_mounts=shell_tool_mounts,
+        require_apply_patch=normalized_tool_options["require_apply_patch"],
+        require_web_search=normalized_tool_options["require_web_search"],
+        require_web_fetch=normalized_tool_options["require_web_fetch"],
+        require_shell=normalized_tool_options["require_shell"],
+        require_advanced_shell=require_advanced_shell,
+        require_image_generation=normalized_tool_options["require_image_generation"],
+        require_mcp=normalized_tool_options["mcp"],
+        require_storage=normalized_tool_options["require_storage"],
+        require_table_read=require_table_read,
+        require_table_write=require_table_write,
+        require_read_only_storage=require_read_only_storage,
+        require_time=require_time,
+        require_uuid=require_uuid,
+        use_memory=use_memory,
+        memory_model=memory_model,
+        room_rules_path=room_rules_path,
+        require_document_authoring=require_document_authoring,
+        require_discovery=require_discovery,
+        working_dir=working_dir,
+        llm_participant=llm_participant,
+        decision_model=decision_model,
+        always_reply=always_reply,
+        threading_mode=threading_mode,
+        thread_dir=thread_dir,
+        database_namespace=database_namespace,
+        skill_dirs=skill_dirs,
+        shell_image=shell_image,
+        delegate_shell_token=delegate_shell_token,
+        shell_copy_env=shell_copy_env,
+        shell_set_env=shell_set_env,
+        log_llm_requests=log_llm_requests,
+        channels=channels,
+    )
 
 
 def _copy_shell_env_vars(*, copy_env: Optional[list[str]]) -> dict[str, str]:
@@ -587,25 +789,19 @@ def _resolve_working_dir_option(
 
 def build_chatbot(
     *,
+    client: RoomClient | None = None,
+    api_key: str | None = None,
     model: str,
     rule: List[str],
     toolkit: List[str],
     schema: List[str],
-    image_generation: Optional[str] = None,
-    local_shell: Optional[str] = None,
-    shell: Optional[str] = None,
-    apply_patch: Optional[str] = None,
     computer_use: Optional[str] = None,
-    web_search: Optional[str] = None,
-    web_fetch: Optional[str] = None,
-    script_tool: Optional[bool] = None,
     discover_script_tools: Optional[bool] = None,
-    mcp: Optional[str] = None,
-    storage: Optional[str] = None,
-    storage_tool_mounts: Optional[list[StorageToolMount]] = None,
+    storage_tool_local_paths: list[str] | None = None,
+    storage_tool_room_paths: list[str] | None = None,
+    default_room_storage_mount: bool = False,
     shell_tool_mounts: Optional[ContainerMountSpec] = None,
     require_image_generation: Optional[str] = None,
-    require_local_shell: Optional[str] = None,
     require_shell: Optional[bool] = None,
     require_advanced_shell: Optional[bool] = None,
     require_apply_patch: Optional[str] = None,
@@ -624,6 +820,7 @@ def build_chatbot(
     use_memory: Optional[str] = None,
     memory_model: Optional[str] = None,
     rules_file: Optional[list[str]] = None,
+    instructions: Optional[list[str]] = None,
     room_rules_path: Optional[list[str]] = None,
     require_discovery: Optional[str] = None,
     require_document_authoring: Optional[str] = None,
@@ -650,6 +847,11 @@ def build_chatbot(
     requirements = []
 
     toolkits = []
+
+    if storage_tool_local_paths is None:
+        storage_tool_local_paths = []
+    if storage_tool_room_paths is None:
+        storage_tool_room_paths = []
 
     for t in toolkit:
         requirements.append(RequiredToolkit(name=t))
@@ -682,13 +884,10 @@ def build_chatbot(
     base_shell_env.update(_set_shell_env_vars(set_env=shell_set_env))
     resolved_shell_image = resolve_shell_image(shell_image)
     if not supports_openai_tools:
-        if image_generation or require_image_generation:
+        if require_image_generation:
             print("[red]image generation tool is only supported by openai models[/red]")
             raise typer.Exit(1)
-        if local_shell or require_local_shell:
-            print("[red]local shell tool is only supported by openai models[/red]")
-            raise typer.Exit(1)
-        if apply_patch or require_apply_patch:
+        if require_apply_patch:
             print("[red]apply patch tool is only supported by openai models[/red]")
             raise typer.Exit(1)
         if computer_use or require_computer_use:
@@ -711,6 +910,7 @@ def build_chatbot(
         if computer_use or require_computer_use:
             llm_adapter = OpenAIResponsesAdapter(
                 model=model,
+                api_key=api_key,
                 response_options={
                     "reasoning": {"summary": "concise"},
                 },
@@ -720,6 +920,7 @@ def build_chatbot(
             if is_claude_model:
                 llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
                     model=model,
+                    api_key=api_key,
                     log_requests=log_llm_requests,
                 )
                 if resolved_decision_model is None:
@@ -727,6 +928,7 @@ def build_chatbot(
             else:
                 llm_adapter = OpenAIResponsesAdapter(
                     model=model,
+                    api_key=api_key,
                     log_requests=log_llm_requests,
                 )
 
@@ -754,6 +956,8 @@ def build_chatbot(
 
         async def start(self, *, room: RoomClient):
             await super().start(room=room)
+            if require_mcp:
+                await room.local_participant.set_attribute("supports_mcp", True)
 
             env = _build_shell_tool_env(
                 base_env=base_shell_env,
@@ -765,13 +969,13 @@ def build_chatbot(
                 if supports_openai_shell:
                     shell_kwargs = {
                         "working_dir": working_dir,
-                        "config": ShellConfig(name="shell"),
+                        "name": "shell",
                         "image": resolved_shell_image,
                         "env": env,
                     }
                     if shell_tool_mounts is not None:
                         shell_kwargs["mounts"] = shell_tool_mounts
-                    self.shell_tool = ShellTool(**shell_kwargs)
+                    self.shell_tool = ShellTool(room=room, **shell_kwargs)
                 else:
                     shell_kwargs = {
                         "image": resolved_shell_image,
@@ -782,10 +986,11 @@ def build_chatbot(
                     if shell_tool_mounts is not None:
                         shell_kwargs["mounts"] = shell_tool_mounts
 
-                    self.shell_tool = ContainerShellTool(**shell_kwargs)
+                    self.shell_tool = ContainerShellTool(room=room, **shell_kwargs)
 
             if require_advanced_shell:
                 self.advanced_shell_toolkit = ContainerToolkit(
+                    room=room,
                     working_dir=working_dir,
                     default_image=resolved_shell_image,
                     mounts=shell_tool_mounts,
@@ -802,6 +1007,8 @@ def build_chatbot(
                 if self.advanced_shell_toolkit is not None and room is not None:
                     await self.advanced_shell_toolkit.stop_all(room=room)
             finally:
+                if require_mcp and room is not None:
+                    await room.local_participant.set_attribute("supports_mcp", None)
                 self.advanced_shell_toolkit = None
                 self.shell_tool = None
                 await super().stop()
@@ -847,10 +1054,45 @@ def build_chatbot(
 
             return rules
 
+        def get_skills_storage_toolkit(self) -> StorageToolkit | None:
+            if require_storage:
+                return StorageToolkit(
+                    mounts=_require_storage_tool_mounts(
+                        room=client or self.room,
+                        local_paths=storage_tool_local_paths,
+                        room_paths=storage_tool_room_paths,
+                        default_room_mount=default_room_storage_mount,
+                    )
+                )
+
+            if require_read_only_storage:
+                return StorageToolkit(
+                    read_only=True,
+                    mounts=_require_storage_tool_mounts(
+                        room=client or self.room,
+                        local_paths=storage_tool_local_paths,
+                        room_paths=storage_tool_room_paths,
+                        default_room_mount=default_room_storage_mount,
+                    ),
+                )
+
+            return None
+
         async def get_rules(self, *, thread_context, participant):
             rules = await super().get_rules(
                 thread_context=thread_context, participant=participant
             )
+            storage_toolkit = self.get_skills_storage_toolkit()
+
+            if instructions is not None:
+                for instructions_path in instructions:
+                    rules.extend(
+                        await _load_storage_rules(
+                            path=instructions_path,
+                            storage_toolkit=storage_toolkit,
+                            participant=participant,
+                        )
+                    )
 
             if room_rules_path is not None:
                 for p in room_rules_path:
@@ -879,19 +1121,8 @@ def build_chatbot(
                 add_tool(
                     toolkit_name="image_generation",
                     tool=ImageGenerationTool(
-                        config=ImageGenerationConfig(
-                            name="image_generation",
-                            partial_images=3,
-                        ),
-                    ),
-                )
-
-            if require_local_shell:
-                add_tool(
-                    toolkit_name="local_shell",
-                    tool=LocalShellTool(
-                        working_dir=working_dir,
-                        config=LocalShellConfig(name="local_shell"),
+                        model=require_image_generation,
+                        partial_images=3,
                     ),
                 )
 
@@ -899,7 +1130,14 @@ def build_chatbot(
                 add_tool(
                     toolkit_name="apply_patch",
                     tool=ApplyPatchTool(
-                        config=ApplyPatchConfig(name="apply_patch"),
+                        storage=StorageToolkit(
+                            mounts=_require_storage_tool_mounts(
+                                room=client or self.room,
+                                local_paths=storage_tool_local_paths,
+                                room_paths=storage_tool_room_paths,
+                                default_room_mount=True,
+                            )
+                        )
                     ),
                 )
 
@@ -908,9 +1146,10 @@ def build_chatbot(
             if self.advanced_shell_toolkit is not None:
                 add_toolkit(self.advanced_shell_toolkit)
             if require_mcp:
-                raise Exception(
-                    "mcp tool cannot be required by cli currently, use 'optional' instead"
-                )
+                if is_claude_model:
+                    add_toolkit(AnthropicMessagesMCPToolkit())
+                else:
+                    add_toolkit(OpenAIResponsesMCPToolkit())
 
             if require_web_search:
                 if is_claude_model:
@@ -921,7 +1160,7 @@ def build_chatbot(
                 else:
                     add_tool(
                         toolkit_name="web_search",
-                        tool=WebSearchTool(config=WebSearchConfig(name="web_search")),
+                        tool=WebSearchTool(),
                     )
 
             if require_web_fetch:
@@ -934,18 +1173,24 @@ def build_chatbot(
                     add_tool(toolkit_name="web_fetch", tool=WebFetchTool())
 
             if require_storage:
-                add_toolkit(StorageToolkit(mounts=storage_tool_mounts))
+                add_toolkit(
+                    StorageToolkit(
+                        mounts=_require_storage_tool_mounts(
+                            room=client or self.room,
+                            local_paths=storage_tool_local_paths,
+                            room_paths=storage_tool_room_paths,
+                            default_room_mount=default_room_storage_mount,
+                        )
+                    )
+                )
 
             if len(require_table_read) > 0:
                 add_toolkit(
-                    await DatabaseToolkitBuilder().make(
+                    await make_database_toolkit(
                         room=self.room,
-                        model=model,
-                        config=DatabaseToolkitConfig(
-                            tables=require_table_read,
-                            read_only=True,
-                            namespace=database_namespace,
-                        ),
+                        tables=require_table_read,
+                        read_only=True,
+                        namespace=database_namespace,
                     )
                 )
 
@@ -959,6 +1204,7 @@ def build_chatbot(
                 memory_name, memory_namespace = memory_selection
                 add_toolkit(
                     MemoriesToolkit(
+                        room=self.room,
                         memory_name=memory_name,
                         namespace=memory_namespace,
                         llm_model=memory_model,
@@ -967,32 +1213,41 @@ def build_chatbot(
 
             if len(require_table_write) > 0:
                 add_toolkit(
-                    await DatabaseToolkitBuilder().make(
+                    await make_database_toolkit(
                         room=self.room,
-                        model=model,
-                        config=DatabaseToolkitConfig(
-                            tables=require_table_write,
-                            read_only=False,
-                            namespace=database_namespace,
-                        ),
+                        tables=require_table_write,
+                        read_only=False,
+                        namespace=database_namespace,
                     )
                 )
 
             if require_read_only_storage:
-                add_toolkit(StorageToolkit(read_only=True, mounts=storage_tool_mounts))
+                add_toolkit(
+                    StorageToolkit(
+                        read_only=True,
+                        mounts=_require_storage_tool_mounts(
+                            room=client or self.room,
+                            local_paths=storage_tool_local_paths,
+                            room_paths=storage_tool_room_paths,
+                            default_room_mount=default_room_storage_mount,
+                        ),
+                    )
+                )
 
             if require_document_authoring:
-                add_toolkit(DocumentAuthoringToolkit())
+                add_toolkit(DocumentAuthoringToolkit(room=self.room))
                 add_toolkit(
                     DocumentTypeAuthoringToolkit(
-                        schema=widget_schema, document_type="widget"
+                        room=self.room,
+                        schema=widget_schema,
+                        document_type="widget",
                     )
                 )
 
             if require_discovery:
                 from meshagent.tools.discovery import DiscoveryToolkit
 
-                add_toolkit(DiscoveryToolkit())
+                add_toolkit(DiscoveryToolkit(room=self.room))
 
             tk = await super().get_thread_toolkits(
                 thread_context=thread_context, participant=participant
@@ -1018,84 +1273,24 @@ def build_chatbot(
 
             return [*required_toolkits, *tk]
 
-        def get_toolkit_builders(self):
-            providers = []
-
-            if image_generation:
-                providers.append(ImageGenerationToolkitBuilder())
-
-            if apply_patch:
-                providers.append(ApplyPatchToolkitBuilder())
-
-            if local_shell:
-                providers.append(
-                    LocalShellToolkitBuilder(
-                        working_dir=working_dir,
-                    )
-                )
-
-            if shell:
-                shell_builder_kwargs = {
-                    "working_dir": working_dir,
-                    "image": resolved_shell_image,
-                    "env": base_shell_env or None,
-                }
-                if shell_tool_mounts is not None:
-                    shell_builder_kwargs["mounts"] = shell_tool_mounts
-                providers.append(
-                    build_shell_toolkit_builder(
-                        llm_participant=llm_participant,
-                        **shell_builder_kwargs,
-                    )
-                )
-
-            if mcp:
-                providers.append(MCPToolkitBuilder())
-
-            if web_search:
-                if is_claude_model:
-                    providers.append(AnthropicWebSearchToolkitBuilder())
-                else:
-                    providers.append(WebSearchToolkitBuilder())
-
-            if web_fetch:
-                if is_claude_model:
-                    providers.append(AnthropicWebFetchToolkitBuilder())
-                else:
-                    providers.append(WebFetchToolkitBuilder())
-
-            if script_tool:
-                providers.append(ScriptToolkitBuilder())
-
-            if storage:
-                providers.append(StorageToolkitBuilder(mounts=storage_tool_mounts))
-
-            return providers
-
     return CustomChatbot
 
 
 def build_process_agent(
     *,
+    client: RoomClient | None = None,
+    api_key: str | None = None,
     model: str,
     rule: List[str],
     toolkit: List[str],
     schema: List[str],
-    image_generation: Optional[str] = None,
-    local_shell: Optional[str] = None,
-    shell: Optional[str] = None,
-    apply_patch: Optional[str] = None,
     computer_use: Optional[str] = None,
-    web_search: Optional[str] = None,
-    web_fetch: Optional[str] = None,
-    script_tool: Optional[bool] = None,
     discover_script_tools: Optional[bool] = None,
-    mcp: Optional[str] = None,
-    storage: Optional[str] = None,
-    storage_tool_mounts: Optional[list[StorageToolMount]] = None,
+    storage_tool_local_paths: list[str] | None = None,
+    storage_tool_room_paths: list[str] | None = None,
+    default_room_storage_mount: bool = False,
     shell_tool_mounts: Optional[ContainerMountSpec] = None,
     require_image_generation: Optional[str] = None,
-    require_local_shell: Optional[str] = None,
     require_shell: Optional[bool] = None,
     require_advanced_shell: Optional[bool] = None,
     require_apply_patch: Optional[str] = None,
@@ -1114,6 +1309,7 @@ def build_process_agent(
     use_memory: Optional[str] = None,
     memory_model: Optional[str] = None,
     rules_file: Optional[list[str]] = None,
+    instructions: Optional[list[str]] = None,
     room_rules_path: Optional[list[str]] = None,
     require_discovery: Optional[str] = None,
     require_document_authoring: Optional[str] = None,
@@ -1142,10 +1338,16 @@ def build_process_agent(
     )
     from meshagent.agents.messages import TurnStart, TurnSteer
     from meshagent.agents.process import AgentSupervisor, LLMAgentProcess
-    from meshagent.tools import RemoteToolkit, ToolContext, make_toolkits
+    from meshagent.tools import Toolkit, ToolContext
+    from meshagent.tools.hosting import _RemoteToolkitWrapper, _start_hosted_toolkit
 
     requirements = []
     toolkits = []
+
+    if storage_tool_local_paths is None:
+        storage_tool_local_paths = []
+    if storage_tool_room_paths is None:
+        storage_tool_room_paths = []
 
     for t in toolkit:
         requirements.append(RequiredToolkit(name=t))
@@ -1175,13 +1377,10 @@ def build_process_agent(
     base_shell_env.update(_set_shell_env_vars(set_env=shell_set_env))
     resolved_shell_image = resolve_shell_image(shell_image)
     if not supports_openai_tools:
-        if image_generation or require_image_generation:
+        if require_image_generation:
             print("[red]image generation tool is only supported by openai models[/red]")
             raise typer.Exit(1)
-        if local_shell or require_local_shell:
-            print("[red]local shell tool is only supported by openai models[/red]")
-            raise typer.Exit(1)
-        if apply_patch or require_apply_patch:
+        if require_apply_patch:
             print("[red]apply patch tool is only supported by openai models[/red]")
             raise typer.Exit(1)
         if computer_use or require_computer_use:
@@ -1199,6 +1398,7 @@ def build_process_agent(
     )
     channel_llm_adapter = _build_decision_llm_adapter(
         decision_model=resolved_channel_decision_model,
+        api_key=api_key,
         log_llm_requests=log_llm_requests,
     )
 
@@ -1210,6 +1410,7 @@ def build_process_agent(
         if computer_use or require_computer_use:
             llm_adapter = OpenAIResponsesAdapter(
                 model=model,
+                api_key=api_key,
                 response_options={
                     "reasoning": {"summary": "concise"},
                 },
@@ -1219,11 +1420,13 @@ def build_process_agent(
             if is_claude_model:
                 llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
                     model=model,
+                    api_key=api_key,
                     log_requests=log_llm_requests,
                 )
             else:
                 llm_adapter = OpenAIResponsesAdapter(
                     model=model,
+                    api_key=api_key,
                     log_requests=log_llm_requests,
                 )
 
@@ -1246,7 +1449,6 @@ def build_process_agent(
             self._shell_env: dict[str, str] = dict(base_shell_env)
             self._advanced_shell_toolkit: ContainerToolkit | None = None
             self._required_shell_tools: dict[str, BaseTool] = {}
-            self._optional_shell_toolkits: dict[str, Toolkit] = {}
             self._resolved_threading_mode: str | None = None
             if threading_mode != "none":
                 self._resolved_threading_mode = threading_mode
@@ -1255,9 +1457,10 @@ def build_process_agent(
             shell_tool = self._required_shell_tools.get(model)
             if shell_tool is None:
                 shell_tool = build_shell_tool(
+                    room=self.room,
                     model=model,
                     llm_participant=llm_participant,
-                    config=ShellConfig(name="shell"),
+                    name="shell",
                     working_dir=working_dir,
                     image=resolved_shell_image,
                     mounts=shell_tool_mounts,
@@ -1266,42 +1469,16 @@ def build_process_agent(
                 self._required_shell_tools[model] = shell_tool
             return shell_tool
 
-        def _get_optional_shell_toolkit(self, *, model: str) -> Toolkit:
-            shell_toolkit = self._optional_shell_toolkits.get(model)
-            if shell_toolkit is None:
-                shell_toolkit = Toolkit(
-                    name="shell",
-                    tools=[
-                        build_shell_tool(
-                            model=model,
-                            llm_participant=llm_participant,
-                            config=ShellConfig(name="shell"),
-                            working_dir=working_dir,
-                            image=resolved_shell_image,
-                            mounts=shell_tool_mounts,
-                            env=base_shell_env or None,
-                        )
-                    ],
-                )
-                self._optional_shell_toolkits[model] = shell_toolkit
-            return shell_toolkit
-
         async def _stop_cached_shell_tools(self) -> None:
             room = self._room
             cached_required_shell_tools = [*self._required_shell_tools.values()]
-            cached_optional_shell_tools = [
-                tool
-                for toolkit in self._optional_shell_toolkits.values()
-                for tool in toolkit.tools
-            ]
             self._required_shell_tools = {}
-            self._optional_shell_toolkits = {}
 
             if room is None:
                 return
 
             stopped_tool_ids: set[int] = set()
-            for tool in [*cached_required_shell_tools, *cached_optional_shell_tools]:
+            for tool in cached_required_shell_tools:
                 if not isinstance(tool, ContainerShellTool):
                     continue
                 tool_id = id(tool)
@@ -1310,7 +1487,7 @@ def build_process_agent(
                 stopped_tool_ids.add(tool_id)
                 await tool.stop(room=room)
 
-        async def get_exposed_toolkits(self) -> list[RemoteToolkit]:
+        async def get_exposed_toolkits(self) -> list[Toolkit]:
             exposed_toolkits = await super().get_exposed_toolkits()
             channels = []
             if self._chat_channel is not None:
@@ -1329,13 +1506,14 @@ def build_process_agent(
                 raise RoomException("agent is already started")
 
             self._room = room
+            if require_mcp:
+                await room.local_participant.set_attribute("supports_mcp", True)
             if _has_chat_channel(channels=resolved_channels):
                 self._chat_channel = ChatChannel(
                     room=room,
                     threading_mode=self._resolved_threading_mode,
                     thread_dir=thread_dir,
                     llm_adapter=channel_llm_adapter,
-                    toolkit_builders=self.get_toolkit_builders(),
                 )
             self._mail_channels = []
             for channel_spec in resolved_channels:
@@ -1376,10 +1554,9 @@ def build_process_agent(
                         room=room,
                         toolkit_name=toolkit_config.toolkit_name,
                         thread_dir=thread_dir,
-                        toolkit_builders=self.get_toolkit_builders(),
                     )
                 )
-            started_remote_toolkits: list[RemoteToolkit] = []
+            started_remote_toolkits: list[_RemoteToolkitWrapper] = []
             supervisor: AgentSupervisor | None = None
 
             try:
@@ -1396,6 +1573,7 @@ def build_process_agent(
 
                 if require_advanced_shell:
                     self._advanced_shell_toolkit = ContainerToolkit(
+                        room=room,
                         working_dir=working_dir,
                         default_image=resolved_shell_image,
                         mounts=shell_tool_mounts,
@@ -1420,11 +1598,16 @@ def build_process_agent(
 
                 self._exposed_toolkits = await self.get_exposed_toolkits()
                 for toolkit in self._exposed_toolkits:
-                    await toolkit.start(room=room)
-                    started_remote_toolkits.append(toolkit)
+                    hosted_toolkit = await _start_hosted_toolkit(
+                        room=room,
+                        toolkit=toolkit,
+                    )
+                    started_remote_toolkits.append(hosted_toolkit)
+                self._hosted_exposed_toolkits = started_remote_toolkits
             except Exception:
                 for toolkit in reversed(started_remote_toolkits):
                     await toolkit.stop()
+                self._hosted_exposed_toolkits = []
                 self._exposed_toolkits = []
                 if supervisor is not None:
                     await supervisor.stop()
@@ -1452,6 +1635,8 @@ def build_process_agent(
                     await self._advanced_shell_toolkit.stop_all(room=room)
                 await self._stop_cached_shell_tools()
             finally:
+                if require_mcp and room is not None:
+                    await room.local_participant.set_attribute("supports_mcp", None)
                 self._advanced_shell_toolkit = None
                 self._shell_env = dict(base_shell_env)
                 await super().stop()
@@ -1492,14 +1677,44 @@ def build_process_agent(
 
             return rules
 
+        def get_skills_storage_toolkit(self) -> StorageToolkit | None:
+            if require_storage:
+                return StorageToolkit(
+                    mounts=_require_storage_tool_mounts(
+                        room=client or self.room,
+                        local_paths=storage_tool_local_paths,
+                        room_paths=storage_tool_room_paths,
+                        default_room_mount=default_room_storage_mount,
+                    )
+                )
+
+            if require_read_only_storage:
+                return StorageToolkit(
+                    read_only=True,
+                    mounts=_require_storage_tool_mounts(
+                        room=client or self.room,
+                        local_paths=storage_tool_local_paths,
+                        room_paths=storage_tool_room_paths,
+                        default_room_mount=default_room_storage_mount,
+                    ),
+                )
+
+            return None
+
         async def get_rules(self, *, participant: Optional[Participant]) -> list[str]:
             rules = [*rule]
+            storage_toolkit = self.get_skills_storage_toolkit()
 
             if self._skill_dirs is not None and len(self._skill_dirs) > 0:
                 rules.append(
                     "You have access to to following skills which follow the agentskills spec:"
                 )
-                rules.append(await to_prompt([*(Path(p) for p in self._skill_dirs)]))
+                rules.append(
+                    await to_prompt(
+                        [*(Path(p) for p in self._skill_dirs)],
+                        storage_toolkit=storage_toolkit,
+                    )
+                )
                 rules.append(
                     "Use the shell or storage tool to find out more about skills and execute them when they are required"
                 )
@@ -1510,6 +1725,16 @@ def build_process_agent(
                     selected_rules = self._client_rules.get(client)
                     if selected_rules is not None:
                         rules.extend(selected_rules)
+
+            if instructions is not None:
+                for instructions_path in instructions:
+                    rules.extend(
+                        await _load_storage_rules(
+                            path=instructions_path,
+                            storage_toolkit=storage_toolkit,
+                            participant=participant,
+                        )
+                    )
 
             if room_rules_path is not None:
                 for room_rules_file in room_rules_path:
@@ -1522,60 +1747,6 @@ def build_process_agent(
 
             rules.append("based on the previous transcript, take your turn and respond")
             return rules
-
-        def get_toolkit_builders(self) -> list[ToolkitBuilder]:
-            providers = []
-
-            if image_generation:
-                providers.append(ImageGenerationToolkitBuilder())
-
-            if apply_patch:
-                providers.append(ApplyPatchToolkitBuilder())
-
-            if local_shell:
-                providers.append(
-                    LocalShellToolkitBuilder(
-                        working_dir=working_dir,
-                    )
-                )
-
-            if shell:
-                shell_builder_kwargs = {
-                    "working_dir": working_dir,
-                    "image": resolved_shell_image,
-                    "env": base_shell_env or None,
-                }
-                if shell_tool_mounts is not None:
-                    shell_builder_kwargs["mounts"] = shell_tool_mounts
-                providers.append(
-                    build_shell_toolkit_builder(
-                        llm_participant=llm_participant,
-                        **shell_builder_kwargs,
-                    )
-                )
-
-            if mcp:
-                providers.append(MCPToolkitBuilder())
-
-            if web_search:
-                if is_claude_model:
-                    providers.append(AnthropicWebSearchToolkitBuilder())
-                else:
-                    providers.append(WebSearchToolkitBuilder())
-
-            if web_fetch:
-                if is_claude_model:
-                    providers.append(AnthropicWebFetchToolkitBuilder())
-                else:
-                    providers.append(WebFetchToolkitBuilder())
-
-            if script_tool:
-                providers.append(ScriptToolkitBuilder())
-
-            if storage:
-                providers.append(StorageToolkitBuilder(mounts=storage_tool_mounts))
-
-            return providers
 
         async def get_process_turn_toolkits(
             self,
@@ -1602,19 +1773,8 @@ def build_process_agent(
                 add_tool(
                     toolkit_name="image_generation",
                     tool=ImageGenerationTool(
-                        config=ImageGenerationConfig(
-                            name="image_generation",
-                            partial_images=3,
-                        ),
-                    ),
-                )
-
-            if require_local_shell:
-                add_tool(
-                    toolkit_name="local_shell",
-                    tool=LocalShellTool(
-                        working_dir=working_dir,
-                        config=LocalShellConfig(name="local_shell"),
+                        model=require_image_generation,
+                        partial_images=3,
                     ),
                 )
 
@@ -1622,7 +1782,14 @@ def build_process_agent(
                 add_tool(
                     toolkit_name="apply_patch",
                     tool=ApplyPatchTool(
-                        config=ApplyPatchConfig(name="apply_patch"),
+                        storage=StorageToolkit(
+                            mounts=_require_storage_tool_mounts(
+                                room=client or self.room,
+                                local_paths=storage_tool_local_paths,
+                                room_paths=storage_tool_room_paths,
+                                default_room_mount=True,
+                            )
+                        )
                     ),
                 )
 
@@ -1635,9 +1802,10 @@ def build_process_agent(
                 add_toolkit(self._advanced_shell_toolkit)
 
             if require_mcp:
-                raise Exception(
-                    "mcp tool cannot be required by cli currently, use 'optional' instead"
-                )
+                if is_claude_model:
+                    add_toolkit(AnthropicMessagesMCPToolkit())
+                else:
+                    add_toolkit(OpenAIResponsesMCPToolkit())
 
             if require_web_search:
                 if is_claude_model:
@@ -1648,7 +1816,7 @@ def build_process_agent(
                 else:
                     add_tool(
                         toolkit_name="web_search",
-                        tool=WebSearchTool(config=WebSearchConfig(name="web_search")),
+                        tool=WebSearchTool(),
                     )
 
             if require_web_fetch:
@@ -1661,18 +1829,24 @@ def build_process_agent(
                     add_tool(toolkit_name="web_fetch", tool=WebFetchTool())
 
             if require_storage:
-                add_toolkit(StorageToolkit(mounts=storage_tool_mounts))
+                add_toolkit(
+                    StorageToolkit(
+                        mounts=_require_storage_tool_mounts(
+                            room=client or self.room,
+                            local_paths=storage_tool_local_paths,
+                            room_paths=storage_tool_room_paths,
+                            default_room_mount=default_room_storage_mount,
+                        )
+                    )
+                )
 
             if len(require_table_read) > 0:
                 add_toolkit(
-                    await DatabaseToolkitBuilder().make(
+                    await make_database_toolkit(
                         room=self.room,
-                        model=model,
-                        config=DatabaseToolkitConfig(
-                            tables=require_table_read,
-                            read_only=True,
-                            namespace=database_namespace,
-                        ),
+                        tables=require_table_read,
+                        read_only=True,
+                        namespace=database_namespace,
                     )
                 )
 
@@ -1686,6 +1860,7 @@ def build_process_agent(
                 memory_name, memory_namespace = memory_selection
                 add_toolkit(
                     MemoriesToolkit(
+                        room=self.room,
                         memory_name=memory_name,
                         namespace=memory_namespace,
                         llm_model=memory_model,
@@ -1694,24 +1869,32 @@ def build_process_agent(
 
             if len(require_table_write) > 0:
                 add_toolkit(
-                    await DatabaseToolkitBuilder().make(
+                    await make_database_toolkit(
                         room=self.room,
-                        model=model,
-                        config=DatabaseToolkitConfig(
-                            tables=require_table_write,
-                            read_only=False,
-                            namespace=database_namespace,
-                        ),
+                        tables=require_table_write,
+                        read_only=False,
+                        namespace=database_namespace,
                     )
                 )
 
             if require_read_only_storage:
-                add_toolkit(StorageToolkit(read_only=True, mounts=storage_tool_mounts))
+                add_toolkit(
+                    StorageToolkit(
+                        read_only=True,
+                        mounts=_require_storage_tool_mounts(
+                            room=client or self.room,
+                            local_paths=storage_tool_local_paths,
+                            room_paths=storage_tool_room_paths,
+                            default_room_mount=default_room_storage_mount,
+                        ),
+                    )
+                )
 
             if require_document_authoring:
-                add_toolkit(DocumentAuthoringToolkit())
+                add_toolkit(DocumentAuthoringToolkit(room=self.room))
                 add_toolkit(
                     DocumentTypeAuthoringToolkit(
+                        room=self.room,
                         schema=widget_schema,
                         document_type="widget",
                     )
@@ -1720,7 +1903,7 @@ def build_process_agent(
             if require_discovery:
                 from meshagent.tools.discovery import DiscoveryToolkit
 
-                add_toolkit(DiscoveryToolkit())
+                add_toolkit(DiscoveryToolkit(room=self.room))
 
             if require_computer_use:
                 from meshagent.computers.agent import ComputerToolkit
@@ -1742,41 +1925,12 @@ def build_process_agent(
             caller_context: dict[str, Any] | None = {
                 "thread_id": process.thread_id,
             }
-            if process.session_context is not None:
-                caller_context["chat"] = process.session_context.to_json()
-
             required_toolkits = await self.get_required_toolkits(
                 context=ToolContext(
-                    room=self.room,
                     caller=self.room.local_participant,
                     on_behalf_of=sender,
                     caller_context=caller_context,
                     event_handler=handle_tool_event,
-                )
-            )
-
-            requested_toolkits: list[dict[str, Any]] = []
-            for turn in turns:
-                if turn.toolkits is not None and len(turn.toolkits) > 0:
-                    requested_toolkits.extend(turn.toolkits)
-
-            requested_shell_toolkit = False
-            configured_toolkits: list[dict[str, Any]] = []
-            for requested_toolkit in requested_toolkits:
-                if shell and requested_toolkit.get("name") == "shell":
-                    requested_shell_toolkit = True
-                    continue
-                configured_toolkits.append(requested_toolkit)
-
-            optional_toolkits: list[Toolkit] = []
-            if requested_shell_toolkit:
-                optional_toolkits.append(self._get_optional_shell_toolkit(model=model))
-            optional_toolkits.extend(
-                await make_toolkits(
-                    room=self.room,
-                    model=model,
-                    providers=self.get_toolkit_builders(),
-                    tools=configured_toolkits,
                 )
             )
 
@@ -1791,7 +1945,6 @@ def build_process_agent(
                     combined_toolkits.extend(channel.get_agent_toolkits())
             if process.thread_adapter is not None:
                 combined_toolkits.append(process.thread_adapter.make_toolkit())
-            combined_toolkits.extend(optional_toolkits)
             return combined_toolkits
 
     class _ProcessSupervisor(AgentSupervisor):
@@ -1811,9 +1964,8 @@ def build_process_agent(
 
             process = LLMAgentProcess(
                 thread_id=thread_id,
-                room=self._agent.room,
+                participant=self._agent.room.local_participant,
                 llm_adapter=llm_adapter,
-                toolkit_builders=self._agent.get_toolkit_builders(),
                 toolkits=[*toolkits],
                 thread_adapter=AgentProcessThreadAdapter(
                     room=self._agent.room,
@@ -1830,6 +1982,7 @@ def build_process_agent(
                     )
                 ),
             )
+            process.register_content_scheme(_room_content_scheme(room=self._agent.room))
             return process
 
     return CustomProcessAgent
@@ -1861,6 +2014,7 @@ async def join(
         ),
     ] = [],
     rules_file: Optional[list[str]] = None,
+    instructions: InstructionsOption = [],
     require_toolkit: Annotated[
         List[str],
         typer.Option(
@@ -1876,14 +2030,15 @@ async def join(
     toolkit: Annotated[
         List[str],
         typer.Option(
-            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+            "--toolkit",
+            "-t",
+            help="the name or url of a required toolkit",
+            hidden=True,
         ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option(
-            "--schema", "-s", help="the name or url of a required schema", hidden=True
-        ),
+        typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
@@ -1894,9 +2049,6 @@ async def join(
     computer_use: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable computer use"),
-    ] = False,
-    local_shell: Annotated[
-        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
     shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable function shell tool calling")
@@ -1964,10 +2116,6 @@ async def join(
     ] = False,
     starting_url: StartingUrlOption = None,
     allow_goto_url: AllowGotoUrlOption = False,
-    require_local_shell: Annotated[
-        Optional[bool],
-        typer.Option(..., help="Enable local shell tool calling"),
-    ] = False,
     require_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
@@ -1997,27 +2145,31 @@ async def join(
     ] = None,
     require_table_read: Annotated[
         list[str],
-        typer.Option(..., help="Enable table read tools for a specific table"),
+        typer.Option(
+            "--table-read", help="Enable table read tools for a specific table"
+        ),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(..., help="Enable table write tools for a specific table"),
+        typer.Option(
+            "--table-write", help="Enable table write tools for a specific table"
+        ),
     ] = [],
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit"),
+        typer.Option("--read-only-storage", help="Enable read only storage toolkit"),
     ] = False,
     require_time: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--time",
             help="Enable time/datetime tools",
         ),
     ] = True,
     require_uuid: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--uuid",
             help="Enable UUID generation tools",
         ),
     ] = False,
@@ -2037,11 +2189,11 @@ async def join(
     ] = None,
     require_document_authoring: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable MeshDocument authoring"),
+        typer.Option("--document-authoring", help="Enable MeshDocument authoring"),
     ] = False,
     require_discovery: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable discovery of agents and tools"),
+        typer.Option("--discovery", help="Enable discovery of agents and tools"),
     ] = False,
     working_dir: WorkingDirOption = None,
     working_directory: WorkingDirectoryAliasOption = None,
@@ -2099,6 +2251,29 @@ async def join(
         runtime=runtime,
         database_namespace=database_namespace,
     )
+    normalized_tool_options = normalize_required_tool_options(
+        toolkit=toolkit,
+        require_toolkit=require_toolkit,
+        schema=schema,
+        require_schema=require_schema,
+        image_generation=image_generation,
+        require_image_generation=require_image_generation,
+        computer_use=computer_use,
+        require_computer_use=require_computer_use,
+        shell=shell,
+        require_shell=require_shell,
+        advanced_shell=require_advanced_shell,
+        apply_patch=apply_patch,
+        require_apply_patch=require_apply_patch,
+        web_search=web_search,
+        require_web_search=require_web_search,
+        web_fetch=web_fetch,
+        require_web_fetch=require_web_fetch,
+        mcp=mcp,
+        require_mcp=require_mcp,
+        storage=storage,
+        require_storage=require_storage,
+    )
 
     key = await resolve_key(project_id=project_id, key=key)
     account_client = await get_client()
@@ -2132,9 +2307,8 @@ async def join(
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
 
-        storage_tool_mounts = parse_storage_tool_mounts(
-            local_paths=storage_tool_local_path,
-            room_paths=storage_tool_room_path,
+        default_room_storage_mount = bool(
+            normalized_tool_options["require_storage"] or require_read_only_storage
         )
         shell_tool_mounts = parse_shell_tool_mounts(
             room_paths=merge_option_lists(
@@ -2152,55 +2326,43 @@ async def join(
             config_paths=shell_tool_config_mount,
             image_paths=shell_image_mount,
         )
+        client = RoomClient(
+            protocol=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room),
+                token=jwt,
+            )
+        )
 
-        builder = _builder_for_runtime(runtime)
-        CustomChatbot = builder(
-            computer_use=computer_use,
-            require_computer_use=require_computer_use,
-            starting_url=starting_url,
-            allow_goto_url=allow_goto_url,
+        CustomChatbot = _build_runtime_agent(
+            client=client,
+            api_key=jwt,
+            runtime=runtime,
+            normalized_tool_options=normalized_tool_options,
             model=model,
             rule=rule,
-            toolkit=require_toolkit + toolkit,
-            schema=require_schema + schema,
             rules_file=rules_file,
-            local_shell=local_shell,
-            shell=shell,
-            apply_patch=apply_patch,
-            image_generation=image_generation,
-            web_search=web_search,
-            web_fetch=web_fetch,
-            script_tool=script_tool,
+            instructions=instructions,
             discover_script_tools=discover_script_tools,
-            mcp=mcp,
-            storage=storage,
-            storage_tool_mounts=storage_tool_mounts,
+            storage_tool_local_paths=storage_tool_local_path,
+            storage_tool_room_paths=storage_tool_room_path,
+            default_room_storage_mount=default_room_storage_mount,
             shell_tool_mounts=shell_tool_mounts,
-            require_apply_patch=require_apply_patch,
-            require_web_search=require_web_search,
-            require_web_fetch=require_web_fetch,
-            require_local_shell=require_local_shell,
-            require_shell=require_shell,
-            require_advanced_shell=require_advanced_shell,
-            require_image_generation=require_image_generation,
-            require_mcp=require_mcp,
-            require_storage=require_storage,
-            require_table_read=require_table_read,
-            require_table_write=require_table_write,
             require_read_only_storage=require_read_only_storage,
             require_time=require_time,
             require_uuid=require_uuid,
             use_memory=use_memory,
             memory_model=memory_model,
-            room_rules_path=room_rules,
+            require_table_read=require_table_read,
+            require_table_write=require_table_write,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
-            working_dir=working_dir,
+            require_advanced_shell=require_advanced_shell,
             llm_participant=llm_participant,
             decision_model=decision_model,
             always_reply=always_reply,
             threading_mode=threading_mode,
             thread_dir=thread_dir,
+            working_dir=working_dir,
             database_namespace=resolved_database_namespace,
             skill_dirs=skill_dir,
             shell_image=shell_image,
@@ -2209,6 +2371,9 @@ async def join(
             shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
             channels=resolved_channels,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
+            room_rules_path=room_rules,
         )
 
         bot = CustomChatbot()
@@ -2218,12 +2383,6 @@ async def join(
 
             agents.append((bot, jwt))
         else:
-            client = RoomClient(
-                protocol=WebSocketClientProtocol(
-                    url=websocket_room_url(room_name=room),
-                    token=jwt,
-                )
-            )
 
             async def run_join_session(client: RoomClient) -> None:
                 print(
@@ -2246,12 +2405,18 @@ async def join(
         await account_client.close()
 
 
+_HIDDEN_REQUIRE_OPTION_NAMES = DUPLICATE_REQUIRE_OPTION_NAMES | {
+    "require_computer_use",
+}
+
+
 @app.async_command("service")
 async def service(
     *,
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[list[str]] = None,
+    instructions: InstructionsOption = [],
     room_rules: Annotated[
         List[str],
         typer.Option(
@@ -2275,14 +2440,15 @@ async def service(
     toolkit: Annotated[
         List[str],
         typer.Option(
-            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+            "--toolkit",
+            "-t",
+            help="the name or url of a required toolkit",
+            hidden=True,
         ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option(
-            "--schema", "-s", help="the name or url of a required schema", hidden=True
-        ),
+        typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
@@ -2290,9 +2456,6 @@ async def service(
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
-    local_shell: Annotated[
-        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
-    ] = False,
     shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable function shell tool calling")
     ] = False,
@@ -2363,10 +2526,6 @@ async def service(
     ] = False,
     starting_url: StartingUrlOption = None,
     allow_goto_url: AllowGotoUrlOption = False,
-    require_local_shell: Annotated[
-        Optional[bool],
-        typer.Option(..., help="Enable local shell tool calling"),
-    ] = False,
     require_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
@@ -2395,27 +2554,31 @@ async def service(
     ] = None,
     require_table_read: Annotated[
         list[str],
-        typer.Option(..., help="Enable table read tools for a specific table"),
+        typer.Option(
+            "--table-read", help="Enable table read tools for a specific table"
+        ),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(..., help="Enable table write tools for a specific table"),
+        typer.Option(
+            "--table-write", help="Enable table write tools for a specific table"
+        ),
     ] = [],
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit"),
+        typer.Option("--read-only-storage", help="Enable read only storage toolkit"),
     ] = False,
     require_time: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--time",
             help="Enable time/datetime tools",
         ),
     ] = True,
     require_uuid: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--uuid",
             help="Enable UUID generation tools",
         ),
     ] = False,
@@ -2441,7 +2604,7 @@ async def service(
     ] = False,
     require_discovery: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable discovery of agents and tools"),
+        typer.Option("--discovery", help="Enable discovery of agents and tools"),
     ] = False,
     llm_participant: Annotated[
         Optional[str],
@@ -2493,11 +2656,33 @@ async def service(
         runtime=runtime,
         database_namespace=database_namespace,
     )
+    normalized_tool_options = normalize_required_tool_options(
+        toolkit=toolkit,
+        require_toolkit=require_toolkit,
+        schema=schema,
+        require_schema=require_schema,
+        image_generation=image_generation,
+        require_image_generation=require_image_generation,
+        computer_use=computer_use,
+        require_computer_use=require_computer_use,
+        shell=shell,
+        require_shell=require_shell,
+        advanced_shell=require_advanced_shell,
+        apply_patch=apply_patch,
+        require_apply_patch=require_apply_patch,
+        web_search=web_search,
+        require_web_search=require_web_search,
+        web_fetch=web_fetch,
+        require_web_fetch=require_web_fetch,
+        mcp=mcp,
+        require_mcp=require_mcp,
+        storage=storage,
+        require_storage=require_storage,
+    )
 
     service = get_service(host=host, port=port)
-    storage_tool_mounts = parse_storage_tool_mounts(
-        local_paths=storage_tool_local_path,
-        room_paths=storage_tool_room_path,
+    default_room_storage_mount = bool(
+        normalized_tool_options["require_storage"] or require_read_only_storage
     )
     shell_tool_mounts = parse_shell_tool_mounts(
         room_paths=merge_option_lists(
@@ -2535,58 +2720,39 @@ async def service(
         )
     )
 
-    builder = _builder_for_runtime(runtime)
     service.add_path(
         identity=agent_name,
         path=path,
-        cls=builder(
-            computer_use=computer_use,
-            require_computer_use=require_computer_use,
-            starting_url=starting_url,
-            allow_goto_url=allow_goto_url,
+        cls=_build_runtime_agent(
+            client=None,
+            runtime=runtime,
+            normalized_tool_options=normalized_tool_options,
             model=model,
-            local_shell=local_shell,
-            shell=shell,
-            apply_patch=apply_patch,
             rule=rule,
-            toolkit=require_toolkit + toolkit,
-            schema=require_schema + schema,
             rules_file=rules_file,
-            web_search=web_search,
-            web_fetch=web_fetch,
-            script_tool=script_tool,
+            instructions=instructions,
             discover_script_tools=discover_script_tools,
-            image_generation=image_generation,
-            mcp=mcp,
-            storage=storage,
-            storage_tool_mounts=storage_tool_mounts,
+            storage_tool_local_paths=storage_tool_local_path,
+            storage_tool_room_paths=storage_tool_room_path,
+            default_room_storage_mount=default_room_storage_mount,
             shell_tool_mounts=shell_tool_mounts,
-            database_namespace=resolved_database_namespace,
-            require_web_search=require_web_search,
-            require_web_fetch=require_web_fetch,
-            require_shell=require_shell,
-            require_advanced_shell=require_advanced_shell,
-            require_apply_patch=require_apply_patch,
-            require_local_shell=require_local_shell,
-            require_image_generation=require_image_generation,
-            require_mcp=require_mcp,
-            require_storage=require_storage,
-            require_table_write=require_table_write,
-            require_table_read=require_table_read,
             require_read_only_storage=require_read_only_storage,
             require_time=require_time,
             require_uuid=require_uuid,
             use_memory=use_memory,
             memory_model=memory_model,
-            room_rules_path=room_rules,
-            working_dir=working_dir,
+            require_table_read=require_table_read,
+            require_table_write=require_table_write,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
+            require_advanced_shell=require_advanced_shell,
             llm_participant=llm_participant,
             decision_model=decision_model,
             always_reply=always_reply,
             threading_mode=threading_mode,
             thread_dir=thread_dir,
+            working_dir=working_dir,
+            database_namespace=resolved_database_namespace,
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
@@ -2594,6 +2760,9 @@ async def service(
             shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
             channels=resolved_channels,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
+            room_rules_path=room_rules,
         ),
     )
 
@@ -2617,6 +2786,7 @@ async def spec(
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[list[str]] = None,
+    instructions: InstructionsOption = [],
     room_rules: Annotated[
         List[str],
         typer.Option(
@@ -2640,14 +2810,15 @@ async def spec(
     toolkit: Annotated[
         List[str],
         typer.Option(
-            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+            "--toolkit",
+            "-t",
+            help="the name or url of a required toolkit",
+            hidden=True,
         ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option(
-            "--schema", "-s", help="the name or url of a required schema", hidden=True
-        ),
+        typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
@@ -2655,9 +2826,6 @@ async def spec(
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
-    local_shell: Annotated[
-        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
-    ] = False,
     shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable function shell tool calling")
     ] = False,
@@ -2721,10 +2889,6 @@ async def spec(
     ] = False,
     starting_url: StartingUrlOption = None,
     allow_goto_url: AllowGotoUrlOption = False,
-    require_local_shell: Annotated[
-        Optional[bool],
-        typer.Option(..., help="Enable local shell tool calling"),
-    ] = False,
     require_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
@@ -2753,27 +2917,31 @@ async def spec(
     ] = None,
     require_table_read: Annotated[
         list[str],
-        typer.Option(..., help="Enable table read tools for a specific table"),
+        typer.Option(
+            "--table-read", help="Enable table read tools for a specific table"
+        ),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(..., help="Enable table write tools for a specific table"),
+        typer.Option(
+            "--table-write", help="Enable table write tools for a specific table"
+        ),
     ] = [],
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit"),
+        typer.Option("--read-only-storage", help="Enable read only storage toolkit"),
     ] = False,
     require_time: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--time",
             help="Enable time/datetime tools",
         ),
     ] = True,
     require_uuid: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--uuid",
             help="Enable UUID generation tools",
         ),
     ] = False,
@@ -2799,7 +2967,7 @@ async def spec(
     ] = False,
     require_discovery: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable discovery of agents and tools"),
+        typer.Option("--discovery", help="Enable discovery of agents and tools"),
     ] = False,
     llm_participant: Annotated[
         Optional[str],
@@ -2843,11 +3011,33 @@ async def spec(
         runtime=runtime,
         database_namespace=database_namespace,
     )
+    normalized_tool_options = normalize_required_tool_options(
+        toolkit=toolkit,
+        require_toolkit=require_toolkit,
+        schema=schema,
+        require_schema=require_schema,
+        image_generation=image_generation,
+        require_image_generation=require_image_generation,
+        computer_use=computer_use,
+        require_computer_use=require_computer_use,
+        shell=shell,
+        require_shell=require_shell,
+        advanced_shell=require_advanced_shell,
+        apply_patch=apply_patch,
+        require_apply_patch=require_apply_patch,
+        web_search=web_search,
+        require_web_search=require_web_search,
+        web_fetch=web_fetch,
+        require_web_fetch=require_web_fetch,
+        mcp=mcp,
+        require_mcp=require_mcp,
+        storage=storage,
+        require_storage=require_storage,
+    )
 
     service = get_service(host=None, port=None)
-    storage_tool_mounts = parse_storage_tool_mounts(
-        local_paths=storage_tool_local_path,
-        room_paths=storage_tool_room_path,
+    default_room_storage_mount = bool(
+        normalized_tool_options["require_storage"] or require_read_only_storage
     )
     shell_tool_mounts = parse_shell_tool_mounts(
         room_paths=merge_option_lists(
@@ -2883,58 +3073,39 @@ async def spec(
         )
     )
 
-    builder = _builder_for_runtime(runtime)
     service.add_path(
         identity=agent_name,
         path=path,
-        cls=builder(
-            computer_use=computer_use,
-            require_computer_use=require_computer_use,
-            starting_url=starting_url,
-            allow_goto_url=allow_goto_url,
+        cls=_build_runtime_agent(
+            client=None,
+            runtime=runtime,
+            normalized_tool_options=normalized_tool_options,
             model=model,
-            local_shell=local_shell,
-            shell=shell,
-            apply_patch=apply_patch,
             rule=rule,
-            toolkit=require_toolkit + toolkit,
-            schema=require_schema + schema,
             rules_file=rules_file,
-            web_search=web_search,
-            web_fetch=web_fetch,
-            script_tool=script_tool,
+            instructions=instructions,
             discover_script_tools=discover_script_tools,
-            image_generation=image_generation,
-            mcp=mcp,
-            storage=storage,
-            storage_tool_mounts=storage_tool_mounts,
+            storage_tool_local_paths=storage_tool_local_path,
+            storage_tool_room_paths=storage_tool_room_path,
+            default_room_storage_mount=default_room_storage_mount,
             shell_tool_mounts=shell_tool_mounts,
-            database_namespace=resolved_database_namespace,
-            require_web_search=require_web_search,
-            require_web_fetch=require_web_fetch,
-            require_shell=require_shell,
-            require_advanced_shell=require_advanced_shell,
-            require_apply_patch=require_apply_patch,
-            require_local_shell=require_local_shell,
-            require_image_generation=require_image_generation,
-            require_mcp=require_mcp,
-            require_storage=require_storage,
-            require_table_write=require_table_write,
-            require_table_read=require_table_read,
             require_read_only_storage=require_read_only_storage,
             require_time=require_time,
             require_uuid=require_uuid,
             use_memory=use_memory,
             memory_model=memory_model,
-            room_rules_path=room_rules,
-            working_dir=working_dir,
+            require_table_read=require_table_read,
+            require_table_write=require_table_write,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
+            require_advanced_shell=require_advanced_shell,
             llm_participant=llm_participant,
             decision_model=decision_model,
             always_reply=always_reply,
             threading_mode=threading_mode,
             thread_dir=thread_dir,
+            working_dir=working_dir,
+            database_namespace=resolved_database_namespace,
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
@@ -2942,6 +3113,9 @@ async def spec(
             shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
             channels=resolved_channels,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
+            room_rules_path=room_rules,
         ),
     )
 
@@ -2985,6 +3159,7 @@ async def deploy(
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[list[str]] = None,
+    instructions: InstructionsOption = [],
     room_rules: Annotated[
         List[str],
         typer.Option(
@@ -3008,14 +3183,15 @@ async def deploy(
     toolkit: Annotated[
         List[str],
         typer.Option(
-            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+            "--toolkit",
+            "-t",
+            help="the name or url of a required toolkit",
+            hidden=True,
         ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option(
-            "--schema", "-s", help="the name or url of a required schema", hidden=True
-        ),
+        typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
@@ -3023,9 +3199,6 @@ async def deploy(
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
-    local_shell: Annotated[
-        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
-    ] = False,
     shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable function shell tool calling")
     ] = False,
@@ -3089,10 +3262,6 @@ async def deploy(
     ] = False,
     starting_url: StartingUrlOption = None,
     allow_goto_url: AllowGotoUrlOption = False,
-    require_local_shell: Annotated[
-        Optional[bool],
-        typer.Option(..., help="Enable local shell tool calling"),
-    ] = False,
     require_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
@@ -3121,27 +3290,31 @@ async def deploy(
     ] = None,
     require_table_read: Annotated[
         list[str],
-        typer.Option(..., help="Enable table read tools for a specific table"),
+        typer.Option(
+            "--table-read", help="Enable table read tools for a specific table"
+        ),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(..., help="Enable table write tools for a specific table"),
+        typer.Option(
+            "--table-write", help="Enable table write tools for a specific table"
+        ),
     ] = [],
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit"),
+        typer.Option("--read-only-storage", help="Enable read only storage toolkit"),
     ] = False,
     require_time: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--time",
             help="Enable time/datetime tools",
         ),
     ] = True,
     require_uuid: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--uuid",
             help="Enable UUID generation tools",
         ),
     ] = False,
@@ -3167,7 +3340,7 @@ async def deploy(
     ] = False,
     require_discovery: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable discovery of agents and tools"),
+        typer.Option("--discovery", help="Enable discovery of agents and tools"),
     ] = False,
     llm_participant: Annotated[
         Optional[str],
@@ -3218,11 +3391,33 @@ async def deploy(
         runtime=runtime,
         database_namespace=database_namespace,
     )
+    normalized_tool_options = normalize_required_tool_options(
+        toolkit=toolkit,
+        require_toolkit=require_toolkit,
+        schema=schema,
+        require_schema=require_schema,
+        image_generation=image_generation,
+        require_image_generation=require_image_generation,
+        computer_use=computer_use,
+        require_computer_use=require_computer_use,
+        shell=shell,
+        require_shell=require_shell,
+        advanced_shell=require_advanced_shell,
+        apply_patch=apply_patch,
+        require_apply_patch=require_apply_patch,
+        web_search=web_search,
+        require_web_search=require_web_search,
+        web_fetch=web_fetch,
+        require_web_fetch=require_web_fetch,
+        mcp=mcp,
+        require_mcp=require_mcp,
+        storage=storage,
+        require_storage=require_storage,
+    )
 
     service = get_service(host=None, port=None)
-    storage_tool_mounts = parse_storage_tool_mounts(
-        local_paths=storage_tool_local_path,
-        room_paths=storage_tool_room_path,
+    default_room_storage_mount = bool(
+        normalized_tool_options["require_storage"] or require_read_only_storage
     )
     shell_tool_mounts = parse_shell_tool_mounts(
         room_paths=merge_option_lists(
@@ -3258,58 +3453,39 @@ async def deploy(
         )
     )
 
-    builder = _builder_for_runtime(runtime)
     service.add_path(
         identity=agent_name,
         path=path,
-        cls=builder(
-            computer_use=computer_use,
-            require_computer_use=require_computer_use,
-            starting_url=starting_url,
-            allow_goto_url=allow_goto_url,
+        cls=_build_runtime_agent(
+            client=None,
+            runtime=runtime,
+            normalized_tool_options=normalized_tool_options,
             model=model,
-            local_shell=local_shell,
-            shell=shell,
-            apply_patch=apply_patch,
             rule=rule,
-            toolkit=require_toolkit + toolkit,
-            schema=require_schema + schema,
             rules_file=rules_file,
-            web_search=web_search,
-            web_fetch=web_fetch,
-            script_tool=script_tool,
+            instructions=instructions,
             discover_script_tools=discover_script_tools,
-            image_generation=image_generation,
-            mcp=mcp,
-            storage=storage,
-            storage_tool_mounts=storage_tool_mounts,
+            storage_tool_local_paths=storage_tool_local_path,
+            storage_tool_room_paths=storage_tool_room_path,
+            default_room_storage_mount=default_room_storage_mount,
             shell_tool_mounts=shell_tool_mounts,
-            database_namespace=resolved_database_namespace,
-            require_web_search=require_web_search,
-            require_web_fetch=require_web_fetch,
-            require_shell=require_shell,
-            require_advanced_shell=require_advanced_shell,
-            require_apply_patch=require_apply_patch,
-            require_local_shell=require_local_shell,
-            require_image_generation=require_image_generation,
-            require_mcp=require_mcp,
-            require_storage=require_storage,
-            require_table_write=require_table_write,
-            require_table_read=require_table_read,
             require_read_only_storage=require_read_only_storage,
             require_time=require_time,
             require_uuid=require_uuid,
             use_memory=use_memory,
             memory_model=memory_model,
-            room_rules_path=room_rules,
-            working_dir=working_dir,
+            require_table_read=require_table_read,
+            require_table_write=require_table_write,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
+            require_advanced_shell=require_advanced_shell,
             llm_participant=llm_participant,
             decision_model=decision_model,
             always_reply=always_reply,
             threading_mode=threading_mode,
             thread_dir=thread_dir,
+            working_dir=working_dir,
+            database_namespace=resolved_database_namespace,
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
@@ -3317,6 +3493,9 @@ async def deploy(
             shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
             channels=resolved_channels,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
+            room_rules_path=room_rules,
         ),
     )
 
@@ -3399,9 +3578,6 @@ async def chat_with(
     room: str,
     thread_path: Optional[str],
     message: Optional[str] = None,
-    use_web_search: bool = False,
-    use_image_gen: bool = False,
-    use_storage: bool = False,
 ):
     from meshagent.agents.chat import ChatBotClient
 
@@ -3427,16 +3603,6 @@ async def chat_with(
             "[bold red]Textual is required for chatbot UI. Install meshagent-cli dependencies and retry.[/bold red]"
         )
         raise typer.Exit(1) from exc
-
-    def build_tools() -> list[ToolkitConfig]:
-        tools: list[ToolkitConfig] = []
-        if use_web_search:
-            tools.append(WebSearchConfig())
-        elif use_image_gen:
-            tools.append(ImageGenerationConfig())
-        elif use_storage:
-            tools.append(StorageToolkitConfig())
-        return tools
 
     def _suppress_textual_debug_features() -> None:
         raw_features = os.environ.get("TEXTUAL")
@@ -4131,7 +4297,7 @@ async def chat_with(
                     self._notify_user(f"Unable to submit approval decision: {ex}")
                 return
 
-            await self._chat_client.send(text=user_input, tools=build_tools())
+            await self._chat_client.send(text=user_input)
             if self._messages_scroll is not None:
                 self._messages_scroll.scroll_end(animate=False)
 
@@ -4831,7 +4997,7 @@ async def chat_with(
                 thread_path=resolved_thread_path,
             )
             await chat_client.__aenter__()
-            await chat_client.send(text=message, tools=build_tools())
+            await chat_client.send(text=message)
             response = await chat_client.receive()
             print(response)
             return
@@ -4865,6 +5031,7 @@ async def run(
         ),
     ] = [],
     rules_file: Optional[list[str]] = None,
+    instructions: InstructionsOption = [],
     require_toolkit: Annotated[
         List[str],
         typer.Option(
@@ -4880,14 +5047,15 @@ async def run(
     toolkit: Annotated[
         List[str],
         typer.Option(
-            "--toolkit", "-t", help="the name or url of a required toolkit", hidden=True
+            "--toolkit",
+            "-t",
+            help="the name or url of a required toolkit",
+            hidden=True,
         ),
     ] = [],
     schema: Annotated[
         List[str],
-        typer.Option(
-            "--schema", "-s", help="the name or url of a required schema", hidden=True
-        ),
+        typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
@@ -4898,9 +5066,6 @@ async def run(
     computer_use: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable computer use"),
-    ] = False,
-    local_shell: Annotated[
-        Optional[bool], typer.Option(..., help="Enable local shell tool calling")
     ] = False,
     shell: Annotated[
         Optional[bool], typer.Option(..., help="Enable function shell tool calling")
@@ -4961,10 +5126,6 @@ async def run(
     ] = False,
     starting_url: StartingUrlOption = None,
     allow_goto_url: AllowGotoUrlOption = False,
-    require_local_shell: Annotated[
-        Optional[bool],
-        typer.Option(..., help="Enable local shell tool calling"),
-    ] = False,
     require_shell: Annotated[
         Optional[bool],
         typer.Option(..., help="Enable function shell tool calling"),
@@ -4994,27 +5155,31 @@ async def run(
     ] = None,
     require_table_read: Annotated[
         list[str],
-        typer.Option(..., help="Enable table read tools for a specific table"),
+        typer.Option(
+            "--table-read", help="Enable table read tools for a specific table"
+        ),
     ] = [],
     require_table_write: Annotated[
         list[str],
-        typer.Option(..., help="Enable table write tools for a specific table"),
+        typer.Option(
+            "--table-write", help="Enable table write tools for a specific table"
+        ),
     ] = [],
     require_read_only_storage: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable read only storage toolkit"),
+        typer.Option("--read-only-storage", help="Enable read only storage toolkit"),
     ] = False,
     require_time: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--time",
             help="Enable time/datetime tools",
         ),
     ] = True,
     require_uuid: Annotated[
         bool,
         typer.Option(
-            ...,
+            "--uuid",
             help="Enable UUID generation tools",
         ),
     ] = False,
@@ -5034,11 +5199,11 @@ async def run(
     ] = None,
     require_document_authoring: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable MeshDocument authoring"),
+        typer.Option("--document-authoring", help="Enable MeshDocument authoring"),
     ] = False,
     require_discovery: Annotated[
         Optional[bool],
-        typer.Option(..., help="Enable discovery of agents and tools"),
+        typer.Option("--discovery", help="Enable discovery of agents and tools"),
     ] = False,
     working_dir: WorkingDirOption = None,
     working_directory: WorkingDirectoryAliasOption = None,
@@ -5122,6 +5287,29 @@ async def run(
         runtime=runtime,
         database_namespace=database_namespace,
     )
+    normalized_tool_options = normalize_required_tool_options(
+        toolkit=toolkit,
+        require_toolkit=require_toolkit,
+        schema=schema,
+        require_schema=require_schema,
+        image_generation=image_generation,
+        require_image_generation=require_image_generation,
+        computer_use=computer_use,
+        require_computer_use=require_computer_use,
+        shell=shell,
+        require_shell=require_shell,
+        advanced_shell=require_advanced_shell,
+        apply_patch=apply_patch,
+        require_apply_patch=require_apply_patch,
+        web_search=web_search,
+        require_web_search=require_web_search,
+        web_fetch=web_fetch,
+        require_web_fetch=require_web_fetch,
+        mcp=mcp,
+        require_mcp=require_mcp,
+        storage=storage,
+        require_storage=require_storage,
+    )
 
     key = await resolve_key(project_id=project_id, key=key)
     account_client = await get_client()
@@ -5148,9 +5336,8 @@ async def run(
 
             jwt = token.to_jwt(api_key=key)
 
-        storage_tool_mounts = parse_storage_tool_mounts(
-            local_paths=storage_tool_local_path,
-            room_paths=storage_tool_room_path,
+        default_room_storage_mount = bool(
+            normalized_tool_options["require_storage"] or require_read_only_storage
         )
         shell_tool_mounts = parse_shell_tool_mounts(
             room_paths=merge_option_lists(
@@ -5174,54 +5361,36 @@ async def run(
                 token=jwt,
             )
         )
-        builder = _builder_for_runtime(runtime)
-        CustomChatbot = builder(
-            computer_use=computer_use,
-            require_computer_use=require_computer_use,
-            starting_url=starting_url,
-            allow_goto_url=allow_goto_url,
+        CustomChatbot = _build_runtime_agent(
+            client=client,
+            api_key=jwt,
+            runtime=runtime,
+            normalized_tool_options=normalized_tool_options,
             model=model,
             rule=rule,
-            toolkit=require_toolkit + toolkit,
-            schema=require_schema + schema,
             rules_file=rules_file,
-            local_shell=local_shell,
-            shell=shell,
-            apply_patch=apply_patch,
-            image_generation=image_generation,
-            web_search=web_search,
-            web_fetch=web_fetch,
-            script_tool=script_tool,
+            instructions=instructions,
             discover_script_tools=discover_script_tools,
-            mcp=mcp,
-            storage=storage,
-            storage_tool_mounts=storage_tool_mounts,
+            storage_tool_local_paths=storage_tool_local_path,
+            storage_tool_room_paths=storage_tool_room_path,
+            default_room_storage_mount=default_room_storage_mount,
             shell_tool_mounts=shell_tool_mounts,
-            require_apply_patch=require_apply_patch,
-            require_web_search=require_web_search,
-            require_web_fetch=require_web_fetch,
-            require_local_shell=require_local_shell,
-            require_shell=require_shell,
-            require_advanced_shell=require_advanced_shell,
-            require_image_generation=require_image_generation,
-            require_mcp=require_mcp,
-            require_storage=require_storage,
-            require_table_read=require_table_read,
-            require_table_write=require_table_write,
             require_read_only_storage=require_read_only_storage,
             require_time=require_time,
             require_uuid=require_uuid,
             use_memory=use_memory,
             memory_model=memory_model,
-            room_rules_path=room_rules,
+            require_table_read=require_table_read,
+            require_table_write=require_table_write,
             require_document_authoring=require_document_authoring,
             require_discovery=require_discovery,
-            working_dir=working_dir,
+            require_advanced_shell=require_advanced_shell,
             llm_participant=llm_participant,
             decision_model=decision_model,
             always_reply=always_reply,
             threading_mode=threading_mode,
             thread_dir=thread_dir,
+            working_dir=working_dir,
             database_namespace=resolved_database_namespace,
             skill_dirs=skill_dir,
             shell_image=shell_image,
@@ -5230,6 +5399,9 @@ async def run(
             shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
             channels=resolved_channels,
+            starting_url=starting_url,
+            allow_goto_url=allow_goto_url,
+            room_rules_path=room_rules,
         )
 
         bot = CustomChatbot()
@@ -5296,18 +5468,6 @@ async def use(
         Optional[str],
         typer.Option(..., help="the input message to use"),
     ] = None,
-    use_web_search: Annotated[
-        Optional[bool],
-        typer.Option(..., help="request the web search tool"),
-    ] = None,
-    use_image_gen: Annotated[
-        Optional[bool],
-        typer.Option(..., help="request the image gen tool"),
-    ] = None,
-    use_storage: Annotated[
-        Optional[bool],
-        typer.Option(..., help="request the storage tool"),
-    ] = None,
 ):
     root = logging.getLogger()
     root.setLevel(logging.ERROR)
@@ -5323,9 +5483,6 @@ async def use(
             project_id=project_id,
             thread_path=thread_path,
             message=message,
-            use_web_search=use_web_search,
-            use_image_gen=use_image_gen,
-            use_storage=use_storage,
         )
 
     except asyncio.CancelledError:
@@ -5333,3 +5490,6 @@ async def use(
 
     finally:
         await account_client.close()
+
+
+strip_command_options(app, option_names=_HIDDEN_REQUIRE_OPTION_NAMES)

@@ -856,7 +856,6 @@ def build_codex_worker(
     model: str,
     title: Optional[str],
     description: Optional[str],
-    supports_context: bool,
     prompt: Optional[str],
     rule: list[str],
     toolkit: list[str],
@@ -941,7 +940,6 @@ def build_codex_worker(
                 rules=rule if len(rule) > 0 else None,
                 toolkit_name=toolkit_name,
                 skill_dirs=skill_dirs if len(skill_dirs or []) > 0 else None,
-                supports_context=supports_context,
                 model=model,
                 command=command,
                 ws_url=ws_url,
@@ -2105,9 +2103,6 @@ async def worker_join(
     description: Annotated[
         Optional[str], typer.Option(..., help="A description for the worker")
     ] = None,
-    supports_context: Annotated[
-        bool, typer.Option(..., help="Whether to merge caller context messages")
-    ] = True,
     prompt: Annotated[
         Optional[str], typer.Option(..., help="Override prompt used for each message")
     ] = None,
@@ -2274,7 +2269,6 @@ async def worker_join(
             queue=queue,
             title=title,
             description=description,
-            supports_context=supports_context,
             prompt=prompt,
             model=model,
             rule=rule,
@@ -2334,9 +2328,6 @@ async def worker_service(
     description: Annotated[
         Optional[str], typer.Option(..., help="A description for the worker")
     ] = None,
-    supports_context: Annotated[
-        bool, typer.Option(..., help="Whether to merge caller context messages")
-    ] = True,
     prompt: Annotated[
         Optional[str], typer.Option(..., help="Override prompt used for each message")
     ] = None,
@@ -2490,7 +2481,6 @@ async def worker_service(
             queue=queue,
             title=title,
             description=description,
-            supports_context=supports_context,
             prompt=prompt,
             toolkit_name=toolkit_name,
             model=model,
@@ -2540,9 +2530,6 @@ async def worker_spec(
     description: Annotated[
         Optional[str], typer.Option(..., help="A description for the worker")
     ] = None,
-    supports_context: Annotated[
-        bool, typer.Option(..., help="Whether to merge caller context messages")
-    ] = True,
     prompt: Annotated[
         Optional[str], typer.Option(..., help="Override prompt used for each message")
     ] = None,
@@ -2698,7 +2685,6 @@ async def worker_spec(
             queue=queue,
             title=title,
             description=description,
-            supports_context=supports_context,
             prompt=prompt,
             toolkit_name=toolkit_name,
             model=model,
@@ -2769,9 +2755,6 @@ async def worker_deploy(
     description: Annotated[
         Optional[str], typer.Option(..., help="A description for the worker")
     ] = None,
-    supports_context: Annotated[
-        bool, typer.Option(..., help="Whether to merge caller context messages")
-    ] = True,
     prompt: Annotated[
         Optional[str], typer.Option(..., help="Override prompt used for each message")
     ] = None,
@@ -2929,7 +2912,6 @@ async def worker_deploy(
             queue=queue,
             title=title,
             description=description,
-            supports_context=supports_context,
             prompt=prompt,
             toolkit_name=toolkit_name,
             model=model,

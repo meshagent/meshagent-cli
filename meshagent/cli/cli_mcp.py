@@ -12,7 +12,8 @@ from meshagent.api import RoomClient, WebSocketClientProtocol, RoomException, Ap
 from meshagent.cli import async_typer
 from meshagent.cli.helper import resolve_project_id, resolve_room, resolve_key
 
-from meshagent.tools.hosting import RemoteToolkit
+from meshagent.tools import Toolkit
+from meshagent.tools.hosting import _start_hosted_toolkit
 
 
 from meshagent.api.services import ServiceHost
@@ -195,18 +196,21 @@ async def sse(
                         tools=mcp_tools_response.tools,
                     )
 
-                    remote_toolkit = RemoteToolkit(
+                    toolkit = Toolkit(
                         name=toolkit.name,
                         tools=toolkit.tools,
                         title=toolkit.title,
                         description=toolkit.description,
                     )
 
-                    await remote_toolkit.start(room=client)
+                    hosted_toolkit = await _start_hosted_toolkit(
+                        room=client,
+                        toolkit=toolkit,
+                    )
                     try:
                         await client.protocol.wait_for_close()
                     except KeyboardInterrupt:
-                        await remote_toolkit.stop()
+                        await hosted_toolkit.stop()
 
     except RoomException as e:
         print(e)
@@ -309,18 +313,21 @@ async def streamable_http(
                         tools=mcp_tools_response.tools,
                     )
 
-                    remote_toolkit = RemoteToolkit(
+                    toolkit = Toolkit(
                         name=toolkit.name,
                         tools=toolkit.tools,
                         title=toolkit.title,
                         description=toolkit.description,
                     )
 
-                    await remote_toolkit.start(room=client)
+                    hosted_toolkit = await _start_hosted_toolkit(
+                        room=client,
+                        toolkit=toolkit,
+                    )
                     try:
                         await client.protocol.wait_for_close()
                     except KeyboardInterrupt:
-                        await remote_toolkit.stop()
+                        await hosted_toolkit.stop()
 
     except RoomException as e:
         print(e)
@@ -408,18 +415,21 @@ async def stdio(
                         tools=mcp_tools_response.tools,
                     )
 
-                    remote_toolkit = RemoteToolkit(
+                    toolkit = Toolkit(
                         name=toolkit.name,
                         tools=toolkit.tools,
                         title=toolkit.title,
                         description=toolkit.description,
                     )
 
-                    await remote_toolkit.start(room=client)
+                    hosted_toolkit = await _start_hosted_toolkit(
+                        room=client,
+                        toolkit=toolkit,
+                    )
                     try:
                         await client.protocol.wait_for_close()
                     except KeyboardInterrupt:
-                        await remote_toolkit.stop()
+                        await hosted_toolkit.stop()
 
     except RoomException as e:
         print(e)
@@ -594,7 +604,7 @@ async def stdio_service(
                 )
 
                 @service_host.path(path=path)
-                class CustomToolkit(RemoteToolkit):
+                class CustomToolkit(Toolkit):
                     def __init__(self):
                         super().__init__(
                             name=toolkit.name,
