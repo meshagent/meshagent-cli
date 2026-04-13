@@ -10,6 +10,7 @@ license = "Apache-2.0"
 keywords = []
 dependencies = [
   "typer~=0.21",
+  "aiofiles~=24.1",
   "fastmcp~=2.8",
   "opentelemetry-distro~=0.59b0",
   "opentelemetry-exporter-otlp-proto-http~=1.33",
