@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+from pathlib import Path
 
 import click
 import pytest
@@ -78,6 +79,7 @@ def test_root_cli_registers_process_group() -> None:
                 "--require-toolkit",
                 "--schema",
                 "--mcp",
+                "--instructions",
                 "--shell",
                 "--web-search",
                 "--read-only-storage",
@@ -1462,6 +1464,104 @@ async def test_chatbot_require_shell_uses_container_shell_for_non_gpt_model(
 
     assert isinstance(agent.shell_tool, ContainerShellTool)
     assert agent.shell_tool.working_dir == "/workspace"
+
+
+@pytest.mark.asyncio
+async def test_chatbot_get_rules_loads_instructions_from_configured_storage(
+    tmp_path: Path,
+) -> None:
+    instructions_file = tmp_path / "instructions.txt"
+    instructions_file.write_text(
+        "global instruction\n[web]\nweb instruction\n",
+        encoding="utf-8",
+    )
+
+    class _RulesParticipant:
+        def __init__(self, *, client: str | None) -> None:
+            self._client = client
+
+        def get_attribute(self, name: str) -> str | None:
+            if name == "client":
+                return self._client
+            return None
+
+    custom_chatbot = chatbot.build_chatbot(
+        client=_FakeProcessRoomClient(),
+        model="gpt-5",
+        rule=["base rule"],
+        toolkit=[],
+        schema=[],
+        instructions=["instructions.txt"],
+        require_storage=True,
+        storage_tool_local_paths=[f"{tmp_path}:/:ro"],
+    )
+    agent = custom_chatbot()
+
+    rules = await agent.get_rules(
+        thread_context=None,
+        participant=_RulesParticipant(client="web"),
+    )
+
+    assert "base rule" in rules
+    assert "global instruction" in rules
+    assert "web instruction" in rules
+
+
+@pytest.mark.asyncio
+async def test_process_agent_get_rules_loads_instructions_from_current_working_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    instructions_file = tmp_path / "instructions.txt"
+    instructions_file.write_text(
+        "cwd instruction\n",
+        encoding="utf-8",
+    )
+
+    custom_process_agent = chatbot.build_process_agent(
+        model="gpt-5",
+        rule=["base rule"],
+        toolkit=[],
+        schema=[],
+        instructions=["instructions.txt"],
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+    )
+    agent = custom_process_agent()
+
+    rules = await agent.get_rules(participant=None)
+
+    assert "base rule" in rules
+    assert "cwd instruction" in rules
+
+
+@pytest.mark.asyncio
+async def test_process_agent_get_rules_warns_when_instructions_file_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    caplog.set_level("WARNING")
+
+    custom_process_agent = chatbot.build_process_agent(
+        model="gpt-5",
+        rule=["base rule"],
+        toolkit=[],
+        schema=[],
+        instructions=["missing.txt"],
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+    )
+    agent = custom_process_agent()
+
+    rules = await agent.get_rules(participant=None)
+
+    assert "base rule" in rules
+    assert "unable to load instructions from missing.txt" in caplog.text
 
 
 @pytest.mark.asyncio

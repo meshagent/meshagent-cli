@@ -11,6 +11,7 @@ from meshagent.tools import (
     MemoriesToolkit,
 )
 from meshagent.tools.storage import (
+    StorageToolLocalMount,
     StorageToolMount,
     StorageToolkit,
 )
@@ -176,6 +177,17 @@ ShellSetEnvOption = Annotated[
     typer.Option(
         "--shell-set-env",
         help=("Set env vars in shell tool env as NAME=VALUE. Can be repeated."),
+    ),
+]
+
+InstructionsOption = Annotated[
+    list[str],
+    typer.Option(
+        "--instructions",
+        help=(
+            "a path in the configured storage toolkit to a rules file that "
+            "will be loaded at runtime"
+        ),
     ),
 ]
 
@@ -511,6 +523,63 @@ def _require_storage_tool_mounts(
     return mounts
 
 
+def _default_rules_storage_toolkit() -> StorageToolkit:
+    return StorageToolkit(
+        read_only=True,
+        mounts=[
+            StorageToolLocalMount(
+                path="/",
+                local_path=str(Path.cwd()),
+            )
+        ],
+    )
+
+
+def _normalize_storage_rules_path(path: str) -> str:
+    normalized = Path(path)
+    if not normalized.is_absolute():
+        normalized = Path("/") / normalized
+    return normalized.as_posix()
+
+
+async def _load_storage_rules(
+    *,
+    path: str,
+    storage_toolkit: StorageToolkit | None,
+    participant: Participant | None,
+) -> list[str]:
+    resolved_storage_toolkit = (
+        storage_toolkit
+        if storage_toolkit is not None
+        else _default_rules_storage_toolkit()
+    )
+    normalized_path = _normalize_storage_rules_path(path)
+    rules: list[str] = []
+
+    try:
+        instructions_file = await resolved_storage_toolkit.read_file(
+            path=normalized_path
+        )
+    except RoomException as exc:
+        logger.warning("unable to load instructions from %s: %s", path, exc)
+        return rules
+
+    rules_txt = instructions_file.data.decode()
+    rules_config = RulesConfig.parse(rules_txt)
+
+    if rules_config.rules is not None:
+        rules.extend(rules_config.rules)
+
+    if participant is not None:
+        client = participant.get_attribute("client")
+        if rules_config.client_rules is not None and client is not None:
+            client_rules = rules_config.client_rules.get(client)
+            if client_rules is not None:
+                rules.extend(client_rules)
+
+    return rules
+
+
 def _build_runtime_agent(
     *,
     client: RoomClient | None,
@@ -520,6 +589,7 @@ def _build_runtime_agent(
     model: str,
     rule: list[str],
     rules_file: Optional[list[str]],
+    instructions: Optional[list[str]],
     discover_script_tools: Optional[bool],
     storage_tool_local_paths: list[str],
     storage_tool_room_paths: list[str],
@@ -565,6 +635,7 @@ def _build_runtime_agent(
         toolkit=normalized_tool_options["toolkit"],
         schema=normalized_tool_options["schema"],
         rules_file=rules_file,
+        instructions=instructions,
         discover_script_tools=discover_script_tools,
         client=client,
         storage_tool_local_paths=storage_tool_local_paths,
@@ -722,6 +793,7 @@ def build_chatbot(
     use_memory: Optional[str] = None,
     memory_model: Optional[str] = None,
     rules_file: Optional[list[str]] = None,
+    instructions: Optional[list[str]] = None,
     room_rules_path: Optional[list[str]] = None,
     require_discovery: Optional[str] = None,
     require_document_authoring: Optional[str] = None,
@@ -955,10 +1027,45 @@ def build_chatbot(
 
             return rules
 
+        def get_skills_storage_toolkit(self) -> StorageToolkit | None:
+            if require_storage:
+                return StorageToolkit(
+                    mounts=_require_storage_tool_mounts(
+                        room=client or self.room,
+                        local_paths=storage_tool_local_paths,
+                        room_paths=storage_tool_room_paths,
+                        default_room_mount=default_room_storage_mount,
+                    )
+                )
+
+            if require_read_only_storage:
+                return StorageToolkit(
+                    read_only=True,
+                    mounts=_require_storage_tool_mounts(
+                        room=client or self.room,
+                        local_paths=storage_tool_local_paths,
+                        room_paths=storage_tool_room_paths,
+                        default_room_mount=default_room_storage_mount,
+                    ),
+                )
+
+            return None
+
         async def get_rules(self, *, thread_context, participant):
             rules = await super().get_rules(
                 thread_context=thread_context, participant=participant
             )
+            storage_toolkit = self.get_skills_storage_toolkit()
+
+            if instructions is not None:
+                for instructions_path in instructions:
+                    rules.extend(
+                        await _load_storage_rules(
+                            path=instructions_path,
+                            storage_toolkit=storage_toolkit,
+                            participant=participant,
+                        )
+                    )
 
             if room_rules_path is not None:
                 for p in room_rules_path:
@@ -1175,6 +1282,7 @@ def build_process_agent(
     use_memory: Optional[str] = None,
     memory_model: Optional[str] = None,
     rules_file: Optional[list[str]] = None,
+    instructions: Optional[list[str]] = None,
     room_rules_path: Optional[list[str]] = None,
     require_discovery: Optional[str] = None,
     require_document_authoring: Optional[str] = None,
@@ -1568,6 +1676,7 @@ def build_process_agent(
 
         async def get_rules(self, *, participant: Optional[Participant]) -> list[str]:
             rules = [*rule]
+            storage_toolkit = self.get_skills_storage_toolkit()
 
             if self._skill_dirs is not None and len(self._skill_dirs) > 0:
                 rules.append(
@@ -1576,7 +1685,7 @@ def build_process_agent(
                 rules.append(
                     await to_prompt(
                         [*(Path(p) for p in self._skill_dirs)],
-                        storage_toolkit=self.get_skills_storage_toolkit(),
+                        storage_toolkit=storage_toolkit,
                     )
                 )
                 rules.append(
@@ -1589,6 +1698,16 @@ def build_process_agent(
                     selected_rules = self._client_rules.get(client)
                     if selected_rules is not None:
                         rules.extend(selected_rules)
+
+            if instructions is not None:
+                for instructions_path in instructions:
+                    rules.extend(
+                        await _load_storage_rules(
+                            path=instructions_path,
+                            storage_toolkit=storage_toolkit,
+                            participant=participant,
+                        )
+                    )
 
             if room_rules_path is not None:
                 for room_rules_file in room_rules_path:
@@ -1867,6 +1986,7 @@ async def join(
         ),
     ] = [],
     rules_file: Optional[list[str]] = None,
+    instructions: InstructionsOption = [],
     require_toolkit: Annotated[
         List[str],
         typer.Option(
@@ -2193,6 +2313,7 @@ async def join(
             model=model,
             rule=rule,
             rules_file=rules_file,
+            instructions=instructions,
             discover_script_tools=discover_script_tools,
             storage_tool_local_paths=storage_tool_local_path,
             storage_tool_room_paths=storage_tool_room_path,
@@ -2267,6 +2388,7 @@ async def service(
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[list[str]] = None,
+    instructions: InstructionsOption = [],
     room_rules: Annotated[
         List[str],
         typer.Option(
@@ -2580,6 +2702,7 @@ async def service(
             model=model,
             rule=rule,
             rules_file=rules_file,
+            instructions=instructions,
             discover_script_tools=discover_script_tools,
             storage_tool_local_paths=storage_tool_local_path,
             storage_tool_room_paths=storage_tool_room_path,
@@ -2635,6 +2758,7 @@ async def spec(
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[list[str]] = None,
+    instructions: InstructionsOption = [],
     room_rules: Annotated[
         List[str],
         typer.Option(
@@ -2931,6 +3055,7 @@ async def spec(
             model=model,
             rule=rule,
             rules_file=rules_file,
+            instructions=instructions,
             discover_script_tools=discover_script_tools,
             storage_tool_local_paths=storage_tool_local_path,
             storage_tool_room_paths=storage_tool_room_path,
@@ -3006,6 +3131,7 @@ async def deploy(
     agent_name: Annotated[str, typer.Option(..., help="Name of the agent to call")],
     rule: Annotated[List[str], typer.Option("--rule", "-r", help="a system rule")] = [],
     rules_file: Optional[list[str]] = None,
+    instructions: InstructionsOption = [],
     room_rules: Annotated[
         List[str],
         typer.Option(
@@ -3309,6 +3435,7 @@ async def deploy(
             model=model,
             rule=rule,
             rules_file=rules_file,
+            instructions=instructions,
             discover_script_tools=discover_script_tools,
             storage_tool_local_paths=storage_tool_local_path,
             storage_tool_room_paths=storage_tool_room_path,
@@ -4876,6 +5003,7 @@ async def run(
         ),
     ] = [],
     rules_file: Optional[list[str]] = None,
+    instructions: InstructionsOption = [],
     require_toolkit: Annotated[
         List[str],
         typer.Option(
@@ -5213,6 +5341,7 @@ async def run(
             model=model,
             rule=rule,
             rules_file=rules_file,
+            instructions=instructions,
             discover_script_tools=discover_script_tools,
             storage_tool_local_paths=storage_tool_local_path,
             storage_tool_room_paths=storage_tool_room_path,
