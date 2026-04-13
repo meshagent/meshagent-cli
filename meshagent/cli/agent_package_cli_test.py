@@ -48,7 +48,7 @@ def test_load_package_supports_zero_arg_factory(tmp_path: Path) -> None:
     assert loaded._module_export_is_factory is True
 
 
-def test_load_package_resolves_exported_instance_paths_relative_to_module(
+def test_load_package_stores_exported_instance_paths_relative_to_module(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -67,10 +67,15 @@ def test_load_package_resolves_exported_instance_paths_relative_to_module(
 
     loaded = _load_package(module_path=str(module_path), export_name="main")
 
-    assert loaded._instructions[0].source == (module_dir / "rules.txt").resolve()
+    assert loaded._instructions[0].source == Path("rules.txt")
+    assert loaded._instructions[0].base_path == module_dir.resolve()
+    assert (
+        loaded._resolve_deploy_assets()[0].asset.source
+        == (module_dir / "rules.txt").resolve()
+    )
 
 
-def test_load_package_resolves_factory_paths_relative_to_module(
+def test_load_package_stores_factory_paths_relative_to_module(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -90,7 +95,12 @@ def test_load_package_resolves_factory_paths_relative_to_module(
 
     loaded = _load_package(module_path=str(module_path), export_name="build")
 
-    assert loaded._instructions[0].source == (module_dir / "rules.txt").resolve()
+    assert loaded._instructions[0].source == Path("rules.txt")
+    assert loaded._instructions[0].base_path == module_dir.resolve()
+    assert (
+        loaded._resolve_deploy_assets()[0].asset.source
+        == (module_dir / "rules.txt").resolve()
+    )
 
 
 @pytest.mark.asyncio
