@@ -2122,7 +2122,7 @@ async def _run_image_build_stage(
             source_dir=build_inputs.pack_spec.source_dir,
             preserved_paths=build_inputs.preserved_packed_build_paths,
         )
-        build_id = await client.containers.build_context(
+        build_id = await client.containers.build(
             tag=parsed_tag.value,
             mount_path=build_inputs.pack_spec.mount_path,
             context_path=build_inputs.context_path,

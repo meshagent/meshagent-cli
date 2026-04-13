@@ -443,8 +443,8 @@ async def test_build_image_streams_context_and_waits_for_exit(
     archive_path.write_bytes(archive_bytes)
 
     class _FakeContainers:
-        async def build_context(self, **kwargs) -> str:
-            captured["build_context_kwargs"] = {
+        async def build(self, **kwargs) -> str:
+            captured["build_kwargs"] = {
                 key: value for key, value in kwargs.items() if key != "chunks"
             }
             streamed = bytearray()
@@ -516,7 +516,7 @@ async def test_build_image_streams_context_and_waits_for_exit(
         "source_dir": source_dir,
         "preserved_paths": frozenset(),
     }
-    assert captured["build_context_kwargs"] == {
+    assert captured["build_kwargs"] == {
         "tag": "repo/name:tag",
         "mount_path": "/workspace",
         "context_path": "/workspace",
@@ -548,8 +548,8 @@ async def test_build_image_pack_streams_context_and_defaults_context_path(
     archive_path.write_bytes(archive_bytes)
 
     class _FakeContainers:
-        async def build_context(self, **kwargs) -> str:
-            captured["build_context_kwargs"] = {
+        async def build(self, **kwargs) -> str:
+            captured["build_kwargs"] = {
                 key: value for key, value in kwargs.items() if key != "chunks"
             }
             streamed = bytearray()
@@ -622,7 +622,7 @@ async def test_build_image_pack_streams_context_and_defaults_context_path(
         "source_dir": source_dir,
         "preserved_paths": frozenset(),
     }
-    assert captured["build_context_kwargs"] == {
+    assert captured["build_kwargs"] == {
         "tag": "repo/example:1",
         "mount_path": "/context",
         "context_path": "/context",
@@ -654,7 +654,7 @@ async def test_build_image_pack_preserves_ignored_dockerfile_and_dockerignore(
     archive_path.write_bytes(b"context-archive")
 
     class _FakeContainers:
-        async def build_context(self, **kwargs) -> str:
+        async def build(self, **kwargs) -> str:
             async for _chunk in kwargs["chunks"]:
                 pass
             return "build-1"
@@ -723,7 +723,7 @@ async def test_build_image_pack_exits_with_build_status(
     archive_path.write_bytes(b"context-archive")
 
     class _FakeContainers:
-        async def build_context(self, **kwargs) -> str:
+        async def build(self, **kwargs) -> str:
             async for _chunk in kwargs["chunks"]:
                 pass
             return "build-1"
@@ -925,7 +925,7 @@ async def test_build_image_can_disable_room_image_optimization(
     archive_path.write_bytes(archive_bytes)
 
     class _FakeContainers:
-        async def build_context(self, **kwargs) -> str:
+        async def build(self, **kwargs) -> str:
             captured["build_kwargs"] = {
                 key: value for key, value in kwargs.items() if key != "chunks"
             }
