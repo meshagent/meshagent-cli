@@ -81,7 +81,8 @@ from meshagent.anthropic import (
     WebSearchTool as AnthropicWebSearchTool,
 )
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from urllib.parse import urlparse
 
 from meshagent.tools.script import get_script_tools
 
@@ -94,8 +95,10 @@ from meshagent.openai.tools.responses_adapter import (
 
 from meshagent.tools.database import make_database_toolkit
 from meshagent.agents.adapter import LLMAdapter, MessageStreamLLMAdapter
+from meshagent.agents.process import ContentScheme
 
 from meshagent.api import RequiredToolkit, RequiredSchema
+from meshagent.api.messaging import FileContent
 import logging
 import os.path
 import os
@@ -540,6 +543,30 @@ def _normalize_storage_rules_path(path: str) -> str:
     if not normalized.is_absolute():
         normalized = Path("/") / normalized
     return normalized.as_posix()
+
+
+def _normalize_room_content_path(*, url: str) -> str:
+    parsed_url = urlparse(url)
+    if parsed_url.scheme != "room":
+        raise ValueError(f"unsupported room file url: {url}")
+
+    raw_path = f"{parsed_url.netloc}{parsed_url.path}".lstrip("/")
+    normalized = PurePosixPath("/" + raw_path).as_posix().strip("/")
+    if normalized == "":
+        raise ValueError("room file url must reference a non-root storage path")
+
+    if any(part in {".", ".."} for part in PurePosixPath(normalized).parts):
+        raise ValueError("room file url cannot contain '.' or '..' segments")
+
+    return normalized
+
+
+def _room_content_scheme(*, room: RoomClient) -> ContentScheme:
+    async def _download(url: str) -> FileContent:
+        path = _normalize_room_content_path(url=url)
+        return await room.storage.download(path=path)
+
+    return ContentScheme(prefix="room://", download=_download)
 
 
 async def _load_storage_rules(
@@ -1937,7 +1964,7 @@ def build_process_agent(
 
             process = LLMAgentProcess(
                 thread_id=thread_id,
-                room=self._agent.room,
+                participant=self._agent.room.local_participant,
                 llm_adapter=llm_adapter,
                 toolkits=[*toolkits],
                 thread_adapter=AgentProcessThreadAdapter(
@@ -1955,6 +1982,7 @@ def build_process_agent(
                     )
                 ),
             )
+            process.register_content_scheme(_room_content_scheme(room=self._agent.room))
             return process
 
     return CustomProcessAgent

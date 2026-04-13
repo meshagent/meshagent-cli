@@ -1,6 +1,8 @@
 import asyncio
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import pytest
 import typer
@@ -24,6 +26,33 @@ from meshagent.api.specs.service import (
     ServiceSpec,
     TokenValue,
 )
+
+
+class _FakeParticipant:
+    def __init__(self, *, name: str) -> None:
+        self._name = name
+
+    def get_attribute(self, name: str):
+        if name == "name":
+            return self._name
+        return None
+
+
+def test_replace_meshagent_image_vars_defaults_to_pkg_dev() -> None:
+    assert image.replace_meshagent_image_vars("meshagent/python-sdk-slim:default") == (
+        "us-central1-docker.pkg.dev/meshagent-public/images/"
+        f"python-sdk-slim:{image.__version__}-esgz"
+    )
+
+
+def test_replace_meshagent_image_vars_allows_prefix_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MESHAGENT_IMAGE_PREFIX", "registry.example.com/custom/")
+
+    assert image.replace_meshagent_image_vars("meshagent/python-sdk-slim:default") == (
+        f"registry.example.com/custom/python-sdk-slim:{image.__version__}-esgz"
+    )
 
 
 def test_resolve_room_archive_path_uses_output_name_for_directory_targets() -> None:
@@ -127,6 +156,7 @@ async def test_pack_image_uploads_archive_to_room_storage(
         "_with_client",
         _fake_with_client,
     )
+    monkeypatch.setenv("MESHAGENT_ARCH", "arm64")
     monkeypatch.setattr(image, "resolve_room", lambda room: room)
     monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
 
@@ -137,7 +167,6 @@ async def test_pack_image_uploads_archive_to_room_storage(
         tag="room.meshagent.com/sample/app:1",
         output=str(output_path),
         base="python:3.13",
-        arch="arm64",
         room_path=None,
     )
 
@@ -245,7 +274,6 @@ async def test_pack_image_uploads_archive_to_room_without_local_output(
         tag="room.meshagent.com/sample/app:1",
         output=None,
         base=None,
-        arch="amd64",
         room_path=None,
     )
 
@@ -344,7 +372,6 @@ async def test_pack_image_room_close_timeout_does_not_block(
         tag="room.meshagent.com/sample/app:1",
         output=None,
         base=None,
-        arch="amd64",
         room_path=None,
     )
 
@@ -401,22 +428,35 @@ async def test_build_oci_archive_to_streaming_output_does_not_deadlock_when_queu
 
 
 @pytest.mark.asyncio
-async def test_build_image_starts_room_build_and_waits_for_exit(
+async def test_build_image_streams_context_and_waits_for_exit(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    mount_spec = object()
     credentials = [object()]
     captured: dict[str, object] = {}
-    parse_mount_args: dict[str, object] = {}
+    source_dir = tmp_path / "website"
+    source_dir.mkdir()
+    (source_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    archive_dir = tempfile.TemporaryDirectory(prefix="meshagent-build-context-test-")
+    archive_path = Path(archive_dir.name) / "context.tar"
+    archive_bytes = b"context-archive"
+    archive_path.write_bytes(archive_bytes)
 
     class _FakeContainers:
-        async def build(self, **kwargs) -> str:
-            captured["build_kwargs"] = kwargs
+        async def build_context(self, **kwargs) -> str:
+            captured["build_context_kwargs"] = {
+                key: value for key, value in kwargs.items() if key != "chunks"
+            }
+            streamed = bytearray()
+            async for chunk in kwargs["chunks"]:
+                streamed.extend(chunk)
+            captured["streamed_context"] = bytes(streamed)
             return "build-1"
 
     class _FakeRoomClient:
         def __init__(self) -> None:
             self.containers = _FakeContainers()
+            self.local_participant = _FakeParticipant(name="jesse@example.com")
 
         async def __aexit__(self, exc_type, exc, tb) -> None:
             del exc_type, exc, tb
@@ -440,18 +480,18 @@ async def test_build_image_starts_room_build_and_waits_for_exit(
         captured["build_id"] = build_id
         return 0
 
-    def _fake_parse_image_operation_mounts(**kwargs):
-        parse_mount_args.update(kwargs)
-        return mount_spec
+    async def _fake_build_local_context_archive(**kwargs):
+        captured["local_context_kwargs"] = kwargs
+        return archive_path, len(archive_bytes), archive_dir
 
-    monkeypatch.setattr(
-        image,
-        "_parse_image_operation_mounts",
-        _fake_parse_image_operation_mounts,
-    )
     monkeypatch.setattr(image, "_parse_creds", lambda values: credentials)
     monkeypatch.setattr(image, "_with_client", _fake_with_client)
     monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(
+        image,
+        "_build_local_context_archive",
+        _fake_build_local_context_archive,
+    )
     monkeypatch.setattr(
         image,
         "_stream_build_job_logs_and_wait_for_exit",
@@ -462,11 +502,9 @@ async def test_build_image_starts_room_build_and_waits_for_exit(
         project_id="project-1",
         room="room-1",
         tag="repo/name:tag",
+        pack=f"{source_dir}:/workspace",
         context_path="/workspace",
         dockerfile_path="/workspace/Dockerfile",
-        mount_room_path=["/src:/workspace"],
-        mount_project_path=[],
-        mount_image=[],
         private=True,
         optimize=True,
         cred=["registry,user,password"],
@@ -474,71 +512,56 @@ async def test_build_image_starts_room_build_and_waits_for_exit(
 
     assert captured["project_id"] == "project-1"
     assert captured["room"] == "room-1"
-    assert parse_mount_args == {
-        "mount_room_path": ["/src:/workspace"],
-        "mount_project_path": [],
-        "mount_image": [],
+    assert captured["local_context_kwargs"] == {
+        "source_dir": source_dir,
+        "preserved_paths": frozenset(),
     }
-    assert captured["build_kwargs"] == {
+    assert captured["build_context_kwargs"] == {
         "tag": "repo/name:tag",
-        "mounts": [mount_spec],
+        "mount_path": "/workspace",
         "context_path": "/workspace",
         "dockerfile_path": "/workspace/Dockerfile",
         "optimize_image": True,
         "private": True,
         "credentials": credentials,
-        "context_archive_path": None,
-        "context_archive_ref": None,
-        "context_archive_mount_path": None,
-        "context_archive_arch": None,
+        "builder_name": "builder",
+        "size": len(archive_bytes),
     }
+    assert captured["streamed_context"] == archive_bytes
     assert captured["build_id"] == "build-1"
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
 
 
 @pytest.mark.asyncio
-async def test_build_image_pack_uploads_archive_and_defaults_context_path(
+async def test_build_image_pack_streams_context_and_defaults_context_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     captured: dict[str, object] = {}
-    parse_mount_args: dict[str, object] = {}
     source_dir = tmp_path / "website"
     source_dir.mkdir()
     (source_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
-    temporary_pack_path = "/temp/build/packs/pack-123"
+    archive_dir = tempfile.TemporaryDirectory(prefix="meshagent-build-context-test-")
+    archive_path = Path(archive_dir.name) / "context.tar"
+    archive_bytes = b"context-archive"
+    archive_path.write_bytes(archive_bytes)
 
     class _FakeContainers:
-        async def build(self, **kwargs) -> str:
-            captured["build_kwargs"] = kwargs
+        async def build_context(self, **kwargs) -> str:
+            captured["build_context_kwargs"] = {
+                key: value for key, value in kwargs.items() if key != "chunks"
+            }
+            streamed = bytearray()
+            async for chunk in kwargs["chunks"]:
+                streamed.extend(chunk)
+            captured["streamed_context"] = bytes(streamed)
             return "build-1"
-
-        async def load(self, *, archive_path: str):
-            captured["loaded_archive_path"] = archive_path
-            return SimpleNamespace(
-                resolved_ref="room.meshagent.com/temp/build/packs/pack-123:latest"
-            )
-
-        async def pull_image(self, *, tag: str, credentials=None) -> None:
-            del credentials
-            captured["pulled_image"] = tag
-
-        async def delete_image(self, *, image: str) -> None:
-            captured["deleted_image"] = image
-
-    class _FakeStorage:
-        async def delete(self, path: str) -> None:
-            captured["deleted_path"] = path
 
     class _FakeRoomClient:
         def __init__(self) -> None:
             self.containers = _FakeContainers()
-            self.storage = _FakeStorage()
-            self.services = SimpleNamespace(restart=self._restart)
-
-        async def _restart(self, *, service_id: str) -> None:
-            captured["restarted_service_id"] = service_id
+            self.local_participant = _FakeParticipant(name="jesse@example.com")
 
         async def __aexit__(self, exc_type, exc, tb) -> None:
             del exc_type, exc, tb
@@ -562,31 +585,16 @@ async def test_build_image_pack_uploads_archive_and_defaults_context_path(
         captured["build_id"] = build_id
         return 0
 
-    async def _fake_upload_oci_archive_to_room(**kwargs) -> SimpleNamespace:
-        captured["upload_kwargs"] = kwargs
-        return SimpleNamespace(
-            packed_archive=SimpleNamespace(
-                output_path=Path("/tmp/ignored.tar"),
-                ref_name="room.meshagent.com/temp/build/packs/pack-123:latest",
-            ),
-            remote_path=temporary_pack_path,
-        )
-
-    def _fake_parse_image_operation_mounts(**kwargs):
-        parse_mount_args.update(kwargs)
-        raise AssertionError("_parse_image_operation_mounts should not be called")
+    async def _fake_build_local_context_archive(**kwargs):
+        captured["local_context_kwargs"] = kwargs
+        return archive_path, len(archive_bytes), archive_dir
 
     monkeypatch.setattr(image, "_with_client", _fake_with_client)
     monkeypatch.setattr(image, "resolve_room", lambda room: room)
     monkeypatch.setattr(
         image,
-        "_upload_oci_archive_to_room",
-        _fake_upload_oci_archive_to_room,
-    )
-    monkeypatch.setattr(
-        image,
-        "_parse_image_operation_mounts",
-        _fake_parse_image_operation_mounts,
+        "_build_local_context_archive",
+        _fake_build_local_context_archive,
     )
     monkeypatch.setattr(image, "_parse_creds", lambda values: [])
     monkeypatch.setattr(
@@ -594,25 +602,15 @@ async def test_build_image_pack_uploads_archive_and_defaults_context_path(
         "_stream_build_job_logs_and_wait_for_exit",
         _fake_stream_build_job_logs_and_wait_for_exit,
     )
-    monkeypatch.setattr(
-        image.uuid,
-        "uuid4",
-        lambda: SimpleNamespace(hex="pack-123"),
-    )
-    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
 
     await image.build_image(
         project_id="project-1",
         room="room-1",
-        tag="room.meshagent.com/website:1",
+        tag="repo/example:1",
+        pack=str(source_dir),
         context_path=None,
         dockerfile_path=None,
-        pack=str(source_dir),
-        arch="arm64",
-        pack_room_path=None,
-        mount_room_path=[],
-        mount_project_path=[],
-        mount_image=[],
+        builder_name="builder-1",
         private=False,
         optimize=True,
         cred=[],
@@ -620,149 +618,25 @@ async def test_build_image_pack_uploads_archive_and_defaults_context_path(
 
     assert captured["project_id"] == "project-1"
     assert captured["room"] == "room-1"
-    assert captured["upload_kwargs"] == {
-        "client": captured["wait_client"],
+    assert captured["local_context_kwargs"] == {
         "source_dir": source_dir,
-        "remote_path": temporary_pack_path,
-        "output_path": None,
-        "base_image": None,
-        "architecture": "arm64",
-        "ref_name": "room.meshagent.com/temp/build/packs/pack-123:latest",
         "preserved_paths": frozenset(),
     }
-    assert parse_mount_args == {}
-    assert captured["loaded_archive_path"] == temporary_pack_path
-    assert (
-        captured["deleted_image"]
-        == "room.meshagent.com/temp/build/packs/pack-123:latest"
-    )
-    assert captured["build_kwargs"] == {
-        "tag": "room.meshagent.com/website:1",
-        "mounts": [],
+    assert captured["build_context_kwargs"] == {
+        "tag": "repo/example:1",
+        "mount_path": "/context",
         "context_path": "/context",
         "dockerfile_path": "/context/Dockerfile",
         "optimize_image": True,
         "private": False,
         "credentials": [],
-        "context_archive_path": temporary_pack_path,
-        "context_archive_ref": "room.meshagent.com/temp/build/packs/pack-123:latest",
-        "context_archive_mount_path": "/context",
-        "context_archive_arch": "arm64",
+        "builder_name": "builder-1",
+        "size": len(archive_bytes),
     }
+    assert captured["streamed_context"] == archive_bytes
     assert captured["build_id"] == "build-1"
-    assert captured["deleted_path"] == temporary_pack_path
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
-
-
-@pytest.mark.asyncio
-async def test_build_image_pack_defaults_architecture_to_amd64(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    captured: dict[str, object] = {}
-    source_dir = tmp_path / "website"
-    source_dir.mkdir()
-    (source_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
-
-    class _FakeContainers:
-        async def build(self, **kwargs) -> str:
-            captured["build_kwargs"] = kwargs
-            return "build-1"
-
-        async def load(self, *, archive_path: str):
-            captured["loaded_archive_path"] = archive_path
-            return SimpleNamespace(
-                resolved_ref="room.meshagent.com/temp/build/packs/pack-123:latest"
-            )
-
-        async def delete_image(self, *, image: str) -> None:
-            captured["deleted_image"] = image
-
-    class _FakeStorage:
-        async def delete(self, path: str) -> None:
-            captured["deleted_path"] = path
-
-    class _FakeRoomClient:
-        def __init__(self) -> None:
-            self.containers = _FakeContainers()
-            self.storage = _FakeStorage()
-
-        async def __aexit__(self, exc_type, exc, tb) -> None:
-            del exc_type, exc, tb
-
-    class _FakeAccountClient:
-        async def close(self) -> None:
-            return None
-
-    async def _fake_with_client(*, project_id, room):
-        del project_id, room
-        return _FakeAccountClient(), _FakeRoomClient()
-
-    async def _fake_stream_build_job_logs_and_wait_for_exit(
-        *,
-        client,
-        build_id: str,
-    ) -> int:
-        del client, build_id
-        return 0
-
-    async def _fake_upload_oci_archive_to_room(**kwargs) -> SimpleNamespace:
-        captured["upload_kwargs"] = kwargs
-        return SimpleNamespace(
-            packed_archive=SimpleNamespace(
-                output_path=Path("/tmp/ignored.tar"),
-                ref_name="room.meshagent.com/temp/build/packs/pack-123:latest",
-            ),
-            remote_path="/temp/build/packs/pack-123",
-        )
-
-    monkeypatch.setattr(image, "_with_client", _fake_with_client)
-    monkeypatch.setattr(image, "resolve_room", lambda room: room)
-    monkeypatch.setattr(
-        image,
-        "_upload_oci_archive_to_room",
-        _fake_upload_oci_archive_to_room,
-    )
-    monkeypatch.setattr(
-        image,
-        "_parse_image_operation_mounts",
-        lambda **kwargs: object(),
-    )
-    monkeypatch.setattr(image, "_parse_creds", lambda values: [])
-    monkeypatch.setattr(
-        image,
-        "_stream_build_job_logs_and_wait_for_exit",
-        _fake_stream_build_job_logs_and_wait_for_exit,
-    )
-    monkeypatch.setattr(
-        image.uuid,
-        "uuid4",
-        lambda: SimpleNamespace(hex="pack-123"),
-    )
-    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
-
-    await image.build_image(
-        project_id=None,
-        room="room-1",
-        tag="room.meshagent.com/website:1",
-        context_path=None,
-        dockerfile_path=None,
-        pack=str(source_dir),
-        pack_room_path=None,
-        mount_room_path=[],
-        mount_project_path=[],
-        mount_image=[],
-        private=False,
-        cred=[],
-    )
-
-    assert captured["upload_kwargs"]["architecture"] == "amd64"
-    assert captured["loaded_archive_path"] == "/temp/build/packs/pack-123"
-    assert (
-        captured["deleted_image"]
-        == "room.meshagent.com/temp/build/packs/pack-123:latest"
-    )
 
 
 @pytest.mark.asyncio
@@ -775,29 +649,20 @@ async def test_build_image_pack_preserves_ignored_dockerfile_and_dockerignore(
     source_dir.mkdir()
     (source_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
     (source_dir / ".dockerignore").write_text("Dockerfile\n", encoding="utf-8")
+    archive_dir = tempfile.TemporaryDirectory(prefix="meshagent-build-context-test-")
+    archive_path = Path(archive_dir.name) / "context.tar"
+    archive_path.write_bytes(b"context-archive")
 
     class _FakeContainers:
-        async def build(self, **kwargs) -> str:
-            captured["build_kwargs"] = kwargs
+        async def build_context(self, **kwargs) -> str:
+            async for _chunk in kwargs["chunks"]:
+                pass
             return "build-1"
-
-        async def load(self, *, archive_path: str):
-            del archive_path
-            return SimpleNamespace(
-                resolved_ref="room.meshagent.com/temp/build/packs/pack-123:latest"
-            )
-
-        async def delete_image(self, *, image: str) -> None:
-            del image
-
-    class _FakeStorage:
-        async def delete(self, path: str) -> None:
-            del path
 
     class _FakeRoomClient:
         def __init__(self) -> None:
             self.containers = _FakeContainers()
-            self.storage = _FakeStorage()
+            self.local_participant = _FakeParticipant(name="jesse@example.com")
 
         async def __aexit__(self, exc_type, exc, tb) -> None:
             del exc_type, exc, tb
@@ -810,102 +675,63 @@ async def test_build_image_pack_preserves_ignored_dockerfile_and_dockerignore(
         del project_id, room
         return _FakeAccountClient(), _FakeRoomClient()
 
-    async def _fake_stream_build_job_logs_and_wait_for_exit(
-        *,
-        client,
-        build_id: str,
-    ) -> int:
-        del client, build_id
-        return 0
-
-    async def _fake_upload_oci_archive_to_room(**kwargs) -> SimpleNamespace:
-        captured["upload_kwargs"] = kwargs
-        return SimpleNamespace(
-            packed_archive=SimpleNamespace(
-                output_path=Path("/tmp/ignored.tar"),
-                ref_name="room.meshagent.com/temp/build/packs/pack-123:latest",
-            ),
-            remote_path="/temp/build/packs/pack-123",
-        )
+    async def _fake_build_local_context_archive(**kwargs):
+        captured["local_context_kwargs"] = kwargs
+        return archive_path, archive_path.stat().st_size, archive_dir
 
     monkeypatch.setattr(image, "_with_client", _fake_with_client)
     monkeypatch.setattr(image, "resolve_room", lambda room: room)
     monkeypatch.setattr(
         image,
-        "_upload_oci_archive_to_room",
-        _fake_upload_oci_archive_to_room,
-    )
-    monkeypatch.setattr(
-        image,
-        "_parse_image_operation_mounts",
-        lambda **kwargs: object(),
+        "_build_local_context_archive",
+        _fake_build_local_context_archive,
     )
     monkeypatch.setattr(image, "_parse_creds", lambda values: [])
     monkeypatch.setattr(
         image,
         "_stream_build_job_logs_and_wait_for_exit",
-        _fake_stream_build_job_logs_and_wait_for_exit,
+        mock.AsyncMock(return_value=0),
     )
-    monkeypatch.setattr(
-        image.uuid,
-        "uuid4",
-        lambda: SimpleNamespace(hex="pack-123"),
-    )
-    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
 
     await image.build_image(
         project_id=None,
         room="room-1",
-        tag="room.meshagent.com/website:1",
+        tag="repo/example:1",
+        pack=str(source_dir),
         context_path=None,
         dockerfile_path=None,
-        pack=str(source_dir),
-        pack_room_path=None,
-        mount_room_path=[],
-        mount_project_path=[],
-        mount_image=[],
         private=False,
         optimize=True,
         cred=[],
     )
 
-    assert captured["upload_kwargs"]["preserved_paths"] == frozenset(
+    assert captured["local_context_kwargs"]["preserved_paths"] == frozenset(
         {".dockerignore", "Dockerfile"}
     )
 
 
 @pytest.mark.asyncio
-async def test_build_image_pack_deletes_temporary_loaded_image_after_failed_build(
+async def test_build_image_pack_exits_with_build_status(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    captured: dict[str, object] = {}
     source_dir = tmp_path / "website"
     source_dir.mkdir()
     (source_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    archive_dir = tempfile.TemporaryDirectory(prefix="meshagent-build-context-test-")
+    archive_path = Path(archive_dir.name) / "context.tar"
+    archive_path.write_bytes(b"context-archive")
 
     class _FakeContainers:
-        async def build(self, **kwargs) -> str:
-            captured["build_kwargs"] = kwargs
+        async def build_context(self, **kwargs) -> str:
+            async for _chunk in kwargs["chunks"]:
+                pass
             return "build-1"
-
-        async def load(self, *, archive_path: str):
-            captured["loaded_archive_path"] = archive_path
-            return SimpleNamespace(
-                resolved_ref="room.meshagent.com/temp/build/packs/pack-123:latest"
-            )
-
-        async def delete_image(self, *, image: str) -> None:
-            captured["deleted_image"] = image
-
-    class _FakeStorage:
-        async def delete(self, path: str) -> None:
-            captured["deleted_path"] = path
 
     class _FakeRoomClient:
         def __init__(self) -> None:
             self.containers = _FakeContainers()
-            self.storage = _FakeStorage()
+            self.local_participant = _FakeParticipant(name="jesse@example.com")
 
         async def __aexit__(self, exc_type, exc, tb) -> None:
             del exc_type, exc, tb
@@ -918,72 +744,38 @@ async def test_build_image_pack_deletes_temporary_loaded_image_after_failed_buil
         del project_id, room
         return _FakeAccountClient(), _FakeRoomClient()
 
-    async def _fake_stream_build_job_logs_and_wait_for_exit(
-        *,
-        client,
-        build_id: str,
-    ) -> int:
-        del client, build_id
-        return 17
-
-    async def _fake_upload_oci_archive_to_room(**kwargs) -> SimpleNamespace:
-        captured["upload_kwargs"] = kwargs
-        return SimpleNamespace(
-            packed_archive=SimpleNamespace(
-                output_path=Path("/tmp/ignored.tar"),
-                ref_name="room.meshagent.com/temp/build/packs/pack-123:latest",
-            ),
-            remote_path="/temp/build/packs/pack-123",
-        )
+    async def _fake_build_local_context_archive(**kwargs):
+        del kwargs
+        return archive_path, archive_path.stat().st_size, archive_dir
 
     monkeypatch.setattr(image, "_with_client", _fake_with_client)
     monkeypatch.setattr(image, "resolve_room", lambda room: room)
     monkeypatch.setattr(
         image,
-        "_upload_oci_archive_to_room",
-        _fake_upload_oci_archive_to_room,
-    )
-    monkeypatch.setattr(
-        image,
-        "_parse_image_operation_mounts",
-        lambda **kwargs: object(),
+        "_build_local_context_archive",
+        _fake_build_local_context_archive,
     )
     monkeypatch.setattr(image, "_parse_creds", lambda values: [])
     monkeypatch.setattr(
         image,
         "_stream_build_job_logs_and_wait_for_exit",
-        _fake_stream_build_job_logs_and_wait_for_exit,
+        mock.AsyncMock(return_value=17),
     )
-    monkeypatch.setattr(
-        image.uuid,
-        "uuid4",
-        lambda: SimpleNamespace(hex="pack-123"),
-    )
-    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
 
     with pytest.raises(typer.Exit) as exc_info:
         await image.build_image(
             project_id=None,
             room="room-1",
-            tag="room.meshagent.com/website:1",
+            tag="repo/example:1",
+            pack=str(source_dir),
             context_path=None,
             dockerfile_path=None,
-            pack=str(source_dir),
-            pack_room_path=None,
-            mount_room_path=[],
-            mount_project_path=[],
-            mount_image=[],
             private=False,
             optimize=True,
             cred=[],
         )
 
     assert exc_info.value.exit_code == 17
-    assert (
-        captured["deleted_image"]
-        == "room.meshagent.com/temp/build/packs/pack-123:latest"
-    )
-    assert captured["deleted_path"] == "/temp/build/packs/pack-123"
 
 
 def test_resolve_build_pack_room_path_defaults_to_repository_path() -> None:
@@ -992,28 +784,6 @@ def test_resolve_build_pack_room_path_defaults_to_repository_path() -> None:
     assert (
         image._resolve_build_pack_room_path(parsed_tag=parsed_tag, room_path=None)
         == "/nested/website"
-    )
-
-
-def test_resolve_uploaded_build_pack_room_path_defaults_to_temp_path(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    parsed_tag = image._parse_build_tag("room.meshagent.com/website:1")
-    monkeypatch.setattr(
-        image.uuid,
-        "uuid4",
-        lambda: SimpleNamespace(hex="pack-123"),
-    )
-
-    assert image._resolve_uploaded_build_pack_room_path(
-        parsed_tag=parsed_tag,
-        room_path=None,
-    ) == ("/temp/build/packs/pack-123", True)
-
-
-def test_build_pack_ref_name_uses_room_storage_path_latest() -> None:
-    assert image._build_pack_ref_name_for_room_path(room_path="/nested/website") == (
-        "room.meshagent.com/nested/website:latest"
     )
 
 
@@ -1141,109 +911,32 @@ def test_resolve_runtime_container_override_supports_python_runtime() -> None:
 
 
 @pytest.mark.asyncio
-async def test_build_image_defaults_context_path_from_mount_room_path(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    mount_spec = object()
-    captured: dict[str, object] = {}
-    parse_mount_args: dict[str, object] = {}
-
-    class _FakeContainers:
-        async def build(self, **kwargs) -> str:
-            captured["build_kwargs"] = kwargs
-            return "build-1"
-
-    class _FakeRoomClient:
-        def __init__(self) -> None:
-            self.containers = _FakeContainers()
-
-        async def __aexit__(self, exc_type, exc, tb) -> None:
-            del exc_type, exc, tb
-
-    class _FakeAccountClient:
-        async def close(self) -> None:
-            return None
-
-    async def _fake_with_client(*, project_id, room):
-        del project_id, room
-        return _FakeAccountClient(), _FakeRoomClient()
-
-    async def _fake_stream_build_job_logs_and_wait_for_exit(
-        *,
-        client,
-        build_id: str,
-    ) -> int:
-        del client, build_id
-        return 0
-
-    def _fake_parse_image_operation_mounts(**kwargs):
-        parse_mount_args.update(kwargs)
-        return mount_spec
-
-    monkeypatch.setattr(image, "_with_client", _fake_with_client)
-    monkeypatch.setattr(image, "resolve_room", lambda room: room)
-    monkeypatch.setattr(
-        image,
-        "_parse_image_operation_mounts",
-        _fake_parse_image_operation_mounts,
-    )
-    monkeypatch.setattr(image, "_parse_creds", lambda values: [])
-    monkeypatch.setattr(
-        image,
-        "_stream_build_job_logs_and_wait_for_exit",
-        _fake_stream_build_job_logs_and_wait_for_exit,
-    )
-
-    await image.build_image(
-        project_id=None,
-        room="room-1",
-        tag="repo/name:tag",
-        context_path=None,
-        dockerfile_path=None,
-        pack=None,
-        pack_room_path=None,
-        mount_room_path=["/src"],
-        mount_project_path=[],
-        mount_image=[],
-        private=False,
-        optimize=True,
-        cred=[],
-    )
-
-    assert parse_mount_args == {
-        "mount_room_path": ["/src:/context"],
-        "mount_project_path": [],
-        "mount_image": [],
-    }
-    assert captured["build_kwargs"] == {
-        "tag": "repo/name:tag",
-        "mounts": [mount_spec],
-        "context_path": "/context",
-        "dockerfile_path": None,
-        "optimize_image": True,
-        "private": False,
-        "credentials": [],
-        "context_archive_path": None,
-        "context_archive_ref": None,
-        "context_archive_mount_path": None,
-        "context_archive_arch": None,
-    }
-
-
-@pytest.mark.asyncio
 async def test_build_image_can_disable_room_image_optimization(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     captured: dict[str, object] = {}
+    source_dir = tmp_path / "website"
+    source_dir.mkdir()
+    (source_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    archive_dir = tempfile.TemporaryDirectory(prefix="meshagent-build-context-test-")
+    archive_path = Path(archive_dir.name) / "context.tar"
+    archive_bytes = b"context-archive"
+    archive_path.write_bytes(archive_bytes)
 
     class _FakeContainers:
-        async def build(self, **kwargs) -> str:
-            captured["build_kwargs"] = kwargs
+        async def build_context(self, **kwargs) -> str:
+            captured["build_kwargs"] = {
+                key: value for key, value in kwargs.items() if key != "chunks"
+            }
+            async for _chunk in kwargs["chunks"]:
+                pass
             return "build-1"
 
     class _FakeRoomClient:
         def __init__(self) -> None:
             self.containers = _FakeContainers()
+            self.local_participant = _FakeParticipant(name="jesse@example.com")
 
         async def __aexit__(self, exc_type, exc, tb) -> None:
             del exc_type, exc, tb
@@ -1256,6 +949,10 @@ async def test_build_image_can_disable_room_image_optimization(
         del project_id, room
         return _FakeAccountClient(), _FakeRoomClient()
 
+    async def _fake_build_local_context_archive(**kwargs):
+        del kwargs
+        return archive_path, len(archive_bytes), archive_dir
+
     async def _fake_stream_build_job_logs_and_wait_for_exit(
         *,
         client,
@@ -1266,6 +963,11 @@ async def test_build_image_can_disable_room_image_optimization(
 
     monkeypatch.setattr(image, "_with_client", _fake_with_client)
     monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(
+        image,
+        "_build_local_context_archive",
+        _fake_build_local_context_archive,
+    )
     monkeypatch.setattr(image, "_parse_creds", lambda values: [])
     monkeypatch.setattr(
         image,
@@ -1277,13 +979,9 @@ async def test_build_image_can_disable_room_image_optimization(
         project_id=None,
         room="room-1",
         tag="room.meshagent.com/website:1",
+        pack=str(source_dir),
         context_path="/context",
         dockerfile_path="/context/Dockerfile",
-        pack=None,
-        pack_room_path=None,
-        mount_room_path=[],
-        mount_project_path=[],
-        mount_image=[],
         private=False,
         optimize=False,
         cred=[],
@@ -1291,39 +989,15 @@ async def test_build_image_can_disable_room_image_optimization(
 
     assert captured["build_kwargs"] == {
         "tag": "room.meshagent.com/website:1",
-        "mounts": [],
+        "mount_path": "/context",
         "context_path": "/context",
         "dockerfile_path": "/context/Dockerfile",
         "optimize_image": False,
         "private": False,
         "credentials": [],
-        "context_archive_path": None,
-        "context_archive_ref": None,
-        "context_archive_mount_path": None,
-        "context_archive_arch": None,
+        "builder_name": "builder",
+        "size": len(archive_bytes),
     }
-
-
-@pytest.mark.asyncio
-async def test_build_image_requires_context_path_for_multiple_mount_targets() -> None:
-    with pytest.raises(
-        typer.BadParameter,
-        match="--context-path is required when multiple mount targets are provided",
-    ):
-        await image.build_image(
-            project_id=None,
-            room="room-1",
-            tag="repo/name:tag",
-            context_path=None,
-            dockerfile_path=None,
-            pack=None,
-            pack_room_path=None,
-            mount_room_path=["/src:/workspace"],
-            mount_project_path=["/docs:/docs"],
-            mount_image=[],
-            private=False,
-            cred=[],
-        )
 
 
 @pytest.mark.asyncio
@@ -1341,14 +1015,9 @@ async def test_build_image_pack_requires_local_dockerfile_when_used_as_context(
             project_id=None,
             room="room-1",
             tag="room.meshagent.com/website:1",
+            pack=str(source_dir),
             context_path=None,
             dockerfile_path=None,
-            pack=str(source_dir),
-            arch="arm64",
-            pack_room_path=None,
-            mount_room_path=[],
-            mount_project_path=[],
-            mount_image=[],
             private=False,
             cred=[],
         )
@@ -1377,7 +1046,6 @@ async def test_pack_image_requires_output_without_room(tmp_path: Path) -> None:
             tag=None,
             output=None,
             base=None,
-            arch="amd64",
             room_path=None,
         )
 
@@ -1397,7 +1065,6 @@ async def test_pack_image_requires_tag_when_uploading_to_room(tmp_path: Path) ->
             tag=None,
             output=str(tmp_path / "sample.tar"),
             base=None,
-            arch="arm64",
             room_path=None,
         )
 
@@ -1420,7 +1087,6 @@ async def test_pack_image_requires_room_meshagent_tag_when_uploading_to_room(
             tag="website:1",
             output=str(tmp_path / "sample.tar"),
             base=None,
-            arch="arm64",
             room_path=None,
         )
 
@@ -1574,7 +1240,7 @@ async def test_deploy_image_creates_room_service_with_mounts_env_secret_and_toke
     assert env_by_name["MESHAGENT_TOKEN"].token is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.identity == "repo-web"
     assert env_by_name["MESHAGENT_TOKEN"].token.api is not None
-    assert env_by_name["MESHAGENT_TOKEN"].token.api.secrets is None
+    assert env_by_name["MESHAGENT_TOKEN"].token.api.secrets is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.api.services is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.role == "agent"
     for env_name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
@@ -1831,6 +1497,7 @@ async def test_deploy_image_pack_builds_before_deploying(
     monkeypatch.setattr(image, "_with_client", _fake_with_client)
     monkeypatch.setattr(image, "resolve_room", lambda room: room)
     monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setenv("MESHAGENT_ARCH", "arm64")
     monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
 
     await image.deploy_image(
@@ -1840,8 +1507,6 @@ async def test_deploy_image_pack_builds_before_deploying(
         pack=str(source_dir),
         context_path="/context",
         dockerfile_path="/context/Dockerfile",
-        arch="arm64",
-        pack_room_path="/packed/context",
         optimize=False,
         cred=["registry,user,password"],
         domain=None,
@@ -1861,10 +1526,7 @@ async def test_deploy_image_pack_builds_before_deploying(
     assert build_kwargs["dockerfile_path"] == "/context/Dockerfile"
     assert build_kwargs["pack"] == str(source_dir)
     assert build_kwargs["arch"] == "arm64"
-    assert build_kwargs["pack_room_path"] == "/packed/context"
-    assert build_kwargs["mount_room_path"] == []
-    assert build_kwargs["mount_project_path"] == []
-    assert build_kwargs["mount_image"] == []
+    assert build_kwargs["builder_name"] is None
     assert build_kwargs["private"] is False
     assert build_kwargs["optimize"] is False
     assert build_kwargs["cred"] == ["registry,user,password"]
@@ -1967,8 +1629,6 @@ async def test_deploy_image_pack_fails_before_build_when_env_secret_is_missing(
             pack=str(source_dir),
             context_path="/context",
             dockerfile_path="/context/Dockerfile",
-            arch="arm64",
-            pack_room_path="/packed/context",
             optimize=False,
             domain=None,
             room_mount=[],
@@ -2208,8 +1868,6 @@ CMD ["/app/dist/index.js"]
         pack=str(source_dir),
         context_path="/context",
         dockerfile_path="/context/Dockerfile",
-        arch="amd64",
-        pack_room_path=None,
         optimize=True,
         domain=None,
         room_mount=[],
@@ -2331,8 +1989,6 @@ async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
         pack=str(source_dir),
         context_path="/context",
         dockerfile_path="/context/Dockerfile",
-        arch="amd64",
-        pack_room_path=None,
         optimize=True,
         domain="node.meshagent.dev",
         room_mount=[],
@@ -2385,8 +2041,6 @@ async def test_deploy_image_build_options_require_pack() -> None:
             pack=None,
             context_path="/context",
             dockerfile_path=None,
-            arch=image.DEFAULT_ARCHITECTURE,
-            pack_room_path=None,
             optimize=True,
             domain=None,
             room_mount=[],
@@ -2412,8 +2066,6 @@ async def test_deploy_image_cred_requires_pack() -> None:
             pack=None,
             context_path=None,
             dockerfile_path=None,
-            arch=image.DEFAULT_ARCHITECTURE,
-            pack_room_path=None,
             optimize=True,
             cred=["registry,user,password"],
             domain=None,

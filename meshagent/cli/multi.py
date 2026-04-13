@@ -377,7 +377,7 @@ async def join(
         Optional[str], typer.Option(..., help="Name of the agent to call")
     ] = None,
 ):
-    from meshagent.agents import Agent
+    from meshagent.agents import SingleRoomAgent
     from meshagent.api import RoomClient
     from meshagent.api.helpers import websocket_room_url
     from meshagent.api.websocket_protocol import WebSocketClientProtocol
@@ -398,7 +398,7 @@ async def join(
 
     try:
 
-        async def run_agent(agent: Agent, jwt: str):
+        async def run_agent(agent: SingleRoomAgent, jwt: str):
             nonlocal room
 
             async with RoomClient(

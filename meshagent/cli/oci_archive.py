@@ -472,6 +472,20 @@ def _write_layer_tar(
     return digest
 
 
+def write_build_context_archive(
+    *,
+    source_dir: Path,
+    output_path: Path,
+    preserved_paths: frozenset[str] = frozenset(),
+) -> None:
+    _write_layer_tar(
+        source_dir=source_dir,
+        layer_path=output_path,
+        excluded_paths=set(),
+        preserved_paths=preserved_paths,
+    )
+
+
 def _compress_zstd_to_path(*, source_path: Path, destination_path: Path) -> None:
     compressor = zstandard.ZstdCompressor(level=_ZSTD_COMPRESSION_LEVEL)
     with source_path.open("rb") as source, destination_path.open("wb") as destination:
