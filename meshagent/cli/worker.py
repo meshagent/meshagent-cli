@@ -536,6 +536,30 @@ def build_worker(
                 for p in room_rules_paths:
                     await self._load_room_rules(path=p)
 
+        def get_skills_storage_toolkit(self) -> StorageToolkit | None:
+            if require_storage:
+                return StorageToolkit(
+                    mounts=_require_storage_tool_mounts(
+                        room=client or self.room,
+                        local_paths=storage_tool_local_paths,
+                        room_paths=storage_tool_room_paths,
+                        default_room_mount=default_room_storage_mount,
+                    )
+                )
+
+            if require_read_only_storage:
+                return StorageToolkit(
+                    read_only=True,
+                    mounts=_require_storage_tool_mounts(
+                        room=client or self.room,
+                        local_paths=storage_tool_local_paths,
+                        room_paths=storage_tool_room_paths,
+                        default_room_mount=default_room_storage_mount,
+                    ),
+                )
+
+            return None
+
         async def get_rules(self):
             rules = [*await super().get_rules()]
             for p in self._room_rules_paths:

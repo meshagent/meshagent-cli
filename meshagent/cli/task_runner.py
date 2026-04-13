@@ -581,6 +581,30 @@ def build_task_runner(
 
             return rules
 
+        def _get_skills_storage_toolkit(self) -> StorageToolkit | None:
+            if require_storage:
+                return StorageToolkit(
+                    mounts=_require_storage_tool_mounts(
+                        room=client or self.room,
+                        local_paths=storage_tool_local_paths,
+                        room_paths=storage_tool_room_paths,
+                        default_room_mount=default_room_storage_mount,
+                    )
+                )
+
+            if require_read_only_storage:
+                return StorageToolkit(
+                    read_only=True,
+                    mounts=_require_storage_tool_mounts(
+                        room=client or self.room,
+                        local_paths=storage_tool_local_paths,
+                        room_paths=storage_tool_room_paths,
+                        default_room_mount=default_room_storage_mount,
+                    ),
+                )
+
+            return None
+
         async def get_rules(self, *, context: TaskContext):
             rules = await super().get_rules(context=context)
 
@@ -588,7 +612,12 @@ def build_task_runner(
                 rules.append(
                     "You have access to to following skills which follow the agentskills spec:"
                 )
-                rules.append(await to_prompt([*(Path(p) for p in skill_dirs)]))
+                rules.append(
+                    await to_prompt(
+                        [*(Path(p) for p in skill_dirs)],
+                        storage_toolkit=self._get_skills_storage_toolkit(),
+                    )
+                )
                 rules.append(
                     "Use the shell or storage tool to find out more about skills and execute them when they are required"
                 )
