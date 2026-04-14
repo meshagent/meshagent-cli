@@ -29,23 +29,23 @@ dynamic = ["version", "readme"]
 [project.optional-dependencies]
 
 all = [
-  "meshagent-agents[all]~=0.36.3",
-  "meshagent-api[all]~=0.36.3",
-  "meshagent-computers~=0.36.3",
-  "meshagent-openai~=0.36.3",
-  "meshagent-anthropic~=0.36.3",
-  "meshagent-codex~=0.36.3",
-  "meshagent-mcp~=0.36.3",
-  "meshagent-tools~=0.36.3",
+  "meshagent-agents[all]~=0.37.0",
+  "meshagent-api[all]~=0.37.0",
+  "meshagent-computers~=0.37.0",
+  "meshagent-openai~=0.37.0",
+  "meshagent-anthropic~=0.37.0",
+  "meshagent-codex~=0.37.0",
+  "meshagent-mcp~=0.37.0",
+  "meshagent-tools~=0.37.0",
   "supabase-auth~=2.28.0",
   "prompt-toolkit~=3.0.52"
 ]
 
 mcp-service = [
-    "meshagent-agents[all]~=0.36.3",
-    "meshagent-api~=0.36.3",
-    "meshagent-mcp~=0.36.3",
-    "meshagent-tools~=0.36.3",
+    "meshagent-agents[all]~=0.37.0",
+    "meshagent-api~=0.37.0",
+    "meshagent-mcp~=0.37.0",
+    "meshagent-tools~=0.37.0",
     "supabase-auth~=2.28.0"
 ]
 
