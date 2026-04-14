@@ -31,11 +31,12 @@ async def test_whoami_uses_user_profile(monkeypatch) -> None:
     async def _fake_get_access_token() -> str | None:
         return "oauth-token"
 
-    async def _fake_get_client() -> _FakeClient:
-        return client
-
     monkeypatch.setattr(auth.auth_async, "get_access_token", _fake_get_access_token)
-    monkeypatch.setattr(auth, "get_client", _fake_get_client)
+    monkeypatch.setattr(
+        auth,
+        "CustomMeshagentClient",
+        lambda *, base_url, token: client,
+    )
     monkeypatch.setattr(auth.typer, "echo", output.append)
 
     await auth.whoami()

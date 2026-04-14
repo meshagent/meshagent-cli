@@ -1,8 +1,9 @@
 import typer
 
+from meshagent.api.helpers import meshagent_base_url
 from meshagent.cli import async_typer
 from meshagent.cli import auth_async
-from meshagent.cli.helper import get_active_project, get_client
+from meshagent.cli.helper import CustomMeshagentClient, get_active_project
 
 app = async_typer.AsyncTyper(help="Authenticate to meshagent")
 
@@ -31,7 +32,10 @@ async def whoami():
         typer.echo("Not logged in")
         return
 
-    client = await get_client()
+    client = CustomMeshagentClient(
+        base_url=meshagent_base_url(),
+        token=access_token,
+    )
     try:
         profile = await client.get_user_profile("me")
     finally:
