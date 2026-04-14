@@ -23,7 +23,7 @@ def setup_command():
     """Perform initial login and project/api key activation."""
 
     async def runner():
-        from meshagent.cli import api_keys, auth_async, projects
+        from meshagent.cli import api_keys, ask as ask_module, auth_async, projects
         from meshagent.cli.helper import (
             get_active_api_key,
             get_active_project,
@@ -118,5 +118,9 @@ def setup_command():
 
         if result.status != "completed" and result.message is not None:
             print(result.message)
+            return
+
+        if result.status == "completed":
+            await ask_module.ask(project_id=None, message=None)
 
     _run_async(runner())

@@ -88,6 +88,12 @@ app.add_lazy_command(
     help="Inspect recent sessions and events",
 )
 app.add_lazy_command(
+    name="ask",
+    module="meshagent.cli.ask",
+    help="Send a one-shot prompt through the LLM router",
+    attribute="ask_command",
+)
+app.add_lazy_command(
     name="token",
     module="meshagent.cli.participant_token",
     help="Generate participant tokens (JWTs)",

@@ -20,7 +20,7 @@ dependencies = [
   "pathspec>=1.0.3,<2",
   "zstandard~=0.25.0",
   "rich~=14.3.0",
-  "textual>=0.50,<2.0",
+  "textual>=8.2.3,<9.0",
   "prompt-toolkit~=3.0.52",
 ]
 
