@@ -306,7 +306,7 @@ class SetupWizardApp(App[None]):
         yield Static("", id="setup-logo")
         yield Static("MeshAgent Setup", id="setup-title")
         yield Static("", id="setup-message")
-        yield OptionList(id="setup-options", wrap=False)
+        yield OptionList(id="setup-options")
         yield Input(id="setup-input", placeholder="")
         yield Static("", id="setup-status")
         yield Static("", id="setup-url")
