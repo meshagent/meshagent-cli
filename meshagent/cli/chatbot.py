@@ -82,6 +82,7 @@ from meshagent.anthropic import (
 )
 
 from pathlib import Path, PurePosixPath
+import posixpath
 from urllib.parse import urlparse
 
 from meshagent.tools.script import get_script_tools
@@ -538,11 +539,48 @@ def _default_rules_storage_toolkit() -> StorageToolkit:
     )
 
 
-def _normalize_storage_rules_path(path: str) -> str:
-    normalized = Path(path)
-    if not normalized.is_absolute():
-        normalized = Path("/") / normalized
-    return normalized.as_posix()
+def _resolve_configured_local_storage_path(path: Path) -> Path:
+    if path.is_absolute():
+        return path.resolve()
+    return (Path.cwd() / path).resolve()
+
+
+def _normalize_configured_storage_path(path: Path) -> str:
+    if path.is_absolute():
+        return path.as_posix()
+
+    normalized = posixpath.normpath(f"/{path.as_posix()}")
+    if not normalized.startswith("/"):
+        normalized = f"/{normalized}"
+    return normalized
+
+
+def _default_rules_storage_for_path(path: str) -> tuple[StorageToolkit, str]:
+    configured_path = Path(path)
+    cwd = Path.cwd().resolve()
+    resolved = _resolve_configured_local_storage_path(configured_path)
+
+    if resolved.is_relative_to(cwd):
+        relative = resolved.relative_to(cwd)
+        virtual_path = Path("/") if relative == Path(".") else Path("/") / relative
+        return _default_rules_storage_toolkit(), virtual_path.as_posix()
+
+    return (
+        StorageToolkit(
+            read_only=True,
+            mounts=[
+                StorageToolLocalMount(
+                    path="/",
+                    local_path=str(cwd),
+                ),
+                StorageToolLocalMount(
+                    path=resolved.as_posix(),
+                    local_path=str(resolved),
+                ),
+            ],
+        ),
+        resolved.as_posix(),
+    )
 
 
 def _normalize_room_content_path(*, url: str) -> str:
@@ -575,12 +613,13 @@ async def _load_storage_rules(
     storage_toolkit: StorageToolkit | None,
     participant: Participant | None,
 ) -> list[str]:
-    resolved_storage_toolkit = (
-        storage_toolkit
-        if storage_toolkit is not None
-        else _default_rules_storage_toolkit()
-    )
-    normalized_path = _normalize_storage_rules_path(path)
+    if storage_toolkit is None:
+        resolved_storage_toolkit, normalized_path = _default_rules_storage_for_path(
+            path
+        )
+    else:
+        resolved_storage_toolkit = storage_toolkit
+        normalized_path = _normalize_configured_storage_path(Path(path))
     rules: list[str] = []
 
     try:

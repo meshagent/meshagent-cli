@@ -1538,6 +1538,40 @@ async def test_process_agent_get_rules_loads_instructions_from_current_working_d
 
 
 @pytest.mark.asyncio
+async def test_process_agent_get_rules_loads_instructions_from_parent_relative_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    monkeypatch.chdir(app_dir)
+
+    instructions_file = tmp_path / "shared" / "instructions.txt"
+    instructions_file.parent.mkdir()
+    instructions_file.write_text(
+        "shared instruction\n",
+        encoding="utf-8",
+    )
+
+    custom_process_agent = chatbot.build_process_agent(
+        model="gpt-5",
+        rule=["base rule"],
+        toolkit=[],
+        schema=[],
+        instructions=["../shared/instructions.txt"],
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+    )
+    agent = custom_process_agent()
+
+    rules = await agent.get_rules(participant=None)
+
+    assert "base rule" in rules
+    assert "shared instruction" in rules
+
+
+@pytest.mark.asyncio
 async def test_process_agent_get_rules_warns_when_instructions_file_is_missing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
