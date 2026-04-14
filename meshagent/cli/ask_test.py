@@ -330,6 +330,63 @@ async def test_ask_command_uses_oauth_token_and_prints_result(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
+async def test_ask_command_prints_markdown_without_streaming(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    rendered: list[object] = []
+
+    async def _fake_get_access_token() -> str:
+        return "oauth-token"
+
+    async def _fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-123"
+        return "project-123"
+
+    def _fake_build_ask_adapter(
+        *,
+        model: str,
+        project_id: str,
+        access_token: str,
+    ) -> LLMAdapter:
+        captured["model"] = model
+        captured["project_id"] = project_id
+        captured["access_token"] = access_token
+        return _FakeAskAdapter()
+
+    class _FakeConsole:
+        def print(self, value: object) -> None:
+            rendered.append(value)
+
+    monkeypatch.setattr(
+        ask_module.auth_async, "get_access_token", _fake_get_access_token
+    )
+    monkeypatch.setattr(ask_module, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(ask_module, "_build_ask_adapter", _fake_build_ask_adapter)
+    monkeypatch.setattr(ask_module, "Console", _FakeConsole)
+    monkeypatch.setattr(ask_module, "Markdown", lambda text: ("markdown", text))
+    monkeypatch.setattr(
+        ask_module.click,
+        "echo",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("streaming output should not be used")
+        ),
+    )
+
+    await ask_module.ask(
+        project_id="project-123",
+        message="hello",
+        format="markdown",
+        model="gpt-5.4",
+    )
+
+    assert captured == {
+        "model": "gpt-5.4",
+        "project_id": "project-123",
+        "access_token": "oauth-token",
+    }
+    assert rendered == [("markdown", "hello world")]
+
+
+@pytest.mark.asyncio
 async def test_ask_command_launches_tui_when_prompt_missing_in_tty(monkeypatch) -> None:
     captured: dict[str, object] = {}
 

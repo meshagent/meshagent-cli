@@ -5,6 +5,43 @@ from rich import print
 
 from meshagent.cli.version import __version__
 
+_SETUP_WELCOME_PROMPT = (
+    "welcome {user_name} to meshagent and let them know they can use "
+    "'meshagent ask' to ask questions about meshagent"
+)
+
+
+def _setup_welcome_prompt(*, user_name: str | None) -> str:
+    if user_name is None or user_name.strip() == "":
+        return (
+            "welcome them to meshagent and let them know they can use "
+            "'meshagent ask' to ask questions about meshagent"
+        )
+
+    return _SETUP_WELCOME_PROMPT.format(user_name=user_name.strip())
+
+
+def _display_name_from_profile(profile: dict[str, object]) -> str | None:
+    first_name = profile.get("first_name")
+    last_name = profile.get("last_name")
+    email = profile.get("email")
+
+    full_name = " ".join(
+        part
+        for part in (
+            first_name.strip() if isinstance(first_name, str) else None,
+            last_name.strip() if isinstance(last_name, str) else None,
+        )
+        if part
+    )
+    if full_name != "":
+        return full_name
+
+    if isinstance(email, str) and email.strip() != "":
+        return email.strip()
+
+    return None
+
 
 def _run_async(coro):
     asyncio.run(coro)
@@ -24,7 +61,9 @@ def setup_command():
 
     async def runner():
         from meshagent.cli import api_keys, ask as ask_module, auth_async, projects
+        from meshagent.api.helpers import meshagent_base_url
         from meshagent.cli.helper import (
+            CustomMeshagentClient,
             get_active_api_key,
             get_active_project,
             get_client,
@@ -121,6 +160,28 @@ def setup_command():
             return
 
         if result.status == "completed":
-            await ask_module.ask(project_id=None, message=None)
+            profile: dict[str, object] | None = None
+            access_token = await auth_async.get_access_token()
+            if access_token is not None:
+                client = CustomMeshagentClient(
+                    base_url=meshagent_base_url(),
+                    token=access_token,
+                )
+                try:
+                    profile = await client.get_user_profile("me")
+                except Exception:
+                    profile = None
+                finally:
+                    await client.close()
+            await ask_module.ask(
+                project_id=None,
+                message=_setup_welcome_prompt(
+                    user_name=(
+                        _display_name_from_profile(profile)
+                        if profile is not None
+                        else None
+                    ),
+                ),
+            )
 
     _run_async(runner())

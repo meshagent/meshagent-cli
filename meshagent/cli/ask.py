@@ -14,6 +14,8 @@ from typing import Annotated, Any
 
 import click
 import typer
+from rich.console import Console
+from rich.markdown import Markdown
 from meshagent.agents.adapter import LLMAdapter
 from meshagent.agents.messages import (
     AGENT_EVENT_TEXT_CONTENT_DELTA,
@@ -1305,6 +1307,14 @@ async def ask(
         str | None,
         typer.Option("--message", "-m", help="Prompt to send to the LLM"),
     ] = None,
+    format: Annotated[
+        str,
+        typer.Option(
+            "--format",
+            help="Output format for non-interactive responses.",
+            case_sensitive=False,
+        ),
+    ] = "text",
     model: Annotated[
         str,
         typer.Option("--model", help="Name of the LLM model to use"),
@@ -1340,6 +1350,20 @@ async def ask(
             "Prompt required. Pass `-m/--message`, or run in a TTY for interactive mode."
         )
         raise typer.Exit(1)
+
+    normalized_format = format.strip().lower()
+    if normalized_format not in {"text", "markdown"}:
+        click.echo(f"Unsupported format: {format}. Expected one of: text, markdown.")
+        raise typer.Exit(1)
+
+    if normalized_format == "markdown":
+        result = await _run_ask_process(
+            prompt=message,
+            model=model,
+            llm_adapter=llm_adapter,
+        )
+        Console().print(Markdown(result))
+        return
 
     wrote_output = False
 

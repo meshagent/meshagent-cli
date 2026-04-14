@@ -6,13 +6,39 @@ from meshagent.cli.tui.setup import SetupWizardResult
 
 def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
     launched: list[dict[str, object]] = []
+    fake_profile = {
+        "id": "user-123",
+        "first_name": "Jesse",
+        "last_name": "Ezell",
+        "email": "jesse@example.com",
+    }
 
     async def _fake_get_active_project() -> str | None:
         return None
 
+    async def _fake_get_access_token() -> str | None:
+        return "oauth-token"
+
     async def _fake_run_setup_wizard_tui(**kwargs) -> SetupWizardResult:
         assert kwargs["active_project_id"] is None
         return SetupWizardResult(status="completed", message="done")
+
+    class _FakeClient:
+        async def list_projects(self):
+            return {"projects": []}
+
+        async def create_project(self, project_name: str):
+            return {"id": project_name}
+
+        async def get_user_profile(self, user_id: str):
+            assert user_id == "me"
+            return fake_profile
+
+        async def close(self) -> None:
+            return None
+
+    async def _fake_get_client():
+        return _FakeClient()
 
     async def _fake_ask(*, project_id, message, model="gpt-5.4") -> None:
         launched.append(
@@ -32,6 +58,18 @@ def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
         _fake_run_setup_wizard_tui,
     )
     monkeypatch.setattr(
+        "meshagent.cli.helper.get_client",
+        _fake_get_client,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.auth_async.get_access_token",
+        _fake_get_access_token,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.helper.CustomMeshagentClient",
+        lambda *, base_url, token: _FakeClient(),
+    )
+    monkeypatch.setattr(
         "meshagent.cli.ask.ask",
         _fake_ask,
     )
@@ -49,7 +87,7 @@ def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
     assert launched == [
         {
             "project_id": None,
-            "message": None,
+            "message": root_commands._setup_welcome_prompt(user_name="Jesse Ezell"),
             "model": "gpt-5.4",
         }
     ]
@@ -64,6 +102,9 @@ def test_setup_command_does_not_launch_ask_when_not_completed(monkeypatch) -> No
     async def _fake_run_setup_wizard_tui(**kwargs) -> SetupWizardResult:
         del kwargs
         return SetupWizardResult(status="canceled", message="Setup canceled.")
+
+    async def _fake_get_access_token() -> str | None:
+        raise AssertionError("oauth token should not be requested")
 
     async def _fake_ask(*, project_id, message, model="gpt-5.4") -> None:
         del project_id, message, model
@@ -81,6 +122,10 @@ def test_setup_command_does_not_launch_ask_when_not_completed(monkeypatch) -> No
     monkeypatch.setattr(
         "meshagent.cli.ask.ask",
         _fake_ask,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.auth_async.get_access_token",
+        _fake_get_access_token,
     )
 
     monkeypatch.setattr(
