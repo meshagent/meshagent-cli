@@ -192,7 +192,7 @@ async def scheduled_task_list(
     room: Annotated[
         Optional[str],
         typer.Option("--room", "-r", help="Filter by room name"),
-    ] = None,
+    ] = os.getenv("MESHAGENT_ROOM"),
     task_id: Annotated[
         Optional[str],
         typer.Option("--id", "--task-id", help="Filter by scheduled task id"),
@@ -266,7 +266,7 @@ async def scheduled_task_update(
     room: Annotated[
         Optional[str],
         typer.Option("--room", "-r", help="Updated room name"),
-    ] = None,
+    ] = os.getenv("MESHAGENT_ROOM"),
     queue: Annotated[
         Optional[str],
         typer.Option("--queue", "-q", help="Updated queue name"),
