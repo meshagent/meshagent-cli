@@ -2144,23 +2144,6 @@ async def deploy(
         await client.close()
 
 
-_REMOVED_TOOLKIT_OPTION_NAMES = DUPLICATE_REQUIRE_OPTION_NAMES | {
-    "discover_script_tools",
-    "storage_tool_local_path",
-    "storage_tool_room_path",
-    "shell_room_mount",
-    "shell_tool_room_path",
-    "shell_project_mount",
-    "shell_tool_project_path",
-    "shell_empty_dir_mount",
-    "shell_tool_empty_dir",
-    "shell_image_mount",
-    "working_dir",
-    "working_directory",
-    "shell_image",
-    "delegate_shell_token",
-    "shell_copy_env",
-    "shell_set_env",
-}
+_REMOVED_TOOLKIT_OPTION_NAMES = DUPLICATE_REQUIRE_OPTION_NAMES
 
 strip_command_options(app, option_names=_REMOVED_TOOLKIT_OPTION_NAMES)
