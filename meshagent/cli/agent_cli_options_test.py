@@ -23,7 +23,10 @@ def test_join_help_retains_storage_mount_options(module, subcommand: str) -> Non
     options = {
         option
         for param in command.params
-        for option in [*getattr(param, "opts", []), *getattr(param, "secondary_opts", [])]
+        for option in [
+            *getattr(param, "opts", []),
+            *getattr(param, "secondary_opts", []),
+        ]
     }
     assert "--storage-tool-local-path" in options
     assert "--storage-tool-room-path" in options
