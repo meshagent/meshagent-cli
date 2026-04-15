@@ -102,10 +102,10 @@ async def forward(
 
         if name is not None:
             async with RoomClient(
-                protocol=WebSocketClientProtocol(
+                protocol_factory=WebSocketClientProtocol(
                     url=websocket_room_url(room_name=room),
                     token=connection.jwt,
-                )
+                ).create_factory()
             ) as r:
                 containers = await r.containers.list()
                 for container in containers:

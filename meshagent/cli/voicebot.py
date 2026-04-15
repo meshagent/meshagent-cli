@@ -276,10 +276,10 @@ async def join(
             agents.append((bot, jwt))
         else:
             async with RoomClient(
-                protocol=WebSocketClientProtocol(
+                protocol_factory=WebSocketClientProtocol(
                     url=websocket_room_url(room_name=room),
                     token=jwt,
-                )
+                ).create_factory()
             ) as client:
                 await bot.start(room=client)
 

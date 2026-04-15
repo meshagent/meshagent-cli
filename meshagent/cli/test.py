@@ -625,10 +625,10 @@ async def stream_tool(
 
     print("[bold green]Connecting to room...[/bold green]")
     async with RoomClient(
-        protocol=WebSocketClientProtocol(
+        protocol_factory=WebSocketClientProtocol(
             url=websocket_room_url(room_name=room_name),
             token=jwt,
-        )
+        ).create_factory()
     ) as client:
         toolkit_instance = Toolkit(
             name=toolkit,

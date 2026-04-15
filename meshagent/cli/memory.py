@@ -563,10 +563,10 @@ async def _connected_room_client(
             project_id=project_id, room=room_name
         )
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             yield client
     finally:

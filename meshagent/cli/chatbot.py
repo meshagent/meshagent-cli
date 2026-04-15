@@ -2366,10 +2366,10 @@ async def join(
             image_paths=shell_image_mount,
         )
         client = RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=jwt,
-            )
+            ).create_factory()
         )
 
         CustomChatbot = _build_runtime_agent(
@@ -4885,10 +4885,10 @@ async def chat_with(
         _queue_status(status_queue, status="connecting", message="connecting to room")
 
         connecting_client = RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=connection.jwt,
-            ),
+            ).create_factory(),
         )
 
         def _on_room_status(**kwargs) -> None:
@@ -5395,10 +5395,10 @@ async def run(
         )
 
         client = RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=jwt,
-            )
+            ).create_factory()
         )
         CustomChatbot = _build_runtime_agent(
             client=client,

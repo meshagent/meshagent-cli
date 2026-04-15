@@ -402,10 +402,10 @@ async def join(
             nonlocal room
 
             async with RoomClient(
-                protocol=WebSocketClientProtocol(
+                protocol_factory=WebSocketClientProtocol(
                     url=websocket_room_url(room_name=room),
                     token=jwt,
-                )
+                ).create_factory()
             ) as room:
                 await agent.start(room=room)
                 await room.protocol.wait_for_close()

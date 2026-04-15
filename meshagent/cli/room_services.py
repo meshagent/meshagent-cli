@@ -35,10 +35,10 @@ async def room_services_list_command(
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             print("[bold green]Fetching services...[/bold green]")
             services_client = ServicesClient(room=client)
@@ -133,10 +133,10 @@ async def room_services_restart_command(
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             services_client = ServicesClient(room=client)
             result: ListServicesResult = await services_client.list_with_state()

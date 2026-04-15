@@ -348,10 +348,10 @@ async def _connect_room(project_id: ProjectIdOption, room: RoomOption):
             project_id=project_id, room=room_name
         )
         client = RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         )
         await client.__aenter__()
         return account_client, client

@@ -46,10 +46,10 @@ async def queue_list(
         connection = await account_client.connect_room(project_id=project_id, room=room)
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             rows = _queue_rows(await client.queues.list())
 
@@ -91,10 +91,10 @@ async def send(
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             if file is not None:
                 with open(file, "rb") as f:
@@ -142,10 +142,10 @@ async def send_mail(
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             message = create_email_message(
                 to_address=queue,
@@ -196,10 +196,10 @@ async def receive(
         connection = await account_client.connect_room(project_id=project_id, room=room)
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             response = await client.queues.receive(name=queue, wait=False)
             if response is None:
@@ -230,10 +230,10 @@ async def size(
         connection = await account_client.connect_room(project_id=project_id, room=room)
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             matching_queue = next(
                 (item for item in await client.queues.list() if item.name == queue),

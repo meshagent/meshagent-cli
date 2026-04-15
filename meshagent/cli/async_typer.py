@@ -62,6 +62,7 @@ class LazyLoadedCommand(click.Command):
                 f"{self._registration.module} has no attribute {self._registration.attribute}"
             ) from exc
 
+        source_app = target if isinstance(target, AsyncTyper) else None
         command = _coerce_to_click_command(target)
         for segment in self._registration.command_path:
             if not isinstance(command, click.Group):
@@ -75,6 +76,12 @@ class LazyLoadedCommand(click.Command):
                     f"{self._registration.module}.{self._registration.attribute} has no subcommand {segment}"
                 )
             command = resolved
+
+        if source_app is not None and len(self._registration.command_path) > 0:
+            command = _attach_deprecated_option_aliases(
+                command,
+                source_app.deprecated_option_aliases,
+            )
 
         self._loaded_command = command
         return command

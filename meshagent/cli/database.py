@@ -181,10 +181,10 @@ async def list_tables(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             tables = await client.database.list_tables(
                 namespace=_ns(namespace),
@@ -225,10 +225,10 @@ async def inspect(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             schema = await client.database.inspect(
                 table=table,
@@ -285,10 +285,10 @@ async def install_requirements(
         requirements = _load_json_file(file, name="--file")
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             for rt in requirements["tables"]:
                 rt = RequiredTable.from_json(rt)
@@ -378,10 +378,10 @@ async def create_table(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             # Build DataType objects from json if schema provided
             schema = None
@@ -453,10 +453,10 @@ async def drop_table(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             await client.database.drop_table(
                 name=table,
@@ -533,10 +533,10 @@ async def add_columns(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             if columns is not None:
                 try:
@@ -589,10 +589,10 @@ async def drop_columns(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             await client.database.drop_columns(
                 table=table,
@@ -640,10 +640,10 @@ async def insert(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             await client.database.insert_stream(
                 table=table,
@@ -693,10 +693,10 @@ async def merge(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             await client.database.merge_stream(
                 table=table,
@@ -746,10 +746,10 @@ async def update(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             await client.database.update(
                 table=table,
@@ -786,10 +786,10 @@ async def delete(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             await client.database.delete(
                 table=table,
@@ -858,10 +858,10 @@ async def search(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             await _print_row_batches(
                 batches=client.database.search_stream(
@@ -1030,10 +1030,10 @@ async def sql(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             await _print_row_batches(
                 batches=client.database.sql_stream(
@@ -1069,10 +1069,10 @@ async def optimize(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             await client.database.optimize(
                 table=table,
@@ -1114,10 +1114,10 @@ async def list_versions(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             versions = await client.database.list_versions(
                 table=table,
@@ -1153,10 +1153,10 @@ async def list_branches(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             branches = await client.database.list_branches(namespace=_ns(namespace))
             out = [branch.model_dump(mode="json") for branch in branches]
@@ -1190,10 +1190,10 @@ async def create_branch(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             await client.database.create_branch(
                 branch=branch,
@@ -1231,10 +1231,10 @@ async def delete_branch(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             await client.database.delete_branch(
                 branch=branch,
@@ -1270,10 +1270,10 @@ async def restore(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             await client.database.restore(
                 table=table,
@@ -1317,10 +1317,10 @@ async def list_indexes(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             idxs = await client.database.list_indexes(
                 table=table,
@@ -1367,10 +1367,10 @@ async def create_index(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             if kind == "vector":
                 await client.database.create_vector_index(
@@ -1427,10 +1427,10 @@ async def drop_index(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             await client.database.drop_index(
                 table=table,

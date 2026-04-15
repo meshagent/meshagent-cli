@@ -178,10 +178,10 @@ async def run(
                 room=resolved_room,
             )
             async with RoomClient(
-                protocol=WebSocketClientProtocol(
+                protocol_factory=WebSocketClientProtocol(
                     url=connection.room_url,
                     token=connection.jwt,
-                )
+                ).create_factory()
             ) as client:
                 try:
                     exit_code = await _stream_container_job_logs_and_wait_for_exit(

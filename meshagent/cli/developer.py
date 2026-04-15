@@ -125,10 +125,10 @@ async def watch_logs(
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             print("[bold cyan]watching enabled. Press Ctrl+C to stop.[/bold cyan]")
 

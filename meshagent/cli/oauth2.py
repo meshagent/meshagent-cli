@@ -95,10 +95,10 @@ async def oauth2(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=jwt_consumer.jwt,
-            )
+            ).create_factory()
         ) as consumer:
             print("[green]Requesting OAuth token from consumer side...[/green]")
             token = await consumer.secrets.request_oauth_token(
@@ -158,10 +158,10 @@ async def secret_request(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=jwt_consumer.jwt,
-            )
+            ).create_factory()
         ) as consumer:
             typer.echo(
                 f"Requesting secret from participant {from_participant_id}...",
@@ -212,10 +212,10 @@ async def secret_get(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=jwt_consumer.jwt,
-            )
+            ).create_factory()
         ) as consumer:
             resp = await consumer.secrets.get_secret(
                 secret_id=id,
@@ -263,10 +263,10 @@ async def secret_exists(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=jwt_consumer.jwt,
-            )
+            ).create_factory()
         ) as consumer:
             secret_exists = await consumer.secrets.exists(
                 secret_id=id,
@@ -340,10 +340,10 @@ async def secret_set(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=jwt_consumer.jwt,
-            )
+            ).create_factory()
         ) as consumer:
             await consumer.secrets.set_secret(
                 secret_id=id,
@@ -379,10 +379,10 @@ async def list(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=jwt_consumer.jwt,
-            )
+            ).create_factory()
         ) as consumer:
             secrets = await consumer.secrets.list_secrets()
             output = []
@@ -421,10 +421,10 @@ async def delete(
         )
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=jwt_consumer.jwt,
-            )
+            ).create_factory()
         ) as consumer:
             await consumer.secrets.delete_secret(id=id, delegated_to=delegated_to)
             print("deleted secret")

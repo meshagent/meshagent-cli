@@ -491,7 +491,7 @@ async def _with_client(
             url=connection.room_url,
             token=connection.jwt,
         )
-        client_cm = RoomClient(protocol=proto)
+        client_cm = RoomClient(protocol_factory=proto.create_factory())
         await client_cm.__aenter__()
         return account_client, client_cm
     except Exception:

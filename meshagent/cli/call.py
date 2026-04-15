@@ -198,10 +198,10 @@ async def _make_call(
         else:
             print("[bold green]Connecting to room...[/bold green]")
             async with RoomClient(
-                protocol=WebSocketClientProtocol(
+                protocol_factory=WebSocketClientProtocol(
                     url=websocket_room_url(room_name=room),
                     token=jwt,
-                )
+                ).create_factory()
             ) as client:
                 print("[bold green]Making agent call...[/bold green]")
                 await client.agents.make_call(

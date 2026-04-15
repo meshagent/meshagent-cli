@@ -1292,10 +1292,10 @@ async def _sync_website_files_to_room_storage(
     )
 
     async with RoomClient(
-        protocol=WebSocketClientProtocol(
+        protocol_factory=WebSocketClientProtocol(
             url=websocket_room_url(room_name=room_name),
             token=connection.jwt,
-        )
+        ).create_factory()
     ) as room:
         for upload in uploads:
             remote_path = str(
@@ -1724,10 +1724,10 @@ async def join(
                     print(f"  {route_path} -> {source}")
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=jwt,
-            )
+            ).create_factory()
         ) as client:
             watch_task: asyncio.Task | None = None
             await server.start(room=client)

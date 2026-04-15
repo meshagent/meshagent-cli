@@ -174,10 +174,10 @@ async def sse(
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=jwt,
-            )
+            ).create_factory()
         ) as client:
             headers = _kv_to_dict(header, separator=":", trim=True) if header else {}
             secret_headers = await _resolve_header_secrets(client, header_secret)
@@ -286,10 +286,10 @@ async def streamable_http(
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=jwt,
-            )
+            ).create_factory()
         ) as client:
             headers = _kv_to_dict(header, separator=":", trim=True) if header else {}
             secret_headers = await _resolve_header_secrets(client, header_secret)
@@ -388,10 +388,10 @@ async def stdio(
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=jwt,
-            )
+            ).create_factory()
         ) as client:
             parsed_command = shlex.split(command)
 

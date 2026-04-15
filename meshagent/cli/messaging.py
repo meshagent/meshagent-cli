@@ -39,10 +39,10 @@ async def messaging_list_participants_command(
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             # Must enable before we can see who else is enabled
             await client.messaging.enable()
@@ -84,10 +84,10 @@ async def messaging_send_command(
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             # Create and enable messaging
             await client.messaging.enable()
@@ -138,10 +138,10 @@ async def messaging_broadcast_command(
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             # Create and enable messaging
             await client.messaging.enable()

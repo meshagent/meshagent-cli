@@ -1209,10 +1209,10 @@ async def chatbot_join(
             agents.append((bot, jwt))
         else:
             async with RoomClient(
-                protocol=WebSocketClientProtocol(
+                protocol_factory=WebSocketClientProtocol(
                     url=websocket_room_url(room_name=room_name),
                     token=jwt,
-                )
+                ).create_factory()
             ) as client:
                 await bot.start(room=client)
                 try:
@@ -1443,10 +1443,10 @@ async def task_runner_join(
             agents.append((bot, jwt))
         else:
             async with RoomClient(
-                protocol=WebSocketClientProtocol(
+                protocol_factory=WebSocketClientProtocol(
                     url=websocket_room_url(room_name=room_name),
                     token=jwt,
-                )
+                ).create_factory()
             ) as client:
                 await bot.start(room=client)
                 try:
@@ -2299,10 +2299,10 @@ async def worker_join(
             agents.append((bot, jwt))
         else:
             async with RoomClient(
-                protocol=WebSocketClientProtocol(
+                protocol_factory=WebSocketClientProtocol(
                     url=websocket_room_url(room_name=room_name),
                     token=jwt,
-                )
+                ).create_factory()
             ) as client:
                 await bot.start(room=client)
                 try:
@@ -3193,10 +3193,10 @@ async def chatbot_run(
         bot = CustomCodexChatBot()
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=jwt,
-            )
+            ).create_factory()
         ) as client:
             await bot.start(room=client)
 
@@ -3500,20 +3500,20 @@ async def task_runner_run(
         arguments = json.loads(input_payload)
 
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room_name),
                 token=jwt,
-            )
+            ).create_factory()
         ) as client:
             if with_caller:
                 connection = await account_client.connect_room(
                     project_id=project_id, room=room_name
                 )
                 async with RoomClient(
-                    protocol=WebSocketClientProtocol(
+                    protocol_factory=WebSocketClientProtocol(
                         url=websocket_room_url(room_name=room_name),
                         token=connection.jwt,
-                    ),
+                    ).create_factory(),
                 ) as user_client:
                     result = await bot.run(
                         room=client,

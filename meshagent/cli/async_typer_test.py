@@ -25,6 +25,23 @@ def _module_with_app(
     return module
 
 
+def _module_with_alias_app(*, module_name: str, command_name: str) -> types.ModuleType:
+    module = types.ModuleType(module_name)
+    app = async_typer.AsyncTyper(help=f"{command_name} commands")
+    app.add_deprecated_option_aliases({"--require-web-search": "--web-search"})
+
+    @app.callback()
+    def _callback() -> None:
+        return None
+
+    @app.command(command_name)
+    def _command(web_search: bool = False) -> None:
+        click.echo(f"web_search={web_search}")
+
+    module.app = app
+    return module
+
+
 def test_lazy_help_does_not_import_subcommands(monkeypatch) -> None:
     app = async_typer.LazyTyper(help="Root commands")
     app.add_lazy_command(
@@ -112,6 +129,41 @@ def test_lazy_command_path_loads_leaf_command(monkeypatch) -> None:
     assert result.exit_code == 0
     assert result.output == "hello\n"
     assert recorded_imports == ["tests.fake_leaf"]
+
+
+def test_lazy_command_path_preserves_deprecated_option_aliases(monkeypatch) -> None:
+    app = async_typer.LazyTyper(help="Root commands")
+    app.add_lazy_command(
+        name="hello",
+        module="tests.fake_leaf_with_alias",
+        help="Say hello",
+        command_path=("hello",),
+    )
+
+    fake_leaf_module = _module_with_alias_app(
+        module_name="tests.fake_leaf_with_alias",
+        command_name="hello",
+    )
+
+    recorded_imports: list[str] = []
+    original_import_module = importlib.import_module
+
+    def _fake_import_module(name: str, package: str | None = None):
+        recorded_imports.append(name)
+        if name == "tests.fake_leaf_with_alias":
+            return fake_leaf_module
+        return original_import_module(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", _fake_import_module)
+
+    result = CliRunner().invoke(
+        async_typer.get_command(app),
+        ["hello", "--require-web-search"],
+    )
+
+    assert result.exit_code == 0
+    assert result.output == "web_search=True\n"
+    assert recorded_imports == ["tests.fake_leaf_with_alias"]
 
 
 def test_collect_lazy_command_modules_from_entrypoint_includes_nested_modules() -> None:

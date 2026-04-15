@@ -79,10 +79,10 @@ async def storage_exists_command(
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=connection.jwt,
-            )
+            ).create_factory()
         ) as client:
             file_exists = await client.storage.exists(path=remote_path)
             if file_exists:
@@ -139,10 +139,10 @@ async def storage_cp_command(
 
             print("[bold green]Connecting to room...[/bold green]")
             client = RoomClient(
-                protocol=WebSocketClientProtocol(
+                protocol_factory=WebSocketClientProtocol(
                     url=websocket_room_url(room_name=room),
                     token=connection.jwt,
-                )
+                ).create_factory()
             )
 
             await client.__aenter__()  # Manually enter the async context
@@ -357,10 +357,10 @@ async def storage_show_command(
 
         print("[bold green]Connecting to room...[/bold green]")
         client = RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=connection.jwt,
-            )
+            ).create_factory()
         )
 
         await client.__aenter__()
@@ -456,10 +456,10 @@ async def storage_rm_command(
 
             print("[bold green]Connecting to room...[/bold green]")
             client = RoomClient(
-                protocol=WebSocketClientProtocol(
+                protocol_factory=WebSocketClientProtocol(
                     url=websocket_room_url(room_name=room),
                     token=connection.jwt,
-                )
+                ).create_factory()
             )
 
             await client.__aenter__()
@@ -651,10 +651,10 @@ async def storage_ls_command(
         connection = await account_client.connect_room(project_id=project_id, room=room)
 
         client = RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=connection.jwt,
-            )
+            ).create_factory()
         )
         await client.__aenter__()
         storage_client = client.storage

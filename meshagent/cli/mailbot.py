@@ -883,10 +883,10 @@ async def join(
             image_paths=shell_image_mount,
         )
         client = RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=jwt,
-            )
+            ).create_factory()
         )
 
         CustomMailbot = build_mailbot(
@@ -1924,23 +1924,7 @@ async def deploy(
 
 
 _REMOVED_TOOLKIT_OPTION_NAMES = {
-    "discover_script_tools",
-    "storage_tool_local_path",
-    "storage_tool_room_path",
-    "shell_room_mount",
-    "shell_tool_room_path",
-    "shell_project_mount",
-    "shell_tool_project_path",
-    "shell_empty_dir_mount",
-    "shell_tool_empty_dir",
-    "shell_image_mount",
     "require_schema",
-    "working_dir",
-    "working_directory",
-    "shell_image",
-    "delegate_shell_token",
-    "shell_copy_env",
-    "shell_set_env",
 }
 
 strip_command_options(app, option_names=_REMOVED_TOOLKIT_OPTION_NAMES)

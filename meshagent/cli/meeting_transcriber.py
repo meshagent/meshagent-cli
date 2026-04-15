@@ -69,10 +69,10 @@ async def join(
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
         async with RoomClient(
-            protocol=WebSocketClientProtocol(
+            protocol_factory=WebSocketClientProtocol(
                 url=websocket_room_url(room_name=room),
                 token=jwt,
-            )
+            ).create_factory()
         ) as client:
             requirements = []
 
