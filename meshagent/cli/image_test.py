@@ -41,7 +41,7 @@ class _FakeParticipant:
 def test_replace_meshagent_image_vars_defaults_to_pkg_dev() -> None:
     assert image.replace_meshagent_image_vars("meshagent/python-sdk-slim:default") == (
         "us-central1-docker.pkg.dev/meshagent-public/images/"
-        f"python-sdk-slim:{image.__version__}-esgz"
+        f"python-sdk-slim:{image.__version__}"
     )
 
 
@@ -51,7 +51,14 @@ def test_replace_meshagent_image_vars_allows_prefix_override(
     monkeypatch.setenv("MESHAGENT_IMAGE_PREFIX", "registry.example.com/custom/")
 
     assert image.replace_meshagent_image_vars("meshagent/python-sdk-slim:default") == (
-        f"registry.example.com/custom/python-sdk-slim:{image.__version__}-esgz"
+        f"registry.example.com/custom/python-sdk-slim:{image.__version__}"
+    )
+
+
+def test_replace_meshagent_image_vars_keeps_shell_images_on_estargz() -> None:
+    assert image.replace_meshagent_image_vars("meshagent/shell-codex:default") == (
+        "us-central1-docker.pkg.dev/meshagent-public/images/"
+        f"shell-codex:{image.__version__}-esgz"
     )
 
 

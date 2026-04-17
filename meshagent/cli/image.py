@@ -122,23 +122,32 @@ def default_pack_architecture() -> str:
     return normalized_arch
 
 
+def _meshagent_default_image_tag(*, image: str) -> str:
+    repository = image.removeprefix("meshagent/").partition(":")[0]
+    if repository.startswith("shell-"):
+        return f"{__version__}-esgz"
+    return __version__
+
+
 def replace_meshagent_image_vars(image: str) -> str:
     resolved_image = image
     meshagent_image_prefix = os.environ.get("MESHAGENT_IMAGE_PREFIX")
     if meshagent_image_prefix is None or meshagent_image_prefix.strip() == "":
         meshagent_image_prefix = _DEFAULT_MESHAGENT_IMAGE_PREFIX
     if resolved_image.startswith("meshagent/"):
+        meshagent_default_tag: str | None = None
+        if resolved_image.endswith(":default"):
+            meshagent_default_tag = _meshagent_default_image_tag(image=resolved_image)
         resolved_image = resolved_image.replace(
             "meshagent/",
             meshagent_image_prefix,
             1,
         )
-        if resolved_image.endswith(":default"):
+        if meshagent_default_tag is not None:
             resolved_image = resolved_image.replace(
                 ":default",
-                f":{__version__}",
+                f":{meshagent_default_tag}",
             )
-            resolved_image = f"{resolved_image}-esgz"
 
     return resolved_image.replace("{SERVER_VERSION}", __version__)
 
