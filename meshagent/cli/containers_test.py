@@ -80,8 +80,8 @@ class _FakeLoadContainers:
     async def load(self, *, archive_path: str) -> ImportedImage:
         self.load_calls.append(archive_path)
         return ImportedImage(
-            resolved_ref="room.meshagent.com/images/example.tar:latest",
-            refs=["room.meshagent.com/images/example.tar:latest"],
+            resolved_ref="registry.meshagent.com/images/example.tar:latest",
+            refs=["registry.meshagent.com/images/example.tar:latest"],
         )
 
 
@@ -256,7 +256,7 @@ async def test_images_load_uses_room_storage_load_path(
     assert account_client.close_calls == 1
     assert (
         capsys.readouterr().out
-        == "Image loaded: room.meshagent.com/images/example.tar:latest\n"
+        == "Image loaded: registry.meshagent.com/images/example.tar:latest\n"
     )
 
 
@@ -277,9 +277,12 @@ async def test_with_client_uses_room_url_from_connection_info(
             self.url = url
             self.token = token
 
+        def create_factory(self):
+            return lambda: self
+
     class _FakeRoomClient:
-        def __init__(self, *, protocol: _FakeProtocol) -> None:
-            self.protocol = protocol
+        def __init__(self, *, protocol_factory) -> None:
+            self.protocol = protocol_factory()
             self.enter_calls = 0
 
         async def __aenter__(self) -> "_FakeRoomClient":

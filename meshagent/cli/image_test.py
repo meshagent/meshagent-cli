@@ -1,5 +1,6 @@
 import asyncio
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -8,6 +9,7 @@ import pytest
 import typer
 
 from meshagent.api import ApiScope
+from meshagent.api.client import ProjectInfo, ProjectRepository
 from meshagent.api.image_runtime import (
     IMAGE_RUNTIME_BASES,
     IMAGE_RUNTIME_MOUNT_PATH,
@@ -171,7 +173,7 @@ async def test_pack_image_uploads_archive_to_room_storage(
         project_id="project-1",
         room="room-1",
         path=str(source_dir),
-        tag="room.meshagent.com/sample/app:1",
+        tag="registry.meshagent.com/sample/app:1",
         output=str(output_path),
         base="python:3.13",
         room_path=None,
@@ -181,7 +183,7 @@ async def test_pack_image_uploads_archive_to_room_storage(
     assert captured["output_path"] == output_path.resolve()
     assert captured["base_image"] == "python:3.13"
     assert captured["architecture"] == "arm64"
-    assert captured["ref_name"] == "room.meshagent.com/sample/app:1"
+    assert captured["ref_name"] == "registry.meshagent.com/sample/app:1"
     assert captured["on_packed_archive_ready"] is True
     assert captured["project_id"] == "project-1"
     assert captured["room"] == "room-1"
@@ -278,7 +280,7 @@ async def test_pack_image_uploads_archive_to_room_without_local_output(
         project_id="project-1",
         room="room-1",
         path=str(source_dir),
-        tag="room.meshagent.com/sample/app:1",
+        tag="registry.meshagent.com/sample/app:1",
         output=None,
         base=None,
         room_path=None,
@@ -287,7 +289,7 @@ async def test_pack_image_uploads_archive_to_room_without_local_output(
     assert captured["source_dir"] == source_dir
     assert captured["base_image"] is None
     assert captured["architecture"] == "amd64"
-    assert captured["ref_name"] == "room.meshagent.com/sample/app:1"
+    assert captured["ref_name"] == "registry.meshagent.com/sample/app:1"
     assert captured["remote_path"] == "/sample/app"
     assert captured["overwrite"] is True
     assert captured["size"] is None
@@ -318,7 +320,7 @@ async def test_pack_image_room_close_timeout_does_not_block(
         del source_dir, output_path, base_image, architecture, ref_name
         packed_archive = SimpleNamespace(
             output_path=Path("/tmp/ignored.tar"),
-            ref_name="room.meshagent.com/sample/app:1",
+            ref_name="registry.meshagent.com/sample/app:1",
             manifest_digest="sha256:sampledigest",
         )
         if on_packed_archive_ready is not None:
@@ -376,7 +378,7 @@ async def test_pack_image_room_close_timeout_does_not_block(
         project_id="project-1",
         room="room-1",
         path=str(source_dir),
-        tag="room.meshagent.com/sample/app:1",
+        tag="registry.meshagent.com/sample/app:1",
         output=None,
         base=None,
         room_path=None,
@@ -397,7 +399,7 @@ async def test_build_oci_archive_to_streaming_output_does_not_deadlock_when_queu
     archive_output = image._StreamingArchiveOutput()
     packed_archive = SimpleNamespace(
         output_path=tmp_path / "ignored.tar",
-        ref_name="room.meshagent.com/sample/app:1",
+        ref_name="registry.meshagent.com/sample/app:1",
         manifest_digest="sha256:sampledigest",
     )
 
@@ -426,7 +428,7 @@ async def test_build_oci_archive_to_streaming_output_does_not_deadlock_when_queu
                 archive_output=archive_output,
                 base_image=None,
                 architecture="amd64",
-                ref_name="room.meshagent.com/sample/app:1",
+                ref_name="registry.meshagent.com/sample/app:1",
             ),
             _free_queue_space(),
         ),
@@ -508,7 +510,7 @@ async def test_build_image_streams_context_and_waits_for_exit(
     await image.build_image(
         project_id="project-1",
         room="room-1",
-        tag="repo/name:tag",
+        tag="registry.meshagent.com/project/name:tag",
         pack=f"{source_dir}:/workspace",
         context_path="/workspace",
         dockerfile_path="/workspace/Dockerfile",
@@ -524,7 +526,7 @@ async def test_build_image_streams_context_and_waits_for_exit(
         "preserved_paths": frozenset(),
     }
     assert captured["build_kwargs"] == {
-        "tag": "repo/name:tag",
+        "tag": "registry.meshagent.com/project/name:tag",
         "mount_path": "/workspace",
         "context_path": "/workspace",
         "dockerfile_path": "/workspace/Dockerfile",
@@ -613,7 +615,7 @@ async def test_build_image_pack_streams_context_and_defaults_context_path(
     await image.build_image(
         project_id="project-1",
         room="room-1",
-        tag="repo/example:1",
+        tag="registry.meshagent.com/project/example:1",
         pack=str(source_dir),
         context_path=None,
         dockerfile_path=None,
@@ -630,7 +632,7 @@ async def test_build_image_pack_streams_context_and_defaults_context_path(
         "preserved_paths": frozenset(),
     }
     assert captured["build_kwargs"] == {
-        "tag": "repo/example:1",
+        "tag": "registry.meshagent.com/project/example:1",
         "mount_path": "/context",
         "context_path": "/context",
         "dockerfile_path": "/context/Dockerfile",
@@ -703,7 +705,7 @@ async def test_build_image_pack_preserves_ignored_dockerfile_and_dockerignore(
     await image.build_image(
         project_id=None,
         room="room-1",
-        tag="repo/example:1",
+        tag="registry.meshagent.com/project/example:1",
         pack=str(source_dir),
         context_path=None,
         dockerfile_path=None,
@@ -773,7 +775,7 @@ async def test_build_image_pack_exits_with_build_status(
         await image.build_image(
             project_id=None,
             room="room-1",
-            tag="repo/example:1",
+            tag="registry.meshagent.com/project/example:1",
             pack=str(source_dir),
             context_path=None,
             dockerfile_path=None,
@@ -786,7 +788,7 @@ async def test_build_image_pack_exits_with_build_status(
 
 
 def test_resolve_build_pack_room_path_defaults_to_repository_path() -> None:
-    parsed_tag = image._parse_build_tag("room.meshagent.com/nested/website:1")
+    parsed_tag = image._parse_build_tag("registry.meshagent.com/nested/website:1")
 
     assert (
         image._resolve_build_pack_room_path(parsed_tag=parsed_tag, room_path=None)
@@ -900,7 +902,7 @@ def test_infer_deploy_ports_from_packed_dockerfile_rejects_reserved_port(
 
 def test_resolve_runtime_container_override_supports_python_runtime() -> None:
     override = image._resolve_runtime_container_override(
-        parsed_tag=image._parse_build_tag("room.meshagent.com/repo/app:1"),
+        parsed_tag=image._parse_build_tag("registry.meshagent.com/repo/app:1"),
         dockerfile_metadata=image._PackedDockerfileMetadata(
             labels={"meshagent.runtime": "python"},
             command=("main.py",),
@@ -912,7 +914,7 @@ def test_resolve_runtime_container_override_supports_python_runtime() -> None:
     assert override.image == IMAGE_RUNTIME_BASES["python"].base_image
     assert override.command == "python main.py"
     assert override.working_dir == "/app"
-    assert override.image_mount.image == "room.meshagent.com/repo/app:1"
+    assert override.image_mount.image == "registry.meshagent.com/repo/app:1"
     assert override.image_mount.path == IMAGE_RUNTIME_MOUNT_PATH
     assert override.image_mount.subpath == IMAGE_RUNTIME_MOUNT_SUBPATH
 
@@ -985,7 +987,7 @@ async def test_build_image_can_disable_room_image_optimization(
     await image.build_image(
         project_id=None,
         room="room-1",
-        tag="room.meshagent.com/website:1",
+        tag="registry.meshagent.com/project/website:1",
         pack=str(source_dir),
         context_path="/context",
         dockerfile_path="/context/Dockerfile",
@@ -995,7 +997,7 @@ async def test_build_image_can_disable_room_image_optimization(
     )
 
     assert captured["build_kwargs"] == {
-        "tag": "room.meshagent.com/website:1",
+        "tag": "registry.meshagent.com/project/website:1",
         "mount_path": "/context",
         "context_path": "/context",
         "dockerfile_path": "/context/Dockerfile",
@@ -1021,7 +1023,7 @@ async def test_build_image_pack_requires_local_dockerfile_when_used_as_context(
         await image.build_image(
             project_id=None,
             room="room-1",
-            tag="room.meshagent.com/website:1",
+            tag="registry.meshagent.com/project/website:1",
             pack=str(source_dir),
             context_path=None,
             dockerfile_path=None,
@@ -1033,9 +1035,176 @@ async def test_build_image_pack_requires_local_dockerfile_when_used_as_context(
 def test_require_room_pack_tag_rejects_non_room_meshagent_tag() -> None:
     with pytest.raises(
         typer.BadParameter,
-        match="--pack requires --tag to start with room.meshagent.com/",
+        match="--pack requires --tag to use registry.meshagent.com/<project-key>/<repository>:<tag>",
     ):
         image._require_room_pack_tag(parsed_tag=image._parse_build_tag("website:1"))
+
+
+@pytest.mark.asyncio
+async def test_resolve_project_registry_build_credentials_rejects_project_key_mismatch():
+    class _FakeAccountClient:
+        async def get_project_info(self, project_id: str):
+            assert project_id == "project-1"
+            return ProjectInfo(
+                id="project-1",
+                owner_user_id="user-1",
+                name="Powerboards",
+                project_key="other-project",
+            )
+
+    with pytest.raises(
+        typer.BadParameter,
+        match="does not match the selected project",
+    ):
+        await image._resolve_project_registry_build_credentials(
+            account_client=_FakeAccountClient(),
+            project_id="project-1",
+            parsed_tag=image._parse_build_tag(
+                "registry.meshagent.com/powerboards/test:latest"
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_image_build_stage_requests_repository_token_and_prepends_registry_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    source_dir = tmp_path / "website"
+    source_dir.mkdir()
+    (source_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+
+    class _FakeContainersClient:
+        async def build(self, **kwargs) -> str:
+            captured["build_kwargs"] = kwargs
+            return "build-1"
+
+    class _FakeRoomClient:
+        def __init__(self) -> None:
+            self.containers = _FakeContainersClient()
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+            captured["room_client_closed"] = True
+
+    class _FakeAccountClient:
+        async def get_project_info(self, project_id: str):
+            captured["project_info_project_id"] = project_id
+            return ProjectInfo(
+                id=project_id,
+                owner_user_id="user-1",
+                name="Powerboards",
+                project_key="powerboards",
+            )
+
+        async def list_repositories(self, *, project_id: str):
+            captured["list_repositories_project_id"] = project_id
+            return [
+                ProjectRepository(
+                    id="repository-1",
+                    project_id=project_id,
+                    name="test",
+                    description="Repository",
+                    annotations={},
+                    created_at=datetime(2026, 4, 19, tzinfo=timezone.utc),
+                )
+            ]
+
+        async def create_repository_token(
+            self,
+            *,
+            project_id: str,
+            repository_id: str,
+            request,
+        ):
+            captured["repository_token_request"] = {
+                "project_id": project_id,
+                "repository_id": repository_id,
+                "actions": request.actions,
+                "expires_in_seconds": request.expires_in_seconds,
+            }
+            return SimpleNamespace(token="repository-jwt")
+
+        async def close(self) -> None:
+            captured["account_client_closed"] = True
+
+    async def _fake_with_client(*, project_id, room):
+        captured["with_client"] = {"project_id": project_id, "room": room}
+        return _FakeAccountClient(), _FakeRoomClient()
+
+    async def _fake_build_local_context_archive(
+        *,
+        source_dir: Path,
+        preserved_paths: frozenset[str],
+    ):
+        captured["archive_source_dir"] = source_dir
+        captured["archive_preserved_paths"] = preserved_paths
+        temp_dir = tempfile.TemporaryDirectory(prefix="meshagent-build-context-test-")
+        return Path(temp_dir.name) / "context.tar", 7, temp_dir
+
+    async def _fake_iter_file_chunks(path: Path):
+        captured["iter_file_chunks_path"] = path
+        yield b"context"
+
+    async def _fake_stream_build_job_logs_and_wait_for_exit(*, client, build_id: str):
+        del client
+        captured["build_id"] = build_id
+        return 0
+
+    monkeypatch.setattr(image, "_with_client", _fake_with_client)
+    monkeypatch.setattr(
+        image,
+        "_build_local_context_archive",
+        _fake_build_local_context_archive,
+    )
+    monkeypatch.setattr(image, "_iter_file_chunks", _fake_iter_file_chunks)
+    monkeypatch.setattr(
+        image,
+        "_stream_build_job_logs_and_wait_for_exit",
+        _fake_stream_build_job_logs_and_wait_for_exit,
+    )
+
+    await image._run_image_build_stage(
+        resolved_project_id="project-1",
+        resolved_room="room-1",
+        parsed_tag=image._parse_build_tag(
+            "registry.meshagent.com/powerboards/test:latest"
+        ),
+        context_path=None,
+        dockerfile_path=None,
+        pack=str(source_dir),
+        arch="amd64",
+        builder_name=None,
+        private=False,
+        optimize=True,
+        cred=["ghcr.io,external-user,external-pass"],
+    )
+
+    assert captured["with_client"] == {"project_id": "project-1", "room": "room-1"}
+    assert captured["project_info_project_id"] == "project-1"
+    assert captured["list_repositories_project_id"] == "project-1"
+    assert captured["repository_token_request"] == {
+        "project_id": "project-1",
+        "repository_id": "repository-1",
+        "actions": ["pull", "push"],
+        "expires_in_seconds": 3600,
+    }
+    build_kwargs = captured["build_kwargs"]
+    credentials = build_kwargs["credentials"]
+    assert credentials[0] == image.DockerSecret(
+        registry="registry.meshagent.com",
+        username=image.DEFAULT_REGISTRY_USERNAME,
+        password="repository-jwt",
+    )
+    assert credentials[1] == image.DockerSecret(
+        registry="ghcr.io",
+        username="external-user",
+        password="external-pass",
+    )
+    assert captured["build_id"] == "build-1"
+    assert captured["room_client_closed"] is True
+    assert captured["account_client_closed"] is True
 
 
 @pytest.mark.asyncio
@@ -1085,7 +1254,7 @@ async def test_pack_image_requires_room_meshagent_tag_when_uploading_to_room(
 
     with pytest.raises(
         typer.BadParameter,
-        match="--pack requires --tag to start with room.meshagent.com/",
+        match="--pack requires --tag to use registry.meshagent.com/<project-key>/<repository>:<tag>",
     ):
         await image.pack_image(
             project_id=None,
@@ -1510,7 +1679,7 @@ async def test_deploy_image_pack_builds_before_deploying(
     await image.deploy_image(
         project_id="project-1",
         room="room-1",
-        tag="room.meshagent.com/repo/web:1",
+        tag="registry.meshagent.com/repo/web:1",
         pack=str(source_dir),
         context_path="/context",
         dockerfile_path="/context/Dockerfile",
@@ -1528,7 +1697,7 @@ async def test_deploy_image_pack_builds_before_deploying(
     build_kwargs = captured["build_kwargs"]
     assert build_kwargs["resolved_project_id"] == "project-1"
     assert build_kwargs["resolved_room"] == "room-1"
-    assert build_kwargs["parsed_tag"].value == "room.meshagent.com/repo/web:1"
+    assert build_kwargs["parsed_tag"].value == "registry.meshagent.com/repo/web:1"
     assert build_kwargs["context_path"] == "/context"
     assert build_kwargs["dockerfile_path"] == "/context/Dockerfile"
     assert build_kwargs["pack"] == str(source_dir)
@@ -1542,7 +1711,7 @@ async def test_deploy_image_pack_builds_before_deploying(
     assert isinstance(created_service, tuple)
     service_spec = created_service[2]
     assert service_spec.container is not None
-    assert service_spec.container.image == "room.meshagent.com/repo/web:1"
+    assert service_spec.container.image == "registry.meshagent.com/repo/web:1"
     assert service_spec.metadata.annotations is not None
     assert (
         service_spec.metadata.annotations[image.ANNOTATION_REQUEST_VALIDATION_METHOD]
@@ -1632,7 +1801,7 @@ async def test_deploy_image_pack_fails_before_build_when_env_secret_is_missing(
         await image.deploy_image(
             project_id="project-1",
             room="room-1",
-            tag="room.meshagent.com/repo/web:1",
+            tag="registry.meshagent.com/repo/web:1",
             pack=str(source_dir),
             context_path="/context",
             dockerfile_path="/context/Dockerfile",
@@ -1710,7 +1879,7 @@ async def test_deploy_image_pack_requires_matching_volume_mount(
         await image.deploy_image(
             project_id="project-1",
             room="room-1",
-            tag="room.meshagent.com/repo/web:1",
+            tag="registry.meshagent.com/repo/web:1",
             pack=str(source_dir),
             domain=None,
             room_mount=[],
@@ -1783,7 +1952,7 @@ async def test_deploy_image_pack_allows_matching_volume_mount(
     await image.deploy_image(
         project_id="project-1",
         room="room-1",
-        tag="room.meshagent.com/repo/web:1",
+        tag="registry.meshagent.com/repo/web:1",
         pack=str(source_dir),
         domain=None,
         room_mount=[],
@@ -1871,7 +2040,7 @@ CMD ["/app/dist/index.js"]
     await image.deploy_image(
         project_id="project-1",
         room="room-1",
-        tag="room.meshagent.com/repo/web:1",
+        tag="registry.meshagent.com/repo/web:1",
         pack=str(source_dir),
         context_path="/context",
         dockerfile_path="/context/Dockerfile",
@@ -1896,7 +2065,7 @@ CMD ["/app/dist/index.js"]
     assert service_spec.container.storage.images is not None
     assert service_spec.container.storage.images == [
         ImageStorageMountSpec(
-            image="room.meshagent.com/repo/web:1",
+            image="registry.meshagent.com/repo/web:1",
             path=IMAGE_RUNTIME_MOUNT_PATH,
             subpath=IMAGE_RUNTIME_MOUNT_SUBPATH,
             read_only=True,
@@ -1992,7 +2161,7 @@ async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
     await image.deploy_image(
         project_id="project-1",
         room="room-1",
-        tag="room.meshagent.com/repo/web:1",
+        tag="registry.meshagent.com/repo/web:1",
         pack=str(source_dir),
         context_path="/context",
         dockerfile_path="/context/Dockerfile",

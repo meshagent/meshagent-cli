@@ -151,6 +151,11 @@ app.add_lazy_command(
     help="Manage routes for your project",
 )
 app.add_lazy_command(
+    name="registry",
+    module="meshagent.cli.registry",
+    help="Manage registries for your project",
+)
+app.add_lazy_command(
     name="scheduled-task",
     module="meshagent.cli.scheduled_tasks",
     help="Manage scheduled tasks for your project",
