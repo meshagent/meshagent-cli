@@ -240,6 +240,11 @@ app.add_lazy_command(
     module="meshagent.cli.image",
     help="Build and pack OCI images",
 )
+app.add_lazy_command(
+    name="llm",
+    module="meshagent.cli.llm",
+    help="Local LLM proxy utilities",
+)
 
 
 def detect_shell() -> str:

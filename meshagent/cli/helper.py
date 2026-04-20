@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional, TypedDict
 
 import typer
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from rich.console import Console
 from rich.table import Table
 
@@ -220,7 +220,8 @@ def build_shell_tool(
 
 class Settings(BaseModel):
     active_project: Optional[str] = None
-    active_api_keys: Optional[dict] = {}
+    active_api_keys: dict[str, str] = Field(default_factory=dict)
+    llm_proxy_bearer_token: str | None = None
 
 
 def _save_settings(s: Settings):
@@ -269,6 +270,19 @@ async def get_active_api_key(project_id: str):
         return key
     else:
         return None
+
+
+async def get_llm_proxy_bearer_token() -> str | None:
+    settings = _load_settings()
+    if settings is None:
+        return None
+    return settings.llm_proxy_bearer_token
+
+
+async def set_llm_proxy_bearer_token(token: str | None) -> None:
+    settings = _load_settings() or Settings()
+    settings.llm_proxy_bearer_token = token
+    _save_settings(settings)
 
 
 app = async_typer.AsyncTyper()
