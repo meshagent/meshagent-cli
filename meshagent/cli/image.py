@@ -4,13 +4,10 @@ import asyncio
 import json
 import os
 import posixpath
-import queue
 import re
 import shlex
-import threading
 import tempfile
 from collections.abc import AsyncIterator
-from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Optional
@@ -67,22 +64,18 @@ from meshagent.api.specs.service import (
 from meshagent.cli.oci_archive import (
     DEFAULT_ARCHITECTURE,
     DockerIgnore,
-    ImagePackError,
-    PackedOciArchive,
-    build_oci_archive,
-    build_oci_archive_to_writer,
     write_build_context_archive,
 )
 from meshagent.cli.version import __version__
 
 
-app = async_typer.AsyncTyper(help="Build and pack OCI images")
-_ARCHIVE_STREAM_QUEUE_SIZE = 8
+app = async_typer.AsyncTyper(help="Build and publish OCI images")
 _BUILD_CONTEXT_CHUNK_SIZE = 1024 * 1024
 _CLIENT_CLOSE_TIMEOUT_SECONDS = 2.0
 _DEFAULT_CONTEXT_MOUNT_PATH = "/context"
 _DEFAULT_REPOSITORY_TOKEN_TTL_SECONDS = 3600
 _PROJECT_REGISTRY = "registry.meshagent.com"
+_GENERATED_PACK_DOCKERFILE_NAME = ".meshagent-pack.Dockerfile"
 _TOKEN_ENVIRONMENT_NAMES = (
     "MESHAGENT_TOKEN",
     "OPENAI_API_KEY",
@@ -111,13 +104,6 @@ ImageRoomOption = Annotated[
         help="Room name",
     ),
 ]
-
-
-class _ArchiveStreamEnd:
-    pass
-
-
-_ARCHIVE_STREAM_END = _ArchiveStreamEnd()
 
 
 def default_pack_architecture() -> str:
@@ -197,12 +183,6 @@ class _ParsedImageTag:
 
 
 @dataclass(frozen=True)
-class _UploadedPackedArchive:
-    packed_archive: PackedOciArchive
-    remote_path: str
-
-
-@dataclass(frozen=True)
 class _ResolvedBuildStageInputs:
     context_path: str
     dockerfile_path: str | None
@@ -246,140 +226,6 @@ class _RoomRouteTarget:
 class _RoomServiceUpsertResult:
     service_id: str
     created: bool
-
-
-class _StreamingArchiveOutput:
-    def __init__(self, *, output_path: Path | None = None) -> None:
-        self._output_path = output_path
-        self._file = None
-        if output_path is not None:
-            self._output_path.parent.mkdir(parents=True, exist_ok=True)
-            self._file = output_path.open("wb")
-        self._queue: queue.Queue[bytes | _ArchiveStreamEnd] = queue.Queue(
-            maxsize=_ARCHIVE_STREAM_QUEUE_SIZE
-        )
-        self._stream_aborted = threading.Event()
-        self._error: BaseException | None = None
-        self._closed = False
-
-    def write(self, data: bytes) -> int:
-        if self._closed:
-            raise ValueError("archive output is closed")
-        if data == b"":
-            return 0
-
-        if self._file is not None:
-            self._file.write(data)
-        self._enqueue_chunk(data)
-        return len(data)
-
-    def flush(self) -> None:
-        if self._file is not None:
-            self._file.flush()
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        if self._file is not None:
-            self._file.close()
-
-    def finish(self) -> None:
-        self.close()
-        self._enqueue_end()
-
-    def fail(self, exc: BaseException) -> None:
-        self._error = exc
-        self.close()
-        self._enqueue_end()
-
-    def abort(self) -> None:
-        self._stream_aborted.set()
-
-    def cleanup_failed_output(self) -> None:
-        if self._output_path is None:
-            return
-        with suppress(FileNotFoundError):
-            self._output_path.unlink()
-
-    async def iter_chunks(self) -> AsyncIterator[bytes]:
-        while True:
-            item = await asyncio.to_thread(self._queue.get)
-            if item is _ARCHIVE_STREAM_END:
-                if self._error is not None:
-                    raise self._error
-                return
-            yield item
-
-    def _enqueue_chunk(self, data: bytes) -> None:
-        while True:
-            if self._stream_aborted.is_set():
-                return
-            try:
-                self._queue.put(data, timeout=0.1)
-                return
-            except queue.Full:
-                continue
-
-    def _enqueue_end(self) -> None:
-        while True:
-            if self._stream_aborted.is_set():
-                with suppress(queue.Full):
-                    self._queue.put_nowait(_ARCHIVE_STREAM_END)
-                return
-            try:
-                self._queue.put(_ARCHIVE_STREAM_END, timeout=0.1)
-                return
-            except queue.Full:
-                continue
-
-
-async def _build_oci_archive_to_streaming_output(
-    *,
-    source_dir: Path,
-    output_path: Path,
-    archive_output: _StreamingArchiveOutput,
-    base_image: str | None,
-    architecture: str,
-    ref_name: str | None = None,
-    preserved_paths: frozenset[str] | None = None,
-    on_packed_archive_ready=None,
-) -> PackedOciArchive:
-    try:
-        build_kwargs = {
-            "source_dir": source_dir,
-            "output_path": output_path,
-            "archive_output": archive_output,
-            "base_image": base_image,
-            "architecture": architecture,
-            "ref_name": ref_name,
-        }
-        if preserved_paths is not None:
-            build_kwargs["preserved_paths"] = preserved_paths
-        if on_packed_archive_ready is not None:
-            build_kwargs["on_packed_archive_ready"] = on_packed_archive_ready
-        packed_archive = await build_oci_archive_to_writer(
-            **build_kwargs,
-        )
-    except BaseException as exc:
-        await asyncio.to_thread(archive_output.fail, exc)
-        raise
-
-    await asyncio.to_thread(archive_output.finish)
-    return packed_archive
-
-
-def _resolve_room_archive_path(*, output_path: Path, room_path: str | None) -> str:
-    if room_path is None or room_path.strip() == "":
-        return f"/{output_path.name}"
-
-    if not room_path.startswith("/"):
-        raise typer.BadParameter("--room-path must be an absolute room storage path")
-
-    if room_path.endswith("/"):
-        return posixpath.join(room_path, output_path.name)
-
-    return room_path
 
 
 def _parse_build_pack(value: str) -> _BuildPackSpec:
@@ -566,22 +412,16 @@ async def _resolve_project_registry_build_credentials(
     ]
 
 
-def _resolve_build_pack_room_path(
-    *, parsed_tag: _ParsedImageTag, room_path: str | None
-) -> str:
-    if room_path is None or room_path.strip() == "":
-        return posixpath.join("/", parsed_tag.repository)
+def _generated_pack_dockerfile_path(*, mount_path: str) -> str:
+    return posixpath.join(mount_path, _GENERATED_PACK_DOCKERFILE_NAME)
 
-    cleaned_room_path = room_path.strip()
-    if not cleaned_room_path.startswith("/"):
-        raise typer.BadParameter(
-            "--pack-room-path must be an absolute room storage path"
-        )
 
-    if cleaned_room_path.endswith("/"):
-        return posixpath.join(cleaned_room_path, parsed_tag.repository)
+def _build_generated_pack_dockerfile(*, base_image: str | None) -> bytes:
+    resolved_base_image = "scratch" if base_image is None else base_image.strip()
+    if resolved_base_image == "":
+        raise typer.BadParameter("--base cannot be empty")
 
-    return cleaned_room_path
+    return f"FROM {resolved_base_image}\nCOPY . /\n".encode("utf-8")
 
 
 def _infer_packed_dockerfile_path(
@@ -2034,118 +1874,6 @@ async def _apply_deploy_plan(
         )
 
 
-async def _upload_oci_archive_to_room(
-    *,
-    client: RoomClient,
-    source_dir: Path,
-    remote_path: str | None,
-    output_path: Path | None,
-    base_image: str | None,
-    architecture: str,
-    ref_name: str | None = None,
-    preserved_paths: frozenset[str] | None = None,
-) -> _UploadedPackedArchive:
-    archive_output = _StreamingArchiveOutput(output_path=output_path)
-    with tempfile.TemporaryDirectory(prefix="meshagent-oci-upload-") as temp_dir:
-        default_output_name = output_path.name if output_path is not None else "oci.tar"
-        build_output_path = output_path or (Path(temp_dir) / default_output_name)
-        packed_archive_ready: asyncio.Future[PackedOciArchive] = (
-            asyncio.get_running_loop().create_future()
-        )
-
-        async def _on_packed_archive_ready(packed_archive: PackedOciArchive) -> None:
-            if not packed_archive_ready.done():
-                packed_archive_ready.set_result(packed_archive)
-
-        build_task = asyncio.create_task(
-            _build_oci_archive_to_streaming_output(
-                source_dir=source_dir,
-                output_path=build_output_path,
-                archive_output=archive_output,
-                base_image=base_image,
-                architecture=architecture,
-                ref_name=ref_name,
-                preserved_paths=preserved_paths,
-                on_packed_archive_ready=_on_packed_archive_ready,
-            )
-        )
-
-        async def _upload_archive() -> str:
-            await packed_archive_ready
-            if remote_path is None:
-                raise typer.BadParameter(
-                    "packed archive upload requires an explicit room storage path"
-                )
-            resolved_remote_path = remote_path
-            upload_name = (
-                output_path.name
-                if output_path is not None
-                else posixpath.basename(resolved_remote_path)
-            )
-            await client.storage.upload_stream(
-                path=resolved_remote_path,
-                chunks=archive_output.iter_chunks(),
-                overwrite=True,
-                size=None,
-                name=upload_name,
-            )
-            return resolved_remote_path
-
-        upload_task = asyncio.create_task(_upload_archive())
-        try:
-            packed_archive, resolved_remote_path = await asyncio.gather(
-                build_task, upload_task
-            )
-        except ImagePackError as exc:
-            archive_output.abort()
-            if not build_task.done():
-                with suppress(Exception):
-                    await build_task
-            if not upload_task.done():
-                upload_task.cancel()
-                with suppress(asyncio.CancelledError, Exception):
-                    await upload_task
-            archive_output.cleanup_failed_output()
-            raise typer.BadParameter(str(exc)) from exc
-        except Exception:
-            archive_output.abort()
-            if not build_task.done():
-                with suppress(Exception):
-                    await build_task
-            if not upload_task.done():
-                upload_task.cancel()
-                with suppress(asyncio.CancelledError, Exception):
-                    await upload_task
-            archive_output.cleanup_failed_output()
-            raise
-    return _UploadedPackedArchive(
-        packed_archive=packed_archive,
-        remote_path=resolved_remote_path,
-    )
-
-
-async def _close_pack_clients(
-    *,
-    account_client,
-    client: RoomClient,
-) -> None:
-    try:
-        await asyncio.wait_for(
-            client.__aexit__(None, None, None),
-            timeout=_CLIENT_CLOSE_TIMEOUT_SECONDS,
-        )
-    except asyncio.TimeoutError:
-        print("[yellow]Timed out closing room client after upload[/yellow]")
-
-    try:
-        await asyncio.wait_for(
-            account_client.close(),
-            timeout=_CLIENT_CLOSE_TIMEOUT_SECONDS,
-        )
-    except asyncio.TimeoutError:
-        print("[yellow]Timed out closing account client after upload[/yellow]")
-
-
 async def _iter_file_chunks(path: Path) -> AsyncIterator[bytes]:
     with path.open("rb") as file_obj:
         while True:
@@ -2162,6 +1890,7 @@ async def _build_local_context_archive(
     *,
     source_dir: Path,
     preserved_paths: frozenset[str],
+    injected_files: dict[str, bytes] | None = None,
 ) -> tuple[Path, int, tempfile.TemporaryDirectory[str]]:
     temp_dir = tempfile.TemporaryDirectory(prefix="meshagent-build-context-")
     archive_path = Path(temp_dir.name) / "context.tar"
@@ -2171,12 +1900,84 @@ async def _build_local_context_archive(
             source_dir=source_dir,
             output_path=archive_path,
             preserved_paths=preserved_paths,
+            injected_files=injected_files,
         )
         archive_size = archive_path.stat().st_size
         return archive_path, archive_size, temp_dir
     except Exception:
         temp_dir.cleanup()
         raise
+
+
+async def _run_image_pack_stage(
+    *,
+    resolved_project_id: str | None,
+    resolved_room: str,
+    parsed_tag: _ParsedImageTag,
+    source_dir: Path,
+    base_image: str | None,
+) -> None:
+    account_client, client = await _with_client(
+        project_id=resolved_project_id,
+        room=resolved_room,
+    )
+    context_archive_temp_dir: tempfile.TemporaryDirectory[str] | None = None
+    try:
+        if resolved_project_id is None:
+            raise typer.BadParameter(
+                "a project id is required to pack a room registry image"
+            )
+        registry_credentials = await _resolve_project_registry_build_credentials(
+            account_client=account_client,
+            project_id=resolved_project_id,
+            parsed_tag=parsed_tag,
+        )
+        source_pack_spec = _BuildPackSpec(
+            source_dir=source_dir,
+            mount_path=_DEFAULT_CONTEXT_MOUNT_PATH,
+        )
+        (
+            archive_path,
+            archive_size,
+            context_archive_temp_dir,
+        ) = await _build_local_context_archive(
+            source_dir=source_dir,
+            preserved_paths=_preserved_packed_build_paths(
+                pack_spec=source_pack_spec,
+                context_path=_DEFAULT_CONTEXT_MOUNT_PATH,
+                dockerfile_path=None,
+            ),
+            injected_files={
+                _GENERATED_PACK_DOCKERFILE_NAME: _build_generated_pack_dockerfile(
+                    base_image=base_image
+                )
+            },
+        )
+        build_id = await client.containers.build(
+            tag=parsed_tag.value,
+            mount_path=_DEFAULT_CONTEXT_MOUNT_PATH,
+            context_path=_DEFAULT_CONTEXT_MOUNT_PATH,
+            dockerfile_path=_generated_pack_dockerfile_path(
+                mount_path=_DEFAULT_CONTEXT_MOUNT_PATH
+            ),
+            optimize_image=True,
+            private=False,
+            credentials=registry_credentials,
+            builder_name=_default_builder_name(client=client),
+            chunks=_iter_file_chunks(archive_path),
+            size=archive_size,
+        )
+        exit_code = await _stream_build_job_logs_and_wait_for_exit(
+            client=client,
+            build_id=build_id,
+        )
+        if exit_code != 0:
+            raise typer.Exit(code=exit_code)
+    finally:
+        if context_archive_temp_dir is not None:
+            context_archive_temp_dir.cleanup()
+        await client.__aexit__(None, None, None)
+        await account_client.close()
 
 
 async def _run_image_build_stage(
@@ -2723,105 +2524,46 @@ async def deploy_image(
         await account_client.close()
 
 
-@app.async_command("pack", help="Pack a local directory into an OCI image archive.")
+@app.async_command(
+    "pack",
+    help="Publish a local directory as an image inside a room using a generated Dockerfile.",
+)
 async def pack_image(
     *,
     project_id: ImageProjectIdOption = None,
     room: ImageRoomOption = None,
-    path: Annotated[str, typer.Argument(help="Local directory to pack")],
+    path: Annotated[str, typer.Argument(help="Local directory to publish")],
     tag: Annotated[
-        Optional[str],
+        str,
         typer.Option(
+            ...,
             "--tag",
             help=(
-                "Image reference to embed in the packed archive. Required with "
-                "--room, and must use "
-                "registry.meshagent.com/<project-key>/<repository>:<tag> there."
+                "Image reference to publish. Must use "
+                "registry.meshagent.com/<project-key>/<repository>:<tag>."
             ),
         ),
-    ] = None,
-    output: Annotated[
-        Optional[str],
-        typer.Option(
-            "--output",
-            "-o",
-            help=(
-                "Local path to write the OCI archive tar. Required unless --room is "
-                "set."
-            ),
-        ),
-    ] = None,
+    ],
     base: Annotated[
         Optional[str],
         typer.Option(
             "--base",
-            help="Optional base image reference. Defaults to scratch semantics.",
-        ),
-    ] = None,
-    room_path: Annotated[
-        Optional[str],
-        typer.Option(
-            "--room-path",
-            help=(
-                "Room storage path to upload the archive to when --room is set. "
-                "Defaults to the repository path from --tag."
-            ),
+            help="Optional base image reference for the generated Dockerfile.",
         ),
     ] = None,
 ) -> None:
     source_dir = Path(path)
-    output_path = Path(output).expanduser().resolve() if output is not None else None
-    parsed_tag = _parse_build_tag(tag) if tag is not None else None
+    parsed_tag = _parse_build_tag(tag)
+    _require_room_pack_tag(parsed_tag=parsed_tag)
     resolved_room = resolve_room(room)
     if resolved_room is None:
-        if output_path is None:
-            raise typer.BadParameter("--output is required unless --room is set")
-        try:
-            packed_archive = await build_oci_archive(
-                source_dir=source_dir,
-                output_path=output_path,
-                base_image=base,
-                architecture=default_pack_architecture(),
-                ref_name=parsed_tag.value if parsed_tag is not None else None,
-            )
-        except ImagePackError as exc:
-            raise typer.BadParameter(str(exc)) from exc
+        raise typer.BadParameter("--room is required unless MESHAGENT_ROOM is set")
 
-        print(
-            f"[green]Wrote OCI archive[/green] {packed_archive.output_path} "
-            f"({packed_archive.ref_name})"
-        )
-        return
-
-    if parsed_tag is None:
-        raise typer.BadParameter("--tag is required when --room is set")
-    _require_room_pack_tag(parsed_tag=parsed_tag)
-    remote_path = _resolve_build_pack_room_path(
+    resolved_project_id = await resolve_project_id(project_id=project_id)
+    await _run_image_pack_stage(
+        resolved_project_id=resolved_project_id,
+        resolved_room=resolved_room,
         parsed_tag=parsed_tag,
-        room_path=room_path,
+        source_dir=source_dir,
+        base_image=base,
     )
-    account_client, client = await _with_client(
-        project_id=project_id,
-        room=resolved_room,
-    )
-    try:
-        uploaded_archive = await _upload_oci_archive_to_room(
-            client=client,
-            source_dir=source_dir,
-            remote_path=remote_path,
-            output_path=output_path,
-            base_image=base,
-            architecture=default_pack_architecture(),
-            ref_name=parsed_tag.value,
-        )
-    except Exception:
-        await _close_pack_clients(account_client=account_client, client=client)
-        raise
-
-    if output_path is not None:
-        print(
-            f"[green]Wrote OCI archive[/green] {uploaded_archive.packed_archive.output_path} "
-            f"({uploaded_archive.packed_archive.ref_name})"
-        )
-    print(f"[green]Uploaded OCI archive[/green] {uploaded_archive.remote_path}")
-    await _close_pack_clients(account_client=account_client, client=client)

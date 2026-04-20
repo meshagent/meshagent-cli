@@ -477,6 +477,7 @@ def write_build_context_archive(
     source_dir: Path,
     output_path: Path,
     preserved_paths: frozenset[str] = frozenset(),
+    injected_files: dict[str, bytes] | None = None,
 ) -> None:
     _write_layer_tar(
         source_dir=source_dir,
@@ -484,6 +485,16 @@ def write_build_context_archive(
         excluded_paths=set(),
         preserved_paths=preserved_paths,
     )
+    if injected_files is None or len(injected_files) == 0:
+        return
+
+    with tarfile.open(output_path, mode="a") as archive:
+        for archive_path, data in injected_files.items():
+            _add_bytes_to_archive(
+                archive,
+                path=archive_path,
+                data=data,
+            )
 
 
 def _compress_zstd_to_path(*, source_path: Path, destination_path: Path) -> None:

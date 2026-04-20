@@ -1,4 +1,3 @@
-import asyncio
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,78 +63,46 @@ def test_replace_meshagent_image_vars_keeps_shell_images_on_estargz() -> None:
     )
 
 
-def test_resolve_room_archive_path_uses_output_name_for_directory_targets() -> None:
-    output_path = Path("/tmp/build/image.oci.tar")
-
-    assert (
-        image._resolve_room_archive_path(
-            output_path=output_path,
-            room_path="/archives/",
-        )
-        == "/archives/image.oci.tar"
+def test_build_generated_pack_dockerfile_defaults_to_scratch() -> None:
+    assert image._build_generated_pack_dockerfile(base_image=None) == (
+        b"FROM scratch\nCOPY . /\n"
     )
 
 
 @pytest.mark.asyncio
-async def test_pack_image_uploads_archive_to_room_storage(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+async def test_pack_image_streams_generated_build_context_and_waits_for_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    captured: dict[str, object] = {}
     source_dir = tmp_path / "sample"
     source_dir.mkdir()
-    output_path = tmp_path / "dist" / "sample.oci.tar"
-    captured: dict[str, object] = {}
-
-    async def _fake_build_oci_archive_to_writer(
-        *,
-        source_dir: Path,
-        output_path: Path,
-        archive_output,
-        base_image: str | None,
-        architecture: str,
-        ref_name: str | None = None,
-        on_packed_archive_ready=None,
-    ) -> SimpleNamespace:
-        resolved_output_path = output_path.expanduser().resolve()
-        captured["source_dir"] = source_dir
-        captured["output_path"] = resolved_output_path
-        captured["base_image"] = base_image
-        captured["architecture"] = architecture
-        captured["ref_name"] = ref_name
-        captured["on_packed_archive_ready"] = on_packed_archive_ready is not None
-        packed_archive = SimpleNamespace(
-            output_path=resolved_output_path,
-            ref_name="sample:latest",
-            manifest_digest="sha256:sampledigest",
+    archive_dir = tempfile.TemporaryDirectory(prefix="meshagent-build-context-test-")
+    archive_path = Path(archive_dir.name) / "context.tar"
+    archive_bytes = b"context-archive"
+    archive_path.write_bytes(archive_bytes)
+    registry_credentials = [
+        image.DockerSecret(
+            registry="registry.meshagent.com",
+            username="meshagent",
+            password="token",
         )
-        if on_packed_archive_ready is not None:
-            await on_packed_archive_ready(packed_archive)
-        archive_output.write(b"oci-")
-        archive_output.write(b"archive")
-        return packed_archive
+    ]
 
-    class _FakeStorage:
-        async def upload_stream(
-            self,
-            *,
-            path: str,
-            chunks,
-            overwrite: bool,
-            size: int | None,
-            name: str,
-        ) -> None:
-            uploaded = bytearray()
-            async for chunk in chunks:
-                uploaded.extend(chunk)
-
-            captured["remote_path"] = path
-            captured["overwrite"] = overwrite
-            captured["size"] = size
-            captured["upload_name"] = name
-            captured["uploaded_bytes"] = bytes(uploaded)
+    class _FakeContainers:
+        async def build(self, **kwargs) -> str:
+            captured["build_kwargs"] = {
+                key: value for key, value in kwargs.items() if key != "chunks"
+            }
+            streamed = bytearray()
+            async for chunk in kwargs["chunks"]:
+                streamed.extend(chunk)
+            captured["streamed_context"] = bytes(streamed)
+            return "build-1"
 
     class _FakeRoomClient:
         def __init__(self) -> None:
-            self.storage = _FakeStorage()
+            self.containers = _FakeContainers()
 
         async def __aexit__(self, exc_type, exc, tb) -> None:
             del exc_type, exc, tb
@@ -145,295 +112,93 @@ async def test_pack_image_uploads_archive_to_room_storage(
         async def close(self) -> None:
             captured["account_client_closed"] = True
 
+    async def _fake_resolve_project_id(*, project_id):
+        captured["project_id_arg"] = project_id
+        return "resolved-project-1"
+
     async def _fake_with_client(*, project_id, room):
         captured["project_id"] = project_id
         captured["room"] = room
         return _FakeAccountClient(), _FakeRoomClient()
 
-    async def _unexpected_build_oci_archive(**kwargs) -> SimpleNamespace:
-        del kwargs
-        raise AssertionError("room uploads should stream from the archive builder")
+    async def _fake_resolve_project_registry_build_credentials(
+        *,
+        account_client,
+        project_id: str,
+        parsed_tag,
+    ):
+        captured["credentials_account_client"] = account_client
+        captured["credentials_project_id"] = project_id
+        captured["credentials_tag"] = parsed_tag.value
+        return registry_credentials
 
-    monkeypatch.setattr(
-        image,
-        "build_oci_archive_to_writer",
-        _fake_build_oci_archive_to_writer,
-    )
-    monkeypatch.setattr(image, "build_oci_archive", _unexpected_build_oci_archive)
-    monkeypatch.setattr(
-        image,
-        "_with_client",
-        _fake_with_client,
-    )
-    monkeypatch.setenv("MESHAGENT_ARCH", "arm64")
+    async def _fake_stream_build_job_logs_and_wait_for_exit(
+        *,
+        client,
+        build_id: str,
+    ) -> int:
+        captured["wait_client"] = client
+        captured["build_id"] = build_id
+        return 0
+
+    async def _fake_build_local_context_archive(**kwargs):
+        captured["local_context_kwargs"] = kwargs
+        return archive_path, len(archive_bytes), archive_dir
+
+    monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(image, "_with_client", _fake_with_client)
     monkeypatch.setattr(image, "resolve_room", lambda room: room)
-    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        image,
+        "_resolve_project_registry_build_credentials",
+        _fake_resolve_project_registry_build_credentials,
+    )
+    monkeypatch.setattr(
+        image,
+        "_build_local_context_archive",
+        _fake_build_local_context_archive,
+    )
+    monkeypatch.setattr(
+        image,
+        "_stream_build_job_logs_and_wait_for_exit",
+        _fake_stream_build_job_logs_and_wait_for_exit,
+    )
 
     await image.pack_image(
         project_id="project-1",
         room="room-1",
         path=str(source_dir),
         tag="registry.meshagent.com/sample/app:1",
-        output=str(output_path),
         base="python:3.13",
-        room_path=None,
     )
 
-    assert captured["source_dir"] == source_dir
-    assert captured["output_path"] == output_path.resolve()
-    assert captured["base_image"] == "python:3.13"
-    assert captured["architecture"] == "arm64"
-    assert captured["ref_name"] == "registry.meshagent.com/sample/app:1"
-    assert captured["on_packed_archive_ready"] is True
-    assert captured["project_id"] == "project-1"
+    assert captured["project_id_arg"] == "project-1"
+    assert captured["project_id"] == "resolved-project-1"
     assert captured["room"] == "room-1"
-    assert captured["remote_path"] == "/sample/app"
-    assert captured["overwrite"] is True
-    assert captured["size"] is None
-    assert captured["upload_name"] == "sample.oci.tar"
-    assert captured["uploaded_bytes"] == b"oci-archive"
-    assert output_path.read_bytes() == b"oci-archive"
+    assert captured["credentials_project_id"] == "resolved-project-1"
+    assert captured["credentials_tag"] == "registry.meshagent.com/sample/app:1"
+    assert captured["local_context_kwargs"] == {
+        "source_dir": source_dir,
+        "preserved_paths": frozenset(),
+        "injected_files": {
+            image._GENERATED_PACK_DOCKERFILE_NAME: b"FROM python:3.13\nCOPY . /\n"
+        },
+    }
+    assert captured["build_kwargs"] == {
+        "tag": "registry.meshagent.com/sample/app:1",
+        "mount_path": "/context",
+        "context_path": "/context",
+        "dockerfile_path": "/context/.meshagent-pack.Dockerfile",
+        "optimize_image": True,
+        "private": False,
+        "credentials": registry_credentials,
+        "builder_name": "builder",
+        "size": len(archive_bytes),
+    }
+    assert captured["streamed_context"] == archive_bytes
+    assert captured["build_id"] == "build-1"
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
-
-
-@pytest.mark.asyncio
-async def test_pack_image_uploads_archive_to_room_without_local_output(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    source_dir = tmp_path / "sample"
-    source_dir.mkdir()
-    captured: dict[str, object] = {}
-
-    async def _fake_build_oci_archive_to_writer(
-        *,
-        source_dir: Path,
-        output_path: Path,
-        archive_output,
-        base_image: str | None,
-        architecture: str,
-        ref_name: str | None = None,
-        on_packed_archive_ready=None,
-    ) -> SimpleNamespace:
-        captured["source_dir"] = source_dir
-        captured["output_path"] = output_path
-        captured["base_image"] = base_image
-        captured["architecture"] = architecture
-        captured["ref_name"] = ref_name
-        packed_archive = SimpleNamespace(
-            output_path=output_path,
-            ref_name="sample:latest",
-            manifest_digest="sha256:sampledigest",
-        )
-        if on_packed_archive_ready is not None:
-            await on_packed_archive_ready(packed_archive)
-        archive_output.write(b"oci-archive")
-        return packed_archive
-
-    class _FakeStorage:
-        async def upload_stream(
-            self,
-            *,
-            path: str,
-            chunks,
-            overwrite: bool,
-            size: int | None,
-            name: str,
-        ) -> None:
-            uploaded = bytearray()
-            async for chunk in chunks:
-                uploaded.extend(chunk)
-
-            captured["remote_path"] = path
-            captured["overwrite"] = overwrite
-            captured["size"] = size
-            captured["upload_name"] = name
-            captured["uploaded_bytes"] = bytes(uploaded)
-
-    class _FakeRoomClient:
-        def __init__(self) -> None:
-            self.storage = _FakeStorage()
-
-        async def __aexit__(self, exc_type, exc, tb) -> None:
-            del exc_type, exc, tb
-            captured["room_client_closed"] = True
-
-    class _FakeAccountClient:
-        async def close(self) -> None:
-            captured["account_client_closed"] = True
-
-    async def _fake_with_client(*, project_id, room):
-        captured["project_id"] = project_id
-        captured["room"] = room
-        return _FakeAccountClient(), _FakeRoomClient()
-
-    monkeypatch.setattr(
-        image,
-        "build_oci_archive_to_writer",
-        _fake_build_oci_archive_to_writer,
-    )
-    monkeypatch.setattr(image, "_with_client", _fake_with_client)
-    monkeypatch.setattr(image, "resolve_room", lambda room: room)
-    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
-
-    await image.pack_image(
-        project_id="project-1",
-        room="room-1",
-        path=str(source_dir),
-        tag="registry.meshagent.com/sample/app:1",
-        output=None,
-        base=None,
-        room_path=None,
-    )
-
-    assert captured["source_dir"] == source_dir
-    assert captured["base_image"] is None
-    assert captured["architecture"] == "amd64"
-    assert captured["ref_name"] == "registry.meshagent.com/sample/app:1"
-    assert captured["remote_path"] == "/sample/app"
-    assert captured["overwrite"] is True
-    assert captured["size"] is None
-    assert captured["upload_name"] == "app"
-    assert captured["uploaded_bytes"] == b"oci-archive"
-    assert captured["room_client_closed"] is True
-    assert captured["account_client_closed"] is True
-
-
-@pytest.mark.asyncio
-async def test_pack_image_room_close_timeout_does_not_block(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    source_dir = tmp_path / "sample"
-    source_dir.mkdir()
-    captured: dict[str, object] = {"prints": []}
-
-    async def _fake_build_oci_archive_to_writer(
-        *,
-        source_dir: Path,
-        output_path: Path,
-        archive_output,
-        base_image: str | None,
-        architecture: str,
-        ref_name: str | None = None,
-        on_packed_archive_ready=None,
-    ) -> SimpleNamespace:
-        del source_dir, output_path, base_image, architecture, ref_name
-        packed_archive = SimpleNamespace(
-            output_path=Path("/tmp/ignored.tar"),
-            ref_name="registry.meshagent.com/sample/app:1",
-            manifest_digest="sha256:sampledigest",
-        )
-        if on_packed_archive_ready is not None:
-            await on_packed_archive_ready(packed_archive)
-        archive_output.write(b"oci-archive")
-        return packed_archive
-
-    class _FakeStorage:
-        async def upload_stream(
-            self,
-            *,
-            path: str,
-            chunks,
-            overwrite: bool,
-            size: int | None,
-            name: str,
-        ) -> None:
-            del path, overwrite, size, name
-            async for _chunk in chunks:
-                pass
-
-    class _FakeRoomClient:
-        def __init__(self) -> None:
-            self.storage = _FakeStorage()
-
-        async def __aexit__(self, exc_type, exc, tb) -> None:
-            del exc_type, exc, tb
-            await asyncio.sleep(1)
-
-    class _FakeAccountClient:
-        async def close(self) -> None:
-            captured["account_client_closed"] = True
-
-    async def _fake_with_client(*, project_id, room):
-        del project_id, room
-        return _FakeAccountClient(), _FakeRoomClient()
-
-    monkeypatch.setattr(
-        image,
-        "build_oci_archive_to_writer",
-        _fake_build_oci_archive_to_writer,
-    )
-    monkeypatch.setattr(image, "_with_client", _fake_with_client)
-    monkeypatch.setattr(image, "resolve_room", lambda room: room)
-    monkeypatch.setattr(image, "_CLIENT_CLOSE_TIMEOUT_SECONDS", 0.01)
-    monkeypatch.setattr(
-        image,
-        "print",
-        lambda *args, **kwargs: captured["prints"].append(
-            " ".join(str(arg) for arg in args)
-        ),
-    )
-
-    await image.pack_image(
-        project_id="project-1",
-        room="room-1",
-        path=str(source_dir),
-        tag="registry.meshagent.com/sample/app:1",
-        output=None,
-        base=None,
-        room_path=None,
-    )
-
-    assert any("Uploaded OCI archive" in line for line in captured["prints"])
-    assert any(
-        "Timed out closing room client after upload" in line
-        for line in captured["prints"]
-    )
-    assert captured["account_client_closed"] is True
-
-
-@pytest.mark.asyncio
-async def test_build_oci_archive_to_streaming_output_does_not_deadlock_when_queue_is_full(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    archive_output = image._StreamingArchiveOutput()
-    packed_archive = SimpleNamespace(
-        output_path=tmp_path / "ignored.tar",
-        ref_name="registry.meshagent.com/sample/app:1",
-        manifest_digest="sha256:sampledigest",
-    )
-
-    for _ in range(image._ARCHIVE_STREAM_QUEUE_SIZE):
-        archive_output._queue.put_nowait(b"queued")
-
-    async def _fake_build_oci_archive_to_writer(**kwargs) -> SimpleNamespace:
-        del kwargs
-        return packed_archive
-
-    async def _free_queue_space() -> None:
-        await asyncio.sleep(0.01)
-        assert archive_output._queue.get_nowait() == b"queued"
-
-    monkeypatch.setattr(
-        image,
-        "build_oci_archive_to_writer",
-        _fake_build_oci_archive_to_writer,
-    )
-
-    await asyncio.wait_for(
-        asyncio.gather(
-            image._build_oci_archive_to_streaming_output(
-                source_dir=tmp_path,
-                output_path=tmp_path / "ignored.tar",
-                archive_output=archive_output,
-                base_image=None,
-                architecture="amd64",
-                ref_name="registry.meshagent.com/sample/app:1",
-            ),
-            _free_queue_space(),
-        ),
-        timeout=1,
-    )
 
 
 @pytest.mark.asyncio
@@ -496,6 +261,11 @@ async def test_build_image_streams_context_and_waits_for_exit(
     monkeypatch.setattr(image, "_parse_creds", lambda values: credentials)
     monkeypatch.setattr(image, "_with_client", _fake_with_client)
     monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(
+        image,
+        "_resolve_project_registry_build_credentials",
+        mock.AsyncMock(return_value=[]),
+    )
     monkeypatch.setattr(
         image,
         "_build_local_context_archive",
@@ -602,6 +372,11 @@ async def test_build_image_pack_streams_context_and_defaults_context_path(
     monkeypatch.setattr(image, "resolve_room", lambda room: room)
     monkeypatch.setattr(
         image,
+        "_resolve_project_registry_build_credentials",
+        mock.AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        image,
         "_build_local_context_archive",
         _fake_build_local_context_archive,
     )
@@ -692,6 +467,11 @@ async def test_build_image_pack_preserves_ignored_dockerfile_and_dockerignore(
     monkeypatch.setattr(image, "resolve_room", lambda room: room)
     monkeypatch.setattr(
         image,
+        "_resolve_project_registry_build_credentials",
+        mock.AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        image,
         "_build_local_context_archive",
         _fake_build_local_context_archive,
     )
@@ -761,6 +541,11 @@ async def test_build_image_pack_exits_with_build_status(
     monkeypatch.setattr(image, "resolve_room", lambda room: room)
     monkeypatch.setattr(
         image,
+        "_resolve_project_registry_build_credentials",
+        mock.AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        image,
         "_build_local_context_archive",
         _fake_build_local_context_archive,
     )
@@ -787,12 +572,9 @@ async def test_build_image_pack_exits_with_build_status(
     assert exc_info.value.exit_code == 17
 
 
-def test_resolve_build_pack_room_path_defaults_to_repository_path() -> None:
-    parsed_tag = image._parse_build_tag("registry.meshagent.com/nested/website:1")
-
-    assert (
-        image._resolve_build_pack_room_path(parsed_tag=parsed_tag, room_path=None)
-        == "/nested/website"
+def test_generated_pack_dockerfile_path_uses_mount_path() -> None:
+    assert image._generated_pack_dockerfile_path(mount_path="/workspace") == (
+        "/workspace/.meshagent-pack.Dockerfile"
     )
 
 
@@ -972,6 +754,11 @@ async def test_build_image_can_disable_room_image_optimization(
 
     monkeypatch.setattr(image, "_with_client", _fake_with_client)
     monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(
+        image,
+        "_resolve_project_registry_build_credentials",
+        mock.AsyncMock(return_value=[]),
+    )
     monkeypatch.setattr(
         image,
         "_build_local_context_archive",
@@ -1208,45 +995,24 @@ async def test_run_image_build_stage_requests_repository_token_and_prepends_regi
 
 
 @pytest.mark.asyncio
-async def test_pack_image_requires_output_without_room(tmp_path: Path) -> None:
+async def test_pack_image_requires_room(tmp_path: Path) -> None:
     source_dir = tmp_path / "sample"
     source_dir.mkdir()
 
     with pytest.raises(
-        typer.BadParameter, match="--output is required unless --room is set"
+        typer.BadParameter, match="--room is required unless MESHAGENT_ROOM is set"
     ):
         await image.pack_image(
             project_id=None,
             room=None,
             path=str(source_dir),
-            tag=None,
-            output=None,
+            tag="registry.meshagent.com/sample/app:1",
             base=None,
-            room_path=None,
         )
 
 
 @pytest.mark.asyncio
-async def test_pack_image_requires_tag_when_uploading_to_room(tmp_path: Path) -> None:
-    source_dir = tmp_path / "sample"
-    source_dir.mkdir()
-
-    with pytest.raises(
-        typer.BadParameter, match="--tag is required when --room is set"
-    ):
-        await image.pack_image(
-            project_id=None,
-            room="room-1",
-            path=str(source_dir),
-            tag=None,
-            output=str(tmp_path / "sample.tar"),
-            base=None,
-            room_path=None,
-        )
-
-
-@pytest.mark.asyncio
-async def test_pack_image_requires_room_meshagent_tag_when_uploading_to_room(
+async def test_pack_image_requires_room_meshagent_tag_when_publishing(
     tmp_path: Path,
 ) -> None:
     source_dir = tmp_path / "sample"
@@ -1261,9 +1027,7 @@ async def test_pack_image_requires_room_meshagent_tag_when_uploading_to_room(
             room="room-1",
             path=str(source_dir),
             tag="website:1",
-            output=str(tmp_path / "sample.tar"),
             base=None,
-            room_path=None,
         )
 
 
