@@ -22,8 +22,9 @@ from meshagent.cli.containers import (
     _stream_build_job_logs_and_wait_for_exit,
     _with_client,
 )
-from meshagent.cli.helper import resolve_room
 from meshagent.cli.helper import (
+    get_client,
+    resolve_room,
     resolve_project_id,
     split_container_mount,
     split_empty_dir_mount,
@@ -33,6 +34,7 @@ from meshagent.api import ApiScope, RoomClient
 from meshagent.api.client import (
     ConflictError,
     CreateRepositoryTokenRequest,
+    Meshagent,
     ProjectRepository,
 )
 from meshagent.api.image_runtime import (
@@ -42,7 +44,7 @@ from meshagent.api.image_runtime import (
     IMAGE_RUNTIME_MOUNT_SUBPATH,
     ImageRuntimeDefinition,
 )
-from meshagent.api.registry_auth import DEFAULT_REGISTRY_USERNAME
+from meshagent.api.registry_auth import DEFAULT_REGISTRY_HOST, DEFAULT_REGISTRY_USERNAME
 from meshagent.api.room_server_client import DockerSecret
 from meshagent.api.room_ports import RESERVED_ROOM_SERVICE_PORTS
 from meshagent.api.specs.service import (
@@ -74,7 +76,6 @@ _BUILD_CONTEXT_CHUNK_SIZE = 1024 * 1024
 _CLIENT_CLOSE_TIMEOUT_SECONDS = 2.0
 _DEFAULT_CONTEXT_MOUNT_PATH = "/context"
 _DEFAULT_REPOSITORY_TOKEN_TTL_SECONDS = 3600
-_PROJECT_REGISTRY = "registry.meshagent.com"
 _GENERATED_PACK_DOCKERFILE_NAME = ".meshagent-pack.Dockerfile"
 _TOKEN_ENVIRONMENT_NAMES = (
     "MESHAGENT_TOKEN",
@@ -324,31 +325,71 @@ def _parse_build_tag(tag: str) -> _ParsedImageTag:
     )
 
 
-def _require_room_pack_tag(*, parsed_tag: _ParsedImageTag) -> None:
-    if parsed_tag.registry != _PROJECT_REGISTRY:
+def _normalize_project_registry(project_registry: str | None) -> str | None:
+    if project_registry is None:
+        return None
+    normalized = project_registry.strip()
+    if normalized == "":
+        return None
+    return normalized
+
+
+async def _get_project_registry() -> str:
+    account_client = await get_client()
+    try:
+        config = await account_client.get_config()
+    finally:
+        await account_client.close()
+
+    return _normalize_project_registry(config.domains.registry) or DEFAULT_REGISTRY_HOST
+
+
+def _project_registry_tag_format(*, project_registry: str) -> str:
+    return f"{project_registry}/<project-key>/<repository>:<tag>"
+
+
+def _require_room_pack_tag(
+    *,
+    parsed_tag: _ParsedImageTag,
+    project_registry: str,
+) -> None:
+    if parsed_tag.registry != project_registry:
         raise typer.BadParameter(
-            "--pack requires --tag to use registry.meshagent.com/<project-key>/<repository>:<tag>"
+            "--pack requires --tag to use "
+            f"{_project_registry_tag_format(project_registry=project_registry)}"
         )
-    _validate_project_registry_repository(parsed_tag=parsed_tag)
+    _validate_project_registry_repository(
+        parsed_tag=parsed_tag,
+        project_registry=project_registry,
+    )
 
 
-def _validate_project_registry_repository(*, parsed_tag: _ParsedImageTag) -> None:
+def _validate_project_registry_repository(
+    *,
+    parsed_tag: _ParsedImageTag,
+    project_registry: str,
+) -> None:
     repository_parts = parsed_tag.repository.split("/")
     if len(repository_parts) < 2:
         raise typer.BadParameter(
             "room image tags must be in the form "
-            "registry.meshagent.com/<project-key>/<repository>:<tag>"
+            f"{_project_registry_tag_format(project_registry=project_registry)}"
         )
     if _PROJECT_KEY_RE.fullmatch(repository_parts[0]) is None:
         raise typer.BadParameter(
-            "room image tags must use a valid project key after registry.meshagent.com/"
+            f"room image tags must use a valid project key after {project_registry}/"
         )
 
 
 def _split_project_registry_repository(
-    *, parsed_tag: _ParsedImageTag
+    *,
+    parsed_tag: _ParsedImageTag,
+    project_registry: str,
 ) -> tuple[str, str]:
-    _validate_project_registry_repository(parsed_tag=parsed_tag)
+    _validate_project_registry_repository(
+        parsed_tag=parsed_tag,
+        project_registry=project_registry,
+    )
     project_key, repository_name = parsed_tag.repository.split("/", 1)
     return project_key, repository_name
 
@@ -366,22 +407,24 @@ def _find_project_repository(
 
 async def _resolve_project_registry_build_credentials(
     *,
-    account_client,
+    account_client: Meshagent,
     project_id: str,
     parsed_tag: _ParsedImageTag,
+    project_registry: str,
 ) -> list[DockerSecret]:
-    if parsed_tag.registry != _PROJECT_REGISTRY:
+    if parsed_tag.registry != project_registry:
         return []
 
     expected_project_key, repository_name = _split_project_registry_repository(
-        parsed_tag=parsed_tag
+        parsed_tag=parsed_tag,
+        project_registry=project_registry,
     )
     project = await account_client.get_project_info(project_id)
     if project.project_key != expected_project_key:
         raise typer.BadParameter(
             "the image tag project key does not match the selected project: "
-            f"expected registry.meshagent.com/{project.project_key}/..., "
-            f"got registry.meshagent.com/{expected_project_key}/..."
+            f"expected {project_registry}/{project.project_key}/..., "
+            f"got {project_registry}/{expected_project_key}/..."
         )
 
     repositories = await account_client.list_repositories(project_id=project_id)
@@ -405,7 +448,7 @@ async def _resolve_project_registry_build_credentials(
     )
     return [
         DockerSecret(
-            registry=_PROJECT_REGISTRY,
+            registry=project_registry,
             username=DEFAULT_REGISTRY_USERNAME,
             password=token.token,
         )
@@ -1914,6 +1957,7 @@ async def _run_image_pack_stage(
     resolved_project_id: str | None,
     resolved_room: str,
     parsed_tag: _ParsedImageTag,
+    project_registry: str,
     source_dir: Path,
     base_image: str | None,
 ) -> None:
@@ -1927,10 +1971,15 @@ async def _run_image_pack_stage(
             raise typer.BadParameter(
                 "a project id is required to pack a room registry image"
             )
+        _require_room_pack_tag(
+            parsed_tag=parsed_tag,
+            project_registry=project_registry,
+        )
         registry_credentials = await _resolve_project_registry_build_credentials(
             account_client=account_client,
             project_id=resolved_project_id,
             parsed_tag=parsed_tag,
+            project_registry=project_registry,
         )
         source_pack_spec = _BuildPackSpec(
             source_dir=source_dir,
@@ -1985,6 +2034,7 @@ async def _run_image_build_stage(
     resolved_project_id: str | None,
     resolved_room: str,
     parsed_tag: _ParsedImageTag,
+    project_registry: str,
     context_path: str | None,
     dockerfile_path: str | None,
     pack: str,
@@ -2012,10 +2062,15 @@ async def _run_image_build_stage(
             raise typer.BadParameter(
                 "a project id is required to build a room registry image"
             )
+        _require_room_pack_tag(
+            parsed_tag=parsed_tag,
+            project_registry=project_registry,
+        )
         registry_credentials = await _resolve_project_registry_build_credentials(
             account_client=account_client,
             project_id=resolved_project_id,
             parsed_tag=parsed_tag,
+            project_registry=project_registry,
         )
         if len(registry_credentials) > 0:
             credentials = [*registry_credentials, *credentials]
@@ -2098,7 +2153,10 @@ async def build_image(
         str,
         typer.Option(
             ...,
-            help="Image tag to build, e.g. repo/name:tag.",
+            help=(
+                "Image tag to build. Must use the configured MeshAgent registry "
+                "in the form <registry>/<project-key>/<repository>:<tag>."
+            ),
         ),
     ],
     pack: Annotated[
@@ -2165,15 +2223,20 @@ async def build_image(
     ] = [],
 ) -> None:
     parsed_tag = _parse_build_tag(tag)
-    _require_room_pack_tag(parsed_tag=parsed_tag)
     resolved_room = resolve_room(room)
     if resolved_room is None:
         raise typer.BadParameter("--room is required unless MESHAGENT_ROOM is set")
+    project_registry = await _get_project_registry()
+    _require_room_pack_tag(
+        parsed_tag=parsed_tag,
+        project_registry=project_registry,
+    )
     resolved_project_id = await resolve_project_id(project_id=project_id)
     await _run_image_build_stage(
         resolved_project_id=resolved_project_id,
         resolved_room=resolved_room,
         parsed_tag=parsed_tag,
+        project_registry=project_registry,
         context_path=context_path,
         dockerfile_path=dockerfile_path,
         pack=pack,
@@ -2350,8 +2413,7 @@ async def deploy_image(
     ] = True,
 ) -> None:
     parsed_tag = _parse_build_tag(tag)
-    if pack is not None:
-        _require_room_pack_tag(parsed_tag=parsed_tag)
+    project_registry: str | None = None
     _validate_deploy_build_stage_options(
         pack=pack,
         context_path=context_path,
@@ -2378,6 +2440,12 @@ async def deploy_image(
     resolved_room = resolve_room(room)
     if resolved_room is None:
         raise typer.BadParameter("--room is required unless MESHAGENT_ROOM is set")
+    if pack is not None:
+        project_registry = await _get_project_registry()
+        _require_room_pack_tag(
+            parsed_tag=parsed_tag,
+            project_registry=project_registry,
+        )
     if domain is not None:
         domain = domain.strip()
         if domain == "":
@@ -2449,10 +2517,12 @@ async def deploy_image(
             resolved_identity=resolved_environment.identity,
         )
         if pack is not None:
+            assert project_registry is not None
             await _run_image_build_stage(
                 resolved_project_id=resolved_project_id,
                 resolved_room=resolved_room,
                 parsed_tag=parsed_tag,
+                project_registry=project_registry,
                 context_path=context_path,
                 dockerfile_path=dockerfile_path,
                 pack=pack,
@@ -2539,8 +2609,9 @@ async def pack_image(
             ...,
             "--tag",
             help=(
-                "Image reference to publish. Must use "
-                "registry.meshagent.com/<project-key>/<repository>:<tag>."
+                "Image reference to publish. Must use the configured "
+                "MeshAgent registry in the form "
+                "<registry>/<project-key>/<repository>:<tag>."
             ),
         ),
     ],
@@ -2554,16 +2625,21 @@ async def pack_image(
 ) -> None:
     source_dir = Path(path)
     parsed_tag = _parse_build_tag(tag)
-    _require_room_pack_tag(parsed_tag=parsed_tag)
     resolved_room = resolve_room(room)
     if resolved_room is None:
         raise typer.BadParameter("--room is required unless MESHAGENT_ROOM is set")
+    project_registry = await _get_project_registry()
+    _require_room_pack_tag(
+        parsed_tag=parsed_tag,
+        project_registry=project_registry,
+    )
 
     resolved_project_id = await resolve_project_id(project_id=project_id)
     await _run_image_pack_stage(
         resolved_project_id=resolved_project_id,
         resolved_room=resolved_room,
         parsed_tag=parsed_tag,
+        project_registry=project_registry,
         source_dir=source_dir,
         base_image=base,
     )

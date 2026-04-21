@@ -8,7 +8,12 @@ import pytest
 import typer
 
 from meshagent.api import ApiScope
-from meshagent.api.client import ProjectInfo, ProjectRepository
+from meshagent.api.client import (
+    MeshagentDeploymentConfig,
+    MeshagentDomains,
+    ProjectInfo,
+    ProjectRepository,
+)
 from meshagent.api.image_runtime import (
     IMAGE_RUNTIME_BASES,
     IMAGE_RUNTIME_MOUNT_PATH,
@@ -39,6 +44,23 @@ class _FakeParticipant:
         return None
 
 
+@pytest.fixture(autouse=True)
+def _stub_project_registry_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeConfigClient:
+        async def get_config(self) -> MeshagentDeploymentConfig:
+            return MeshagentDeploymentConfig(
+                domains=MeshagentDomains(registry="registry.meshagent.com")
+            )
+
+        async def close(self) -> None:
+            return None
+
+    async def _fake_get_client() -> _FakeConfigClient:
+        return _FakeConfigClient()
+
+    monkeypatch.setattr(image, "get_client", _fake_get_client)
+
+
 def test_replace_meshagent_image_vars_defaults_to_pkg_dev() -> None:
     assert image.replace_meshagent_image_vars("meshagent/python-sdk-slim:default") == (
         "us-central1-docker.pkg.dev/meshagent-public/images/"
@@ -67,6 +89,36 @@ def test_build_generated_pack_dockerfile_defaults_to_scratch() -> None:
     assert image._build_generated_pack_dockerfile(base_image=None) == (
         b"FROM scratch\nCOPY . /\n"
     )
+
+
+@pytest.mark.asyncio
+async def test_get_project_registry_uses_api_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeConfigClient:
+        async def get_config(self) -> MeshagentDeploymentConfig:
+            captured["get_config_called"] = True
+            return MeshagentDeploymentConfig(
+                domains=MeshagentDomains(registry="registry.meshagent.life")
+            )
+
+        async def close(self) -> None:
+            captured["closed"] = True
+
+    async def _fake_get_client() -> _FakeConfigClient:
+        return _FakeConfigClient()
+
+    monkeypatch.setattr(image, "get_client", _fake_get_client)
+
+    registry = await image._get_project_registry()
+
+    assert registry == "registry.meshagent.life"
+    assert captured == {
+        "get_config_called": True,
+        "closed": True,
+    }
 
 
 @pytest.mark.asyncio
@@ -126,10 +178,12 @@ async def test_pack_image_streams_generated_build_context_and_waits_for_exit(
         account_client,
         project_id: str,
         parsed_tag,
+        project_registry: str,
     ):
         captured["credentials_account_client"] = account_client
         captured["credentials_project_id"] = project_id
         captured["credentials_tag"] = parsed_tag.value
+        captured["credentials_registry"] = project_registry
         return registry_credentials
 
     async def _fake_stream_build_job_logs_and_wait_for_exit(
@@ -177,6 +231,7 @@ async def test_pack_image_streams_generated_build_context_and_waits_for_exit(
     assert captured["room"] == "room-1"
     assert captured["credentials_project_id"] == "resolved-project-1"
     assert captured["credentials_tag"] == "registry.meshagent.com/sample/app:1"
+    assert captured["credentials_registry"] == "registry.meshagent.com"
     assert captured["local_context_kwargs"] == {
         "source_dir": source_dir,
         "preserved_paths": frozenset(),
@@ -824,7 +879,10 @@ def test_require_room_pack_tag_rejects_non_room_meshagent_tag() -> None:
         typer.BadParameter,
         match="--pack requires --tag to use registry.meshagent.com/<project-key>/<repository>:<tag>",
     ):
-        image._require_room_pack_tag(parsed_tag=image._parse_build_tag("website:1"))
+        image._require_room_pack_tag(
+            parsed_tag=image._parse_build_tag("website:1"),
+            project_registry="registry.meshagent.com",
+        )
 
 
 @pytest.mark.asyncio
@@ -849,6 +907,7 @@ async def test_resolve_project_registry_build_credentials_rejects_project_key_mi
             parsed_tag=image._parse_build_tag(
                 "registry.meshagent.com/powerboards/test:latest"
             ),
+            project_registry="registry.meshagent.com",
         )
 
 
@@ -958,6 +1017,7 @@ async def test_run_image_build_stage_requests_repository_token_and_prepends_regi
         parsed_tag=image._parse_build_tag(
             "registry.meshagent.com/powerboards/test:latest"
         ),
+        project_registry="registry.meshagent.com",
         context_path=None,
         dockerfile_path=None,
         pack=str(source_dir),
@@ -1462,6 +1522,7 @@ async def test_deploy_image_pack_builds_before_deploying(
     assert build_kwargs["resolved_project_id"] == "project-1"
     assert build_kwargs["resolved_room"] == "room-1"
     assert build_kwargs["parsed_tag"].value == "registry.meshagent.com/repo/web:1"
+    assert build_kwargs["project_registry"] == "registry.meshagent.com"
     assert build_kwargs["context_path"] == "/context"
     assert build_kwargs["dockerfile_path"] == "/context/Dockerfile"
     assert build_kwargs["pack"] == str(source_dir)
