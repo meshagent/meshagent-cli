@@ -16,7 +16,12 @@ from meshagent.cli.helper import resolve_project_id
 from meshagent.cli import async_typer
 from meshagent.cli.helper import get_client, resolve_room
 
-app = async_typer.AsyncTyper(help="Interact with agents and toolkits in a room")
+app = async_typer.LazyTyper(help="Interact with agents and toolkits in a room")
+app.add_lazy_command(
+    name="call",
+    module="meshagent.cli.call",
+    help="Trigger agent/tool calls in a room",
+)
 
 
 def _chunk_to_output(chunk: Content) -> dict:

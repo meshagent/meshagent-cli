@@ -269,7 +269,7 @@ def _default_ref_name(source_dir: Path) -> str:
 def _pack_history_entry(*, created_at: str, source_dir: Path) -> dict[str, object]:
     return {
         "created": created_at,
-        "created_by": f"meshagent image pack {source_dir}",
+        "created_by": f"meshagent local-oci-archive {source_dir}",
         "comment": "packed local files into an OCI archive",
     }
 

@@ -68,7 +68,8 @@ app.add_lazy_command(
 app.add_lazy_command(
     name="call",
     module="meshagent.cli.call",
-    help="Trigger agent/tool calls via URL",
+    help="Trigger agent/tool calls in a room",
+    hidden=True,
 )
 app.add_lazy_command(
     name="auth",
@@ -115,6 +116,7 @@ app.add_lazy_command(
     name="package",
     module="meshagent.cli.agent_package_cli",
     help="Build, run, and deploy packaged services",
+    hidden=True,
 )
 app.add_lazy_command(
     name="mcp",
@@ -159,6 +161,20 @@ app.add_lazy_command(
     help="Manage registries for your project",
 )
 app.add_lazy_command(
+    name="build",
+    module="meshagent.cli.image",
+    attribute="app",
+    command_path=("build",),
+    help="Build a container image inside a room",
+)
+app.add_lazy_command(
+    name="deploy",
+    module="meshagent.cli.image",
+    attribute="app",
+    command_path=("deploy",),
+    help="Create or update a room service from an image",
+)
+app.add_lazy_command(
     name="scheduled-task",
     module="meshagent.cli.scheduled_tasks",
     help="Manage scheduled tasks for your project",
@@ -197,6 +213,7 @@ app.add_lazy_command(
     name="multi",
     module="meshagent.cli.multi",
     help="Connect agents and tools to a room",
+    hidden=True,
 )
 app.add_lazy_command(
     name="voicebot",
@@ -237,11 +254,6 @@ app.add_lazy_command(
     name="room",
     module="meshagent.cli.room",
     help="Operate within a room",
-)
-app.add_lazy_command(
-    name="image",
-    module="meshagent.cli.image",
-    help="Build and pack OCI images",
 )
 app.add_lazy_command(
     name="llm",

@@ -7,12 +7,12 @@ app.add_lazy_command(
     name="agent",
     module="meshagent.cli.agent",
     help="Interact with agents and toolkits",
+    hidden=True,
 )
 app.add_lazy_command(
     name="agents",
     module="meshagent.cli.agent",
     help="Interact with agents and toolkits",
-    hidden=True,
 )
 app.add_lazy_command(
     name="secret",

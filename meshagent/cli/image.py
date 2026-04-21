@@ -76,7 +76,7 @@ from meshagent.cli.oci_archive import (
 from meshagent.cli.version import __version__
 
 
-app = async_typer.AsyncTyper(help="Build and publish OCI images")
+app = async_typer.AsyncTyper(help="Pack local directories as OCI images")
 _BUILD_CONTEXT_CHUNK_SIZE = 1024 * 1024
 _CLIENT_CLOSE_TIMEOUT_SECONDS = 2.0
 _DEFAULT_CONTEXT_MOUNT_PATH = "/context"
@@ -237,7 +237,7 @@ class _RoomServiceUpsertResult:
 def _parse_build_pack(value: str) -> _BuildPackSpec:
     cleaned = value.strip()
     if cleaned == "":
-        raise typer.BadParameter("--pack cannot be empty")
+        raise typer.BadParameter("PATH cannot be empty")
 
     if ":" not in cleaned:
         return _BuildPackSpec(
@@ -247,7 +247,7 @@ def _parse_build_pack(value: str) -> _BuildPackSpec:
 
     source_dir_text, mount_path = (part.strip() for part in cleaned.rsplit(":", 1))
     if source_dir_text == "" or mount_path == "":
-        raise typer.BadParameter("--pack must be in the form '<path>[:<mount>]'")
+        raise typer.BadParameter("PATH must be in the form '<path>[:<mount>]'")
 
     return _BuildPackSpec(
         source_dir=Path(source_dir_text),
@@ -266,7 +266,7 @@ def _resolve_build_context_path(
         return context_path
 
     if not mount_path.startswith("/"):
-        raise typer.BadParameter("--pack mount path must be an absolute path")
+        raise typer.BadParameter("PATH mount path must be an absolute path")
     return mount_path
 
 
@@ -502,7 +502,7 @@ def _require_room_pack_tag(
 ) -> None:
     if parsed_tag.registry != project_registry:
         raise typer.BadParameter(
-            "--pack requires --tag to use "
+            "PATH requires --tag to use "
             f"{_project_registry_tag_format(project_registry=project_registry)}"
         )
     _validate_project_registry_repository(
@@ -2379,16 +2379,31 @@ def _validate_deploy_build_stage_options(
         return
 
     if len(invalid_options) == 1:
-        raise typer.BadParameter(f"{invalid_options[0]} requires --pack")
+        raise typer.BadParameter(f"{invalid_options[0]} requires PATH")
 
-    raise typer.BadParameter(f"{', '.join(invalid_options)} require --pack")
+    raise typer.BadParameter(f"{', '.join(invalid_options)} require PATH")
 
 
-@app.async_command("build", help="Build a container image inside a room.")
+@app.async_command(
+    "build",
+    help="Build a container image inside a room.",
+    hidden=True,
+)
 async def build_image(
     *,
     project_id: ImageProjectIdOption = None,
     room: ImageRoomOption = None,
+    pack: Annotated[
+        str,
+        typer.Argument(
+            ...,
+            metavar="PATH",
+            help=(
+                "Local directory to stream as the build context. Format "
+                "'<path>[:<mount>]'. Defaults mount to /context."
+            ),
+        ),
+    ],
     tag: Annotated[
         str,
         typer.Option(
@@ -2401,24 +2416,13 @@ async def build_image(
             ),
         ),
     ],
-    pack: Annotated[
-        str,
-        typer.Option(
-            ...,
-            "--pack",
-            help=(
-                "Local directory to stream as the build context. Format "
-                "'<path>[:<mount>]'. Defaults mount to /context."
-            ),
-        ),
-    ],
     context_path: Annotated[
         Optional[str],
         typer.Option(
             "--context-path",
             help=(
                 "Build context path inside the streamed build context (absolute "
-                "path). Defaults to the pack mount path."
+                "path). Defaults to the PATH mount path."
             ),
         ),
     ] = None,
@@ -2496,41 +2500,41 @@ async def build_image(
 @app.async_command(
     "deploy",
     help="Create or update a room service from an image, optionally building it first.",
+    hidden=True,
 )
 async def deploy_image(
     *,
     project_id: ImageProjectIdOption = None,
     room: ImageRoomOption = None,
+    pack: Annotated[
+        Optional[str],
+        typer.Argument(
+            metavar="PATH",
+            help=(
+                "Local directory to stream as the build context before deploy. "
+                "Format '<path>[:<mount>]'. Defaults mount to /context."
+            ),
+        ),
+    ] = None,
     tag: Annotated[
         str,
         typer.Option(
             ...,
             help=(
-                "Image tag to deploy, e.g. repo/name:tag. When used with "
-                "--pack, shorthand <repository>:<tag> and "
+                "Image tag to deploy, e.g. repo/name:tag. When used with PATH, "
+                "shorthand <repository>:<tag> and "
                 "<project-key>/<repository>:<tag> resolve against the "
                 "configured MeshAgent registry."
             ),
         ),
     ],
-    pack: Annotated[
-        Optional[str],
-        typer.Option(
-            "--pack",
-            help=(
-                "Stream a local directory as the build context, build the image, "
-                "and then deploy it. Format '<path>[:<mount>]'. Defaults mount to "
-                "/context."
-            ),
-        ),
-    ] = None,
     context_path: Annotated[
         Optional[str],
         typer.Option(
             "--context-path",
             help=(
                 "Build context path inside the packed build context (absolute path). "
-                "Only used with --pack."
+                "Only used with PATH."
             ),
         ),
     ] = None,
@@ -2540,7 +2544,7 @@ async def deploy_image(
             "--dockerfile-path",
             help=(
                 "Optional Dockerfile path inside the packed build context (absolute "
-                "path). Only used with --pack."
+                "path). Only used with PATH."
             ),
         ),
     ] = None,
@@ -2550,7 +2554,7 @@ async def deploy_image(
             "--optimize/--no-optimize",
             help=(
                 "Whether to optimize room image outputs to eStargz during the build "
-                "stage. Enabled by default. Only used with --pack."
+                "stage. Enabled by default. Only used with PATH."
             ),
         ),
     ] = True,

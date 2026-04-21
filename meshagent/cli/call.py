@@ -25,7 +25,7 @@ import pathlib
 from pydantic_yaml import parse_yaml_raw_as
 from meshagent.api.participant_token import ParticipantTokenSpec
 
-app = async_typer.AsyncTyper(help="Trigger agent/tool calls via URL")
+app = async_typer.AsyncTyper(help="Trigger agent/tool calls in a room")
 
 PRIVATE_NETS = (
     ipaddress.ip_network("10.0.0.0/8"),

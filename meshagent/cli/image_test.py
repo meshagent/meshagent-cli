@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from click.testing import CliRunner
 import pytest
 import typer
 
@@ -21,7 +22,7 @@ from meshagent.api.image_runtime import (
     IMAGE_RUNTIME_MOUNT_SUBPATH,
 )
 from meshagent.api.room_ports import ROOM_INTERNAL_API_PORT
-from meshagent.cli import image
+from meshagent.cli import async_typer, cli, image
 from meshagent.api.specs.service import (
     ContainerMountSpec,
     ContainerSpec,
@@ -60,6 +61,30 @@ def _stub_project_registry_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
         return _FakeConfigClient()
 
     monkeypatch.setattr(image, "get_client", _fake_get_client)
+
+
+def test_root_help_lists_build_and_deploy_commands() -> None:
+    result = CliRunner().invoke(async_typer.get_command(cli.app), ["--help"])
+
+    assert result.exit_code == 0
+    assert "│ build" in result.output
+    assert "│ deploy" in result.output
+
+
+def test_root_build_help_uses_positional_path() -> None:
+    result = CliRunner().invoke(async_typer.get_command(cli.app), ["build", "--help"])
+
+    assert result.exit_code == 0
+    assert "Usage: meshagent build [OPTIONS] PATH" in result.output
+    assert "--pack" not in result.output
+
+
+def test_root_deploy_help_uses_optional_positional_path() -> None:
+    result = CliRunner().invoke(async_typer.get_command(cli.app), ["deploy", "--help"])
+
+    assert result.exit_code == 0
+    assert "Usage: meshagent deploy [OPTIONS] [PATH]" in result.output
+    assert "--pack" not in result.output
 
 
 def test_replace_meshagent_image_vars_defaults_to_pkg_dev() -> None:
@@ -1094,7 +1119,7 @@ async def test_build_image_pack_requires_local_dockerfile_when_used_as_context(
 def test_require_room_pack_tag_rejects_non_project_registry_tag() -> None:
     with pytest.raises(
         typer.BadParameter,
-        match="--pack requires --tag to use registry.meshagent.com/<project-key>/<repository>:<tag>",
+        match="PATH requires --tag to use registry.meshagent.com/<project-key>/<repository>:<tag>",
     ):
         image._require_room_pack_tag(
             parsed_tag=image._parse_build_tag("ghcr.io/example/app:1"),
@@ -2417,7 +2442,7 @@ async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
 async def test_deploy_image_build_options_require_pack() -> None:
     with pytest.raises(
         typer.BadParameter,
-        match="--context-path requires --pack",
+        match="--context-path requires PATH",
     ):
         await image.deploy_image(
             project_id="project-1",
@@ -2442,7 +2467,7 @@ async def test_deploy_image_build_options_require_pack() -> None:
 async def test_deploy_image_cred_requires_pack() -> None:
     with pytest.raises(
         typer.BadParameter,
-        match="--cred requires --pack",
+        match="--cred requires PATH",
     ):
         await image.deploy_image(
             project_id="project-1",
