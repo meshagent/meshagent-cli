@@ -11,7 +11,7 @@ from rich import print
 
 from meshagent.api import ApiScope, ParticipantToken, RoomException
 from meshagent.api.client import NotFoundError
-from meshagent.api.helpers import meshagent_base_url, websocket_room_url
+from meshagent.api.helpers import websocket_room_url
 from meshagent.cli import async_typer
 from meshagent.cli.helper import (
     CustomMeshagentClient,
@@ -20,6 +20,7 @@ from meshagent.cli.helper import (
     resolve_project_id,
     resolve_room,
 )
+from meshagent.cli.local_settings import resolve_api_url
 
 _CONNECTED_TOKEN_ENV_NAMES = (
     "MESHAGENT_TOKEN",
@@ -191,7 +192,7 @@ async def _connect_room_env_resolved(
     )
     return _ConnectedRoomEnv(
         project_id=project_id,
-        api_url=os.getenv("MESHAGENT_API_URL") or meshagent_base_url(),
+        api_url=resolve_api_url(),
         room_name=connection.room_name,
         room_url=_normalize_room_url(room_url=connection.room_url),
         token=connection.jwt,
@@ -238,7 +239,7 @@ async def _mint_connected_room_env(
     )
     return _ConnectedRoomEnv(
         project_id=project_id,
-        api_url=os.getenv("MESHAGENT_API_URL") or meshagent_base_url(),
+        api_url=resolve_api_url(),
         room_name=room,
         room_url=_normalize_room_url(room_url=websocket_room_url(room_name=room)),
         token=token,

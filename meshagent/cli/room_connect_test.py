@@ -103,11 +103,6 @@ def test_room_connect_runs_command_with_connected_room_env(
     monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
     monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
     monkeypatch.setattr(room_connect.subprocess, "run", _fake_run)
-    monkeypatch.setattr(
-        room_connect,
-        "meshagent_base_url",
-        lambda: "https://default.meshagent.test",
-    )
     monkeypatch.setenv("UNCHANGED_ENV", "keep-me")
     monkeypatch.setenv("MESHAGENT_API_URL", "https://env.meshagent.test")
 
@@ -178,7 +173,7 @@ async def test_room_connect_uses_default_api_url_when_env_is_unset(
     monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
     monkeypatch.setattr(
         room_connect,
-        "meshagent_base_url",
+        "resolve_api_url",
         lambda: "https://default.meshagent.test",
     )
     monkeypatch.delenv("MESHAGENT_API_URL", raising=False)
@@ -276,7 +271,7 @@ async def test_room_connect_build_env_with_identity_mints_local_token(
     monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
     monkeypatch.setattr(
         room_connect,
-        "meshagent_base_url",
+        "resolve_api_url",
         lambda: "https://default.meshagent.test",
     )
     monkeypatch.setattr(
@@ -343,7 +338,7 @@ async def test_room_connect_build_env_with_identity_and_meshagent_token_mints_lo
     monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
     monkeypatch.setattr(
         room_connect,
-        "meshagent_base_url",
+        "resolve_api_url",
         lambda: "https://default.meshagent.test",
     )
     monkeypatch.setattr(
@@ -407,7 +402,7 @@ async def test_room_connect_build_env_with_identity_fetches_secret_without_conne
     monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
     monkeypatch.setattr(
         room_connect,
-        "meshagent_base_url",
+        "resolve_api_url",
         lambda: "https://default.meshagent.test",
     )
     monkeypatch.setattr(

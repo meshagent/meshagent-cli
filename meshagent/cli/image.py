@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Optional
+from urllib.parse import urlparse
 
 import typer
 from pydantic import ValidationError
@@ -24,6 +25,7 @@ from meshagent.cli.containers import (
 )
 from meshagent.cli.helper import (
     get_client,
+    resolve_api_url,
     resolve_room,
     resolve_project_id,
     split_container_mount,
@@ -33,8 +35,11 @@ from meshagent.cli.helper import (
 from meshagent.api import ApiScope, RoomClient
 from meshagent.api.client import (
     ConflictError,
+    CreateProjectRepositoryRequest,
     CreateRepositoryTokenRequest,
     Meshagent,
+    MeshagentDeploymentConfig,
+    PermissionDeniedError,
     ProjectRepository,
 )
 from meshagent.api.image_runtime import (
@@ -334,6 +339,48 @@ def _normalize_project_registry(project_registry: str | None) -> str | None:
     return normalized
 
 
+def _derive_project_registry_from_api_base(api_base: str | None) -> str | None:
+    normalized_api_base = _normalize_project_registry(api_base)
+    if normalized_api_base is None:
+        return None
+
+    parsed = urlparse(
+        normalized_api_base
+        if "://" in normalized_api_base
+        else f"https://{normalized_api_base}"
+    )
+    hostname = parsed.hostname
+    if hostname is None or hostname == "":
+        return None
+    if not hostname.startswith("api."):
+        return None
+
+    derived_registry = f"registry.{hostname.removeprefix('api.')}"
+    if parsed.port is None:
+        return derived_registry
+    return f"{derived_registry}:{parsed.port}"
+
+
+def _resolve_project_registry_from_config(
+    *,
+    config: MeshagentDeploymentConfig,
+    api_url: str | None = None,
+) -> str:
+    configured_registry = _normalize_project_registry(config.domains.registry)
+    if configured_registry is not None:
+        return configured_registry
+
+    configured_api_domain = _derive_project_registry_from_api_base(config.domains.api)
+    if configured_api_domain is not None:
+        return configured_api_domain
+
+    derived_from_api_url = _derive_project_registry_from_api_base(api_url)
+    if derived_from_api_url is not None:
+        return derived_from_api_url
+
+    return DEFAULT_REGISTRY_HOST
+
+
 async def _get_project_registry() -> str:
     account_client = await get_client()
     try:
@@ -341,11 +388,111 @@ async def _get_project_registry() -> str:
     finally:
         await account_client.close()
 
-    return _normalize_project_registry(config.domains.registry) or DEFAULT_REGISTRY_HOST
+    return _resolve_project_registry_from_config(
+        config=config,
+        api_url=resolve_api_url(),
+    )
 
 
 def _project_registry_tag_format(*, project_registry: str) -> str:
     return f"{project_registry}/<project-key>/<repository>:<tag>"
+
+
+def _format_image_reference(
+    *,
+    registry: str | None,
+    repository: str,
+    tag: str | None,
+) -> str:
+    repository_ref = repository if registry is None else f"{registry}/{repository}"
+    if tag is None:
+        return repository_ref
+    return f"{repository_ref}:{tag}"
+
+
+def _room_registry_tag_needs_project_key(*, parsed_tag: _ParsedImageTag) -> bool:
+    return len(parsed_tag.repository.split("/")) == 1
+
+
+def _room_registry_tag_needs_normalization(
+    *,
+    parsed_tag: _ParsedImageTag,
+    project_registry: str,
+) -> bool:
+    if parsed_tag.registry is None:
+        return True
+    if parsed_tag.registry != project_registry:
+        return False
+    return _room_registry_tag_needs_project_key(parsed_tag=parsed_tag)
+
+
+def _normalize_room_registry_tag(
+    *,
+    parsed_tag: _ParsedImageTag,
+    project_registry: str,
+    project_key: str,
+) -> _ParsedImageTag:
+    if parsed_tag.registry is not None and parsed_tag.registry != project_registry:
+        return parsed_tag
+
+    resolved_registry = parsed_tag.registry
+    resolved_repository = parsed_tag.repository
+
+    if resolved_registry is None:
+        resolved_registry = project_registry
+
+    if _room_registry_tag_needs_project_key(parsed_tag=parsed_tag):
+        resolved_repository = f"{project_key}/{resolved_repository}"
+
+    if (
+        resolved_registry == parsed_tag.registry
+        and resolved_repository == parsed_tag.repository
+    ):
+        return parsed_tag
+
+    return _parse_build_tag(
+        _format_image_reference(
+            registry=resolved_registry,
+            repository=resolved_repository,
+            tag=parsed_tag.tag,
+        )
+    )
+
+
+async def _resolve_room_registry_target(
+    *,
+    project_id: str,
+    parsed_tag: _ParsedImageTag,
+) -> tuple[str, _ParsedImageTag]:
+    account_client = await get_client()
+    try:
+        config = await account_client.get_config()
+        project_registry = _resolve_project_registry_from_config(
+            config=config,
+            api_url=resolve_api_url(),
+        )
+
+        if not _room_registry_tag_needs_normalization(
+            parsed_tag=parsed_tag,
+            project_registry=project_registry,
+        ):
+            return project_registry, parsed_tag
+
+        if not _room_registry_tag_needs_project_key(parsed_tag=parsed_tag):
+            return project_registry, _normalize_room_registry_tag(
+                parsed_tag=parsed_tag,
+                project_registry=project_registry,
+                project_key="",
+            )
+
+        project = await account_client.get_project_info(project_id)
+        return project_registry, _normalize_room_registry_tag(
+            parsed_tag=parsed_tag,
+            project_registry=project_registry,
+            project_key=project.project_key,
+        )
+    finally:
+        await account_client.close()
 
 
 def _require_room_pack_tag(
@@ -405,6 +552,103 @@ def _find_project_repository(
     return None
 
 
+def _registry_create_command(*, project_id: str, repository_name: str) -> str:
+    return shlex.join(
+        [
+            "meshagent",
+            "registry",
+            "create",
+            "--project-id",
+            project_id,
+            "--name",
+            repository_name,
+        ]
+    )
+
+
+def _registry_list_command(*, project_id: str) -> str:
+    return shlex.join(
+        [
+            "meshagent",
+            "registry",
+            "list",
+            "--project-id",
+            project_id,
+        ]
+    )
+
+
+def _missing_project_repository_message(
+    *,
+    project_id: str,
+    project_key: str,
+    repository_name: str,
+    auto_create_attempted: bool,
+) -> str:
+    command_hint = _registry_create_command(
+        project_id=project_id,
+        repository_name=repository_name,
+    )
+    list_hint = _registry_list_command(project_id=project_id)
+    attempted_text = (
+        " The CLI tried to create it automatically but your credentials do not have "
+        "permission to create registry repositories."
+        if auto_create_attempted
+        else ""
+    )
+    return (
+        "the target repository does not exist in the selected project: "
+        f"{project_key}/{repository_name}."
+        f"{attempted_text} "
+        f"Create it with `{command_hint}` or inspect existing repositories with "
+        f"`{list_hint}`."
+    )
+
+
+async def _ensure_project_repository(
+    *,
+    account_client: Meshagent,
+    project_id: str,
+    project_key: str,
+    repository_name: str,
+) -> ProjectRepository:
+    repositories = await account_client.list_repositories(project_id=project_id)
+    repository = _find_project_repository(
+        repositories=repositories,
+        repository_name=repository_name,
+    )
+    if repository is not None:
+        return repository
+
+    try:
+        return await account_client.create_repository(
+            project_id=project_id,
+            repository=CreateProjectRepositoryRequest(
+                name=repository_name,
+                description="",
+                annotations={},
+            ),
+        )
+    except ConflictError:
+        repositories = await account_client.list_repositories(project_id=project_id)
+        repository = _find_project_repository(
+            repositories=repositories,
+            repository_name=repository_name,
+        )
+        if repository is not None:
+            return repository
+        raise
+    except PermissionDeniedError as exc:
+        raise typer.BadParameter(
+            _missing_project_repository_message(
+                project_id=project_id,
+                project_key=project_key,
+                repository_name=repository_name,
+                auto_create_attempted=True,
+            )
+        ) from exc
+
+
 async def _resolve_project_registry_build_credentials(
     *,
     account_client: Meshagent,
@@ -427,16 +671,12 @@ async def _resolve_project_registry_build_credentials(
             f"got {project_registry}/{expected_project_key}/..."
         )
 
-    repositories = await account_client.list_repositories(project_id=project_id)
-    repository = _find_project_repository(
-        repositories=repositories,
+    repository = await _ensure_project_repository(
+        account_client=account_client,
+        project_id=project_id,
+        project_key=expected_project_key,
         repository_name=repository_name,
     )
-    if repository is None:
-        raise typer.BadParameter(
-            "the target repository does not exist in the selected project: "
-            f"{expected_project_key}/{repository_name}"
-        )
 
     token = await account_client.create_repository_token(
         project_id=project_id,
@@ -2154,8 +2394,10 @@ async def build_image(
         typer.Option(
             ...,
             help=(
-                "Image tag to build. Must use the configured MeshAgent registry "
-                "in the form <registry>/<project-key>/<repository>:<tag>."
+                "Image tag to build. Supports <repository>:<tag>, "
+                "<project-key>/<repository>:<tag>, or "
+                "<registry>/<project-key>/<repository>:<tag>. Shorthand forms "
+                "resolve against the configured MeshAgent registry."
             ),
         ),
     ],
@@ -2226,12 +2468,15 @@ async def build_image(
     resolved_room = resolve_room(room)
     if resolved_room is None:
         raise typer.BadParameter("--room is required unless MESHAGENT_ROOM is set")
-    project_registry = await _get_project_registry()
+    resolved_project_id = await resolve_project_id(project_id=project_id)
+    project_registry, parsed_tag = await _resolve_room_registry_target(
+        project_id=resolved_project_id,
+        parsed_tag=parsed_tag,
+    )
     _require_room_pack_tag(
         parsed_tag=parsed_tag,
         project_registry=project_registry,
     )
-    resolved_project_id = await resolve_project_id(project_id=project_id)
     await _run_image_build_stage(
         resolved_project_id=resolved_project_id,
         resolved_room=resolved_room,
@@ -2260,7 +2505,12 @@ async def deploy_image(
         str,
         typer.Option(
             ...,
-            help="Image tag to deploy, e.g. repo/name:tag.",
+            help=(
+                "Image tag to deploy, e.g. repo/name:tag. When used with "
+                "--pack, shorthand <repository>:<tag> and "
+                "<project-key>/<repository>:<tag> resolve against the "
+                "configured MeshAgent registry."
+            ),
         ),
     ],
     pack: Annotated[
@@ -2440,8 +2690,12 @@ async def deploy_image(
     resolved_room = resolve_room(room)
     if resolved_room is None:
         raise typer.BadParameter("--room is required unless MESHAGENT_ROOM is set")
+    resolved_project_id = await resolve_project_id(project_id=project_id)
     if pack is not None:
-        project_registry = await _get_project_registry()
+        project_registry, parsed_tag = await _resolve_room_registry_target(
+            project_id=resolved_project_id,
+            parsed_tag=parsed_tag,
+        )
         _require_room_pack_tag(
             parsed_tag=parsed_tag,
             project_registry=project_registry,
@@ -2452,7 +2706,6 @@ async def deploy_image(
             raise typer.BadParameter("--domain cannot be empty")
     normalized_liveness = _normalize_deploy_liveness(liveness=liveness)
 
-    resolved_project_id = await resolve_project_id(project_id=project_id)
     packed_default_ports: list[PortSpec] | None = None
     packed_dockerfile_metadata: _PackedDockerfileMetadata | None = None
     runtime_container: _RuntimeContainerOverride | None = None
@@ -2609,9 +2862,10 @@ async def pack_image(
             ...,
             "--tag",
             help=(
-                "Image reference to publish. Must use the configured "
-                "MeshAgent registry in the form "
-                "<registry>/<project-key>/<repository>:<tag>."
+                "Image reference to publish. Supports <repository>:<tag>, "
+                "<project-key>/<repository>:<tag>, or "
+                "<registry>/<project-key>/<repository>:<tag>. Shorthand forms "
+                "resolve against the configured MeshAgent registry."
             ),
         ),
     ],
@@ -2628,13 +2882,16 @@ async def pack_image(
     resolved_room = resolve_room(room)
     if resolved_room is None:
         raise typer.BadParameter("--room is required unless MESHAGENT_ROOM is set")
-    project_registry = await _get_project_registry()
+    resolved_project_id = await resolve_project_id(project_id=project_id)
+    project_registry, parsed_tag = await _resolve_room_registry_target(
+        project_id=resolved_project_id,
+        parsed_tag=parsed_tag,
+    )
     _require_room_pack_tag(
         parsed_tag=parsed_tag,
         project_registry=project_registry,
     )
 
-    resolved_project_id = await resolve_project_id(project_id=project_id)
     await _run_image_pack_stage(
         resolved_project_id=resolved_project_id,
         resolved_room=resolved_room,

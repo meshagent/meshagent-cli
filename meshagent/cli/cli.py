@@ -7,6 +7,8 @@ import sys
 import warnings
 from pathlib import Path
 
+from meshagent.cli.local_settings import apply_active_profile_api_url_environment
+
 
 def _configure_warning_filters() -> None:
     warnings.filterwarnings(
@@ -47,6 +49,7 @@ app = async_typer.LazyTyper(no_args_is_help=True, name="meshagent")
 
 @app.callback()
 def _root_callback() -> None:
+    apply_active_profile_api_url_environment()
     _configure_runtime()
 
 

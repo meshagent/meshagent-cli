@@ -1,6 +1,7 @@
 import pytest
 
 from meshagent.cli import auth
+from meshagent.cli.local_settings import SavedProfileRecord, StoredUserProfile
 
 
 class _FakeClient:
@@ -58,3 +59,51 @@ async def test_whoami_prints_not_logged_in_without_identity(monkeypatch) -> None
     await auth.whoami()
 
     assert output == ["Not logged in"]
+
+
+@pytest.mark.asyncio
+async def test_login_passes_api_url_to_auth_async(monkeypatch) -> None:
+    captured: dict[str, str | None] = {}
+
+    async def _fake_login(*, api_url: str | None = None) -> None:
+        captured["api_url"] = api_url
+
+    async def _fake_get_active_project() -> str | None:
+        return "project-123"
+
+    monkeypatch.setattr(auth.auth_async, "login", _fake_login)
+    monkeypatch.setattr(auth, "get_active_project", _fake_get_active_project)
+
+    await auth.login(api_url="https://override.meshagent.test")
+
+    assert captured == {"api_url": "https://override.meshagent.test"}
+
+
+@pytest.mark.asyncio
+async def test_switch_lists_saved_profiles(monkeypatch) -> None:
+    output: list[str] = []
+
+    monkeypatch.setattr(
+        auth,
+        "list_saved_profiles",
+        lambda: [
+            SavedProfileRecord(
+                user_id="user-123",
+                profile=StoredUserProfile(
+                    id="user-123",
+                    first_name="Jesse",
+                    last_name="Ezell",
+                    email="jesse@example.com",
+                ),
+                api_url="https://api.meshagent.test",
+                is_active=True,
+            )
+        ],
+    )
+    monkeypatch.setattr(auth.typer, "echo", output.append)
+
+    await auth.switch()
+
+    assert output == [
+        "* Jesse Ezell [user-123] @ https://api.meshagent.test",
+    ]

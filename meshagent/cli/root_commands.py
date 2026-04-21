@@ -3,6 +3,7 @@ import asyncio
 import click
 from rich import print
 
+from meshagent.api.client import User
 from meshagent.cli.version import __version__
 
 _SETUP_WELCOME_PROMPT = (
@@ -21,24 +22,19 @@ def _setup_welcome_prompt(*, user_name: str | None) -> str:
     return _SETUP_WELCOME_PROMPT.format(user_name=user_name.strip())
 
 
-def _display_name_from_profile(profile: dict[str, object]) -> str | None:
-    first_name = profile.get("first_name")
-    last_name = profile.get("last_name")
-    email = profile.get("email")
+def _display_name_from_profile(profile: User) -> str | None:
+    parts = []
+    if profile.first_name is not None and profile.first_name.strip() != "":
+        parts.append(profile.first_name.strip())
+    if profile.last_name is not None and profile.last_name.strip() != "":
+        parts.append(profile.last_name.strip())
 
-    full_name = " ".join(
-        part
-        for part in (
-            first_name.strip() if isinstance(first_name, str) else None,
-            last_name.strip() if isinstance(last_name, str) else None,
-        )
-        if part
-    )
+    full_name = " ".join(parts)
     if full_name != "":
         return full_name
 
-    if isinstance(email, str) and email.strip() != "":
-        return email.strip()
+    if profile.email.strip() != "":
+        return profile.email.strip()
 
     return None
 
@@ -56,18 +52,24 @@ def version_command():
 
 
 @click.command("setup")
-def setup_command():
+@click.option(
+    "--api-url",
+    type=str,
+    default=None,
+    help="Persist this API URL on the saved profile and use it for setup login.",
+)
+def setup_command(api_url: str | None = None):
     """Perform initial login and project/api key activation."""
 
     async def runner():
         from meshagent.cli import api_keys, ask as ask_module, auth_async, projects
-        from meshagent.api.helpers import meshagent_base_url
         from meshagent.cli.helper import (
             CustomMeshagentClient,
             get_active_api_key,
             get_active_project,
             get_client,
         )
+        from meshagent.cli.local_settings import resolve_api_url
         from meshagent.cli.tui.setup import (
             SetupProject,
             run_setup_wizard_tui,
@@ -146,6 +148,7 @@ def setup_command():
             login_operation=lambda status_handler: auth_async.login(
                 status_handler=status_handler,
                 print_status=False,
+                api_url=api_url,
             ),
             list_projects_operation=list_setup_projects,
             create_project_operation=create_project_from_name,
@@ -160,15 +163,15 @@ def setup_command():
             return
 
         if result.status == "completed":
-            profile: dict[str, object] | None = None
+            profile: User | None = None
             access_token = await auth_async.get_access_token()
             if access_token is not None:
                 client = CustomMeshagentClient(
-                    base_url=meshagent_base_url(),
+                    base_url=resolve_api_url(),
                     token=access_token,
                 )
                 try:
-                    profile = await client.get_user_profile("me")
+                    profile = User.model_validate(await client.get_user_profile("me"))
                 except Exception:
                     profile = None
                 finally:

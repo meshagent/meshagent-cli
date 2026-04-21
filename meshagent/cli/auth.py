@@ -1,16 +1,32 @@
 import typer
+from typing import Annotated
 
-from meshagent.api.helpers import meshagent_base_url
+from meshagent.api.client import User
 from meshagent.cli import async_typer
 from meshagent.cli import auth_async
 from meshagent.cli.helper import CustomMeshagentClient, get_active_project
+from meshagent.cli.local_settings import (
+    DEFAULT_API_URL,
+    SavedProfileRecord,
+    list_saved_profiles,
+    resolve_api_url,
+    switch_active_profile,
+)
 
 app = async_typer.AsyncTyper(help="Authenticate to meshagent")
 
 
 @app.async_command("login")
-async def login():
-    await auth_async.login()
+async def login(
+    api_url: Annotated[
+        str | None,
+        typer.Option(
+            "--api-url",
+            help="Persist this API URL on the saved profile and use it for this login.",
+        ),
+    ] = None,
+):
+    await auth_async.login(api_url=api_url)
 
     project_id = await get_active_project()
     if project_id is None:
@@ -25,6 +41,62 @@ async def logout():
     await auth_async.logout()
 
 
+def _format_user_identity(profile: User) -> str:
+    parts = []
+    first_name = profile.first_name.strip() if profile.first_name is not None else ""
+    last_name = profile.last_name.strip() if profile.last_name is not None else ""
+    if first_name != "":
+        parts.append(first_name)
+    if last_name != "":
+        parts.append(last_name)
+
+    full_name = " ".join(parts)
+    if full_name != "" and profile.email.strip() != "":
+        return f"{full_name} <{profile.email.strip()}>"
+    if full_name != "":
+        return full_name
+    if profile.email.strip() != "":
+        return profile.email.strip()
+    return profile.id
+
+
+def _format_saved_profile(profile: SavedProfileRecord) -> str:
+    active_marker = "*" if profile.is_active else " "
+    api_url = profile.api_url or DEFAULT_API_URL
+    return (
+        f"{active_marker} {profile.profile.display_name()} "
+        f"[{profile.user_id}] @ {api_url}"
+    )
+
+
+@app.async_command("switch")
+async def switch(
+    profile: Annotated[
+        str | None,
+        typer.Argument(
+            help="Saved profile user id or email. If omitted, saved profiles are listed.",
+        ),
+    ] = None,
+):
+    if profile is None:
+        saved_profiles = list_saved_profiles()
+        if len(saved_profiles) == 0:
+            typer.echo("No saved local profiles.")
+            return
+
+        for saved_profile in saved_profiles:
+            typer.echo(_format_saved_profile(saved_profile))
+        return
+
+    try:
+        selected_profile = switch_active_profile(profile)
+    except LookupError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"Active profile: {_format_saved_profile(selected_profile)}")
+
+
 @app.async_command("whoami")
 async def whoami():
     access_token = await auth_async.get_access_token()
@@ -33,32 +105,12 @@ async def whoami():
         return
 
     client = CustomMeshagentClient(
-        base_url=meshagent_base_url(),
+        base_url=resolve_api_url(),
         token=access_token,
     )
     try:
-        profile = await client.get_user_profile("me")
+        profile = User.model_validate(await client.get_user_profile("me"))
     finally:
         await client.close()
 
-    first_name = profile.get("first_name")
-    last_name = profile.get("last_name")
-    email = profile.get("email")
-
-    full_name = " ".join(
-        part
-        for part in (
-            first_name.strip() if isinstance(first_name, str) else None,
-            last_name.strip() if isinstance(last_name, str) else None,
-        )
-        if part
-    )
-
-    if full_name and isinstance(email, str) and email.strip():
-        typer.echo(f"{full_name} <{email.strip()}>")
-    elif full_name:
-        typer.echo(full_name)
-    elif isinstance(email, str) and email.strip():
-        typer.echo(email.strip())
-    else:
-        typer.echo(str(profile.get("id", "Authenticated")))
+    typer.echo(_format_user_identity(profile))

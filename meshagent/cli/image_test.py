@@ -11,6 +11,7 @@ from meshagent.api import ApiScope
 from meshagent.api.client import (
     MeshagentDeploymentConfig,
     MeshagentDomains,
+    PermissionDeniedError,
     ProjectInfo,
     ProjectRepository,
 )
@@ -119,6 +120,158 @@ async def test_get_project_registry_uses_api_config(
         "get_config_called": True,
         "closed": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_get_project_registry_derives_from_api_domain_when_registry_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeConfigClient:
+        async def get_config(self) -> MeshagentDeploymentConfig:
+            captured["get_config_called"] = True
+            return MeshagentDeploymentConfig(
+                domains=MeshagentDomains(
+                    api="api.meshagent.life",
+                    registry=None,
+                )
+            )
+
+        async def close(self) -> None:
+            captured["closed"] = True
+
+    async def _fake_get_client() -> _FakeConfigClient:
+        return _FakeConfigClient()
+
+    monkeypatch.setattr(image, "get_client", _fake_get_client)
+
+    registry = await image._get_project_registry()
+
+    assert registry == "registry.meshagent.life"
+    assert captured == {
+        "get_config_called": True,
+        "closed": True,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("config_registry", "tag", "expected_tag", "expects_project_lookup"),
+    [
+        (
+            "registry.meshagent.com",
+            "website:1",
+            "registry.meshagent.com/powerboards/website:1",
+            True,
+        ),
+        (
+            "registry.meshagent.com",
+            "powerboards/website:1",
+            "registry.meshagent.com/powerboards/website:1",
+            False,
+        ),
+        (
+            "room.meshagent.com",
+            "room.meshagent.com/website-node:noopt",
+            "room.meshagent.com/powerboards/website-node:noopt",
+            True,
+        ),
+    ],
+)
+async def test_resolve_room_registry_target_normalizes_shorthand_tags(
+    monkeypatch: pytest.MonkeyPatch,
+    config_registry: str,
+    tag: str,
+    expected_tag: str,
+    expects_project_lookup: bool,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeConfigClient:
+        async def get_config(self) -> MeshagentDeploymentConfig:
+            captured["get_config_called"] = True
+            return MeshagentDeploymentConfig(
+                domains=MeshagentDomains(registry=config_registry)
+            )
+
+        async def get_project_info(self, project_id: str) -> ProjectInfo:
+            captured["project_id"] = project_id
+            return ProjectInfo(
+                id=project_id,
+                owner_user_id="user-1",
+                name="Powerboards",
+                project_key="powerboards",
+            )
+
+        async def close(self) -> None:
+            captured["closed"] = True
+
+    async def _fake_get_client() -> _FakeConfigClient:
+        return _FakeConfigClient()
+
+    monkeypatch.setattr(image, "get_client", _fake_get_client)
+
+    project_registry, parsed_tag = await image._resolve_room_registry_target(
+        project_id="project-1",
+        parsed_tag=image._parse_build_tag(tag),
+    )
+
+    assert project_registry == config_registry
+    assert parsed_tag.value == expected_tag
+    assert captured["get_config_called"] is True
+    assert captured["closed"] is True
+    if expects_project_lookup:
+        assert captured["project_id"] == "project-1"
+    else:
+        assert "project_id" not in captured
+
+
+@pytest.mark.asyncio
+async def test_resolve_room_registry_target_derives_registry_from_api_domain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeConfigClient:
+        async def get_config(self) -> MeshagentDeploymentConfig:
+            captured["get_config_called"] = True
+            return MeshagentDeploymentConfig(
+                domains=MeshagentDomains(
+                    api="api.meshagent.life",
+                    registry=None,
+                )
+            )
+
+        async def get_project_info(self, project_id: str) -> ProjectInfo:
+            captured["project_id"] = project_id
+            return ProjectInfo(
+                id=project_id,
+                owner_user_id="user-1",
+                name="Powerboards",
+                project_key="powerboards",
+            )
+
+        async def close(self) -> None:
+            captured["closed"] = True
+
+    async def _fake_get_client() -> _FakeConfigClient:
+        return _FakeConfigClient()
+
+    monkeypatch.setattr(image, "get_client", _fake_get_client)
+
+    project_registry, parsed_tag = await image._resolve_room_registry_target(
+        project_id="project-1",
+        parsed_tag=image._parse_build_tag(
+            "registry.meshagent.life/powerboards/website-node:noopt"
+        ),
+    )
+
+    assert project_registry == "registry.meshagent.life"
+    assert parsed_tag.value == "registry.meshagent.life/powerboards/website-node:noopt"
+    assert captured["get_config_called"] is True
+    assert captured["closed"] is True
+    assert "project_id" not in captured
 
 
 @pytest.mark.asyncio
@@ -368,6 +521,70 @@ async def test_build_image_streams_context_and_waits_for_exit(
 
 
 @pytest.mark.asyncio
+async def test_build_image_normalizes_shorthand_room_registry_tag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeConfigClient:
+        async def get_config(self) -> MeshagentDeploymentConfig:
+            return MeshagentDeploymentConfig(
+                domains=MeshagentDomains(registry="room.meshagent.com")
+            )
+
+        async def get_project_info(self, project_id: str) -> ProjectInfo:
+            captured["project_id"] = project_id
+            return ProjectInfo(
+                id=project_id,
+                owner_user_id="user-1",
+                name="Powerboards",
+                project_key="powerboards",
+            )
+
+        async def close(self) -> None:
+            captured["closed"] = True
+
+    async def _fake_get_client() -> _FakeConfigClient:
+        return _FakeConfigClient()
+
+    async def _fake_resolve_project_id(*, project_id):
+        captured["project_id_arg"] = project_id
+        return "project-1"
+
+    async def _fake_run_image_build_stage(**kwargs) -> None:
+        captured["build_stage_kwargs"] = kwargs
+
+    monkeypatch.setattr(image, "get_client", _fake_get_client)
+    monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(image, "_run_image_build_stage", _fake_run_image_build_stage)
+
+    await image.build_image(
+        project_id=None,
+        room="room-1",
+        tag="room.meshagent.com/website-node:noopt",
+        pack="/tmp/context",
+        context_path="/context",
+        dockerfile_path="/context/Dockerfile",
+        builder_name=None,
+        private=False,
+        optimize=True,
+        cred=[],
+    )
+
+    assert captured["project_id_arg"] is None
+    assert captured["project_id"] == "project-1"
+    assert captured["closed"] is True
+    assert captured["build_stage_kwargs"]["resolved_project_id"] == "project-1"
+    assert captured["build_stage_kwargs"]["resolved_room"] == "room-1"
+    assert (
+        captured["build_stage_kwargs"]["parsed_tag"].value
+        == "room.meshagent.com/powerboards/website-node:noopt"
+    )
+    assert captured["build_stage_kwargs"]["project_registry"] == "room.meshagent.com"
+
+
+@pytest.mark.asyncio
 async def test_build_image_pack_streams_context_and_defaults_context_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -538,7 +755,7 @@ async def test_build_image_pack_preserves_ignored_dockerfile_and_dockerignore(
     )
 
     await image.build_image(
-        project_id=None,
+        project_id="project-1",
         room="room-1",
         tag="registry.meshagent.com/project/example:1",
         pack=str(source_dir),
@@ -613,7 +830,7 @@ async def test_build_image_pack_exits_with_build_status(
 
     with pytest.raises(typer.Exit) as exc_info:
         await image.build_image(
-            project_id=None,
+            project_id="project-1",
             room="room-1",
             tag="registry.meshagent.com/project/example:1",
             pack=str(source_dir),
@@ -827,7 +1044,7 @@ async def test_build_image_can_disable_room_image_optimization(
     )
 
     await image.build_image(
-        project_id=None,
+        project_id="project-1",
         room="room-1",
         tag="registry.meshagent.com/project/website:1",
         pack=str(source_dir),
@@ -863,7 +1080,7 @@ async def test_build_image_pack_requires_local_dockerfile_when_used_as_context(
         match="no Dockerfile or Containerfile found in the packed context",
     ):
         await image.build_image(
-            project_id=None,
+            project_id="project-1",
             room="room-1",
             tag="registry.meshagent.com/project/website:1",
             pack=str(source_dir),
@@ -874,13 +1091,13 @@ async def test_build_image_pack_requires_local_dockerfile_when_used_as_context(
         )
 
 
-def test_require_room_pack_tag_rejects_non_room_meshagent_tag() -> None:
+def test_require_room_pack_tag_rejects_non_project_registry_tag() -> None:
     with pytest.raises(
         typer.BadParameter,
         match="--pack requires --tag to use registry.meshagent.com/<project-key>/<repository>:<tag>",
     ):
         image._require_room_pack_tag(
-            parsed_tag=image._parse_build_tag("website:1"),
+            parsed_tag=image._parse_build_tag("ghcr.io/example/app:1"),
             project_registry="registry.meshagent.com",
         )
 
@@ -909,6 +1126,130 @@ async def test_resolve_project_registry_build_credentials_rejects_project_key_mi
             ),
             project_registry="registry.meshagent.com",
         )
+
+
+@pytest.mark.asyncio
+async def test_resolve_project_registry_build_credentials_creates_missing_repository():
+    captured: dict[str, object] = {}
+
+    class _FakeAccountClient:
+        async def get_project_info(self, project_id: str):
+            captured["project_info_project_id"] = project_id
+            return ProjectInfo(
+                id=project_id,
+                owner_user_id="user-1",
+                name="Powerboards",
+                project_key="powerboards",
+            )
+
+        async def list_repositories(self, *, project_id: str):
+            captured["list_repositories_project_id"] = project_id
+            return []
+
+        async def create_repository(self, *, project_id: str, repository):
+            captured["create_repository_request"] = {
+                "project_id": project_id,
+                "name": repository.name,
+                "description": repository.description,
+                "annotations": repository.annotations,
+            }
+            return ProjectRepository(
+                id="repository-1",
+                project_id=project_id,
+                name=repository.name,
+                description=repository.description,
+                annotations=repository.annotations,
+                created_at=datetime(2026, 4, 21, tzinfo=timezone.utc),
+            )
+
+        async def create_repository_token(
+            self,
+            *,
+            project_id: str,
+            repository_id: str,
+            request,
+        ):
+            captured["repository_token_request"] = {
+                "project_id": project_id,
+                "repository_id": repository_id,
+                "actions": request.actions,
+                "expires_in_seconds": request.expires_in_seconds,
+            }
+            return SimpleNamespace(token="repository-jwt")
+
+    credentials = await image._resolve_project_registry_build_credentials(
+        account_client=_FakeAccountClient(),
+        project_id="project-1",
+        parsed_tag=image._parse_build_tag(
+            "registry.meshagent.com/powerboards/website-node:latest"
+        ),
+        project_registry="registry.meshagent.com",
+    )
+
+    assert captured["project_info_project_id"] == "project-1"
+    assert captured["list_repositories_project_id"] == "project-1"
+    assert captured["create_repository_request"] == {
+        "project_id": "project-1",
+        "name": "website-node",
+        "description": "",
+        "annotations": {},
+    }
+    assert captured["repository_token_request"] == {
+        "project_id": "project-1",
+        "repository_id": "repository-1",
+        "actions": ["pull", "push"],
+        "expires_in_seconds": 3600,
+    }
+    assert credentials == [
+        image.DockerSecret(
+            registry="registry.meshagent.com",
+            username=image.DEFAULT_REGISTRY_USERNAME,
+            password="repository-jwt",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resolve_project_registry_build_credentials_suggests_cli_create_when_auto_create_is_denied():
+    class _FakeAccountClient:
+        async def get_project_info(self, project_id: str):
+            assert project_id == "project-1"
+            return ProjectInfo(
+                id=project_id,
+                owner_user_id="user-1",
+                name="Powerboards",
+                project_key="powerboards",
+            )
+
+        async def list_repositories(self, *, project_id: str):
+            assert project_id == "project-1"
+            return []
+
+        async def create_repository(self, *, project_id: str, repository):
+            del project_id, repository
+            raise PermissionDeniedError("forbidden")
+
+    with pytest.raises(typer.BadParameter) as exc_info:
+        await image._resolve_project_registry_build_credentials(
+            account_client=_FakeAccountClient(),
+            project_id="project-1",
+            parsed_tag=image._parse_build_tag(
+                "registry.meshagent.com/powerboards/website-node:latest"
+            ),
+            project_registry="registry.meshagent.com",
+        )
+
+    message = str(exc_info.value)
+    assert (
+        "the target repository does not exist in the selected project: "
+        "powerboards/website-node."
+    ) in message
+    assert "tried to create it automatically" in message
+    assert (
+        "meshagent registry create --project-id project-1 --name website-node"
+        in message
+    )
+    assert "meshagent registry list --project-id project-1" in message
 
 
 @pytest.mark.asyncio
@@ -1072,23 +1413,66 @@ async def test_pack_image_requires_room(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_pack_image_requires_room_meshagent_tag_when_publishing(
+async def test_pack_image_normalizes_shorthand_tag_when_publishing(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     source_dir = tmp_path / "sample"
     source_dir.mkdir()
+    captured: dict[str, object] = {}
 
-    with pytest.raises(
-        typer.BadParameter,
-        match="--pack requires --tag to use registry.meshagent.com/<project-key>/<repository>:<tag>",
-    ):
-        await image.pack_image(
-            project_id=None,
-            room="room-1",
-            path=str(source_dir),
-            tag="website:1",
-            base=None,
-        )
+    class _FakeConfigClient:
+        async def get_config(self) -> MeshagentDeploymentConfig:
+            return MeshagentDeploymentConfig(
+                domains=MeshagentDomains(registry="registry.meshagent.com")
+            )
+
+        async def get_project_info(self, project_id: str) -> ProjectInfo:
+            captured["project_id"] = project_id
+            return ProjectInfo(
+                id=project_id,
+                owner_user_id="user-1",
+                name="Powerboards",
+                project_key="powerboards",
+            )
+
+        async def close(self) -> None:
+            captured["closed"] = True
+
+    async def _fake_get_client() -> _FakeConfigClient:
+        return _FakeConfigClient()
+
+    async def _fake_resolve_project_id(*, project_id):
+        captured["project_id_arg"] = project_id
+        return "project-1"
+
+    async def _fake_run_image_pack_stage(**kwargs) -> None:
+        captured["pack_stage_kwargs"] = kwargs
+
+    monkeypatch.setattr(image, "get_client", _fake_get_client)
+    monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(image, "_run_image_pack_stage", _fake_run_image_pack_stage)
+
+    await image.pack_image(
+        project_id=None,
+        room="room-1",
+        path=str(source_dir),
+        tag="website:1",
+        base=None,
+    )
+
+    assert captured["project_id_arg"] is None
+    assert captured["project_id"] == "project-1"
+    assert captured["closed"] is True
+    assert captured["pack_stage_kwargs"]["resolved_project_id"] == "project-1"
+    assert captured["pack_stage_kwargs"]["resolved_room"] == "room-1"
+    assert captured["pack_stage_kwargs"]["source_dir"] == source_dir
+    assert (
+        captured["pack_stage_kwargs"]["parsed_tag"].value
+        == "registry.meshagent.com/powerboards/website:1"
+    )
+    assert captured["pack_stage_kwargs"]["project_registry"] == "registry.meshagent.com"
 
 
 def test_parse_build_tag_rejects_invalid_oci_reference() -> None:

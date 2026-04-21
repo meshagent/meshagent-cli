@@ -5,11 +5,12 @@ from typing import Annotated, Optional
 import json
 
 import typer
-from aiohttp import ClientResponseError
 from rich import print
 
 from meshagent.api.client import (
     CreateProjectRepositoryRequest,
+    NotFoundError,
+    ProjectRepository,
     UpdateProjectRepositoryRequest,
 )
 from meshagent.cli import async_typer
@@ -36,6 +37,45 @@ def _parse_annotations(annotations: Optional[str]) -> Optional[dict[str, str]]:
             "--annotations must be a JSON object with string keys and string values"
         )
     return parsed
+
+
+def _find_repository_by_selector(
+    *,
+    repositories: list[ProjectRepository],
+    selector: str,
+) -> ProjectRepository | None:
+    id_matches = [
+        repository for repository in repositories if repository.id == selector
+    ]
+    if len(id_matches) > 0:
+        return id_matches[0]
+
+    name_matches = [
+        repository for repository in repositories if repository.name == selector
+    ]
+    if len(name_matches) > 0:
+        return name_matches[0]
+
+    return None
+
+
+def _resolve_repository_delete_selector(
+    *,
+    repository: str | None,
+    name: str | None,
+) -> str:
+    if repository is not None and name is not None:
+        raise typer.BadParameter("Pass either REPOSITORY or --name, not both.")
+
+    selector = repository if repository is not None else name
+    if selector is None:
+        raise typer.BadParameter("REPOSITORY or --name is required.")
+
+    normalized_selector = selector.strip()
+    if normalized_selector == "":
+        raise typer.BadParameter("Repository selector cannot be empty.")
+
+    return normalized_selector
 
 
 @app.async_command("create")
@@ -128,11 +168,9 @@ async def registry_update(
                 project_id=resolved_project_id,
                 repository_id=repository_id,
             )
-        except ClientResponseError as exc:
-            if exc.status == 404:
-                print(f"[red]Registry not found:[/] {repository_id}")
-                raise typer.Exit(code=1)
-            raise
+        except NotFoundError as exc:
+            print(f"[red]Registry not found:[/] {repository_id}")
+            raise typer.Exit(code=1) from exc
 
         repository = await client.update_repository(
             project_id=resolved_project_id,
@@ -172,11 +210,9 @@ async def registry_show(
                 project_id=resolved_project_id,
                 repository_id=repository_id,
             )
-        except ClientResponseError as exc:
-            if exc.status == 404:
-                print(f"[red]Registry not found:[/] {repository_id}")
-                raise typer.Exit(code=1)
-            raise
+        except NotFoundError as exc:
+            print(f"[red]Registry not found:[/] {repository_id}")
+            raise typer.Exit(code=1) from exc
         print(repository.model_dump(mode="json"))
     finally:
         await client.close()
@@ -226,25 +262,39 @@ async def registry_list(
 async def registry_delete(
     *,
     project_id: ProjectIdOption,
-    repository_id: Annotated[
-        str,
-        typer.Argument(help="Repository id to delete"),
-    ],
+    repository: Annotated[
+        str | None,
+        typer.Argument(help="Repository id or name to delete"),
+    ] = None,
+    name: Annotated[
+        str | None,
+        typer.Option("--name", help="Repository name to delete"),
+    ] = None,
 ):
-    """Delete a project registry repository."""
+    """Delete a project registry repository by id or name."""
     client = await get_client()
     try:
         resolved_project_id = await resolve_project_id(project_id=project_id)
+        selector = _resolve_repository_delete_selector(repository=repository, name=name)
+        repositories = await client.list_repositories(project_id=resolved_project_id)
+        target_repository = _find_repository_by_selector(
+            repositories=repositories,
+            selector=selector,
+        )
+        if target_repository is None:
+            print(f"[red]Registry not found:[/] {selector}")
+            raise typer.Exit(code=1)
         try:
             await client.delete_repository(
                 project_id=resolved_project_id,
-                repository_id=repository_id,
+                repository_id=target_repository.id,
             )
-        except ClientResponseError as exc:
-            if exc.status == 404:
-                print(f"[red]Registry not found:[/] {repository_id}")
-                raise typer.Exit(code=1)
-            raise
-        print(f"[green]Deleted registry:[/] {repository_id}")
+        except NotFoundError as exc:
+            print(f"[red]Registry not found:[/] {selector}")
+            raise typer.Exit(code=1) from exc
+        print(
+            f"[green]Deleted registry:[/] {target_repository.name} "
+            f"({target_repository.id})"
+        )
     finally:
         await client.close()

@@ -139,3 +139,47 @@ def test_setup_command_does_not_launch_ask_when_not_completed(monkeypatch) -> No
     callback()
 
     assert launched is False
+
+
+def test_setup_command_passes_api_url_to_login_operation(monkeypatch) -> None:
+    captured: dict[str, str | None] = {}
+
+    async def _fake_login(
+        *,
+        status_handler=None,
+        print_status: bool = True,
+        api_url: str | None = None,
+    ) -> None:
+        del status_handler, print_status
+        captured["api_url"] = api_url
+
+    async def _fake_get_active_project() -> str | None:
+        return None
+
+    async def _fake_run_setup_wizard_tui(**kwargs) -> SetupWizardResult:
+        await kwargs["login_operation"](lambda _message: None)
+        return SetupWizardResult(status="canceled", message="Setup canceled.")
+
+    monkeypatch.setattr(
+        "meshagent.cli.helper.get_active_project",
+        _fake_get_active_project,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tui.setup.run_setup_wizard_tui",
+        _fake_run_setup_wizard_tui,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.auth_async.login",
+        _fake_login,
+    )
+    monkeypatch.setattr(
+        root_commands,
+        "_run_async",
+        lambda coro: asyncio.run(coro),
+    )
+
+    callback = root_commands.setup_command.callback
+    assert callback is not None
+    callback(api_url="https://override.meshagent.test")
+
+    assert captured == {"api_url": "https://override.meshagent.test"}

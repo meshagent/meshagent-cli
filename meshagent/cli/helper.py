@@ -1,15 +1,12 @@
 import inspect
 from collections.abc import AsyncIterator
-from pathlib import Path
 from typing import Optional, TypedDict
 
 import typer
-from pydantic import BaseModel, Field
 from rich.console import Console
 from rich.table import Table
 
 from meshagent.api import RoomClient
-from meshagent.api.helpers import meshagent_base_url
 from meshagent.api.specs.service import (
     ANNOTATION_SERVICE_README,
     ConfigMountSpec,
@@ -23,6 +20,16 @@ from meshagent.api.specs.service import (
 from meshagent.agents.context import AgentSessionContext
 from meshagent.api.client import Meshagent, RoomConnectionInfo
 from meshagent.cli import async_typer, auth_async
+from meshagent.cli.local_settings import (
+    get_active_api_key as get_active_api_key_from_settings,
+    get_active_project as get_active_project_from_settings,
+    get_llm_proxy_bearer_token as get_llm_proxy_bearer_token_from_settings,
+    load_settings,
+    resolve_api_url,
+    set_active_api_key as set_active_api_key_in_settings,
+    set_active_project as set_active_project_in_settings,
+    set_llm_proxy_bearer_token as set_llm_proxy_bearer_token_in_settings,
+)
 from meshagent.openai.tools.responses_adapter import ShellTool
 from meshagent.tools import (
     ContainerShellTool,
@@ -41,7 +48,6 @@ import json
 
 from rich import print
 
-SETTINGS_FILE = Path.home() / ".meshagent" / "project.json"
 DEFAULT_SHELL_IMAGE = "meshagent/python:default"
 DEFAULT_DATABASE_NAMESPACE = (".database",)
 
@@ -156,10 +162,6 @@ def normalize_required_tool_options(
     }
 
 
-def _ensure_cache_dir():
-    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-
 def resolve_shell_image(shell_image: Optional[str]) -> Optional[str]:
     if shell_image is None:
         return DEFAULT_SHELL_IMAGE
@@ -218,53 +220,28 @@ def build_shell_tool(
     )
 
 
-class Settings(BaseModel):
-    active_project: Optional[str] = None
-    active_api_keys: dict[str, str] = Field(default_factory=dict)
-    llm_proxy_bearer_token: str | None = None
-
-
-def _save_settings(s: Settings):
-    _ensure_cache_dir()
-    SETTINGS_FILE.write_text(s.model_dump_json())
-
-
 def _load_settings():
-    try:
-        _ensure_cache_dir()
-        if SETTINGS_FILE.exists():
-            return Settings.model_validate_json(SETTINGS_FILE.read_text())
-    except OSError as ex:
-        if ex.errno == 30:
-            return Settings()
-        else:
-            raise
+    return load_settings()
+
+
+def get_active_project_sync() -> str | None:
+    return get_active_project_from_settings()
 
 
 async def get_active_project():
-    settings = _load_settings()
-    if settings is None:
-        return None
-    return settings.active_project
+    return get_active_project_sync()
 
 
 async def set_active_project(project_id: str | None):
-    settings = _load_settings() or Settings()
-    settings.active_project = project_id
-    _save_settings(settings)
+    set_active_project_in_settings(project_id)
 
 
 async def set_active_api_key(project_id: str, key: str):
-    settings = _load_settings() or Settings()
-    settings.active_api_keys[project_id] = key
-    _save_settings(settings)
+    set_active_api_key_in_settings(project_id, key)
 
 
 async def get_active_api_key(project_id: str):
-    settings = _load_settings()
-    if settings is None:
-        return None
-    key: str = settings.active_api_keys.get(project_id)
+    key = get_active_api_key_from_settings(project_id)
     # Ignore old keys, API key format changed
     if key is not None and key.startswith("ma-"):
         return key
@@ -273,16 +250,11 @@ async def get_active_api_key(project_id: str):
 
 
 async def get_llm_proxy_bearer_token() -> str | None:
-    settings = _load_settings()
-    if settings is None:
-        return None
-    return settings.llm_proxy_bearer_token
+    return get_llm_proxy_bearer_token_from_settings()
 
 
 async def set_llm_proxy_bearer_token(token: str | None) -> None:
-    settings = _load_settings() or Settings()
-    settings.llm_proxy_bearer_token = token
-    _save_settings(settings)
+    set_llm_proxy_bearer_token_in_settings(token)
 
 
 app = async_typer.AsyncTyper()
@@ -299,7 +271,7 @@ class CustomMeshagentClient(Meshagent):
                 jwt=jwt,
                 room_name=room,
                 project_id=os.getenv("MESHAGENT_PROJECT_ID"),
-                room_url=meshagent_base_url() + f"/rooms/{quote(room)}",
+                room_url=resolve_api_url() + f"/rooms/{quote(room)}",
             )
 
         return await super().connect_room(project_id=project_id, room=room)
@@ -309,13 +281,13 @@ async def get_client():
     key = os.getenv("MESHAGENT_API_KEY") or os.getenv("MESHAGENT_TOKEN")
     if key is not None or os.getenv("MESHAGENT_SESSION_ID") is not None:
         return CustomMeshagentClient(
-            base_url=meshagent_base_url(),
+            base_url=resolve_api_url(),
             token=key,
         )
     else:
         access_token = await auth_async.get_access_token()
         return CustomMeshagentClient(
-            base_url=meshagent_base_url(),
+            base_url=resolve_api_url(),
             token=access_token,
         )
 

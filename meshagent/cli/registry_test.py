@@ -4,10 +4,9 @@ from datetime import datetime, timezone
 
 import pytest
 import typer
-from aiohttp import ClientResponseError
 from click.testing import CliRunner
 
-from meshagent.api.client import ProjectRepository
+from meshagent.api.client import NotFoundError, ProjectRepository
 from meshagent.cli import async_typer, cli, registry
 
 
@@ -193,6 +192,102 @@ async def test_registry_list_prints_table_output(
 
 
 @pytest.mark.asyncio
+async def test_registry_delete_accepts_repository_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    printed: list[str] = []
+
+    class _FakeClient:
+        closed = False
+        deleted: tuple[str, str] | None = None
+
+        async def list_repositories(
+            self, *, project_id: str
+        ) -> list[ProjectRepository]:
+            assert project_id == "resolved-project"
+            return [_repository(repository_id="repo-1", name="website-node")]
+
+        async def delete_repository(
+            self, *, project_id: str, repository_id: str
+        ) -> None:
+            assert project_id == "resolved-project"
+            assert repository_id == "repo-1"
+            self.deleted = (project_id, repository_id)
+
+        async def close(self) -> None:
+            self.closed = True
+
+    fake_client = _FakeClient()
+
+    async def fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-1"
+        return "resolved-project"
+
+    async def fake_get_client() -> _FakeClient:
+        return fake_client
+
+    monkeypatch.setattr(registry, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(registry, "get_client", fake_get_client)
+    monkeypatch.setattr(registry, "print", printed.append)
+
+    await registry.registry_delete(project_id="project-1", repository="website-node")
+
+    assert fake_client.deleted == ("resolved-project", "repo-1")
+    assert printed == ["[green]Deleted registry:[/] website-node (repo-1)"]
+    assert fake_client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_registry_delete_accepts_name_option(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    printed: list[str] = []
+
+    class _FakeClient:
+        closed = False
+        deleted: tuple[str, str] | None = None
+
+        async def list_repositories(
+            self, *, project_id: str
+        ) -> list[ProjectRepository]:
+            assert project_id == "resolved-project"
+            return [_repository(repository_id="repo-1", name="website-node")]
+
+        async def delete_repository(
+            self, *, project_id: str, repository_id: str
+        ) -> None:
+            assert project_id == "resolved-project"
+            assert repository_id == "repo-1"
+            self.deleted = (project_id, repository_id)
+
+        async def close(self) -> None:
+            self.closed = True
+
+    fake_client = _FakeClient()
+
+    async def fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-1"
+        return "resolved-project"
+
+    async def fake_get_client() -> _FakeClient:
+        return fake_client
+
+    monkeypatch.setattr(registry, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(registry, "get_client", fake_get_client)
+    monkeypatch.setattr(registry, "print", printed.append)
+
+    await registry.registry_delete(
+        project_id="project-1",
+        repository=None,
+        name="website-node",
+    )
+
+    assert fake_client.deleted == ("resolved-project", "repo-1")
+    assert printed == ["[green]Deleted registry:[/] website-node (repo-1)"]
+    assert fake_client.closed is True
+
+
+@pytest.mark.asyncio
 async def test_registry_delete_exits_on_not_found(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -201,18 +296,11 @@ async def test_registry_delete_exits_on_not_found(
     class _FakeClient:
         closed = False
 
-        async def delete_repository(
-            self, *, project_id: str, repository_id: str
-        ) -> None:
+        async def list_repositories(
+            self, *, project_id: str
+        ) -> list[ProjectRepository]:
             assert project_id == "resolved-project"
-            assert repository_id == "repo-1"
-            raise ClientResponseError(
-                request_info=None,
-                history=(),
-                status=404,
-                message="not found",
-                headers=None,
-            )
+            return []
 
         async def close(self) -> None:
             self.closed = True
@@ -231,10 +319,58 @@ async def test_registry_delete_exits_on_not_found(
     monkeypatch.setattr(registry, "print", printed.append)
 
     with pytest.raises(typer.Exit) as exc_info:
-        await registry.registry_delete(project_id="project-1", repository_id="repo-1")
+        await registry.registry_delete(project_id="project-1", repository="repo-1")
 
     assert exc_info.value.exit_code == 1
     assert printed == ["[red]Registry not found:[/] repo-1"]
+    assert fake_client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_registry_delete_exits_when_repository_is_deleted_after_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    printed: list[str] = []
+
+    class _FakeClient:
+        closed = False
+
+        async def list_repositories(
+            self, *, project_id: str
+        ) -> list[ProjectRepository]:
+            assert project_id == "resolved-project"
+            return [_repository(repository_id="repo-1", name="website-node")]
+
+        async def delete_repository(
+            self, *, project_id: str, repository_id: str
+        ) -> None:
+            assert project_id == "resolved-project"
+            assert repository_id == "repo-1"
+            raise NotFoundError("not found")
+
+        async def close(self) -> None:
+            self.closed = True
+
+    fake_client = _FakeClient()
+
+    async def fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-1"
+        return "resolved-project"
+
+    async def fake_get_client() -> _FakeClient:
+        return fake_client
+
+    monkeypatch.setattr(registry, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(registry, "get_client", fake_get_client)
+    monkeypatch.setattr(registry, "print", printed.append)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        await registry.registry_delete(
+            project_id="project-1", repository="website-node"
+        )
+
+    assert exc_info.value.exit_code == 1
+    assert printed == ["[red]Registry not found:[/] website-node"]
     assert fake_client.closed is True
 
 
@@ -245,3 +381,13 @@ def test_registry_command_is_available() -> None:
 
     assert result.exit_code == 0
     assert "Manage registries for your project" in result.output
+
+
+def test_registry_delete_help_mentions_name_option() -> None:
+    result = CliRunner().invoke(
+        async_typer.get_command(registry.app), ["delete", "--help"]
+    )
+
+    assert result.exit_code == 0
+    assert "Repository id or name to delete" in result.output
+    assert "--name" in result.output
