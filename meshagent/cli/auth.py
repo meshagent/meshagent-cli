@@ -114,3 +114,13 @@ async def whoami():
         await client.close()
 
     typer.echo(_format_user_identity(profile))
+
+
+@app.async_command("token")
+async def token():
+    access_token = await auth_async.get_access_token()
+    if access_token is None:
+        typer.echo("Not logged in", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(access_token)

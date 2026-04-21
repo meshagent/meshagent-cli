@@ -6,6 +6,7 @@ from meshagent.cli.tui.setup import SetupWizardResult
 
 def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
     launched: list[dict[str, object]] = []
+    integrations_called: list[tuple[str | None, str | None, str | None]] = []
     fake_profile = {
         "id": "user-123",
         "first_name": "Jesse",
@@ -21,11 +22,15 @@ def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
 
     async def _fake_run_setup_wizard_tui(**kwargs) -> SetupWizardResult:
         assert kwargs["active_project_id"] is None
-        return SetupWizardResult(status="completed", message="done")
+        return SetupWizardResult(
+            status="completed",
+            message="done",
+            project_id="project-123",
+        )
 
     class _FakeClient:
         async def list_projects(self):
-            return {"projects": []}
+            return {"projects": [{"id": "project-123", "name": "Life"}]}
 
         async def create_project(self, project_name: str):
             return {"id": project_name}
@@ -66,8 +71,18 @@ def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
         _fake_get_access_token,
     )
     monkeypatch.setattr(
+        "meshagent.cli.local_settings.resolve_api_url",
+        lambda *, api_url=None: "https://api.meshagent.com",
+    )
+    monkeypatch.setattr(
         "meshagent.cli.helper.CustomMeshagentClient",
         lambda *, base_url, token: _FakeClient(),
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.maybe_configure_local_tool_integrations",
+        lambda *, api_url=None, project_id=None, project_name=None: integrations_called.append(
+            (api_url, project_id, project_name)
+        ),
     )
     monkeypatch.setattr(
         "meshagent.cli.ask.ask",
@@ -91,10 +106,14 @@ def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
             "model": "gpt-5.4",
         }
     ]
+    assert integrations_called == [
+        ("https://api.meshagent.com", "project-123", "Life")
+    ]
 
 
 def test_setup_command_does_not_launch_ask_when_not_completed(monkeypatch) -> None:
     launched = False
+    integrations_called = False
 
     async def _fake_get_active_project() -> str | None:
         return None
@@ -124,6 +143,10 @@ def test_setup_command_does_not_launch_ask_when_not_completed(monkeypatch) -> No
         _fake_ask,
     )
     monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.maybe_configure_local_tool_integrations",
+        lambda *, api_url=None, project_id=None, project_name=None: None,
+    )
+    monkeypatch.setattr(
         "meshagent.cli.auth_async.get_access_token",
         _fake_get_access_token,
     )
@@ -139,6 +162,7 @@ def test_setup_command_does_not_launch_ask_when_not_completed(monkeypatch) -> No
     callback()
 
     assert launched is False
+    assert integrations_called is False
 
 
 def test_setup_command_passes_api_url_to_login_operation(monkeypatch) -> None:
@@ -171,6 +195,10 @@ def test_setup_command_passes_api_url_to_login_operation(monkeypatch) -> None:
     monkeypatch.setattr(
         "meshagent.cli.auth_async.login",
         _fake_login,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.maybe_configure_local_tool_integrations",
+        lambda *, api_url=None, project_id=None, project_name=None: None,
     )
     monkeypatch.setattr(
         root_commands,
