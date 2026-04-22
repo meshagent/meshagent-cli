@@ -7,6 +7,7 @@ from meshagent.cli.tui.setup import SetupWizardResult
 
 def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
     launched: list[dict[str, object]] = []
+    claude_launches: list[dict[str, object]] = []
     existing_codex_profile_requests: list[str] = []
     fake_profile = {
         "id": "user-123",
@@ -26,6 +27,7 @@ def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
         assert kwargs["has_authenticated_session"] is True
         assert kwargs["authenticated_user_name"] == "Jesse Ezell (jesse@example.com)"
         assert kwargs["has_codex_cli"] is True
+        assert kwargs["has_claude_code_cli"] is True
         assert kwargs["default_codex_profile_name"] == "meshagent"
         assert callable(kwargs["list_existing_codex_profiles_operation"])
         assert callable(kwargs["configure_codex_profile_operation"])
@@ -85,6 +87,10 @@ def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
         lambda: True,
     )
     monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.has_claude_code_cli",
+        lambda: True,
+    )
+    monkeypatch.setattr(
         "meshagent.cli.tool_integrations.find_existing_codex_profiles",
         lambda *, project_id=None, api_url=None, config_path=None: (
             existing_codex_profile_requests.append(project_id or "") or ["meshagent"]
@@ -97,6 +103,10 @@ def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
     monkeypatch.setattr(
         "meshagent.cli.ask.ask",
         _fake_ask,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.launch_claude_code",
+        lambda **kwargs: claude_launches.append(kwargs) or 0,
     )
 
     monkeypatch.setattr(
@@ -116,7 +126,97 @@ def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
             "model": "gpt-5.4",
         }
     ]
+    assert claude_launches == []
     assert existing_codex_profile_requests == ["project-123"]
+
+
+def test_setup_command_launches_claude_code_after_success(monkeypatch) -> None:
+    claude_launches: list[dict[str, object]] = []
+
+    async def _fake_get_active_project() -> str | None:
+        return None
+
+    async def _fake_get_access_token() -> str | None:
+        return "oauth-token"
+
+    async def _fake_run_setup_wizard_tui(**kwargs) -> SetupWizardResult:
+        assert kwargs["has_claude_code_cli"] is True
+        return SetupWizardResult(
+            status="completed",
+            message="done",
+            project_id="project-123",
+            launch_claude_code=True,
+        )
+
+    class _FakeClient:
+        async def get_user_profile(self, user_id: str):
+            assert user_id == "me"
+            return {"id": "user-123", "email": "jesse@example.com"}
+
+        async def close(self) -> None:
+            return None
+
+    async def _fake_ask(*, project_id, message, model="gpt-5.4") -> None:
+        del project_id, message, model
+        return None
+
+    monkeypatch.setattr(
+        "meshagent.cli.helper.get_active_project",
+        _fake_get_active_project,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tui.setup.run_setup_wizard_tui",
+        _fake_run_setup_wizard_tui,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.auth_async.get_access_token",
+        _fake_get_access_token,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.local_settings.get_active_profile",
+        lambda: StoredUserProfile(id="user-123", email="jesse@example.com"),
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.local_settings.resolve_api_url",
+        lambda *, api_url=None: "https://api.meshagent.com",
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.has_codex_cli",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.has_claude_code_cli",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.helper.CustomMeshagentClient",
+        lambda *, base_url, token: _FakeClient(),
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.ask.ask",
+        _fake_ask,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.launch_claude_code",
+        lambda **kwargs: claude_launches.append(kwargs) or 0,
+    )
+
+    monkeypatch.setattr(
+        root_commands,
+        "_run_async",
+        lambda coro: asyncio.run(coro),
+    )
+
+    callback = root_commands.setup_command.callback
+    assert callback is not None
+    callback()
+
+    assert claude_launches == [
+        {
+            "project_id": "project-123",
+            "api_url": "https://api.meshagent.com",
+        }
+    ]
 
 
 def test_setup_command_does_not_launch_ask_when_not_completed(monkeypatch) -> None:
@@ -129,6 +229,7 @@ def test_setup_command_does_not_launch_ask_when_not_completed(monkeypatch) -> No
         assert kwargs["has_authenticated_session"] is False
         assert kwargs["authenticated_user_name"] is None
         assert kwargs["has_codex_cli"] is False
+        assert kwargs["has_claude_code_cli"] is False
         assert kwargs["list_existing_codex_profiles_operation"] is None
         assert kwargs["configure_codex_profile_operation"] is None
         del kwargs
@@ -156,6 +257,10 @@ def test_setup_command_does_not_launch_ask_when_not_completed(monkeypatch) -> No
     )
     monkeypatch.setattr(
         "meshagent.cli.tool_integrations.has_codex_cli",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.has_claude_code_cli",
         lambda: False,
     )
     monkeypatch.setattr(
@@ -198,6 +303,7 @@ def test_setup_command_passes_api_url_to_login_operation(monkeypatch) -> None:
         assert kwargs["has_authenticated_session"] is False
         assert kwargs["authenticated_user_name"] is None
         assert kwargs["has_codex_cli"] is False
+        assert kwargs["has_claude_code_cli"] is False
         assert kwargs["list_existing_codex_profiles_operation"] is None
         assert kwargs["configure_codex_profile_operation"] is None
         await kwargs["login_operation"](lambda _message: None)
@@ -221,6 +327,10 @@ def test_setup_command_passes_api_url_to_login_operation(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "meshagent.cli.tool_integrations.has_codex_cli",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.has_claude_code_cli",
         lambda: False,
     )
     monkeypatch.setattr(

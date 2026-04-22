@@ -58,6 +58,8 @@ ACCOUNT_EXIT_OPTION_ID = "__account_exit__"
 CODEX_CONTINUE_OPTION_ID = "__codex_continue__"
 CODEX_CREATE_OPTION_ID = "__codex_create__"
 CODEX_SKIP_OPTION_ID = "__codex_skip__"
+CLAUDE_CODE_LAUNCH_OPTION_ID = "__claude_code_launch__"
+CLAUDE_CODE_SKIP_OPTION_ID = "__claude_code_skip__"
 PROJECT_CREATE_OPTION_ID = "__project_create__"
 PROJECT_EXIT_OPTION_ID = "__project_exit__"
 API_KEY_CREATE_OPTION_ID = "__api_key_create__"
@@ -154,6 +156,7 @@ class SetupWizardResult:
     status: Literal["completed", "canceled", "error"]
     message: str | None = None
     project_id: str | None = None
+    launch_claude_code: bool = False
 
 
 LoginStatusHandler = Callable[[str], Awaitable[None] | None]
@@ -177,6 +180,7 @@ SetupMode = Literal[
     "api_key_name",
     "codex_choice",
     "codex_profile_name",
+    "claude_code_choice",
     "busy",
     "error",
     "done",
@@ -277,6 +281,7 @@ class SetupWizardApp(App[None]):
         has_authenticated_session: bool = False,
         authenticated_user_name: str | None = None,
         has_codex_cli: bool = False,
+        has_claude_code_cli: bool = False,
         list_existing_codex_profiles_operation: (
             ListExistingCodexProfilesOperation | None
         ) = None,
@@ -294,6 +299,7 @@ class SetupWizardApp(App[None]):
         self._has_authenticated_session = has_authenticated_session
         self._authenticated_user_name = authenticated_user_name
         self._has_codex_cli = has_codex_cli
+        self._has_claude_code_cli = has_claude_code_cli
         self._list_existing_codex_profiles_operation = (
             list_existing_codex_profiles_operation
         )
@@ -307,6 +313,7 @@ class SetupWizardApp(App[None]):
         self._continued_with_existing_codex_profiles = False
         self._configured_codex_profile_id: str | None = None
         self._codex_profile_scan_error: str | None = None
+        self._launch_claude_code = False
         self._status_lines: list[str] = []
         self._auth_url: str | None = None
 
@@ -477,13 +484,21 @@ class SetupWizardApp(App[None]):
 
         if self._mode == "codex_choice":
             if selected_id == CODEX_SKIP_OPTION_ID:
-                await self._finish_success()
+                await self._maybe_continue_to_claude_code_setup()
                 return
             if selected_id == CODEX_CREATE_OPTION_ID:
                 self._set_mode_codex_profile_name()
                 return
             if selected_id == CODEX_CONTINUE_OPTION_ID:
                 await self._continue_with_existing_codex_profiles()
+                return
+
+        if self._mode == "claude_code_choice":
+            if selected_id == CLAUDE_CODE_SKIP_OPTION_ID:
+                await self._finish_success()
+                return
+            if selected_id == CLAUDE_CODE_LAUNCH_OPTION_ID:
+                await self._continue_with_claude_code_launch()
                 return
 
         if self._mode == "error" and selected_id == ERROR_EXIT_OPTION_ID:
@@ -804,6 +819,27 @@ class SetupWizardApp(App[None]):
             value=initial_value or self._default_codex_profile_name,
         )
 
+    def _show_claude_code_choice(self) -> None:
+        self._mode = "claude_code_choice"
+        self._clear_error()
+        self._hide_input()
+        self._hide_status()
+        self._hide_url()
+        self._set_text(
+            title="Claude Code",
+            message=(
+                "Claude Code was detected on this machine. Launch Claude Code "
+                "through MeshAgent for this project now?"
+            ),
+            help_text="Use Up/Down and Enter.",
+        )
+        self._set_options(
+            options=[
+                Option("Launch Claude Code", id=CLAUDE_CODE_LAUNCH_OPTION_ID),
+                Option("Skip for now", id=CLAUDE_CODE_SKIP_OPTION_ID),
+            ]
+        )
+
     async def _create_api_key(self, project_id: str, api_key_name: str) -> None:
         self._set_busy(
             title="Creating API Key",
@@ -820,7 +856,7 @@ class SetupWizardApp(App[None]):
 
     async def _maybe_continue_to_codex_setup(self) -> None:
         if not self._has_codex_cli or self._configure_codex_profile_operation is None:
-            await self._finish_success()
+            await self._maybe_continue_to_claude_code_setup()
             return
 
         self._continued_with_existing_codex_profiles = False
@@ -852,7 +888,7 @@ class SetupWizardApp(App[None]):
 
     async def _create_codex_profile(self, profile_name: str) -> None:
         if self._configure_codex_profile_operation is None:
-            await self._finish_success()
+            await self._maybe_continue_to_claude_code_setup()
             return
 
         self._set_busy(
@@ -871,10 +907,21 @@ class SetupWizardApp(App[None]):
             return
 
         self._configured_codex_profile_id = profile_name
-        await self._finish_success()
+        await self._maybe_continue_to_claude_code_setup()
 
     async def _continue_with_existing_codex_profiles(self) -> None:
         self._continued_with_existing_codex_profiles = True
+        await self._maybe_continue_to_claude_code_setup()
+
+    async def _maybe_continue_to_claude_code_setup(self) -> None:
+        if not self._has_claude_code_cli:
+            await self._finish_success()
+            return
+
+        self._show_claude_code_choice()
+
+    async def _continue_with_claude_code_launch(self) -> None:
+        self._launch_claude_code = True
         await self._finish_success()
 
     async def _finish_success(self) -> None:
@@ -903,6 +950,8 @@ class SetupWizardApp(App[None]):
                     "Project activated and existing Codex profiles "
                     f"{existing_profile_labels} are ready to use."
                 )
+        if self._launch_claude_code:
+            message = f"{message} Claude Code will launch next."
         self._set_text(
             title="Setup Complete",
             message=message,
@@ -912,6 +961,7 @@ class SetupWizardApp(App[None]):
         self.result = SetupWizardResult(
             status="completed",
             project_id=self._selected_project_id,
+            launch_claude_code=self._launch_claude_code,
         )
 
         await self._run_logo_fade()
@@ -1295,6 +1345,7 @@ async def run_setup_wizard_tui(
     has_authenticated_session: bool = False,
     authenticated_user_name: str | None = None,
     has_codex_cli: bool = False,
+    has_claude_code_cli: bool = False,
     list_existing_codex_profiles_operation: (
         ListExistingCodexProfilesOperation | None
     ) = None,
@@ -1312,6 +1363,7 @@ async def run_setup_wizard_tui(
         has_authenticated_session=has_authenticated_session,
         authenticated_user_name=authenticated_user_name,
         has_codex_cli=has_codex_cli,
+        has_claude_code_cli=has_claude_code_cli,
         list_existing_codex_profiles_operation=list_existing_codex_profiles_operation,
         configure_codex_profile_operation=configure_codex_profile_operation,
         default_codex_profile_name=default_codex_profile_name,

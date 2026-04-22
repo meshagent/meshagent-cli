@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from stat import S_IXGRP, S_IXOTH, S_IXUSR
-from typing import Callable, Protocol
+from typing import Callable, Protocol, Sequence
 
 import click
 
@@ -26,6 +28,7 @@ CODEX_AUTH_REFRESH_INTERVAL_MS = 240_000
 CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
 CODEX_AUTH_WRAPPER_DIR = SETTINGS_DIR / "bin"
 CODEX_PROFILE_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+CLAUDE_CODE_PROJECT_HEADER = "Meshagent-Project-Id"
 
 
 class ConfirmFn(Protocol):
@@ -226,6 +229,12 @@ def has_codex_cli(
     return which("codex") is not None
 
 
+def has_claude_code_cli(
+    which: Callable[[str], str | None] = shutil.which,
+) -> bool:
+    return which("claude") is not None
+
+
 def _resolve_meshagent_auth_command(
     *,
     meshagent_executable: str | None = None,
@@ -256,7 +265,7 @@ def _resolve_meshagent_auth_command(
         if resolved_candidate in seen:
             continue
         seen.add(resolved_candidate)
-        if resolved_candidate.exists():
+        if resolved_candidate.exists() and os.access(resolved_candidate, os.X_OK):
             return shlex.join([str(resolved_candidate), "auth", "token"])
 
     return shlex.join([sys.executable, "-m", "meshagent.cli.cli", "auth", "token"])
@@ -459,3 +468,105 @@ def maybe_configure_local_tool_integrations(
         f"Configured Codex profile `{result.profile_id}` in {result.config_path}. "
         f"Use `codex -p {result.profile_id}` to run Codex through MeshAgent."
     )
+
+
+def _resolve_active_project_id(
+    *,
+    project_id: str | None,
+    missing_project_message: str,
+) -> str:
+    resolved_project_id = (
+        project_id.strip()
+        if project_id is not None and project_id.strip() != ""
+        else get_active_project()
+    )
+    if resolved_project_id is None or resolved_project_id.strip() == "":
+        raise RuntimeError(missing_project_message)
+    return resolved_project_id.strip()
+
+
+def _claude_code_base_url(*, api_url: str | None = None) -> str:
+    return f"{resolve_api_url(api_url=api_url)}/anthropic"
+
+
+def build_claude_code_env(
+    *,
+    project_id: str | None = None,
+    api_url: str | None = None,
+    base_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    resolved_project_id = _resolve_active_project_id(
+        project_id=project_id,
+        missing_project_message=(
+            "An active MeshAgent project is required to launch Claude Code."
+        ),
+    )
+    env = dict(base_env) if base_env is not None else os.environ.copy()
+    env["MESHAGENT_API_URL"] = resolve_api_url(api_url=api_url)
+    env["MESHAGENT_PROJECT_ID"] = resolved_project_id
+    env["ANTHROPIC_BASE_URL"] = _claude_code_base_url(api_url=api_url)
+    env["ANTHROPIC_CUSTOM_HEADERS"] = (
+        f"{CLAUDE_CODE_PROJECT_HEADER}: {resolved_project_id}"
+    )
+    env.pop("ANTHROPIC_API_KEY", None)
+    env.pop("ANTHROPIC_AUTH_TOKEN", None)
+    return env
+
+
+def build_claude_code_command(
+    *,
+    extra_args: Sequence[str] = (),
+    meshagent_executable: str | None = None,
+    claude_executable: str | None = None,
+) -> list[str]:
+    resolved_claude_executable = claude_executable or shutil.which("claude")
+    if resolved_claude_executable is None:
+        raise RuntimeError("Claude Code is not installed.")
+
+    normalized_extra_args = list(extra_args)
+    if any(
+        arg == "--settings" or arg.startswith("--settings=")
+        for arg in normalized_extra_args
+    ):
+        raise RuntimeError(
+            "`meshagent claude-code` manages Claude Code auth settings automatically; "
+            "remove `--settings` from the forwarded Claude Code arguments."
+        )
+
+    settings_payload = json.dumps(
+        {
+            "apiKeyHelper": _resolve_meshagent_auth_command(
+                meshagent_executable=meshagent_executable
+            )
+        }
+    )
+    return [
+        resolved_claude_executable,
+        "--settings",
+        settings_payload,
+        *normalized_extra_args,
+    ]
+
+
+def launch_claude_code(
+    *,
+    project_id: str | None = None,
+    api_url: str | None = None,
+    extra_args: Sequence[str] = (),
+    meshagent_executable: str | None = None,
+    claude_executable: str | None = None,
+    command_runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    base_env: dict[str, str] | None = None,
+) -> int:
+    env = build_claude_code_env(
+        project_id=project_id,
+        api_url=api_url,
+        base_env=base_env,
+    )
+    command = build_claude_code_command(
+        extra_args=extra_args,
+        meshagent_executable=meshagent_executable,
+        claude_executable=claude_executable,
+    )
+    result = command_runner(command, env=env, check=False)
+    return result.returncode

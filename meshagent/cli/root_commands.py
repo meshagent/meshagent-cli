@@ -74,7 +74,9 @@ def setup_command(api_url: str | None = None):
             CODEX_DEFAULT_PROFILE_ID,
             configure_codex_integration,
             find_existing_codex_profiles,
+            has_claude_code_cli,
             has_codex_cli,
+            launch_claude_code,
         )
         from meshagent.cli.tui.setup import (
             SetupProject,
@@ -174,6 +176,7 @@ def setup_command(api_url: str | None = None):
                     if resolved_email != "" and resolved_email != current_user_name:
                         current_user_name = f"{current_user_name} ({resolved_email})"
         codex_available = has_codex_cli()
+        claude_code_available = has_claude_code_cli()
 
         result = await run_setup_wizard_tui(
             login_operation=lambda status_handler: auth_async.login(
@@ -190,6 +193,7 @@ def setup_command(api_url: str | None = None):
             has_authenticated_session=has_authenticated_session,
             authenticated_user_name=current_user_name,
             has_codex_cli=codex_available,
+            has_claude_code_cli=claude_code_available,
             list_existing_codex_profiles_operation=(
                 list_existing_codex_profiles if codex_available else None
             ),
@@ -227,5 +231,12 @@ def setup_command(api_url: str | None = None):
                     ),
                 ),
             )
+            if result.launch_claude_code:
+                exit_code = launch_claude_code(
+                    project_id=result.project_id,
+                    api_url=resolve_api_url(),
+                )
+                if exit_code != 0:
+                    print(f"Claude Code exited with status {exit_code}.")
 
     _run_async(runner())
