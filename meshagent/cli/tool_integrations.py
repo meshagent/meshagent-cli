@@ -128,7 +128,9 @@ def _resolve_codex_identifiers(
     project_id: str,
     project_name: str | None,
 ) -> tuple[str, str]:
-    existing_block = _find_managed_project_block(existing=existing, project_id=project_id)
+    existing_block = _find_managed_project_block(
+        existing=existing, project_id=project_id
+    )
     if existing_block is not None:
         return existing_block.provider_id, existing_block.profile_id
 
@@ -186,9 +188,7 @@ def _resolve_meshagent_auth_command(
         if resolved_candidate.exists():
             return shlex.join([str(resolved_candidate), "auth", "token"])
 
-    return shlex.join(
-        [sys.executable, "-m", "meshagent.cli.cli", "auth", "token"]
-    )
+    return shlex.join([sys.executable, "-m", "meshagent.cli.cli", "auth", "token"])
 
 
 def _write_codex_auth_wrapper(
@@ -197,13 +197,8 @@ def _write_codex_auth_wrapper(
     auth_wrapper_path: Path = CODEX_AUTH_WRAPPER_PATH,
 ) -> Path:
     auth_wrapper_path.parent.mkdir(parents=True, exist_ok=True)
-    command = _resolve_meshagent_auth_command(
-        meshagent_executable=meshagent_executable
-    )
-    auth_wrapper_path.write_text(
-        "#!/bin/sh\n"
-        f"exec {command}\n"
-    )
+    command = _resolve_meshagent_auth_command(meshagent_executable=meshagent_executable)
+    auth_wrapper_path.write_text(f"#!/bin/sh\nexec {command}\n")
     auth_wrapper_path.chmod(
         auth_wrapper_path.stat().st_mode | S_IXUSR | S_IXGRP | S_IXOTH
     )
@@ -240,12 +235,9 @@ def _codex_managed_block(
         ),
         f"# MeshAgent project: {display_project_name} ({project_id})",
         f"[model_providers.{provider_id}]",
-        f'name = {json.dumps("MeshAgent")}',
+        f"name = {json.dumps('MeshAgent')}",
         f"base_url = {json.dumps(provider_base_url)}",
-        (
-            "http_headers = "
-            f'{{"Meshagent-Project-Id"={json.dumps(project_id)}}}'
-        ),
+        (f'http_headers = {{"Meshagent-Project-Id"={json.dumps(project_id)}}}'),
         "",
         f"[model_providers.{provider_id}.auth]",
         f"command = {json.dumps(str(wrapper_path))}",
@@ -253,7 +245,7 @@ def _codex_managed_block(
         f"refresh_interval_ms = {CODEX_AUTH_REFRESH_INTERVAL_MS}",
         "",
         f"[profiles.{profile_id}]",
-        f'model_provider = {json.dumps(provider_id)}',
+        f"model_provider = {json.dumps(provider_id)}",
         f"model = {json.dumps(model)}",
         end_marker,
         "",
@@ -409,6 +401,4 @@ def maybe_configure_local_tool_integrations(
             f"Codex profile `{result.profile_id}` is already configured in {result.config_path}. "
             f"Use `codex -p {result.profile_id}` to run Codex through MeshAgent."
         )
-    echo_fn(
-        message
-    )
+    echo_fn(message)

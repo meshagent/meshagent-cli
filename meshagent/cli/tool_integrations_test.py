@@ -49,8 +49,7 @@ def test_configure_codex_integration_writes_project_scoped_profile(
         "# END MESHAGENT MANAGED BLOCK: CODEX PROJECT project-life\n"
     )
     assert wrapper_path.read_text() == (
-        "#!/bin/sh\n"
-        "exec /tmp/meshagent-life/bin/meshagent auth token\n"
+        "#!/bin/sh\nexec /tmp/meshagent-life/bin/meshagent auth token\n"
     )
     assert wrapper_path.stat().st_mode & 0o111 == 0o111
 
@@ -95,13 +94,14 @@ def test_configure_codex_integration_reuses_existing_ids_for_same_project(
     assert result.provider_id == "meshagent-prod"
     assert result.profile_id == "meshagent-prod"
     assert updated.startswith('model = "gpt-5.4"\n\n')
-    assert '# MeshAgent project: Production (project-prod)\n' in updated
-    assert '[model_providers.meshagent-prod]\n' in updated
-    assert '[profiles.meshagent-prod]\n' in updated
-    assert updated.count("BEGIN MESHAGENT MANAGED BLOCK: CODEX PROJECT project-prod") == 1
+    assert "# MeshAgent project: Production (project-prod)\n" in updated
+    assert "[model_providers.meshagent-prod]\n" in updated
+    assert "[profiles.meshagent-prod]\n" in updated
+    assert (
+        updated.count("BEGIN MESHAGENT MANAGED BLOCK: CODEX PROJECT project-prod") == 1
+    )
     assert wrapper_path.read_text() == (
-        "#!/bin/sh\n"
-        "exec /opt/homebrew/bin/meshagent auth token\n"
+        "#!/bin/sh\nexec /opt/homebrew/bin/meshagent auth token\n"
     )
 
 

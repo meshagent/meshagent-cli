@@ -157,7 +157,9 @@ def setup_command(api_url: str | None = None):
             finally:
                 await client.close()
 
-            projects = response.get("projects", []) if isinstance(response, dict) else []
+            projects = (
+                response.get("projects", []) if isinstance(response, dict) else []
+            )
             for row in projects:
                 if not isinstance(row, dict):
                     continue

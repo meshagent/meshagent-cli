@@ -80,8 +80,8 @@ def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "meshagent.cli.tool_integrations.maybe_configure_local_tool_integrations",
-        lambda *, api_url=None, project_id=None, project_name=None: integrations_called.append(
-            (api_url, project_id, project_name)
+        lambda *, api_url=None, project_id=None, project_name=None: (
+            integrations_called.append((api_url, project_id, project_name))
         ),
     )
     monkeypatch.setattr(
@@ -106,9 +106,7 @@ def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
             "model": "gpt-5.4",
         }
     ]
-    assert integrations_called == [
-        ("https://api.meshagent.com", "project-123", "Life")
-    ]
+    assert integrations_called == [("https://api.meshagent.com", "project-123", "Life")]
 
 
 def test_setup_command_does_not_launch_ask_when_not_completed(monkeypatch) -> None:
