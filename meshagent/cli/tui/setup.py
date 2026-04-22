@@ -52,6 +52,12 @@ from .setup_splash_frames import (
 
 LOGIN_LAUNCH_OPTION_ID = "__login_launch__"
 LOGIN_EXIT_OPTION_ID = "__login_exit__"
+ACCOUNT_CONTINUE_OPTION_ID = "__account_continue__"
+ACCOUNT_SWITCH_OPTION_ID = "__account_switch__"
+ACCOUNT_EXIT_OPTION_ID = "__account_exit__"
+CODEX_CONTINUE_OPTION_ID = "__codex_continue__"
+CODEX_CREATE_OPTION_ID = "__codex_create__"
+CODEX_SKIP_OPTION_ID = "__codex_skip__"
 PROJECT_CREATE_OPTION_ID = "__project_create__"
 PROJECT_EXIT_OPTION_ID = "__project_exit__"
 API_KEY_CREATE_OPTION_ID = "__api_key_create__"
@@ -69,18 +75,18 @@ MESHAGENT_SETUP_LOGO_LINES: tuple[str, ...] = (
     "              cV@HHBWMRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR0QQQHw,             ",
     "             eA&k&DNMRRMRMMMMMRRRRMMMRRRRRRRRRRRRRRRRRRRRRRRRRRR0QO|            ",
     "            rZPXYKNRMMMMMMMMMMMRR00000000000QQQ00QQQQ00RRRRRRRRRRRQE`           ",
-    "            3Pgg&DRMMMMMMMMMMR0MKkXVhhVVhhhgggggggVgb&H0Q0RRRRRRRRRM\           ",
+    "            3Pgg&DRMMMMMMMMMMR0MKkXVhhVVhhhgggggggVgb&H0Q0RRRRRRRRRM\\           ",
     "           `qGPPUWRMMMMMMMMRR$61lxcrsrrrrrrllcccxx%%%l{emDQRRRRRRRR0x           ",
-    '           `SbGG8WRMMMMMMMMB6r^>vi))))>>>>>>><<<\))|"++==%VQRRRRRRRRx           ',
+    '           `SbGG8WRMMMMMMMMB6r^>vi))))>>>>>>><<<\\))|"++==%VQRRRRRRRRx           ',
     '           .qbGZ&WRMMMMMNNDyi;%<||)))))|||||||""<^\',==^;;,;40RRMMMMR%           ',
-    "           .qbZZ&WMNMMNNWDbr/<\=+++/+=+++++++=)ppj: ^=,,,,`[QMMMMMRR%           ",
+    "           .qbZZ&WMNMMNNWDbr/<\\=+++/+=+++++++=)ppj: ^=,,,,`[QMMMMMRR%           ",
     "           .qYZZ&BMNNNNWD@4);)+;;;^;|v+-:^;;;'?@Y5+ /^''''`}0MMMMMMR%           ",
     "           .SkZZ&BMNNNWBHU4);)^:,,')4VT, /,::-}WU2^ |;____.I0MMMMMMR%           ",
     "           .qkbb&BMNNNWBKU4),);_''`*HAS)_),___^n#%^+\"_____ I0MMMMMMRv           ",
     "            qkbbABMNNWWDK8gv,>,___.{D$4<'|'___-`'=/,------ I0MMMMMMMv           ",
-    "            qOYY&BNNNWWDK8E),>,---.sB@4>:|'--_`;\^`__----- ?0MMMMMMMi           ",
+    "            qOYY&BNNNWWDK8E),>,---.sB@4>:|'--_`;\\^`__----- ?0MMMMMMMi           ",
     "            qOYYADNNWWBDKUE),<:-_-.{WKE),\"'--.vd4w+ ,_---- !0MMMMMMMi           ",
-    "            qAkkADMNNWWDHUd\,<:---.sW@4<,|'-- aD&Ei =,`--- !0MMMMMMM)           ",
+    "            qAkkADMNNWWDHUd\\,<:---.sW@4<,|'-- aD&Ei =,`--- !0MMMMMMM)           ",
     "            qAkkADNNNWWDH$Pc`^'``` !NKGr:,`.  JW$Oo'--...  w0MMMMMMN)           ",
     '            qAOOADMNNWWBH$OS]<"++)[AWK&V7lvv*yHBK8b3!l%%{ehNMMMMMMMN)           ',
     "            6&OOODMNNNWWDH$AkZGbAKRNBDKU8&UHN0NWDK$U&AA$BR0MMMMMMMRW)           ",
@@ -90,8 +96,8 @@ MESHAGENT_SETUP_LOGO_LINES: tuple[str, ...] = (
     " ......````-_--vupEAHNMMNNNNNNNNNNNNNNNNNMMMMMMMMMRRRRRRRR00QRHEt;.--````...... ",
     "  .....```````` .;v1y4ADMR0000000000RRRMMMNWWBDHKK@$U&&OkbXqJ!<'-':'___-```.... ",
     " ....````--------`. `:\"%]Lw5F52ywJTnLzoet1]!I}*srllx%%v)>\"+;;^^^;,:''__--``....",
-    "....``--__'':,,;^^=++////\"|))\\\<\\<>>>>>>)))))))>>><\\))|\"/++=^;,,:''__--``....",
-    " ....```--__''::,;^^=++//\"\"|||))))))\\\)))))))))|||\"\"//+++=^;;,,,:''___--``.....",
+    "....``--__'':,,;^^=++////\"|))\\\\<\\<>>>>>>)))))))>>><\\))|\"/++=^;,,:''__--``....",
+    " ....```--__''::,;^^=++//\"\"|||))))))\\\\)))))))))|||\"\"//+++=^;;,,,:''___--``.....",
     " ......```--___'':::,,;;^^^^^======++++++++++=+++===^^;;;,,,,:'''____-````......",
     "    ......````---____'''''::,,,,,,,,,,,,,,,,,,,,,,::::'''''_____---````.......  ",
     "      ........```````-`--________''''''''''''_________------```````.........    ",
@@ -157,15 +163,20 @@ CreateProjectOperation = Callable[[str], Awaitable[str]]
 ActivateProjectOperation = Callable[[str], Awaitable[str]]
 HasActiveApiKeyOperation = Callable[[str], Awaitable[bool]]
 CreateApiKeyOperation = Callable[[str, str], Awaitable[None]]
+ListExistingCodexProfilesOperation = Callable[[str], Awaitable[Sequence[str]]]
+ConfigureCodexProfileOperation = Callable[[str], Awaitable[None]]
 
 SetupMode = Literal[
     "intro",
+    "account_choice",
     "login_choice",
     "login_progress",
     "projects",
     "project_name",
     "api_key_choice",
     "api_key_name",
+    "codex_choice",
+    "codex_profile_name",
     "busy",
     "error",
     "done",
@@ -263,6 +274,14 @@ class SetupWizardApp(App[None]):
         has_active_api_key_operation: HasActiveApiKeyOperation,
         create_api_key_operation: CreateApiKeyOperation,
         active_project_id: str | None = None,
+        has_authenticated_session: bool = False,
+        authenticated_user_name: str | None = None,
+        has_codex_cli: bool = False,
+        list_existing_codex_profiles_operation: (
+            ListExistingCodexProfilesOperation | None
+        ) = None,
+        configure_codex_profile_operation: ConfigureCodexProfileOperation | None = None,
+        default_codex_profile_name: str = "meshagent",
     ) -> None:
         super().__init__()
         self._login_operation = login_operation
@@ -272,10 +291,22 @@ class SetupWizardApp(App[None]):
         self._has_active_api_key_operation = has_active_api_key_operation
         self._create_api_key_operation = create_api_key_operation
         self._active_project_id = active_project_id
+        self._has_authenticated_session = has_authenticated_session
+        self._authenticated_user_name = authenticated_user_name
+        self._has_codex_cli = has_codex_cli
+        self._list_existing_codex_profiles_operation = (
+            list_existing_codex_profiles_operation
+        )
+        self._configure_codex_profile_operation = configure_codex_profile_operation
+        self._default_codex_profile_name = default_codex_profile_name
 
         self._mode: SetupMode = "intro"
         self._projects: list[SetupProject] = []
         self._selected_project_id: str | None = None
+        self._existing_codex_profile_ids: list[str] = []
+        self._continued_with_existing_codex_profiles = False
+        self._configured_codex_profile_id: str | None = None
+        self._codex_profile_scan_error: str | None = None
         self._status_lines: list[str] = []
         self._auth_url: str | None = None
 
@@ -335,7 +366,10 @@ class SetupWizardApp(App[None]):
             message="Loading...",
             help_text="Press Esc or Ctrl+C to cancel.",
         )
-        self._show_login_choice()
+        if self._has_authenticated_session:
+            self._show_account_choice()
+        else:
+            self._show_login_choice()
         self._logo_dissolve_task = asyncio.create_task(self._run_logo_dissolve_in())
         self._status_consumer_task = asyncio.create_task(self._consume_status_updates())
 
@@ -405,6 +439,20 @@ class SetupWizardApp(App[None]):
                 self.exit()
                 return
 
+        if self._mode == "account_choice":
+            if selected_id == ACCOUNT_CONTINUE_OPTION_ID:
+                await self._load_projects()
+                return
+            if selected_id == ACCOUNT_SWITCH_OPTION_ID:
+                await self._start_login()
+                return
+            if selected_id == ACCOUNT_EXIT_OPTION_ID:
+                self.result = SetupWizardResult(
+                    status="canceled", message="Setup canceled."
+                )
+                self.exit()
+                return
+
         if self._mode == "projects":
             if selected_id == PROJECT_CREATE_OPTION_ID:
                 self._set_mode_project_name()
@@ -421,10 +469,21 @@ class SetupWizardApp(App[None]):
 
         if self._mode == "api_key_choice":
             if selected_id == API_KEY_SKIP_OPTION_ID:
-                await self._finish_success()
+                await self._maybe_continue_to_codex_setup()
                 return
             if selected_id == API_KEY_CREATE_OPTION_ID:
                 self._set_mode_api_key_name()
+                return
+
+        if self._mode == "codex_choice":
+            if selected_id == CODEX_SKIP_OPTION_ID:
+                await self._finish_success()
+                return
+            if selected_id == CODEX_CREATE_OPTION_ID:
+                self._set_mode_codex_profile_name()
+                return
+            if selected_id == CODEX_CONTINUE_OPTION_ID:
+                await self._continue_with_existing_codex_profiles()
                 return
 
         if self._mode == "error" and selected_id == ERROR_EXIT_OPTION_ID:
@@ -432,7 +491,9 @@ class SetupWizardApp(App[None]):
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         entered_value = event.value.strip()
-        if entered_value == "":
+        if self._mode == "codex_profile_name" and entered_value == "":
+            entered_value = self._default_codex_profile_name
+        elif entered_value == "":
             self._set_error_text("Value cannot be empty.")
             return
 
@@ -445,6 +506,10 @@ class SetupWizardApp(App[None]):
                 await self._set_error_mode("No project was selected. Exiting.")
                 return
             await self._create_api_key(self._selected_project_id, entered_value)
+            return
+
+        if self._mode == "codex_profile_name":
+            await self._create_codex_profile(entered_value)
 
     def _show_login_choice(self) -> None:
         self._mode = "login_choice"
@@ -462,6 +527,40 @@ class SetupWizardApp(App[None]):
             options=[
                 Option("Launch browser to sign in", id=LOGIN_LAUNCH_OPTION_ID),
                 Option("Exit setup", id=LOGIN_EXIT_OPTION_ID),
+            ]
+        )
+
+    def _show_account_choice(self) -> None:
+        self._mode = "account_choice"
+        self._clear_error()
+        self._hide_input()
+        self._hide_status()
+        self._hide_url()
+
+        continue_label = "Continue with current account"
+        message = "You're already signed in. Continue with the current account or switch accounts."
+        if (
+            self._authenticated_user_name is not None
+            and self._authenticated_user_name.strip() != ""
+        ):
+            resolved_user_name = self._authenticated_user_name.strip()
+            continue_label = f"Continue as {resolved_user_name}"
+            message = (
+                f"You're already signed in. Continue as {resolved_user_name} "
+                "or switch accounts."
+            )
+
+        self._set_text(
+            title="Use Current Account",
+            message=message,
+            help_text="Choose an option. Esc or Ctrl+C cancels.",
+            centered=True,
+        )
+        self._set_options(
+            options=[
+                Option(continue_label, id=ACCOUNT_CONTINUE_OPTION_ID),
+                Option("Switch accounts", id=ACCOUNT_SWITCH_OPTION_ID),
+                Option("Exit setup", id=ACCOUNT_EXIT_OPTION_ID),
             ]
         )
 
@@ -599,7 +698,7 @@ class SetupWizardApp(App[None]):
             return
 
         if has_active_key:
-            await self._finish_success()
+            await self._maybe_continue_to_codex_setup()
             return
 
         self._show_api_key_choice(activated_project_id)
@@ -638,6 +737,73 @@ class SetupWizardApp(App[None]):
         )
         self._show_input(placeholder="my-api-key")
 
+    def _show_codex_choice(self) -> None:
+        self._mode = "codex_choice"
+        self._clear_error()
+        self._hide_input()
+        self._hide_status()
+        self._hide_url()
+        if len(self._existing_codex_profile_ids) == 0:
+            self._set_text(
+                title="Codex Setup",
+                message=(
+                    "Codex was detected on this machine. Add a profile so Codex "
+                    "can use your MeshAgent account?"
+                ),
+                help_text="Use Up/Down and Enter.",
+            )
+            self._set_options(
+                options=[
+                    Option("Add Codex profile", id=CODEX_CREATE_OPTION_ID),
+                    Option("Skip for now", id=CODEX_SKIP_OPTION_ID),
+                ]
+            )
+        else:
+            existing_profile_labels = ", ".join(self._existing_codex_profile_ids)
+            profile_message = (
+                "Codex was detected on this machine. Found existing MeshAgent "
+                f"Codex profiles for this project: {existing_profile_labels}. "
+                "Continue with them or create another profile."
+            )
+            if len(self._existing_codex_profile_ids) == 1:
+                profile_message = (
+                    "Codex was detected on this machine. Found an existing "
+                    "MeshAgent Codex profile for this project: "
+                    f"{existing_profile_labels}. Continue with it or create "
+                    "another profile."
+                )
+
+            self._set_text(
+                title="Codex Setup",
+                message=profile_message,
+                help_text="Use Up/Down and Enter.",
+            )
+            self._set_options(
+                options=[
+                    Option("Continue", id=CODEX_CONTINUE_OPTION_ID),
+                    Option("Create another Codex profile", id=CODEX_CREATE_OPTION_ID),
+                ]
+            )
+
+        if self._codex_profile_scan_error is not None:
+            self._set_error_text(self._codex_profile_scan_error)
+
+    def _set_mode_codex_profile_name(self, *, initial_value: str | None = None) -> None:
+        self._mode = "codex_profile_name"
+        self._clear_error()
+        self._hide_options()
+        self._hide_status()
+        self._hide_url()
+        self._set_text(
+            title="Codex Profile Name",
+            message="Enter the Codex profile name to create.",
+            help_text="Press Enter to continue.",
+        )
+        self._show_input(
+            placeholder=self._default_codex_profile_name,
+            value=initial_value or self._default_codex_profile_name,
+        )
+
     async def _create_api_key(self, project_id: str, api_key_name: str) -> None:
         self._set_busy(
             title="Creating API Key",
@@ -650,6 +816,65 @@ class SetupWizardApp(App[None]):
             await self._set_error_mode(f"Unable to create API key: {ex}")
             return
 
+        await self._maybe_continue_to_codex_setup()
+
+    async def _maybe_continue_to_codex_setup(self) -> None:
+        if not self._has_codex_cli or self._configure_codex_profile_operation is None:
+            await self._finish_success()
+            return
+
+        self._continued_with_existing_codex_profiles = False
+        self._existing_codex_profile_ids = []
+        self._codex_profile_scan_error = None
+        if (
+            self._selected_project_id is not None
+            and self._list_existing_codex_profiles_operation is not None
+        ):
+            self._set_busy(
+                title="Checking Codex",
+                message="Scanning for existing MeshAgent Codex profiles...",
+                help_text="Please wait.",
+            )
+            try:
+                existing_profile_ids = list(
+                    await self._list_existing_codex_profiles_operation(
+                        self._selected_project_id
+                    )
+                )
+            except Exception as ex:
+                self._codex_profile_scan_error = (
+                    f"Unable to inspect existing Codex profiles: {ex}"
+                )
+            else:
+                self._existing_codex_profile_ids = existing_profile_ids
+
+        self._show_codex_choice()
+
+    async def _create_codex_profile(self, profile_name: str) -> None:
+        if self._configure_codex_profile_operation is None:
+            await self._finish_success()
+            return
+
+        self._set_busy(
+            title="Configuring Codex",
+            message=f"Creating Codex profile '{profile_name}'...",
+            help_text="Please wait.",
+        )
+        try:
+            await self._configure_codex_profile_operation(profile_name)
+        except ValueError as ex:
+            self._set_mode_codex_profile_name(initial_value=profile_name)
+            self._set_error_text(str(ex))
+            return
+        except Exception as ex:
+            await self._set_error_mode(f"Unable to configure Codex: {ex}")
+            return
+
+        self._configured_codex_profile_id = profile_name
+        await self._finish_success()
+
+    async def _continue_with_existing_codex_profiles(self) -> None:
+        self._continued_with_existing_codex_profiles = True
         await self._finish_success()
 
     async def _finish_success(self) -> None:
@@ -660,9 +885,27 @@ class SetupWizardApp(App[None]):
         self._hide_input()
         self._hide_status()
         self._hide_url()
+        message = "Project activated and setup finished."
+        if self._configured_codex_profile_id is not None:
+            message = (
+                "Project activated and Codex profile "
+                f"{self._configured_codex_profile_id} created."
+            )
+        elif self._continued_with_existing_codex_profiles:
+            existing_profile_labels = ", ".join(self._existing_codex_profile_ids)
+            if len(self._existing_codex_profile_ids) == 1:
+                message = (
+                    "Project activated and existing Codex profile "
+                    f"{existing_profile_labels} is ready to use."
+                )
+            else:
+                message = (
+                    "Project activated and existing Codex profiles "
+                    f"{existing_profile_labels} are ready to use."
+                )
         self._set_text(
             title="Setup Complete",
-            message="Project activated and setup finished.",
+            message=message,
             help_text="",
         )
 
@@ -784,10 +1027,10 @@ class SetupWizardApp(App[None]):
         if self._options_view is not None:
             self._options_view.display = False
 
-    def _show_input(self, *, placeholder: str) -> None:
+    def _show_input(self, *, placeholder: str, value: str = "") -> None:
         if self._input_view is None:
             return
-        self._input_view.value = ""
+        self._input_view.value = value
         self._input_view.placeholder = placeholder
         self._input_view.display = True
         self._input_view.focus()
@@ -1049,6 +1292,14 @@ async def run_setup_wizard_tui(
     has_active_api_key_operation: HasActiveApiKeyOperation,
     create_api_key_operation: CreateApiKeyOperation,
     active_project_id: str | None,
+    has_authenticated_session: bool = False,
+    authenticated_user_name: str | None = None,
+    has_codex_cli: bool = False,
+    list_existing_codex_profiles_operation: (
+        ListExistingCodexProfilesOperation | None
+    ) = None,
+    configure_codex_profile_operation: ConfigureCodexProfileOperation | None = None,
+    default_codex_profile_name: str = "meshagent",
 ) -> SetupWizardResult:
     app = SetupWizardApp(
         login_operation=login_operation,
@@ -1058,6 +1309,12 @@ async def run_setup_wizard_tui(
         has_active_api_key_operation=has_active_api_key_operation,
         create_api_key_operation=create_api_key_operation,
         active_project_id=active_project_id,
+        has_authenticated_session=has_authenticated_session,
+        authenticated_user_name=authenticated_user_name,
+        has_codex_cli=has_codex_cli,
+        list_existing_codex_profiles_operation=list_existing_codex_profiles_operation,
+        configure_codex_profile_operation=configure_codex_profile_operation,
+        default_codex_profile_name=default_codex_profile_name,
     )
 
     try:

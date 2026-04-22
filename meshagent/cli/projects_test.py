@@ -16,8 +16,7 @@ class _FakeClient:
 
 
 @pytest.mark.asyncio
-async def test_activate_configures_codex_for_selected_project(monkeypatch) -> None:
-    configured: list[tuple[str | None, str | None, str | None]] = []
+async def test_activate_sets_selected_project(monkeypatch) -> None:
     active_project_ids: list[str | None] = []
     output: list[str] = []
     client = _FakeClient([{"id": "project-1", "name": "Foo"}])
@@ -31,16 +30,6 @@ async def test_activate_configures_codex_for_selected_project(monkeypatch) -> No
     monkeypatch.setattr(projects, "get_client", _fake_get_client)
     monkeypatch.setattr(projects, "set_active_project", _fake_set_active_project)
     monkeypatch.setattr(projects, "print", output.append)
-    monkeypatch.setattr(
-        "meshagent.cli.local_settings.resolve_api_url",
-        lambda *, api_url=None: "https://api.meshagent.life",
-    )
-    monkeypatch.setattr(
-        "meshagent.cli.tool_integrations.maybe_configure_local_tool_integrations",
-        lambda *, api_url=None, project_id=None, project_name=None: configured.append(
-            (api_url, project_id, project_name)
-        ),
-    )
 
     result = await projects.activate(
         project_id="project-1",
@@ -50,13 +39,12 @@ async def test_activate_configures_codex_for_selected_project(monkeypatch) -> No
 
     assert result is None
     assert active_project_ids == ["project-1"]
-    assert configured == [("https://api.meshagent.life", "project-1", "Foo")]
     assert output == ["project-1"]
     assert client.closed is True
 
 
 @pytest.mark.asyncio
-async def test_activate_internal_call_skips_codex_configuration(monkeypatch) -> None:
+async def test_activate_internal_call_returns_project_id(monkeypatch) -> None:
     active_project_ids: list[str | None] = []
     client = _FakeClient([{"id": "project-1", "name": "Foo"}])
 
@@ -68,12 +56,6 @@ async def test_activate_internal_call_skips_codex_configuration(monkeypatch) -> 
 
     monkeypatch.setattr(projects, "get_client", _fake_get_client)
     monkeypatch.setattr(projects, "set_active_project", _fake_set_active_project)
-    monkeypatch.setattr(
-        "meshagent.cli.tool_integrations.maybe_configure_local_tool_integrations",
-        lambda **kwargs: (_ for _ in ()).throw(
-            AssertionError("internal activation should not configure Codex")
-        ),
-    )
 
     result = await projects.activate(
         project_id="project-1",

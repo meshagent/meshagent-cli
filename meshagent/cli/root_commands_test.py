@@ -1,12 +1,13 @@
 import asyncio
 
 from meshagent.cli import root_commands
+from meshagent.cli.local_settings import StoredUserProfile
 from meshagent.cli.tui.setup import SetupWizardResult
 
 
 def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
     launched: list[dict[str, object]] = []
-    integrations_called: list[tuple[str | None, str | None, str | None]] = []
+    existing_codex_profile_requests: list[str] = []
     fake_profile = {
         "id": "user-123",
         "first_name": "Jesse",
@@ -22,6 +23,15 @@ def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
 
     async def _fake_run_setup_wizard_tui(**kwargs) -> SetupWizardResult:
         assert kwargs["active_project_id"] is None
+        assert kwargs["has_authenticated_session"] is True
+        assert kwargs["authenticated_user_name"] == "Jesse Ezell (jesse@example.com)"
+        assert kwargs["has_codex_cli"] is True
+        assert kwargs["default_codex_profile_name"] == "meshagent"
+        assert callable(kwargs["list_existing_codex_profiles_operation"])
+        assert callable(kwargs["configure_codex_profile_operation"])
+        assert await kwargs["list_existing_codex_profiles_operation"](
+            "project-123"
+        ) == ["meshagent"]
         return SetupWizardResult(
             status="completed",
             message="done",
@@ -29,21 +39,12 @@ def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
         )
 
     class _FakeClient:
-        async def list_projects(self):
-            return {"projects": [{"id": "project-123", "name": "Life"}]}
-
-        async def create_project(self, project_name: str):
-            return {"id": project_name}
-
         async def get_user_profile(self, user_id: str):
             assert user_id == "me"
             return fake_profile
 
         async def close(self) -> None:
             return None
-
-    async def _fake_get_client():
-        return _FakeClient()
 
     async def _fake_ask(*, project_id, message, model="gpt-5.4") -> None:
         launched.append(
@@ -63,26 +64,35 @@ def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
         _fake_run_setup_wizard_tui,
     )
     monkeypatch.setattr(
-        "meshagent.cli.helper.get_client",
-        _fake_get_client,
-    )
-    monkeypatch.setattr(
         "meshagent.cli.auth_async.get_access_token",
         _fake_get_access_token,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.local_settings.get_active_profile",
+        lambda: StoredUserProfile(
+            id="user-123",
+            first_name="Jesse",
+            last_name="Ezell",
+            email="jesse@example.com",
+        ),
     )
     monkeypatch.setattr(
         "meshagent.cli.local_settings.resolve_api_url",
         lambda *, api_url=None: "https://api.meshagent.com",
     )
     monkeypatch.setattr(
-        "meshagent.cli.helper.CustomMeshagentClient",
-        lambda *, base_url, token: _FakeClient(),
+        "meshagent.cli.tool_integrations.has_codex_cli",
+        lambda: True,
     )
     monkeypatch.setattr(
-        "meshagent.cli.tool_integrations.maybe_configure_local_tool_integrations",
-        lambda *, api_url=None, project_id=None, project_name=None: (
-            integrations_called.append((api_url, project_id, project_name))
+        "meshagent.cli.tool_integrations.find_existing_codex_profiles",
+        lambda *, project_id=None, api_url=None, config_path=None: (
+            existing_codex_profile_requests.append(project_id or "") or ["meshagent"]
         ),
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.helper.CustomMeshagentClient",
+        lambda *, base_url, token: _FakeClient(),
     )
     monkeypatch.setattr(
         "meshagent.cli.ask.ask",
@@ -106,22 +116,26 @@ def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
             "model": "gpt-5.4",
         }
     ]
-    assert integrations_called == [("https://api.meshagent.com", "project-123", "Life")]
+    assert existing_codex_profile_requests == ["project-123"]
 
 
 def test_setup_command_does_not_launch_ask_when_not_completed(monkeypatch) -> None:
     launched = False
-    integrations_called = False
 
     async def _fake_get_active_project() -> str | None:
         return None
 
     async def _fake_run_setup_wizard_tui(**kwargs) -> SetupWizardResult:
+        assert kwargs["has_authenticated_session"] is False
+        assert kwargs["authenticated_user_name"] is None
+        assert kwargs["has_codex_cli"] is False
+        assert kwargs["list_existing_codex_profiles_operation"] is None
+        assert kwargs["configure_codex_profile_operation"] is None
         del kwargs
         return SetupWizardResult(status="canceled", message="Setup canceled.")
 
     async def _fake_get_access_token() -> str | None:
-        raise AssertionError("oauth token should not be requested")
+        return None
 
     async def _fake_ask(*, project_id, message, model="gpt-5.4") -> None:
         del project_id, message, model
@@ -141,8 +155,8 @@ def test_setup_command_does_not_launch_ask_when_not_completed(monkeypatch) -> No
         _fake_ask,
     )
     monkeypatch.setattr(
-        "meshagent.cli.tool_integrations.maybe_configure_local_tool_integrations",
-        lambda *, api_url=None, project_id=None, project_name=None: None,
+        "meshagent.cli.tool_integrations.has_codex_cli",
+        lambda: False,
     )
     monkeypatch.setattr(
         "meshagent.cli.auth_async.get_access_token",
@@ -160,7 +174,6 @@ def test_setup_command_does_not_launch_ask_when_not_completed(monkeypatch) -> No
     callback()
 
     assert launched is False
-    assert integrations_called is False
 
 
 def test_setup_command_passes_api_url_to_login_operation(monkeypatch) -> None:
@@ -178,7 +191,15 @@ def test_setup_command_passes_api_url_to_login_operation(monkeypatch) -> None:
     async def _fake_get_active_project() -> str | None:
         return None
 
+    async def _fake_get_access_token() -> str | None:
+        return None
+
     async def _fake_run_setup_wizard_tui(**kwargs) -> SetupWizardResult:
+        assert kwargs["has_authenticated_session"] is False
+        assert kwargs["authenticated_user_name"] is None
+        assert kwargs["has_codex_cli"] is False
+        assert kwargs["list_existing_codex_profiles_operation"] is None
+        assert kwargs["configure_codex_profile_operation"] is None
         await kwargs["login_operation"](lambda _message: None)
         return SetupWizardResult(status="canceled", message="Setup canceled.")
 
@@ -195,8 +216,12 @@ def test_setup_command_passes_api_url_to_login_operation(monkeypatch) -> None:
         _fake_login,
     )
     monkeypatch.setattr(
-        "meshagent.cli.tool_integrations.maybe_configure_local_tool_integrations",
-        lambda *, api_url=None, project_id=None, project_name=None: None,
+        "meshagent.cli.auth_async.get_access_token",
+        _fake_get_access_token,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.has_codex_cli",
+        lambda: False,
     )
     monkeypatch.setattr(
         root_commands,

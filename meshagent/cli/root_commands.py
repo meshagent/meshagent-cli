@@ -69,9 +69,12 @@ def setup_command(api_url: str | None = None):
             get_active_project,
             get_client,
         )
-        from meshagent.cli.local_settings import resolve_api_url
+        from meshagent.cli.local_settings import get_active_profile, resolve_api_url
         from meshagent.cli.tool_integrations import (
-            maybe_configure_local_tool_integrations,
+            CODEX_DEFAULT_PROFILE_ID,
+            configure_codex_integration,
+            find_existing_codex_profiles,
+            has_codex_cli,
         )
         from meshagent.cli.tui.setup import (
             SetupProject,
@@ -147,29 +150,30 @@ def setup_command(api_url: str | None = None):
                 name=api_key_name,
             )
 
-        async def resolve_project_name(project_id: str | None) -> str | None:
-            if project_id is None or project_id.strip() == "":
-                return None
-
-            client = await get_client()
-            try:
-                response = await client.list_projects()
-            finally:
-                await client.close()
-
-            projects = (
-                response.get("projects", []) if isinstance(response, dict) else []
+        async def configure_codex_profile(profile_id: str) -> None:
+            configure_codex_integration(
+                profile_id=profile_id,
+                api_url=resolve_api_url(),
             )
-            for row in projects:
-                if not isinstance(row, dict):
-                    continue
-                if row.get("id") != project_id:
-                    continue
-                project_name = row.get("name")
-                if isinstance(project_name, str) and project_name.strip() != "":
-                    return project_name.strip()
 
-            return None
+        async def list_existing_codex_profiles(project_id: str) -> list[str]:
+            return find_existing_codex_profiles(
+                project_id=project_id,
+                api_url=resolve_api_url(),
+            )
+
+        current_user_name: str | None = None
+        has_authenticated_session = False
+        if await auth_async.get_access_token() is not None:
+            has_authenticated_session = True
+            active_profile = get_active_profile()
+            if active_profile is not None:
+                current_user_name = active_profile.display_name()
+                if active_profile.email is not None:
+                    resolved_email = active_profile.email.strip()
+                    if resolved_email != "" and resolved_email != current_user_name:
+                        current_user_name = f"{current_user_name} ({resolved_email})"
+        codex_available = has_codex_cli()
 
         result = await run_setup_wizard_tui(
             login_operation=lambda status_handler: auth_async.login(
@@ -183,6 +187,16 @@ def setup_command(api_url: str | None = None):
             has_active_api_key_operation=has_active_api_key,
             create_api_key_operation=create_and_activate_api_key,
             active_project_id=await get_active_project(),
+            has_authenticated_session=has_authenticated_session,
+            authenticated_user_name=current_user_name,
+            has_codex_cli=codex_available,
+            list_existing_codex_profiles_operation=(
+                list_existing_codex_profiles if codex_available else None
+            ),
+            configure_codex_profile_operation=(
+                configure_codex_profile if codex_available else None
+            ),
+            default_codex_profile_name=CODEX_DEFAULT_PROFILE_ID,
         )
 
         if result.status != "completed" and result.message is not None:
@@ -190,12 +204,6 @@ def setup_command(api_url: str | None = None):
             return
 
         if result.status == "completed":
-            project_name = await resolve_project_name(result.project_id)
-            maybe_configure_local_tool_integrations(
-                api_url=resolve_api_url(),
-                project_id=result.project_id,
-                project_name=project_name,
-            )
             profile: User | None = None
             access_token = await auth_async.get_access_token()
             if access_token is not None:

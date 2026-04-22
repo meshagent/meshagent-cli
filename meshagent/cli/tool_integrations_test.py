@@ -5,7 +5,7 @@ import pytest
 from meshagent.cli import tool_integrations
 
 
-def test_configure_codex_integration_writes_project_scoped_profile(
+def test_configure_codex_integration_writes_named_profile(
     monkeypatch, tmp_path: Path
 ) -> None:
     config_path = tmp_path / "config.toml"
@@ -17,8 +17,8 @@ def test_configure_codex_integration_writes_project_scoped_profile(
         lambda: "project-life",
     )
     result = tool_integrations.configure_codex_integration(
+        profile_id="meshagent",
         project_id="project-life",
-        project_name="Life",
         api_url="https://api.meshagent.life",
         meshagent_executable="/tmp/meshagent-life/bin/meshagent",
         config_path=config_path,
@@ -26,27 +26,22 @@ def test_configure_codex_integration_writes_project_scoped_profile(
     )
 
     assert result.changed is True
-    assert result.provider_id == "meshagent-life"
-    assert result.profile_id == "meshagent-life"
+    assert result.provider_id == "meshagent"
+    assert result.profile_id == "meshagent"
     assert config_path.read_text() == (
-        "# BEGIN MESHAGENT MANAGED BLOCK: CODEX PROJECT project-life\n"
-        "# Re-run `meshagent setup` from a different MeshAgent install"
-        " if you want Codex to use a different binary.\n"
-        "# MeshAgent project: Life (project-life)\n"
-        "[model_providers.meshagent-life]\n"
+        "[model_providers.meshagent]\n"
         'name = "MeshAgent"\n'
         'base_url = "https://api.meshagent.life/openai/v1"\n'
         'http_headers = {"Meshagent-Project-Id"="project-life"}\n'
         "\n"
-        "[model_providers.meshagent-life.auth]\n"
+        "[model_providers.meshagent.auth]\n"
         f'command = "{wrapper_path}"\n'
         "timeout_ms = 10000\n"
         "refresh_interval_ms = 240000\n"
         "\n"
-        "[profiles.meshagent-life]\n"
-        'model_provider = "meshagent-life"\n'
+        "[profiles.meshagent]\n"
+        'model_provider = "meshagent"\n'
         'model = "gpt-5.4"\n'
-        "# END MESHAGENT MANAGED BLOCK: CODEX PROJECT project-life\n"
     )
     assert wrapper_path.read_text() == (
         "#!/bin/sh\nexec /tmp/meshagent-life/bin/meshagent auth token\n"
@@ -54,26 +49,13 @@ def test_configure_codex_integration_writes_project_scoped_profile(
     assert wrapper_path.stat().st_mode & 0o111 == 0o111
 
 
-def test_configure_codex_integration_reuses_existing_ids_for_same_project(
+def test_configure_codex_integration_appends_after_existing_content(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.toml"
     wrapper_path = tmp_path / "bin" / "codex-meshagent-auth"
-    config_path.write_text(
-        'model = "gpt-5.4"\n\n'
-        "# BEGIN MESHAGENT MANAGED BLOCK: CODEX PROJECT project-prod\n"
-        "# Re-run `meshagent setup` from a different MeshAgent install"
-        " if you want Codex to use a different binary.\n"
-        "# MeshAgent project: Prod (project-prod)\n"
-        "[model_providers.meshagent-prod]\n"
-        'name = "MeshAgent"\n'
-        "\n"
-        "[profiles.meshagent-prod]\n"
-        'model_provider = "meshagent-prod"\n'
-        'model = "gpt-5.4"\n'
-        "# END MESHAGENT MANAGED BLOCK: CODEX PROJECT project-prod\n"
-    )
+    config_path.write_text('model = "gpt-5.4"\n')
 
     monkeypatch.setattr(
         tool_integrations,
@@ -81,8 +63,8 @@ def test_configure_codex_integration_reuses_existing_ids_for_same_project(
         lambda: "project-prod",
     )
     result = tool_integrations.configure_codex_integration(
+        profile_id="meshagent-prod",
         project_id="project-prod",
-        project_name="Production",
         api_url="https://api.meshagent.com",
         meshagent_executable="/opt/homebrew/bin/meshagent",
         config_path=config_path,
@@ -94,62 +76,82 @@ def test_configure_codex_integration_reuses_existing_ids_for_same_project(
     assert result.provider_id == "meshagent-prod"
     assert result.profile_id == "meshagent-prod"
     assert updated.startswith('model = "gpt-5.4"\n\n')
-    assert "# MeshAgent project: Production (project-prod)\n" in updated
     assert "[model_providers.meshagent-prod]\n" in updated
     assert "[profiles.meshagent-prod]\n" in updated
-    assert (
-        updated.count("BEGIN MESHAGENT MANAGED BLOCK: CODEX PROJECT project-prod") == 1
-    )
     assert wrapper_path.read_text() == (
         "#!/bin/sh\nexec /opt/homebrew/bin/meshagent auth token\n"
     )
 
 
-def test_configure_codex_integration_adds_suffix_for_name_collisions(
+def test_configure_codex_integration_rejects_profile_name_in_use(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(
-        "# BEGIN MESHAGENT MANAGED BLOCK: CODEX PROJECT project-1\n"
-        "# Re-run `meshagent setup` from a different MeshAgent install"
-        " if you want Codex to use a different binary.\n"
-        "# MeshAgent project: Foo (project-1)\n"
-        "[model_providers.meshagent-foo]\n"
+        "[model_providers.meshagent]\n"
         'name = "MeshAgent"\n'
-        'base_url = "https://api.meshagent.life/openai/v1"\n'
-        'http_headers = {"Meshagent-Project-Id"="project-1"}\n'
         "\n"
-        "[model_providers.meshagent-foo.auth]\n"
-        'command = "/tmp/meshagent"\n'
-        "timeout_ms = 10000\n"
-        "refresh_interval_ms = 240000\n"
-        "\n"
-        "[profiles.meshagent-foo]\n"
-        'model_provider = "meshagent-foo"\n'
+        "[profiles.meshagent]\n"
+        'model_provider = "meshagent"\n'
         'model = "gpt-5.4"\n'
-        "# END MESHAGENT MANAGED BLOCK: CODEX PROJECT project-1\n"
     )
 
     monkeypatch.setattr(
         tool_integrations,
         "get_active_project",
-        lambda: "project-2",
-    )
-    result = tool_integrations.configure_codex_integration(
-        project_id="project-2",
-        project_name="Foo",
-        api_url="https://api.meshagent.life",
-        meshagent_executable="/tmp/meshagent-life/bin/meshagent",
-        config_path=config_path,
-        auth_wrapper_path=tmp_path / "bin" / "codex-meshagent-auth",
+        lambda: "project-1",
     )
 
-    updated = config_path.read_text()
-    assert result.provider_id == "meshagent-foo-2"
-    assert result.profile_id == "meshagent-foo-2"
-    assert "[model_providers.meshagent-foo-2]\n" in updated
-    assert "[profiles.meshagent-foo-2]\n" in updated
+    with pytest.raises(ValueError, match="already in use"):
+        tool_integrations.configure_codex_integration(
+            profile_id="meshagent",
+            project_id="project-1",
+            api_url="https://api.meshagent.com",
+            meshagent_executable="/opt/homebrew/bin/meshagent",
+            config_path=config_path,
+        )
+
+
+def test_configure_codex_integration_uses_profile_specific_default_wrapper_paths(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    wrapper_dir = tmp_path / "bin"
+
+    monkeypatch.setattr(
+        tool_integrations,
+        "get_active_project",
+        lambda: "project-1",
+    )
+    monkeypatch.setattr(
+        tool_integrations,
+        "CODEX_AUTH_WRAPPER_DIR",
+        wrapper_dir,
+    )
+
+    tool_integrations.configure_codex_integration(
+        profile_id="meshagent",
+        project_id="project-1",
+        api_url="https://api.meshagent.com",
+        meshagent_executable="/opt/homebrew/bin/meshagent",
+        config_path=config_path,
+    )
+    tool_integrations.configure_codex_integration(
+        profile_id="meshagent-work",
+        project_id="project-1",
+        api_url="https://api.meshagent.com",
+        meshagent_executable="/opt/homebrew/bin/meshagent",
+        config_path=config_path,
+    )
+
+    assert (
+        wrapper_dir / "codex-meshagent-auth-meshagent"
+    ).read_text() == "#!/bin/sh\nexec /opt/homebrew/bin/meshagent auth token\n"
+    assert (
+        wrapper_dir / "codex-meshagent-auth-meshagent-work"
+    ).read_text() == "#!/bin/sh\nexec /opt/homebrew/bin/meshagent auth token\n"
 
 
 def test_configure_codex_integration_requires_active_project(
@@ -165,94 +167,121 @@ def test_configure_codex_integration_requires_active_project(
 
     with pytest.raises(RuntimeError, match="active MeshAgent project"):
         tool_integrations.configure_codex_integration(
+            profile_id="meshagent",
             api_url="https://api.meshagent.com",
             meshagent_executable="/opt/homebrew/bin/meshagent",
             config_path=config_path,
         )
 
 
+def test_find_existing_codex_profiles_returns_matching_profiles(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "[model_providers.openai]\n"
+        'name = "OpenAI"\n'
+        'base_url = "https://api.openai.com/v1"\n'
+        "\n"
+        "[model_providers.meshagent-old]\n"
+        'name = "MeshAgent"\n'
+        'base_url = "https://api.meshagent.life/openai/v1"\n'
+        'http_headers = {"Meshagent-Project-Id"="project-old"}\n'
+        "\n"
+        "[model_providers.meshagent-work]\n"
+        'name = "MeshAgent"\n'
+        'base_url = "https://api.meshagent.life/openai/v1"\n'
+        'http_headers = {"Meshagent-Project-Id"="project-life"}\n'
+        "\n"
+        "[profiles.default]\n"
+        'model_provider = "openai"\n'
+        'model = "gpt-5.4"\n'
+        "\n"
+        "[profiles.meshagent-work]\n"
+        'model_provider = "meshagent-work"\n'
+        'model = "gpt-5.4"\n'
+        "\n"
+        "[profiles.meshagent]\n"
+        'model_provider = "meshagent-work"\n'
+        'model = "gpt-5.4"\n'
+    )
+
+    monkeypatch.setattr(
+        tool_integrations,
+        "get_active_project",
+        lambda: "project-life",
+    )
+
+    assert tool_integrations.find_existing_codex_profiles(
+        api_url="https://api.meshagent.life",
+        config_path=config_path,
+    ) == ["meshagent", "meshagent-work"]
+
+
 def test_maybe_configure_local_tool_integrations_skips_when_codex_missing() -> None:
+    confirmations: list[str] = []
     prompts: list[str] = []
     messages: list[str] = []
 
     tool_integrations.maybe_configure_local_tool_integrations(
         project_id="project-1",
-        project_name="Foo",
-        prompt_fn=lambda message: prompts.append(message) or True,
+        confirm_fn=lambda text, default=False: confirmations.append(text) or True,
+        prompt_fn=lambda text, default="meshagent": prompts.append(text) or default,
         echo_fn=messages.append,
         which=lambda command: None,
     )
 
+    assert confirmations == []
     assert prompts == []
     assert messages == []
 
 
-def test_maybe_configure_local_tool_integrations_reports_configured_profile(
-    monkeypatch,
+def test_maybe_configure_local_tool_integrations_skips_when_user_declines(
     tmp_path: Path,
 ) -> None:
+    confirmations: list[tuple[str, bool]] = []
     messages: list[str] = []
-
-    monkeypatch.setattr(
-        tool_integrations,
-        "configure_codex_integration",
-        lambda **kwargs: tool_integrations.CodexIntegrationResult(
-            config_path=tmp_path / "config.toml",
-            provider_id="meshagent-foo",
-            profile_id="meshagent-foo",
-            changed=True,
-        ),
-    )
 
     tool_integrations.maybe_configure_local_tool_integrations(
         project_id="project-1",
-        project_name="Foo",
-        prompt_fn=lambda message: True,
+        confirm_fn=lambda text, default=False: (
+            confirmations.append((text, default)) or False
+        ),
+        prompt_fn=lambda text, default="meshagent": (_ for _ in ()).throw(
+            AssertionError("profile prompt should not be shown")
+        ),
         echo_fn=messages.append,
         which=lambda command: "/opt/homebrew/bin/codex" if command == "codex" else None,
+        config_path=tmp_path / "config.toml",
     )
 
-    assert messages == [
+    assert confirmations == [
         (
-            f"Configured Codex profile `meshagent-foo` in {tmp_path / 'config.toml'}. "
-            "Use `codex -p meshagent-foo` to run Codex through MeshAgent."
+            "Codex detected. Add a profile to ~/.codex/config.toml so Codex can use "
+            "your MeshAgent account for access?",
+            False,
         )
     ]
+    assert messages == []
 
 
-def test_maybe_configure_local_tool_integrations_skips_prompt_for_existing_project(
+def test_maybe_configure_local_tool_integrations_retries_until_profile_name_is_usable(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.toml"
     wrapper_path = tmp_path / "bin" / "codex-meshagent-auth"
     config_path.write_text(
-        "# BEGIN MESHAGENT MANAGED BLOCK: CODEX PROJECT project-1\n"
-        "# Re-run `meshagent setup` from a different MeshAgent install"
-        " if you want Codex to use a different binary.\n"
-        "# MeshAgent project: Foo (project-1)\n"
-        "[model_providers.meshagent-foo]\n"
-        'name = "MeshAgent"\n'
-        'base_url = "https://api.meshagent.life/openai/v1"\n'
-        'http_headers = {"Meshagent-Project-Id"="project-1"}\n'
-        "\n"
-        "[model_providers.meshagent-foo.auth]\n"
-        f'command = "{wrapper_path}"\n'
-        "timeout_ms = 10000\n"
-        "refresh_interval_ms = 240000\n"
-        "\n"
-        "[profiles.meshagent-foo]\n"
-        'model_provider = "meshagent-foo"\n'
-        'model = "gpt-5.4"\n'
-        "# END MESHAGENT MANAGED BLOCK: CODEX PROJECT project-1\n"
+        '[profiles.meshagent]\nmodel_provider = "meshagent"\nmodel = "gpt-5.4"\n'
     )
     messages: list[str] = []
+    prompt_values = iter(["bad name", "meshagent", "meshagent-work"])
 
     tool_integrations.maybe_configure_local_tool_integrations(
         project_id="project-1",
-        project_name="Foo",
-        prompt_fn=lambda message: (_ for _ in ()).throw(
-            AssertionError("prompt should not be shown for existing project profile")
-        ),
+        api_url="https://api.meshagent.life",
+        meshagent_executable="/opt/homebrew/bin/meshagent",
+        confirm_fn=lambda text, default=False: True,
+        prompt_fn=lambda text, default="meshagent": next(prompt_values),
         echo_fn=messages.append,
         which=lambda command: "/opt/homebrew/bin/codex" if command == "codex" else None,
         config_path=config_path,
@@ -261,7 +290,16 @@ def test_maybe_configure_local_tool_integrations_skips_prompt_for_existing_proje
 
     assert messages == [
         (
-            f"Codex profile `meshagent-foo` is already configured in {config_path}. "
-            "Use `codex -p meshagent-foo` to run Codex through MeshAgent."
-        )
+            "Codex profile names may only include letters, numbers, hyphens, "
+            "and underscores."
+        ),
+        (
+            f"Codex profile `meshagent` is already in use in {config_path}. "
+            "Choose a different name."
+        ),
+        (
+            f"Configured Codex profile `meshagent-work` in {config_path}. "
+            "Use `codex -p meshagent-work` to run Codex through MeshAgent."
+        ),
     ]
+    assert "[profiles.meshagent-work]\n" in config_path.read_text()
