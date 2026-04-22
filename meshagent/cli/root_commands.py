@@ -70,6 +70,9 @@ def setup_command(api_url: str | None = None):
             get_client,
         )
         from meshagent.cli.local_settings import resolve_api_url
+        from meshagent.cli.tool_integrations import (
+            maybe_configure_local_tool_integrations,
+        )
         from meshagent.cli.tui.setup import (
             SetupProject,
             run_setup_wizard_tui,
@@ -144,6 +147,30 @@ def setup_command(api_url: str | None = None):
                 name=api_key_name,
             )
 
+        async def resolve_project_name(project_id: str | None) -> str | None:
+            if project_id is None or project_id.strip() == "":
+                return None
+
+            client = await get_client()
+            try:
+                response = await client.list_projects()
+            finally:
+                await client.close()
+
+            projects = (
+                response.get("projects", []) if isinstance(response, dict) else []
+            )
+            for row in projects:
+                if not isinstance(row, dict):
+                    continue
+                if row.get("id") != project_id:
+                    continue
+                project_name = row.get("name")
+                if isinstance(project_name, str) and project_name.strip() != "":
+                    return project_name.strip()
+
+            return None
+
         result = await run_setup_wizard_tui(
             login_operation=lambda status_handler: auth_async.login(
                 status_handler=status_handler,
@@ -163,6 +190,12 @@ def setup_command(api_url: str | None = None):
             return
 
         if result.status == "completed":
+            project_name = await resolve_project_name(result.project_id)
+            maybe_configure_local_tool_integrations(
+                api_url=resolve_api_url(),
+                project_id=result.project_id,
+                project_name=project_name,
+            )
             profile: User | None = None
             access_token = await auth_async.get_access_token()
             if access_token is not None:

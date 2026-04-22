@@ -62,6 +62,41 @@ async def test_whoami_prints_not_logged_in_without_identity(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
+async def test_token_prints_access_token(monkeypatch) -> None:
+    output: list[str] = []
+
+    async def _fake_get_access_token() -> str | None:
+        return "oauth-token"
+
+    monkeypatch.setattr(auth.auth_async, "get_access_token", _fake_get_access_token)
+    monkeypatch.setattr(auth.typer, "echo", output.append)
+
+    await auth.token()
+
+    assert output == ["oauth-token"]
+
+
+@pytest.mark.asyncio
+async def test_token_exits_when_not_logged_in(monkeypatch) -> None:
+    output: list[tuple[str, bool]] = []
+
+    async def _fake_get_access_token() -> str | None:
+        return None
+
+    def _fake_echo(message: str, *, err: bool = False) -> None:
+        output.append((message, err))
+
+    monkeypatch.setattr(auth.auth_async, "get_access_token", _fake_get_access_token)
+    monkeypatch.setattr(auth.typer, "echo", _fake_echo)
+
+    with pytest.raises(auth.typer.Exit) as exc_info:
+        await auth.token()
+
+    assert exc_info.value.exit_code == 1
+    assert output == [("Not logged in", True)]
+
+
+@pytest.mark.asyncio
 async def test_login_passes_api_url_to_auth_async(monkeypatch) -> None:
     captured: dict[str, str | None] = {}
 

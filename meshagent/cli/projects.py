@@ -108,6 +108,23 @@ async def activate(
             for project in projects:
                 if project["id"] == project_id:
                     await set_active_project(project_id=project_id)
+                    if not return_project_id:
+                        from meshagent.cli.local_settings import resolve_api_url
+                        from meshagent.cli.tool_integrations import (
+                            maybe_configure_local_tool_integrations,
+                        )
+
+                        project_name = project.get("name")
+                        maybe_configure_local_tool_integrations(
+                            api_url=resolve_api_url(),
+                            project_id=project_id,
+                            project_name=(
+                                project_name
+                                if isinstance(project_name, str)
+                                and project_name.strip() != ""
+                                else None
+                            ),
+                        )
                     if return_project_id:
                         return project_id
                     print(project_id)
