@@ -7,6 +7,7 @@ import os
 import re
 import tarfile
 import time
+from datetime import datetime
 from pathlib import Path
 
 import pathlib
@@ -16,6 +17,8 @@ import aiofiles
 import aiofiles.ospath
 import typer
 from rich import print
+from rich.console import Console
+from rich.table import Table
 from typing import Annotated, Optional, List, Dict
 
 from meshagent.cli import async_typer
@@ -33,6 +36,7 @@ from meshagent.api import (
 )
 from meshagent.api.room_server_client import (
     DockerSecret,
+    ImageDescriptor,
 )
 from meshagent.api.specs.service import (
     ContainerMountSpec,
@@ -161,6 +165,52 @@ def _parse_image_operation_mounts(
         )
 
     return mount_spec
+
+
+def _format_image_timestamp(value: datetime | None) -> str:
+    if value is None:
+        return "—"
+    return value.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def _format_image_bytes(value: int | None) -> str:
+    if value is None:
+        return "—"
+    units = ["B", "KB", "MB", "GB", "TB"]
+    size = float(value)
+    unit_index = 0
+    while size >= 1024 and unit_index < len(units) - 1:
+        size /= 1024
+        unit_index += 1
+    if unit_index == 0:
+        return f"{int(size)} {units[unit_index]}"
+    return f"{size:.1f} {units[unit_index]}"
+
+
+def _image_reference(image) -> str:
+    if image.preferred_ref:
+        return image.preferred_ref
+    if len(image.references) > 0:
+        return image.references[0]
+    return image.id
+
+
+def _descriptor_table(*, title: str, descriptor: ImageDescriptor | None) -> Table:
+    table = Table(title=title, show_header=True, header_style="bold magenta")
+    table.add_column("Field", style="cyan")
+    table.add_column("Value")
+    if descriptor is None:
+        table.add_row("descriptor", "—")
+        return table
+    table.add_row("digest", descriptor.digest)
+    table.add_row("media_type", descriptor.media_type or "—")
+    table.add_row("size", _format_image_bytes(descriptor.size))
+    if len(descriptor.annotations) == 0:
+        table.add_row("annotations", "—")
+    else:
+        for key, value in descriptor.annotations.items():
+            table.add_row(f"annotation:{key}", value)
+    return table
 
 
 async def _stream_container_job_logs_and_wait_for_exit(
@@ -774,6 +824,10 @@ async def images_list(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
+    output: Annotated[
+        str,
+        typer.Option(help="table | json"),
+    ] = "table",
 ):
     account_client, client = await _with_client(
         project_id=project_id,
@@ -781,7 +835,144 @@ async def images_list(
     )
     try:
         imgs = await client.containers.list_images()
-        print([i.model_dump() for i in imgs])
+        if output == "json":
+            print([i.model_dump(mode="json") for i in imgs])
+            return
+
+        table = Table(title="Images")
+        table.add_column("Reference", style="cyan")
+        table.add_column("ID")
+        table.add_column("Updated")
+        table.add_column("Created")
+        table.add_column("Media Type")
+        for image in imgs:
+            table.add_row(
+                _image_reference(image),
+                image.id,
+                _format_image_timestamp(image.updated_at),
+                _format_image_timestamp(image.created_at),
+                image.target_media_type or "—",
+            )
+        Console().print(table)
+    finally:
+        await client.__aexit__(None, None, None)
+        await account_client.close()
+
+
+@images_app.async_command(
+    "inspect",
+    help="Inspect a container image in a room by image ID.",
+)
+async def images_inspect(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    image_id: Annotated[
+        str,
+        typer.Option(..., "--image-id", help="Image ID from `meshagent images list`"),
+    ],
+):
+    account_client, client = await _with_client(
+        project_id=project_id,
+        room=room,
+    )
+    try:
+        inspection = await client.containers.inspect_image(image_id=image_id)
+        console = Console()
+
+        summary_table = Table(
+            title="Image", show_header=True, header_style="bold magenta"
+        )
+        summary_table.add_column("Field", style="cyan")
+        summary_table.add_column("Value")
+        summary_table.add_row("reference", _image_reference(inspection.image))
+        summary_table.add_row("id", inspection.image.id)
+        summary_table.add_row(
+            "references",
+            ", ".join(inspection.image.references)
+            if inspection.image.references
+            else "—",
+        )
+        summary_table.add_row(
+            "created_at",
+            _format_image_timestamp(inspection.image.created_at),
+        )
+        summary_table.add_row(
+            "updated_at",
+            _format_image_timestamp(inspection.image.updated_at),
+        )
+        summary_table.add_row(
+            "target_media_type",
+            inspection.image.target_media_type or "—",
+        )
+        summary_table.add_row(
+            "content_size",
+            _format_image_bytes(inspection.content_size),
+        )
+        if len(inspection.image.labels) == 0:
+            summary_table.add_row("labels", "—")
+        else:
+            for key, value in inspection.image.labels.items():
+                summary_table.add_row(f"label:{key}", value)
+
+        manifests_table = Table(
+            title="Manifests",
+            show_header=True,
+            header_style="bold magenta",
+        )
+        manifests_table.add_column("Digest", style="cyan")
+        manifests_table.add_column("Media Type")
+        manifests_table.add_column("Size")
+        manifests_table.add_column("Platform")
+        if len(inspection.manifests) == 0:
+            manifests_table.add_row("—", "—", "—", "—")
+        else:
+            for manifest in inspection.manifests:
+                platform = "/".join(
+                    part
+                    for part in (
+                        manifest.platform_os,
+                        manifest.platform_architecture,
+                        manifest.platform_variant,
+                    )
+                    if part
+                )
+                manifests_table.add_row(
+                    manifest.descriptor.digest,
+                    manifest.descriptor.media_type or "—",
+                    _format_image_bytes(manifest.descriptor.size),
+                    platform or "—",
+                )
+
+        layers_table = Table(
+            title="Layers",
+            show_header=True,
+            header_style="bold magenta",
+        )
+        layers_table.add_column("Digest", style="cyan")
+        layers_table.add_column("Media Type")
+        layers_table.add_column("Size")
+        if len(inspection.layers) == 0:
+            layers_table.add_row("—", "—", "—")
+        else:
+            for layer in inspection.layers:
+                layers_table.add_row(
+                    layer.digest,
+                    layer.media_type or "—",
+                    _format_image_bytes(layer.size),
+                )
+
+        console.print(summary_table)
+        console.print(_descriptor_table(title="Target", descriptor=inspection.target))
+        console.print(
+            _descriptor_table(
+                title="Selected Manifest",
+                descriptor=inspection.selected_manifest,
+            )
+        )
+        console.print(_descriptor_table(title="Config", descriptor=inspection.config))
+        console.print(manifests_table)
+        console.print(layers_table)
     finally:
         await client.__aexit__(None, None, None)
         await account_client.close()

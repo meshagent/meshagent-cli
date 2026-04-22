@@ -4,7 +4,13 @@ from types import SimpleNamespace
 import pytest
 
 from meshagent.cli import containers
-from meshagent.api.room_server_client import ImportedImage
+from meshagent.api.room_server_client import (
+    Image,
+    ImageDescriptor,
+    ImageInspection,
+    ImageManifest,
+    ImportedImage,
+)
 
 
 class _FakeLogStream:
@@ -105,6 +111,93 @@ class _FakeAccountClient:
 
     async def close(self) -> None:
         self.close_calls += 1
+
+
+class _FakeImageContainers:
+    def __init__(self) -> None:
+        self.list_calls = 0
+        self.inspect_calls: list[str] = []
+
+    async def list_images(self) -> list[Image]:
+        self.list_calls += 1
+        return [
+            Image(
+                id="img-1",
+                preferred_ref="demo:latest",
+                references=["demo:latest", "demo:v1"],
+                labels={"role": "demo"},
+                created_at="2026-01-01T00:00:00Z",
+                updated_at="2026-01-02T00:00:00Z",
+                target_media_type="application/vnd.oci.image.manifest.v1+json",
+            )
+        ]
+
+    async def inspect_image(self, *, image_id: str) -> ImageInspection:
+        self.inspect_calls.append(image_id)
+        return ImageInspection(
+            image=Image(
+                id="img-1",
+                preferred_ref="demo:latest",
+                references=["demo:latest", "demo:v1"],
+                labels={"role": "demo"},
+                created_at="2026-01-01T00:00:00Z",
+                updated_at="2026-01-02T00:00:00Z",
+                target_media_type="application/vnd.oci.image.manifest.v1+json",
+            ),
+            target=ImageDescriptor(
+                digest="sha256:target",
+                media_type="application/vnd.oci.image.manifest.v1+json",
+                size=123,
+                annotations={"org.opencontainers.image.ref.name": "demo:latest"},
+            ),
+            selected_manifest=ImageDescriptor(
+                digest="sha256:manifest",
+                media_type="application/vnd.oci.image.manifest.v1+json",
+                size=123,
+                annotations={},
+            ),
+            manifests=[
+                ImageManifest(
+                    descriptor=ImageDescriptor(
+                        digest="sha256:manifest",
+                        media_type="application/vnd.oci.image.manifest.v1+json",
+                        size=123,
+                        annotations={},
+                    ),
+                    platform_os="linux",
+                    platform_architecture="amd64",
+                )
+            ],
+            config=ImageDescriptor(
+                digest="sha256:config",
+                media_type="application/vnd.oci.image.config.v1+json",
+                size=45,
+                annotations={},
+            ),
+            layers=[
+                ImageDescriptor(
+                    digest="sha256:layer-1",
+                    media_type="application/vnd.oci.image.layer.v1.tar+gzip",
+                    size=67,
+                    annotations={},
+                )
+            ],
+            content_size=235,
+        )
+
+
+class _FakeImageClient:
+    def __init__(self) -> None:
+        self.containers = _FakeImageContainers()
+        self.exit_calls: list[tuple[object | None, object | None, object | None]] = []
+
+    async def __aexit__(
+        self,
+        exc_type: object | None,
+        exc: object | None,
+        tb: object | None,
+    ) -> None:
+        self.exit_calls.append((exc_type, exc, tb))
 
 
 class _FakeConnectAccountClient:
@@ -258,6 +351,73 @@ async def test_images_load_uses_room_storage_load_path(
         capsys.readouterr().out
         == "Image loaded: registry.meshagent.com/images/example.tar:latest\n"
     )
+
+
+@pytest.mark.asyncio
+async def test_images_list_renders_summary_table(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    account_client = _FakeAccountClient()
+    client = _FakeImageClient()
+
+    async def _fake_with_client(*, project_id, room):
+        assert project_id == "project-1"
+        assert room == "jesse"
+        return account_client, client
+
+    monkeypatch.setattr(containers, "_with_client", _fake_with_client)
+
+    await containers.images_list(project_id="project-1", room="jesse", output="table")
+
+    output = capsys.readouterr().out
+    assert client.containers.list_calls == 1
+    assert client.exit_calls == [(None, None, None)]
+    assert account_client.close_calls == 1
+    assert "Images" in output
+    assert "Reference" in output
+    assert "Media Type" in output
+    assert "demo:latest" in output
+    assert "img-1" in output
+    assert "application/vnd" in output
+    assert "Size" not in output
+
+
+@pytest.mark.asyncio
+async def test_images_inspect_renders_detail_tables(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    account_client = _FakeAccountClient()
+    client = _FakeImageClient()
+
+    async def _fake_with_client(*, project_id, room):
+        assert project_id == "project-1"
+        assert room == "jesse"
+        return account_client, client
+
+    monkeypatch.setattr(containers, "_with_client", _fake_with_client)
+
+    await containers.images_inspect(
+        project_id="project-1",
+        room="jesse",
+        image_id="img-1",
+    )
+
+    output = capsys.readouterr().out
+    assert client.containers.inspect_calls == ["img-1"]
+    assert client.exit_calls == [(None, None, None)]
+    assert account_client.close_calls == 1
+    assert "Image" in output
+    assert "Target" in output
+    assert "Selected Manifest" in output
+    assert "Manifests" in output
+    assert "Layers" in output
+    assert "demo:latest" in output
+    assert "sha256:target" in output
+    assert "sha256:layer-1" in output
+    assert "235 B" in output
+    assert "linux/amd64" in output
 
 
 @pytest.mark.asyncio
