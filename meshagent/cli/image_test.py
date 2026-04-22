@@ -2305,11 +2305,7 @@ CMD ["/app/dist/index.js"]
             read_only=True,
         )
     ]
-    env_by_name = {
-        env_var.name: env_var for env_var in (service_spec.container.environment or [])
-    }
-    assert env_by_name["NODE_ENV"].value == "production"
-    assert env_by_name["PORT"].value == "8111"
+    assert service_spec.container.environment is None
     assert service_spec.ports is not None
     assert service_spec.ports[0].num == 8111
     assert captured["events"] == ["build", "create"]

@@ -1141,10 +1141,6 @@ def _resolve_runtime_container_override(
     else:
         command_tokens = runtime.launcher + startup_command + command_arguments
 
-    default_environment = tuple(
-        EnvironmentVariable(name=name, value=value)
-        for name, value in dockerfile_metadata.environment
-    )
     working_dir = dockerfile_metadata.working_dir or IMAGE_RUNTIME_MOUNT_PATH
 
     return _RuntimeContainerOverride(
@@ -1157,7 +1153,6 @@ def _resolve_runtime_container_override(
             subpath=IMAGE_RUNTIME_MOUNT_SUBPATH,
             read_only=True,
         ),
-        default_environment=default_environment,
     )
 
 
