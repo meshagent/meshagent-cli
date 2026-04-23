@@ -51,6 +51,14 @@ def test_configure_codex_integration_prefers_meshagent_command_from_path(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.toml"
+    installed_meshagent = tmp_path / "bin" / "meshagent"
+    installed_meshagent.parent.mkdir(parents=True, exist_ok=True)
+    installed_meshagent.write_text("#!/bin/sh\n")
+    installed_meshagent.chmod(0o755)
+    current_meshagent = tmp_path / "current" / "meshagent"
+    current_meshagent.parent.mkdir(parents=True, exist_ok=True)
+    current_meshagent.write_text("#!/bin/sh\n")
+    current_meshagent.chmod(0o755)
 
     monkeypatch.setattr(
         tool_integrations,
@@ -60,14 +68,12 @@ def test_configure_codex_integration_prefers_meshagent_command_from_path(
     monkeypatch.setattr(
         tool_integrations.shutil,
         "which",
-        lambda command: (
-            "/opt/homebrew/bin/meshagent" if command == "meshagent" else None
-        ),
+        lambda command: str(installed_meshagent) if command == "meshagent" else None,
     )
     monkeypatch.setattr(
         tool_integrations,
         "resolve_current_meshagent_executable",
-        lambda *args, **kwargs: "/tmp/current/bin/meshagent",
+        lambda *args, **kwargs: str(current_meshagent),
     )
 
     tool_integrations.configure_codex_integration(
@@ -77,7 +83,7 @@ def test_configure_codex_integration_prefers_meshagent_command_from_path(
         config_path=config_path,
     )
 
-    assert 'command = "meshagent"\n' in config_path.read_text()
+    assert f'command = "{installed_meshagent}"\n' in config_path.read_text()
     assert 'args = ["auth", "token"]\n' in config_path.read_text()
 
 
@@ -700,6 +706,14 @@ def test_configure_claude_code_integration_prefers_meshagent_command_from_path(
     tmp_path: Path,
 ) -> None:
     settings_path = tmp_path / "claude" / "settings.json"
+    installed_meshagent = tmp_path / "bin" / "meshagent"
+    installed_meshagent.parent.mkdir(parents=True, exist_ok=True)
+    installed_meshagent.write_text("#!/bin/sh\n")
+    installed_meshagent.chmod(0o755)
+    current_meshagent = tmp_path / "current" / "meshagent"
+    current_meshagent.parent.mkdir(parents=True, exist_ok=True)
+    current_meshagent.write_text("#!/bin/sh\n")
+    current_meshagent.chmod(0o755)
 
     monkeypatch.setattr(
         tool_integrations,
@@ -709,14 +723,12 @@ def test_configure_claude_code_integration_prefers_meshagent_command_from_path(
     monkeypatch.setattr(
         tool_integrations.shutil,
         "which",
-        lambda command: (
-            "/opt/homebrew/bin/meshagent" if command == "meshagent" else None
-        ),
+        lambda command: str(installed_meshagent) if command == "meshagent" else None,
     )
     monkeypatch.setattr(
         tool_integrations,
         "resolve_current_meshagent_executable",
-        lambda *args, **kwargs: "/tmp/current/bin/meshagent",
+        lambda *args, **kwargs: str(current_meshagent),
     )
 
     tool_integrations.configure_claude_code_integration(
@@ -726,7 +738,8 @@ def test_configure_claude_code_integration_prefers_meshagent_command_from_path(
     )
 
     assert (
-        json.loads(settings_path.read_text())["apiKeyHelper"] == "meshagent auth token"
+        json.loads(settings_path.read_text())["apiKeyHelper"]
+        == f"{installed_meshagent} auth token"
     )
 
 
@@ -744,7 +757,7 @@ def test_inspect_claude_code_integration_returns_meshagent_status(
                     "ANTHROPIC_BASE_URL": "https://api.meshagent.test/anthropic",
                     "ANTHROPIC_CUSTOM_HEADERS": "Meshagent-Project-Id: project-123",
                 },
-                "apiKeyHelper": "meshagent auth token",
+                "apiKeyHelper": "/opt/homebrew/bin/meshagent auth token",
             }
         )
     )

@@ -130,7 +130,7 @@ def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
     assert existing_codex_profile_requests == ["project-123"]
 
 
-def test_setup_command_does_not_pin_current_cli_path_in_claude_configuration(
+def test_setup_command_passes_current_cli_path_to_claude_configuration(
     monkeypatch,
 ) -> None:
     captured: dict[str, str | None] = {}
@@ -214,7 +214,7 @@ def test_setup_command_does_not_pin_current_cli_path_in_claude_configuration(
     assert captured == {
         "project_id": "project-123",
         "api_url": "https://api.meshagent.com",
-        "meshagent_executable": None,
+        "meshagent_executable": "/tmp/current/bin/meshagent",
     }
 
 
@@ -430,7 +430,7 @@ def test_setup_command_does_not_launch_ask_when_not_completed(monkeypatch) -> No
     assert launched is False
 
 
-def test_setup_command_does_not_pin_current_cli_path_in_codex_configuration(
+def test_setup_command_passes_current_cli_path_to_codex_configuration(
     monkeypatch,
 ) -> None:
     captured: dict[str, str | None] = {}
@@ -501,7 +501,7 @@ def test_setup_command_does_not_pin_current_cli_path_in_codex_configuration(
     assert captured == {
         "profile_id": "meshagent-work",
         "api_url": "https://api.meshagent.com",
-        "meshagent_executable": None,
+        "meshagent_executable": "/tmp/current/bin/meshagent",
     }
 
 
@@ -529,13 +529,14 @@ def test_setup_command_passes_codex_replace_and_remove_operations(
         *,
         profile_id: str,
         api_url: str | None = None,
+        meshagent_executable: str | None = None,
         **kwargs,
     ) -> None:
         replaced.append(
             {
                 "profile_id": profile_id,
                 "api_url": api_url,
-                "meshagent_executable": kwargs.get("meshagent_executable"),
+                "meshagent_executable": meshagent_executable,
             }
         )
         assert kwargs == {}
@@ -579,6 +580,11 @@ def test_setup_command_passes_codex_replace_and_remove_operations(
     )
     monkeypatch.setattr(
         root_commands,
+        "_current_meshagent_executable",
+        lambda: "/tmp/current/bin/meshagent",
+    )
+    monkeypatch.setattr(
+        root_commands,
         "_run_async",
         lambda coro: asyncio.run(coro),
     )
@@ -591,7 +597,7 @@ def test_setup_command_passes_codex_replace_and_remove_operations(
         {
             "profile_id": "meshagent",
             "api_url": "https://api.meshagent.com",
-            "meshagent_executable": None,
+            "meshagent_executable": "/tmp/current/bin/meshagent",
         }
     ]
     assert removed == ["meshagent-work"]

@@ -375,7 +375,7 @@ def resolve_current_meshagent_executable(
 def _resolve_meshagent_auth_invocation(
     *,
     meshagent_executable: str | None = None,
-    prefer_bare_meshagent_command: bool = False,
+    prefer_path_meshagent_command: bool = False,
 ) -> CommandInvocation:
     if meshagent_executable is not None and meshagent_executable.strip() != "":
         return CommandInvocation(
@@ -383,11 +383,23 @@ def _resolve_meshagent_auth_invocation(
             args=("auth", "token"),
         )
 
-    if prefer_bare_meshagent_command and shutil.which("meshagent") is not None:
-        return CommandInvocation(
-            command="meshagent",
-            args=("auth", "token"),
-        )
+    if prefer_path_meshagent_command:
+        resolved_meshagent = shutil.which("meshagent")
+        if resolved_meshagent is not None:
+            try:
+                resolved_candidate = Path(resolved_meshagent).expanduser().resolve()
+            except OSError:
+                resolved_candidate = None
+            if (
+                resolved_candidate is not None
+                and resolved_candidate.exists()
+                and resolved_candidate.stem == "meshagent"
+                and os.access(resolved_candidate, os.X_OK)
+            ):
+                return CommandInvocation(
+                    command=str(resolved_candidate),
+                    args=("auth", "token"),
+                )
 
     candidates: list[Path] = []
     current_meshagent_executable = resolve_current_meshagent_executable()
@@ -422,11 +434,11 @@ def _resolve_meshagent_auth_invocation(
 def _resolve_meshagent_auth_command(
     *,
     meshagent_executable: str | None = None,
-    prefer_bare_meshagent_command: bool = False,
+    prefer_path_meshagent_command: bool = False,
 ) -> str:
     return _resolve_meshagent_auth_invocation(
         meshagent_executable=meshagent_executable,
-        prefer_bare_meshagent_command=prefer_bare_meshagent_command,
+        prefer_path_meshagent_command=prefer_path_meshagent_command,
     ).shell_command()
 
 
@@ -441,7 +453,7 @@ def _codex_profile_block(
     provider_base_url = _codex_provider_base_url(api_url=api_url)
     auth_invocation = _resolve_meshagent_auth_invocation(
         meshagent_executable=meshagent_executable,
-        prefer_bare_meshagent_command=True,
+        prefer_path_meshagent_command=True,
     )
 
     lines = [
@@ -1279,7 +1291,7 @@ def configure_claude_code_integration(
     settings["env"] = env
     settings["apiKeyHelper"] = _resolve_meshagent_auth_command(
         meshagent_executable=meshagent_executable,
-        prefer_bare_meshagent_command=True,
+        prefer_path_meshagent_command=True,
     )
 
     updated = json.dumps(settings, indent=2) + "\n"
