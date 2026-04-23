@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Optional
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 import typer
 from pydantic import ValidationError
@@ -19,6 +20,7 @@ from rich import print
 
 from meshagent.cli import async_typer
 from meshagent.cli.containers import (
+    _drain_stream_plain,
     _parse_creds,
     _stream_build_job_logs_and_wait_for_exit,
     _with_client,
@@ -50,7 +52,11 @@ from meshagent.api.image_runtime import (
     ImageRuntimeDefinition,
 )
 from meshagent.api.registry_auth import DEFAULT_REGISTRY_HOST, DEFAULT_REGISTRY_USERNAME
-from meshagent.api.room_server_client import DockerSecret
+from meshagent.api.room_server_client import (
+    DockerSecret,
+    LogStream,
+    ServiceRuntimeState,
+)
 from meshagent.api.room_ports import RESERVED_ROOM_SERVICE_PORTS
 from meshagent.api.specs.service import (
     ANNOTATION_REQUEST_VALIDATION_METHOD,
@@ -81,6 +87,8 @@ _BUILD_CONTEXT_CHUNK_SIZE = 1024 * 1024
 _CLIENT_CLOSE_TIMEOUT_SECONDS = 2.0
 _DEFAULT_CONTEXT_MOUNT_PATH = "/context"
 _DEFAULT_REPOSITORY_TOKEN_TTL_SECONDS = 3600
+_DEPLOY_LIVENESS_REQUEST_TIMEOUT_SECONDS = 2.0
+_DEPLOY_WAIT_POLL_INTERVAL_SECONDS = 1.0
 _GENERATED_PACK_DOCKERFILE_NAME = ".meshagent-pack.Dockerfile"
 _TOKEN_ENVIRONMENT_NAMES = (
     "MESHAGENT_TOKEN",
@@ -232,6 +240,20 @@ class _RoomRouteTarget:
 class _RoomServiceUpsertResult:
     service_id: str
     created: bool
+
+
+@dataclass(frozen=True)
+class _AppliedDeployPlanResult:
+    service_id: str
+    created: bool
+    route_target: _RoomRouteTarget | None
+
+
+@dataclass(frozen=True)
+class _ActiveDeployLogStream:
+    container_id: str
+    stream: LogStream[None]
+    task: asyncio.Task[None]
 
 
 def _parse_build_pack(value: str) -> _BuildPackSpec:
@@ -2017,6 +2039,61 @@ def _resolve_domain_route_target(*, service_spec: ServiceSpec) -> _RoomRouteTarg
     return _RoomRouteTarget(port=str(published_ports[0].num))
 
 
+def _find_service_port(
+    *,
+    service_spec: ServiceSpec,
+    port: str,
+) -> PortSpec | None:
+    for service_port in service_spec.ports or []:
+        if str(service_port.num) == port:
+            return service_port
+    return None
+
+
+def _resolve_domain_liveness_path(
+    *,
+    service_spec: ServiceSpec,
+    route_target: _RoomRouteTarget,
+) -> str | None:
+    service_port = _find_service_port(service_spec=service_spec, port=route_target.port)
+    if service_port is None:
+        return None
+    if service_port.type == "tcp":
+        return None
+    return service_port.liveness
+
+
+def _build_domain_liveness_url(*, domain: str, liveness_path: str) -> str:
+    parsed = urlparse(domain if "://" in domain else f"https://{domain}")
+    scheme = parsed.scheme or "https"
+    netloc = parsed.netloc
+    base_path = parsed.path
+    if netloc == "":
+        netloc = parsed.path
+        base_path = ""
+    if base_path != "/" and base_path.endswith("/"):
+        base_path = base_path.rstrip("/")
+    return f"{scheme}://{netloc}{base_path}{liveness_path}"
+
+
+def _probe_liveness_url(*, url: str) -> bool:
+    request = Request(
+        url,
+        headers={
+            "Accept": "*/*",
+            "User-Agent": f"meshagent-cli/{__version__}",
+        },
+    )
+    try:
+        with urlopen(request, timeout=_DEPLOY_LIVENESS_REQUEST_TIMEOUT_SECONDS) as resp:
+            status_code = resp.getcode()
+    except Exception:
+        return False
+    if status_code is None:
+        return False
+    return 200 <= status_code < 400
+
+
 async def _find_room_service_by_name(
     *,
     account_client,
@@ -2119,7 +2196,7 @@ async def _apply_deploy_plan(
     room_name: str,
     deploy_plan: _ServiceDeployPlan,
     domain: str | None,
-) -> None:
+) -> _AppliedDeployPlanResult:
     route_target = (
         _resolve_domain_route_target(service_spec=deploy_plan.spec)
         if domain is not None
@@ -2150,6 +2227,138 @@ async def _apply_deploy_plan(
             port=route_target.port,
             service_id=deploy_plan.service_id_annotation,
         )
+    return _AppliedDeployPlanResult(
+        service_id=deploy_result.service_id,
+        created=deploy_result.created,
+        route_target=route_target,
+    )
+
+
+async def _get_service_runtime_state(
+    *,
+    client: RoomClient,
+    service_id: str,
+) -> ServiceRuntimeState | None:
+    service_list = await client.services.list_with_state()
+    return service_list.service_states.get(service_id)
+
+
+def _start_deploy_log_stream(
+    *,
+    client: RoomClient,
+    container_id: str,
+) -> _ActiveDeployLogStream:
+    stream = client.containers.logs(container_id=container_id, follow=True)
+    task = asyncio.create_task(_drain_stream_plain(stream, show_progress=False))
+    return _ActiveDeployLogStream(container_id=container_id, stream=stream, task=task)
+
+
+async def _stop_deploy_log_stream(
+    *,
+    active_logs: _ActiveDeployLogStream | None,
+) -> None:
+    if active_logs is None:
+        return
+    if not active_logs.task.done():
+        await asyncio.gather(active_logs.stream.cancel(), return_exceptions=True)
+    await asyncio.gather(active_logs.task, return_exceptions=True)
+
+
+def _print_service_exited_before_live(
+    *,
+    service_name: str,
+    service_id: str,
+    exit_code: int | None,
+) -> None:
+    exit_code_text = str(exit_code) if exit_code is not None else "unknown"
+    print(
+        "[red]Service container exited before the service was live:[/] "
+        f"{service_name} ({service_id}), exit code {exit_code_text}"
+    )
+
+
+async def _wait_for_deployed_service_live(
+    *,
+    client: RoomClient,
+    service_id: str,
+    service_name: str,
+    previous_container_id: str | None,
+    domain: str | None,
+    liveness_path: str | None,
+) -> None:
+    active_logs: _ActiveDeployLogStream | None = None
+    liveness_url = (
+        _build_domain_liveness_url(domain=domain, liveness_path=liveness_path)
+        if domain is not None and liveness_path is not None
+        else None
+    )
+
+    print(f"[cyan]Waiting for service to go live:[/] {service_name} ({service_id})")
+    if domain is not None and liveness_url is not None:
+        print(f"[cyan]Waiting for liveness URL:[/] {liveness_url}")
+    elif domain is not None:
+        print(
+            f"[yellow]Route created for {domain}, but the service has no HTTP liveness path to probe.[/]"
+        )
+
+    try:
+        while True:
+            state = await _get_service_runtime_state(
+                client=client, service_id=service_id
+            )
+            if state is None:
+                await asyncio.sleep(_DEPLOY_WAIT_POLL_INTERVAL_SECONDS)
+                continue
+
+            container_id = state.container_id
+            if (
+                previous_container_id is not None
+                and container_id == previous_container_id
+            ):
+                await asyncio.sleep(_DEPLOY_WAIT_POLL_INTERVAL_SECONDS)
+                continue
+
+            if state.restart_count > 0:
+                _print_service_exited_before_live(
+                    service_name=service_name,
+                    service_id=service_id,
+                    exit_code=state.last_exit_code,
+                )
+                raise typer.Exit(code=1)
+
+            if active_logs is None and container_id is not None:
+                print(f"[cyan]Tailing container logs:[/] {container_id}")
+                active_logs = _start_deploy_log_stream(
+                    client=client,
+                    container_id=container_id,
+                )
+            elif (
+                active_logs is not None
+                and container_id is not None
+                and container_id != active_logs.container_id
+            ):
+                _print_service_exited_before_live(
+                    service_name=service_name,
+                    service_id=service_id,
+                    exit_code=state.last_exit_code,
+                )
+                raise typer.Exit(code=1)
+
+            if container_id is None or state.state != "running":
+                await asyncio.sleep(_DEPLOY_WAIT_POLL_INTERVAL_SECONDS)
+                continue
+
+            if liveness_url is None:
+                print(f"[green]Service is live:[/] {service_name} ({service_id})")
+                return
+
+            if await asyncio.to_thread(_probe_liveness_url, url=liveness_url):
+                print(f"[green]Liveness URL responded:[/] {liveness_url}")
+                return
+
+            await asyncio.sleep(_DEPLOY_WAIT_POLL_INTERVAL_SECONDS)
+    finally:
+        await _stop_deploy_log_stream(active_logs=active_logs)
 
 
 async def _iter_file_chunks(path: Path) -> AsyncIterator[bytes]:
@@ -2660,6 +2869,16 @@ async def deploy_image(
             ),
         ),
     ] = True,
+    wait: Annotated[
+        bool,
+        typer.Option(
+            "--wait/--no-wait",
+            help=(
+                "Wait for the deployed service to start, stream container logs, "
+                "and verify the route liveness URL when --domain is provided."
+            ),
+        ),
+    ] = True,
 ) -> None:
     parsed_tag = _parse_build_tag(tag)
     project_registry: str | None = None
@@ -2823,6 +3042,16 @@ async def deploy_image(
                 environment=environment,
                 resolved_identity=resolved_environment.identity,
             )
+        previous_runtime_state = (
+            await _get_service_runtime_state(
+                client=client,
+                service_id=existing_service.id,
+            )
+            if existing_service is not None
+            and existing_service.id is not None
+            and existing_service.id != ""
+            else None
+        )
         deploy_plan = _build_deploy_service_spec(
             existing_service=existing_service,
             parsed_tag=parsed_tag,
@@ -2833,7 +3062,7 @@ async def deploy_image(
             default_ports=packed_default_ports,
             runtime_container=runtime_container,
         )
-        await _apply_deploy_plan(
+        deploy_result = await _apply_deploy_plan(
             account_client=account_client,
             client=client,
             project_id=resolved_project_id,
@@ -2841,6 +3070,26 @@ async def deploy_image(
             deploy_plan=deploy_plan,
             domain=domain,
         )
+        if wait:
+            await _wait_for_deployed_service_live(
+                client=client,
+                service_id=deploy_result.service_id,
+                service_name=deploy_plan.spec.metadata.name,
+                previous_container_id=(
+                    previous_runtime_state.container_id
+                    if previous_runtime_state is not None
+                    else None
+                ),
+                domain=domain,
+                liveness_path=(
+                    _resolve_domain_liveness_path(
+                        service_spec=deploy_plan.spec,
+                        route_target=deploy_result.route_target,
+                    )
+                    if deploy_result.route_target is not None
+                    else None
+                ),
+            )
     finally:
         await client.__aexit__(None, None, None)
         await account_client.close()

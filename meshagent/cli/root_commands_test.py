@@ -741,3 +741,63 @@ def test_setup_command_passes_api_url_to_login_operation(monkeypatch) -> None:
     callback(api_url="https://override.meshagent.test")
 
     assert captured == {"api_url": "https://override.meshagent.test"}
+
+
+def test_setup_command_skips_current_account_for_unmatched_override_api_url(
+    monkeypatch,
+) -> None:
+    async def _fake_get_active_project() -> str | None:
+        return None
+
+    async def _fake_get_access_token() -> str | None:
+        return "oauth-token"
+
+    async def _fake_run_setup_wizard_tui(**kwargs) -> SetupWizardResult:
+        assert kwargs["has_authenticated_session"] is False
+        assert kwargs["authenticated_user_name"] is None
+        assert kwargs["has_codex_cli"] is False
+        assert kwargs["has_claude_code_cli"] is False
+        return SetupWizardResult(status="canceled", message="Setup canceled.")
+
+    monkeypatch.setattr(
+        "meshagent.cli.helper.get_active_project",
+        _fake_get_active_project,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tui.setup.run_setup_wizard_tui",
+        _fake_run_setup_wizard_tui,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.auth_async.get_access_token",
+        _fake_get_access_token,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.local_settings.get_active_api_url",
+        lambda: "https://api.meshagent.com",
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.local_settings.get_active_profile",
+        lambda: StoredUserProfile(
+            id="user-123",
+            first_name="Jesse",
+            last_name="Ezell",
+            email="jesse@example.com",
+        ),
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.has_codex_cli",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.has_claude_code_cli",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        root_commands,
+        "_run_async",
+        lambda coro: asyncio.run(coro),
+    )
+
+    callback = root_commands.setup_command.callback
+    assert callback is not None
+    callback(api_url="https://override.meshagent.test")

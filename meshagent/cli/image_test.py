@@ -23,6 +23,7 @@ from meshagent.api.image_runtime import (
 )
 from meshagent.api.room_ports import ROOM_INTERNAL_API_PORT
 from meshagent.cli import async_typer, cli, image
+from meshagent.api.room_server_client import ServiceRuntimeState
 from meshagent.api.specs.service import (
     ContainerMountSpec,
     ContainerSpec,
@@ -61,6 +62,27 @@ def _stub_project_registry_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
         return _FakeConfigClient()
 
     monkeypatch.setattr(image, "get_client", _fake_get_client)
+
+
+@pytest.fixture(autouse=True)
+def _stub_deploy_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, object]:
+    calls: list[dict[str, object]] = []
+    original = image._wait_for_deployed_service_live
+
+    async def _fake_wait_for_deployed_service_live(**kwargs) -> None:
+        calls.append(kwargs)
+
+    monkeypatch.setattr(
+        image,
+        "_wait_for_deployed_service_live",
+        _fake_wait_for_deployed_service_live,
+    )
+    return {
+        "calls": calls,
+        "original": original,
+    }
 
 
 def test_root_help_lists_build_and_deploy_commands() -> None:
@@ -1535,6 +1557,303 @@ def test_parse_environment_secret_variables_rejects_invalid_format() -> None:
 
 
 @pytest.mark.asyncio
+async def test_wait_for_deployed_service_live_streams_logs_and_checks_liveness(
+    monkeypatch: pytest.MonkeyPatch,
+    _stub_deploy_wait: dict[str, object],
+) -> None:
+    captured: dict[str, object] = {
+        "prints": [],
+        "started_logs": [],
+        "stopped_logs": [],
+        "probe_urls": [],
+    }
+    states = [
+        ServiceRuntimeState(service_id="service-1", state="starting"),
+        ServiceRuntimeState(
+            service_id="service-1",
+            state="starting",
+            container_id="container-1",
+        ),
+        ServiceRuntimeState(
+            service_id="service-1",
+            state="running",
+            container_id="container-1",
+        ),
+        ServiceRuntimeState(
+            service_id="service-1",
+            state="running",
+            container_id="container-1",
+        ),
+    ]
+    fake_active_logs = SimpleNamespace(container_id="container-1")
+
+    class _FakeServices:
+        def __init__(self, runtime_states: list[ServiceRuntimeState]) -> None:
+            self._runtime_states = runtime_states
+            self._index = 0
+
+        async def list_with_state(self):
+            state = self._runtime_states[
+                min(self._index, len(self._runtime_states) - 1)
+            ]
+            self._index += 1
+            return SimpleNamespace(service_states={"service-1": state})
+
+    fake_client = SimpleNamespace(services=_FakeServices(states))
+
+    async def _fake_to_thread(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    def _fake_start_deploy_log_stream(*, client, container_id: str):
+        del client
+        captured["started_logs"].append(container_id)
+        return fake_active_logs
+
+    async def _fake_stop_deploy_log_stream(*, active_logs) -> None:
+        captured["stopped_logs"].append(active_logs)
+
+    probe_results = iter([False, True])
+
+    def _fake_probe_liveness_url(*, url: str) -> bool:
+        captured["probe_urls"].append(url)
+        return next(probe_results)
+
+    monkeypatch.setattr(image.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(image, "_DEPLOY_WAIT_POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(
+        image, "_start_deploy_log_stream", _fake_start_deploy_log_stream
+    )
+    monkeypatch.setattr(image, "_stop_deploy_log_stream", _fake_stop_deploy_log_stream)
+    monkeypatch.setattr(image, "_probe_liveness_url", _fake_probe_liveness_url)
+    monkeypatch.setattr(
+        image,
+        "print",
+        lambda *args, **kwargs: captured["prints"].append(args[0]),
+    )
+
+    wait_helper = _stub_deploy_wait["original"]
+    assert callable(wait_helper)
+
+    await wait_helper(
+        client=fake_client,
+        service_id="service-1",
+        service_name="repo-web",
+        previous_container_id=None,
+        domain="app.meshagent.app",
+        liveness_path="/ready",
+    )
+
+    assert captured["started_logs"] == ["container-1"]
+    assert captured["stopped_logs"] == [fake_active_logs]
+    assert captured["probe_urls"] == [
+        "https://app.meshagent.app/ready",
+        "https://app.meshagent.app/ready",
+    ]
+    assert any("Liveness URL responded" in message for message in captured["prints"])
+
+
+@pytest.mark.asyncio
+async def test_wait_for_deployed_service_live_exits_when_container_restarts(
+    monkeypatch: pytest.MonkeyPatch,
+    _stub_deploy_wait: dict[str, object],
+) -> None:
+    captured: dict[str, object] = {
+        "prints": [],
+        "started_logs": [],
+        "stopped_logs": [],
+    }
+    states = [
+        ServiceRuntimeState(
+            service_id="service-1",
+            state="starting",
+            container_id="container-1",
+        ),
+        ServiceRuntimeState(
+            service_id="service-1",
+            state="restarting",
+            container_id="container-1",
+            restart_count=1,
+            last_exit_code=137,
+        ),
+    ]
+    fake_active_logs = SimpleNamespace(container_id="container-1")
+
+    class _FakeServices:
+        def __init__(self, runtime_states: list[ServiceRuntimeState]) -> None:
+            self._runtime_states = runtime_states
+            self._index = 0
+
+        async def list_with_state(self):
+            state = self._runtime_states[
+                min(self._index, len(self._runtime_states) - 1)
+            ]
+            self._index += 1
+            return SimpleNamespace(service_states={"service-1": state})
+
+    fake_client = SimpleNamespace(services=_FakeServices(states))
+
+    def _fake_start_deploy_log_stream(*, client, container_id: str):
+        del client
+        captured["started_logs"].append(container_id)
+        return fake_active_logs
+
+    async def _fake_stop_deploy_log_stream(*, active_logs) -> None:
+        captured["stopped_logs"].append(active_logs)
+
+    monkeypatch.setattr(image, "_DEPLOY_WAIT_POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(
+        image, "_start_deploy_log_stream", _fake_start_deploy_log_stream
+    )
+    monkeypatch.setattr(image, "_stop_deploy_log_stream", _fake_stop_deploy_log_stream)
+    monkeypatch.setattr(
+        image,
+        "print",
+        lambda *args, **kwargs: captured["prints"].append(args[0]),
+    )
+
+    wait_helper = _stub_deploy_wait["original"]
+    assert callable(wait_helper)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        await wait_helper(
+            client=fake_client,
+            service_id="service-1",
+            service_name="repo-web",
+            previous_container_id=None,
+            domain="app.meshagent.app",
+            liveness_path="/ready",
+        )
+
+    assert exc_info.value.exit_code == 1
+    assert captured["started_logs"] == ["container-1"]
+    assert captured["stopped_logs"] == [fake_active_logs]
+    assert any(
+        "exit code 137" in message and "before the service was live" in message
+        for message in captured["prints"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_deploy_image_waits_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    _stub_deploy_wait: dict[str, object],
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeRoomClient:
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+            captured["room_client_closed"] = True
+
+    class _FakeAccountClient:
+        async def list_room_services(self, *, project_id: str, room_name: str):
+            del project_id, room_name
+            return []
+
+        async def create_room_service(
+            self, *, project_id: str, room_name: str, service
+        ) -> str:
+            del project_id, room_name, service
+            return "service-1"
+
+        async def close(self) -> None:
+            captured["account_client_closed"] = True
+
+    async def _fake_with_client(*, project_id, room):
+        del project_id, room
+        return _FakeAccountClient(), _FakeRoomClient()
+
+    async def _fake_resolve_project_id(*, project_id):
+        del project_id
+        return "project-1"
+
+    monkeypatch.setattr(image, "_with_client", _fake_with_client)
+    monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
+
+    await image.deploy_image(
+        project_id="project-1",
+        room="room-1",
+        tag="repo/web:1",
+        domain=None,
+        room_mount=[],
+        project_mount=[],
+        empty_dir_mount=[],
+        image_mount=[],
+        env=[],
+        meshagent_token=None,
+        private=True,
+    )
+
+    calls = _stub_deploy_wait["calls"]
+    assert isinstance(calls, list)
+    assert len(calls) == 1
+    assert calls[0]["service_id"] == "service-1"
+    assert calls[0]["service_name"] == "repo-web"
+    assert calls[0]["domain"] is None
+
+
+@pytest.mark.asyncio
+async def test_deploy_image_no_wait_skips_live_wait(
+    monkeypatch: pytest.MonkeyPatch,
+    _stub_deploy_wait: dict[str, object],
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeRoomClient:
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+            captured["room_client_closed"] = True
+
+    class _FakeAccountClient:
+        async def list_room_services(self, *, project_id: str, room_name: str):
+            del project_id, room_name
+            return []
+
+        async def create_room_service(
+            self, *, project_id: str, room_name: str, service
+        ) -> str:
+            del project_id, room_name, service
+            return "service-1"
+
+        async def close(self) -> None:
+            captured["account_client_closed"] = True
+
+    async def _fake_with_client(*, project_id, room):
+        del project_id, room
+        return _FakeAccountClient(), _FakeRoomClient()
+
+    async def _fake_resolve_project_id(*, project_id):
+        del project_id
+        return "project-1"
+
+    monkeypatch.setattr(image, "_with_client", _fake_with_client)
+    monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
+
+    await image.deploy_image(
+        project_id="project-1",
+        room="room-1",
+        tag="repo/web:1",
+        domain=None,
+        room_mount=[],
+        project_mount=[],
+        empty_dir_mount=[],
+        image_mount=[],
+        env=[],
+        meshagent_token=None,
+        private=True,
+        wait=False,
+    )
+
+    calls = _stub_deploy_wait["calls"]
+    assert isinstance(calls, list)
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_deploy_image_creates_room_service_with_mounts_env_secret_and_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1543,6 +1862,17 @@ async def test_deploy_image_creates_room_service_with_mounts_env_secret_and_toke
     class _FakeServices:
         async def restart(self, *, service_id: str) -> None:
             captured["restarted_service_id"] = service_id
+
+        async def list_with_state(self):
+            return SimpleNamespace(
+                service_states={
+                    "service-1": ServiceRuntimeState(
+                        service_id="service-1",
+                        state="running",
+                        container_id="container-old",
+                    )
+                }
+            )
 
     class _FakeSecrets:
         async def exists(
@@ -2595,6 +2925,17 @@ async def test_deploy_image_updates_existing_service_route_and_preserves_token_i
         async def restart(self, *, service_id: str) -> None:
             captured["restarted_service_id"] = service_id
 
+        async def list_with_state(self):
+            return SimpleNamespace(
+                service_states={
+                    "service-1": ServiceRuntimeState(
+                        service_id="service-1",
+                        state="running",
+                        container_id="container-old",
+                    )
+                }
+            )
+
     class _FakeRoomClient:
         def __init__(self) -> None:
             self.services = _FakeServices()
@@ -2747,6 +3088,17 @@ async def test_deploy_image_sets_cookie_validation_on_private_published_ports(
         async def restart(self, *, service_id: str) -> None:
             captured["restarted_service_id"] = service_id
 
+        async def list_with_state(self):
+            return SimpleNamespace(
+                service_states={
+                    "service-1": ServiceRuntimeState(
+                        service_id="service-1",
+                        state="running",
+                        container_id="container-old",
+                    )
+                }
+            )
+
     class _FakeRoomClient:
         def __init__(self) -> None:
             self.services = _FakeServices()
@@ -2866,6 +3218,17 @@ async def test_deploy_image_preserves_existing_liveness_when_default_is_used(
         async def restart(self, *, service_id: str) -> None:
             captured["restarted_service_id"] = service_id
 
+        async def list_with_state(self):
+            return SimpleNamespace(
+                service_states={
+                    "service-1": ServiceRuntimeState(
+                        service_id="service-1",
+                        state="running",
+                        container_id="container-old",
+                    )
+                }
+            )
+
     class _FakeRoomClient:
         def __init__(self) -> None:
             self.services = _FakeServices()
@@ -2958,6 +3321,17 @@ async def test_deploy_image_liveness_flag_overrides_http_ports_only(
         async def restart(self, *, service_id: str) -> None:
             captured["restarted_service_id"] = service_id
 
+        async def list_with_state(self):
+            return SimpleNamespace(
+                service_states={
+                    "service-1": ServiceRuntimeState(
+                        service_id="service-1",
+                        state="running",
+                        container_id="container-old",
+                    )
+                }
+            )
+
     class _FakeRoomClient:
         def __init__(self) -> None:
             self.services = _FakeServices()
@@ -3039,7 +3413,22 @@ async def test_deploy_image_domain_requires_exactly_one_published_port(
         container=ContainerSpec(image="repo/web:old"),
     )
 
+    class _FakeServices:
+        async def list_with_state(self):
+            return SimpleNamespace(
+                service_states={
+                    "service-1": ServiceRuntimeState(
+                        service_id="service-1",
+                        state="running",
+                        container_id="container-old",
+                    )
+                }
+            )
+
     class _FakeRoomClient:
+        def __init__(self) -> None:
+            self.services = _FakeServices()
+
         async def __aexit__(self, exc_type, exc, tb) -> None:
             del exc_type, exc, tb
 

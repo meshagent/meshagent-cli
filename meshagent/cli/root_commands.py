@@ -79,7 +79,12 @@ def setup_command(api_url: str | None = None):
             get_active_project,
             get_client,
         )
-        from meshagent.cli.local_settings import get_active_profile, resolve_api_url
+        from meshagent.cli.local_settings import (
+            get_active_api_url,
+            get_active_profile,
+            normalize_api_url,
+            resolve_api_url,
+        )
         from meshagent.cli.tool_integrations import (
             CODEX_DEFAULT_PROFILE_ID,
             clear_codex_default_profile_if_meshagent_project,
@@ -235,7 +240,12 @@ def setup_command(api_url: str | None = None):
 
         current_user_name: str | None = None
         has_authenticated_session = False
-        if await auth_async.get_access_token() is not None:
+        access_token = await auth_async.get_access_token()
+        requested_api_url = normalize_api_url(api_url)
+        active_api_url = get_active_api_url()
+        if access_token is not None and (
+            requested_api_url is None or requested_api_url == active_api_url
+        ):
             has_authenticated_session = True
             active_profile = get_active_profile()
             if active_profile is not None:
