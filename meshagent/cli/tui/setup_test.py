@@ -183,7 +183,7 @@ def test_show_codex_choice_renders_options(monkeypatch) -> None:
     assert captured == {
         "title": "Codex Setup",
         "message": (
-            "Codex was detected on this machine. Update Codex to use the "
+            "Codex was detected on this machine. Configure Codex to use the "
             "MeshAgent proxy so you can centralize OpenAI and Anthropic "
             "billing, usage analytics, and governance in your MeshAgent "
             "account instead of managing separate provider subscriptions."
@@ -192,7 +192,7 @@ def test_show_codex_choice_renders_options(monkeypatch) -> None:
         "centered": False,
         "options": [
             (
-                "Yes, update Codex to use the MeshAgent proxy",
+                "Yes, use the MeshAgent proxy with Codex",
                 "__codex_create__",
             ),
             (
@@ -200,7 +200,7 @@ def test_show_codex_choice_renders_options(monkeypatch) -> None:
                 "__codex_skip__",
             ),
         ],
-        "highlighted_id": None,
+        "highlighted_id": "__codex_create__",
     }
 
 
@@ -241,18 +241,19 @@ def test_show_codex_choice_prefers_existing_profiles(monkeypatch) -> None:
     assert captured == {
         "title": "Codex Setup",
         "message": (
-            "Codex was detected on this machine. MeshAgent proxy profiles "
-            "centralize OpenAI and Anthropic billing, usage analytics, and "
-            "governance in your MeshAgent account instead of managing separate "
-            "provider subscriptions. Found existing MeshAgent Codex profiles "
-            "for this project: meshagent, meshagent-work. Continue with them or "
-            "create another profile."
+            "Codex was detected on this machine. Configure Codex to use the "
+            "MeshAgent proxy so you can centralize OpenAI and Anthropic "
+            "billing, usage analytics, and governance in your MeshAgent "
+            "account instead of managing separate provider subscriptions. "
+            "Found existing MeshAgent Codex profiles for this project: "
+            "meshagent, meshagent-work. Continue with them or create another "
+            "profile."
         ),
         "help_text": "Use Up/Down and Enter.",
         "centered": False,
         "options": [
             (
-                "Yes, update Codex to use the MeshAgent proxy",
+                "Yes, use the MeshAgent proxy with Codex",
                 "__codex_continue__",
             ),
             ("Create another Codex profile", "__codex_create__"),
@@ -261,7 +262,7 @@ def test_show_codex_choice_prefers_existing_profiles(monkeypatch) -> None:
                 "__codex_skip__",
             ),
         ],
-        "highlighted_id": None,
+        "highlighted_id": "__codex_continue__",
     }
 
 
@@ -411,7 +412,7 @@ def test_show_claude_choice_renders_options(monkeypatch) -> None:
     assert captured == {
         "title": "Claude Setup",
         "message": (
-            "Claude was detected on this machine. Update Claude to use the "
+            "Claude was detected on this machine. Configure Claude to use the "
             "MeshAgent proxy so you can centralize OpenAI and Anthropic "
             "billing, usage analytics, and governance in your MeshAgent "
             "account instead of managing separate provider subscriptions."
@@ -420,7 +421,7 @@ def test_show_claude_choice_renders_options(monkeypatch) -> None:
         "centered": False,
         "options": [
             (
-                "Yes, update Claude to use the MeshAgent proxy",
+                "Yes, use the MeshAgent proxy with Claude",
                 "__claude_configure__",
             ),
             (
@@ -428,7 +429,7 @@ def test_show_claude_choice_renders_options(monkeypatch) -> None:
                 "__claude_skip__",
             ),
         ],
-        "highlighted_id": None,
+        "highlighted_id": "__claude_configure__",
     }
 
 

@@ -35,14 +35,50 @@ def test_configure_codex_integration_writes_named_profile(
         'http_headers = {"Meshagent-Project-Id"="project-life"}\n'
         "\n"
         "[model_providers.meshagent.auth]\n"
-        'command = "/tmp/meshagent-life/bin/meshagent auth token"\n'
+        'command = "/tmp/meshagent-life/bin/meshagent"\n'
+        'args = ["auth", "token"]\n'
         "timeout_ms = 10000\n"
-        "refresh_interval_ms = 240000\n"
+        "refresh_interval_ms = 300000\n"
         "\n"
         "[profiles.meshagent]\n"
         'model_provider = "meshagent"\n'
         'model = "gpt-5.4"\n'
     )
+
+
+def test_configure_codex_integration_prefers_meshagent_command_from_path(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+
+    monkeypatch.setattr(
+        tool_integrations,
+        "get_active_project",
+        lambda: "project-life",
+    )
+    monkeypatch.setattr(
+        tool_integrations.shutil,
+        "which",
+        lambda command: (
+            "/opt/homebrew/bin/meshagent" if command == "meshagent" else None
+        ),
+    )
+    monkeypatch.setattr(
+        tool_integrations,
+        "resolve_current_meshagent_executable",
+        lambda *args, **kwargs: "/tmp/current/bin/meshagent",
+    )
+
+    tool_integrations.configure_codex_integration(
+        profile_id="meshagent",
+        project_id="project-life",
+        api_url="https://api.meshagent.life",
+        config_path=config_path,
+    )
+
+    assert 'command = "meshagent"\n' in config_path.read_text()
+    assert 'args = ["auth", "token"]\n' in config_path.read_text()
 
 
 def test_configure_codex_integration_appends_after_existing_content(
@@ -72,7 +108,8 @@ def test_configure_codex_integration_appends_after_existing_content(
     assert updated.startswith('model = "gpt-5.4"\n\n')
     assert "[model_providers.meshagent-prod]\n" in updated
     assert "[profiles.meshagent-prod]\n" in updated
-    assert 'command = "/opt/homebrew/bin/meshagent auth token"\n' in updated
+    assert 'command = "/opt/homebrew/bin/meshagent"\n' in updated
+    assert 'args = ["auth", "token"]\n' in updated
 
 
 def test_configure_codex_integration_rejects_profile_name_in_use(
@@ -135,11 +172,9 @@ def test_configure_codex_integration_does_not_create_auth_wrapper_files(
 
     assert wrapper_dir.exists() is False
     assert (
-        config_path.read_text().count(
-            'command = "/opt/homebrew/bin/meshagent auth token"\n'
-        )
-        == 2
+        config_path.read_text().count('command = "/opt/homebrew/bin/meshagent"\n') == 2
     )
+    assert config_path.read_text().count('args = ["auth", "token"]\n') == 2
 
 
 def test_configure_codex_integration_requires_active_project(
@@ -334,9 +369,9 @@ def test_maybe_configure_local_tool_integrations_skips_when_user_declines(
 
     assert confirmations == [
         (
-            "Codex detected. Add a profile to ~/.codex/config.toml so Codex can use "
-            "your MeshAgent account for access?",
-            False,
+            "Codex detected. Add a MeshAgent proxy profile to ~/.codex/config.toml "
+            "so Codex uses your MeshAgent account by default?",
+            True,
         )
     ]
     assert messages == []
@@ -379,7 +414,8 @@ def test_maybe_configure_local_tool_integrations_retries_until_profile_name_is_u
     ]
     updated = config_path.read_text()
     assert "[profiles.meshagent-work]\n" in updated
-    assert 'command = "/opt/homebrew/bin/meshagent auth token"\n' in updated
+    assert 'command = "/opt/homebrew/bin/meshagent"\n' in updated
+    assert 'args = ["auth", "token"]\n' in updated
 
 
 def test_build_codex_launch_command_sets_profile_overrides() -> None:
@@ -400,11 +436,13 @@ def test_build_codex_launch_command_sets_profile_overrides() -> None:
         "-c",
         'model_providers.meshagent.http_headers={"Meshagent-Project-Id"="project-123"}',
         "-c",
-        'model_providers.meshagent.auth.command="/tmp/meshagent-life/bin/meshagent auth token"',
+        'model_providers.meshagent.auth.command="/tmp/meshagent-life/bin/meshagent"',
+        "-c",
+        'model_providers.meshagent.auth.args=["auth", "token"]',
         "-c",
         "model_providers.meshagent.auth.timeout_ms=10000",
         "-c",
-        "model_providers.meshagent.auth.refresh_interval_ms=240000",
+        "model_providers.meshagent.auth.refresh_interval_ms=300000",
         "-c",
         'profiles.meshagent.model_provider="meshagent"',
         "-c",
@@ -453,11 +491,13 @@ def test_launch_codex_runs_subprocess() -> None:
         "-c",
         'model_providers.meshagent.http_headers={"Meshagent-Project-Id"="project-123"}',
         "-c",
-        'model_providers.meshagent.auth.command="/tmp/meshagent-life/bin/meshagent auth token"',
+        'model_providers.meshagent.auth.command="/tmp/meshagent-life/bin/meshagent"',
+        "-c",
+        'model_providers.meshagent.auth.args=["auth", "token"]',
         "-c",
         "model_providers.meshagent.auth.timeout_ms=10000",
         "-c",
-        "model_providers.meshagent.auth.refresh_interval_ms=240000",
+        "model_providers.meshagent.auth.refresh_interval_ms=300000",
         "-c",
         'profiles.meshagent.model_provider="meshagent"',
         "-c",
@@ -518,6 +558,41 @@ def test_configure_claude_code_integration_writes_settings_json(
         },
         "apiKeyHelper": "/tmp/meshagent-life/bin/meshagent auth token",
     }
+
+
+def test_configure_claude_code_integration_prefers_meshagent_command_from_path(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    settings_path = tmp_path / "claude" / "settings.json"
+
+    monkeypatch.setattr(
+        tool_integrations,
+        "get_active_project",
+        lambda: "project-123",
+    )
+    monkeypatch.setattr(
+        tool_integrations.shutil,
+        "which",
+        lambda command: (
+            "/opt/homebrew/bin/meshagent" if command == "meshagent" else None
+        ),
+    )
+    monkeypatch.setattr(
+        tool_integrations,
+        "resolve_current_meshagent_executable",
+        lambda *args, **kwargs: "/tmp/current/bin/meshagent",
+    )
+
+    tool_integrations.configure_claude_code_integration(
+        project_id="project-123",
+        api_url="https://api.meshagent.test",
+        settings_path=settings_path,
+    )
+
+    assert (
+        json.loads(settings_path.read_text())["apiKeyHelper"] == "meshagent auth token"
+    )
 
 
 def test_build_claude_code_command_uses_api_key_helper() -> None:

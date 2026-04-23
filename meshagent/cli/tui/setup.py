@@ -79,6 +79,37 @@ def _codex_default_profile_id_from_option_id(option_id: str) -> str | None:
     return option_id.removeprefix(CODEX_DEFAULT_PROFILE_OPTION_ID_PREFIX)
 
 
+def _tool_proxy_setup_message(*, tool_name: str) -> str:
+    return (
+        f"{tool_name} was detected on this machine. Configure {tool_name} to use "
+        "the MeshAgent proxy so you can centralize OpenAI and Anthropic billing, "
+        "usage analytics, and governance in your MeshAgent account instead of "
+        "managing separate provider subscriptions."
+    )
+
+
+def _tool_proxy_access_required_message(*, tool_name: str) -> str:
+    return (
+        f"{tool_name} was detected on this machine. The MeshAgent proxy lets your "
+        "team centralize OpenAI and Anthropic billing, usage analytics, and "
+        "governance in MeshAgent instead of managing separate provider "
+        "subscriptions. Your MeshAgent account is not currently configured for "
+        "LLM access for this project. Talk to your account administrator to turn "
+        "it on, then run setup again."
+    )
+
+
+def _tool_proxy_affirmative_option_label(*, tool_name: str) -> str:
+    return f"Yes, use the MeshAgent proxy with {tool_name}"
+
+
+def _tool_proxy_skip_option_label(*, tool_name: str, launch_command: str) -> str:
+    return (
+        f'No, I will use "meshagent launch {launch_command}" if I want to use '
+        f"{tool_name} via MeshAgent."
+    )
+
+
 MESHAGENT_SETUP_LOGO_LINES: tuple[str, ...] = (
     "                                                                                ",
     "                                                                                ",
@@ -809,15 +840,7 @@ class SetupWizardApp(App[None]):
         if self._can_use_llm_proxy is False:
             self._set_text(
                 title="Codex Setup",
-                message=(
-                    "Codex was detected on this machine. The MeshAgent proxy "
-                    "lets your team centralize OpenAI and Anthropic billing, "
-                    "usage analytics, and governance in MeshAgent instead of "
-                    "managing separate provider subscriptions. Your MeshAgent "
-                    "account is not currently configured for LLM access for "
-                    "this project. Talk to your account administrator to turn "
-                    "it on, then run setup again."
-                ),
+                message=_tool_proxy_access_required_message(tool_name="Codex"),
                 help_text="Use Up/Down and Enter.",
             )
             self._set_options(
@@ -827,44 +850,36 @@ class SetupWizardApp(App[None]):
         if len(self._existing_codex_profile_ids) == 0:
             self._set_text(
                 title="Codex Setup",
-                message=(
-                    "Codex was detected on this machine. Update Codex to use "
-                    "the MeshAgent proxy so you can centralize OpenAI and "
-                    "Anthropic billing, usage analytics, and governance in "
-                    "your MeshAgent account instead of managing separate "
-                    "provider subscriptions."
-                ),
+                message=_tool_proxy_setup_message(tool_name="Codex"),
                 help_text="Use Up/Down and Enter.",
             )
             self._set_options(
                 options=[
                     Option(
-                        "Yes, update Codex to use the MeshAgent proxy",
+                        _tool_proxy_affirmative_option_label(tool_name="Codex"),
                         id=CODEX_CREATE_OPTION_ID,
                     ),
                     Option(
-                        'No, I will use "meshagent launch codex" if I want to use Codex via MeshAgent.',
+                        _tool_proxy_skip_option_label(
+                            tool_name="Codex",
+                            launch_command="codex",
+                        ),
                         id=CODEX_SKIP_OPTION_ID,
                     ),
-                ]
+                ],
+                highlighted_id=CODEX_CREATE_OPTION_ID,
             )
         else:
             existing_profile_labels = ", ".join(self._existing_codex_profile_ids)
             profile_message = (
-                "Codex was detected on this machine. MeshAgent proxy profiles "
-                "centralize OpenAI and Anthropic billing, usage analytics, and "
-                "governance in your MeshAgent account instead of managing "
-                "separate provider subscriptions. Found existing MeshAgent "
+                f"{_tool_proxy_setup_message(tool_name='Codex')} Found existing MeshAgent "
                 f"Codex profiles for this project: {existing_profile_labels}. "
                 "Continue with them or create another profile."
             )
             if len(self._existing_codex_profile_ids) == 1:
                 profile_message = (
-                    "Codex was detected on this machine. MeshAgent proxy "
-                    "profiles centralize OpenAI and Anthropic billing, usage "
-                    "analytics, and governance in your MeshAgent account "
-                    "instead of managing separate provider subscriptions. "
-                    "Found an existing MeshAgent Codex profile for this "
+                    f"{_tool_proxy_setup_message(tool_name='Codex')} Found an "
+                    "existing MeshAgent Codex profile for this "
                     f"project: {existing_profile_labels}. Continue with it or "
                     "create another profile."
                 )
@@ -877,15 +892,19 @@ class SetupWizardApp(App[None]):
             self._set_options(
                 options=[
                     Option(
-                        "Yes, update Codex to use the MeshAgent proxy",
+                        _tool_proxy_affirmative_option_label(tool_name="Codex"),
                         id=CODEX_CONTINUE_OPTION_ID,
                     ),
                     Option("Create another Codex profile", id=CODEX_CREATE_OPTION_ID),
                     Option(
-                        'No, I will use "meshagent launch codex" if I want to use Codex via MeshAgent.',
+                        _tool_proxy_skip_option_label(
+                            tool_name="Codex",
+                            launch_command="codex",
+                        ),
                         id=CODEX_SKIP_OPTION_ID,
                     ),
-                ]
+                ],
+                highlighted_id=CODEX_CONTINUE_OPTION_ID,
             )
 
         if self._codex_profile_scan_error is not None:
@@ -944,7 +963,10 @@ class SetupWizardApp(App[None]):
 
         options.append(
             Option(
-                'No, I will use "meshagent launch codex" if I want to use Codex via MeshAgent.',
+                _tool_proxy_skip_option_label(
+                    tool_name="Codex",
+                    launch_command="codex",
+                ),
                 id=CODEX_DEFAULT_NONE_OPTION_ID,
             )
         )
@@ -966,15 +988,7 @@ class SetupWizardApp(App[None]):
         if self._can_use_llm_proxy is False:
             self._set_text(
                 title="Claude Setup",
-                message=(
-                    "Claude was detected on this machine. The MeshAgent proxy "
-                    "lets your team centralize OpenAI and Anthropic billing, "
-                    "usage analytics, and governance in MeshAgent instead of "
-                    "managing separate provider subscriptions. Your MeshAgent "
-                    "account is not currently configured for LLM access for "
-                    "this project. Talk to your account administrator to turn "
-                    "it on, then run setup again."
-                ),
+                message=_tool_proxy_access_required_message(tool_name="Claude"),
                 help_text="Use Up/Down and Enter.",
             )
             self._set_options(
@@ -983,25 +997,24 @@ class SetupWizardApp(App[None]):
             return
         self._set_text(
             title="Claude Setup",
-            message=(
-                "Claude was detected on this machine. Update Claude to use the "
-                "MeshAgent proxy so you can centralize OpenAI and Anthropic "
-                "billing, usage analytics, and governance in your MeshAgent "
-                "account instead of managing separate provider subscriptions."
-            ),
+            message=_tool_proxy_setup_message(tool_name="Claude"),
             help_text="Use Up/Down and Enter.",
         )
         self._set_options(
             options=[
                 Option(
-                    "Yes, update Claude to use the MeshAgent proxy",
+                    _tool_proxy_affirmative_option_label(tool_name="Claude"),
                     id=CLAUDE_CONFIGURE_OPTION_ID,
                 ),
                 Option(
-                    'No, I will use "meshagent launch claude" if I want to use Claude via MeshAgent.',
+                    _tool_proxy_skip_option_label(
+                        tool_name="Claude",
+                        launch_command="claude",
+                    ),
                     id=CLAUDE_SKIP_OPTION_ID,
                 ),
-            ]
+            ],
+            highlighted_id=CLAUDE_CONFIGURE_OPTION_ID,
         )
 
     async def _create_api_key(self, project_id: str, api_key_name: str) -> None:

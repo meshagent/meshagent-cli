@@ -22,7 +22,7 @@ from meshagent.cli.local_settings import (
 CODEX_DEFAULT_MODEL = "gpt-5.4"
 CODEX_DEFAULT_PROFILE_ID = "meshagent"
 CODEX_AUTH_TIMEOUT_MS = 10_000
-CODEX_AUTH_REFRESH_INTERVAL_MS = 240_000
+CODEX_AUTH_REFRESH_INTERVAL_MS = 300_000
 CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
 CODEX_PROFILE_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 CLAUDE_CODE_PROJECT_HEADER = "Meshagent-Project-Id"
@@ -48,6 +48,15 @@ class CodexIntegrationResult:
 class ClaudeIntegrationResult:
     settings_path: Path
     changed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CommandInvocation:
+    command: str
+    args: tuple[str, ...]
+
+    def shell_command(self) -> str:
+        return shlex.join([self.command, *self.args])
 
 
 type TomlTable = dict[str, object]
@@ -277,12 +286,22 @@ def resolve_current_meshagent_executable(
     return str(resolved_candidate)
 
 
-def _resolve_meshagent_auth_command(
+def _resolve_meshagent_auth_invocation(
     *,
     meshagent_executable: str | None = None,
-) -> str:
+    prefer_bare_meshagent_command: bool = False,
+) -> CommandInvocation:
     if meshagent_executable is not None and meshagent_executable.strip() != "":
-        return shlex.join([meshagent_executable.strip(), "auth", "token"])
+        return CommandInvocation(
+            command=meshagent_executable.strip(),
+            args=("auth", "token"),
+        )
+
+    if prefer_bare_meshagent_command and shutil.which("meshagent") is not None:
+        return CommandInvocation(
+            command="meshagent",
+            args=("auth", "token"),
+        )
 
     candidates: list[Path] = []
     current_meshagent_executable = resolve_current_meshagent_executable()
@@ -303,9 +322,26 @@ def _resolve_meshagent_auth_command(
             continue
         seen.add(resolved_candidate)
         if resolved_candidate.exists() and os.access(resolved_candidate, os.X_OK):
-            return shlex.join([str(resolved_candidate), "auth", "token"])
+            return CommandInvocation(
+                command=str(resolved_candidate),
+                args=("auth", "token"),
+            )
 
-    return shlex.join([sys.executable, "-m", "meshagent.cli.cli", "auth", "token"])
+    return CommandInvocation(
+        command=sys.executable,
+        args=("-m", "meshagent.cli.cli", "auth", "token"),
+    )
+
+
+def _resolve_meshagent_auth_command(
+    *,
+    meshagent_executable: str | None = None,
+    prefer_bare_meshagent_command: bool = False,
+) -> str:
+    return _resolve_meshagent_auth_invocation(
+        meshagent_executable=meshagent_executable,
+        prefer_bare_meshagent_command=prefer_bare_meshagent_command,
+    ).shell_command()
 
 
 def _codex_profile_block(
@@ -317,8 +353,9 @@ def _codex_profile_block(
     model: str = CODEX_DEFAULT_MODEL,
 ) -> str:
     provider_base_url = _codex_provider_base_url(api_url=api_url)
-    auth_command = _resolve_meshagent_auth_command(
-        meshagent_executable=meshagent_executable
+    auth_invocation = _resolve_meshagent_auth_invocation(
+        meshagent_executable=meshagent_executable,
+        prefer_bare_meshagent_command=True,
     )
 
     lines = [
@@ -328,7 +365,8 @@ def _codex_profile_block(
         f'http_headers = {{"Meshagent-Project-Id"={json.dumps(project_id)}}}',
         "",
         f"[model_providers.{profile_id}.auth]",
-        f"command = {json.dumps(auth_command)}",
+        f"command = {json.dumps(auth_invocation.command)}",
+        f"args = {json.dumps(list(auth_invocation.args))}",
         f"timeout_ms = {CODEX_AUTH_TIMEOUT_MS}",
         f"refresh_interval_ms = {CODEX_AUTH_REFRESH_INTERVAL_MS}",
         "",
@@ -433,10 +471,10 @@ def maybe_configure_local_tool_integrations(
 
     if not confirm_fn(
         (
-            "Codex detected. Add a profile to ~/.codex/config.toml so Codex can use "
-            "your MeshAgent account for access?"
+            "Codex detected. Add a MeshAgent proxy profile to ~/.codex/config.toml "
+            "so Codex uses your MeshAgent account by default?"
         ),
-        default=False,
+        default=True,
     ):
         return
 
@@ -691,7 +729,7 @@ def build_codex_launch_command(
                 )
 
     provider_base_url = _codex_provider_base_url(api_url=api_url)
-    auth_command = _resolve_meshagent_auth_command(
+    auth_invocation = _resolve_meshagent_auth_invocation(
         meshagent_executable=meshagent_executable
     )
     http_headers = _toml_inline_string_map(
@@ -707,7 +745,15 @@ def build_codex_launch_command(
         "-c",
         f"model_providers.{normalized_profile_id}.http_headers={http_headers}",
         "-c",
-        f"model_providers.{normalized_profile_id}.auth.command={json.dumps(auth_command)}",
+        (
+            f"model_providers.{normalized_profile_id}.auth.command="
+            f"{json.dumps(auth_invocation.command)}"
+        ),
+        "-c",
+        (
+            f"model_providers.{normalized_profile_id}.auth.args="
+            f"{json.dumps(list(auth_invocation.args))}"
+        ),
         "-c",
         (
             f"model_providers.{normalized_profile_id}.auth.timeout_ms="
@@ -836,7 +882,8 @@ def configure_claude_code_integration(
 
     settings["env"] = env
     settings["apiKeyHelper"] = _resolve_meshagent_auth_command(
-        meshagent_executable=meshagent_executable
+        meshagent_executable=meshagent_executable,
+        prefer_bare_meshagent_command=True,
     )
 
     updated = json.dumps(settings, indent=2) + "\n"

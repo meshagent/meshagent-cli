@@ -96,8 +96,6 @@ def setup_command(api_url: str | None = None):
             run_setup_wizard_tui,
         )
 
-        current_meshagent_executable = _current_meshagent_executable()
-
         async def list_setup_projects() -> list[SetupProject]:
             client = await get_client()
             try:
@@ -178,7 +176,6 @@ def setup_command(api_url: str | None = None):
             configure_codex_integration(
                 profile_id=profile_id,
                 api_url=resolve_api_url(),
-                meshagent_executable=current_meshagent_executable,
             )
 
         async def list_existing_codex_profiles(project_id: str) -> list[str]:
@@ -210,7 +207,6 @@ def setup_command(api_url: str | None = None):
             configure_claude_code_integration(
                 project_id=project_id,
                 api_url=resolve_api_url(),
-                meshagent_executable=current_meshagent_executable,
             )
 
         current_user_name: str | None = None
