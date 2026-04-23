@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -289,3 +290,100 @@ def test_maybe_configure_local_tool_integrations_retries_until_profile_name_is_u
     updated = config_path.read_text()
     assert "[profiles.meshagent-work]\n" in updated
     assert 'command = "/opt/homebrew/bin/meshagent auth token"\n' in updated
+
+
+def test_build_claude_code_env_sets_project_header_and_base_url() -> None:
+    env = tool_integrations.build_claude_code_env(
+        project_id="project-123",
+        api_url="https://api.meshagent.test",
+        base_env={
+            "KEEP_ME": "yes",
+            "ANTHROPIC_API_KEY": "old-key",
+            "ANTHROPIC_AUTH_TOKEN": "old-token",
+        },
+    )
+
+    assert env["KEEP_ME"] == "yes"
+    assert env["MESHAGENT_API_URL"] == "https://api.meshagent.test"
+    assert env["MESHAGENT_PROJECT_ID"] == "project-123"
+    assert env["ANTHROPIC_BASE_URL"] == "https://api.meshagent.test/anthropic"
+    assert env["ANTHROPIC_CUSTOM_HEADERS"] == "Meshagent-Project-Id: project-123"
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "ANTHROPIC_AUTH_TOKEN" not in env
+
+
+def test_build_claude_code_command_uses_api_key_helper() -> None:
+    command = tool_integrations.build_claude_code_command(
+        extra_args=("-p", "say hi"),
+        meshagent_executable="/tmp/meshagent-life/bin/meshagent",
+        claude_executable="/tmp/claude",
+    )
+
+    assert command == [
+        "/tmp/claude",
+        "--settings",
+        '{"apiKeyHelper": "/tmp/meshagent-life/bin/meshagent auth token"}',
+        "-p",
+        "say hi",
+    ]
+
+
+def test_resolve_meshagent_auth_command_falls_back_for_non_executable_argv0(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    non_executable = tmp_path / "cli.py"
+    non_executable.write_text("print('hi')\n")
+    non_executable.chmod(0o644)
+
+    monkeypatch.setattr(tool_integrations.sys, "argv", [str(non_executable)])
+    monkeypatch.setattr(tool_integrations.shutil, "which", lambda command: None)
+    monkeypatch.setattr(tool_integrations.sys, "executable", "/tmp/python")
+
+    assert tool_integrations._resolve_meshagent_auth_command() == (
+        "/tmp/python -m meshagent.cli.cli auth token"
+    )
+
+
+def test_build_claude_code_command_rejects_settings_override() -> None:
+    with pytest.raises(RuntimeError, match="`meshagent claude-code`"):
+        tool_integrations.build_claude_code_command(
+            extra_args=("--settings", "{}"),
+            claude_executable="/tmp/claude",
+        )
+
+
+def test_launch_claude_code_runs_subprocess_with_meshagent_env() -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_run(command, *, env: dict[str, str], check: bool):
+        captured["command"] = command
+        captured["env"] = env
+        captured["check"] = check
+        return SimpleNamespace(returncode=17)
+
+    exit_code = tool_integrations.launch_claude_code(
+        project_id="project-123",
+        api_url="https://api.meshagent.test",
+        extra_args=("-p", "say hi"),
+        meshagent_executable="/tmp/meshagent-life/bin/meshagent",
+        claude_executable="/tmp/claude",
+        command_runner=_fake_run,
+        base_env={"KEEP_ME": "yes"},
+    )
+
+    assert exit_code == 17
+    assert captured["command"] == [
+        "/tmp/claude",
+        "--settings",
+        '{"apiKeyHelper": "/tmp/meshagent-life/bin/meshagent auth token"}',
+        "-p",
+        "say hi",
+    ]
+    assert captured["check"] is False
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["KEEP_ME"] == "yes"
+    assert env["MESHAGENT_PROJECT_ID"] == "project-123"
+    assert env["ANTHROPIC_BASE_URL"] == "https://api.meshagent.test/anthropic"
+    assert env["ANTHROPIC_CUSTOM_HEADERS"] == "Meshagent-Project-Id: project-123"

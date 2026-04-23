@@ -1,3 +1,5 @@
+import asyncio
+
 from textual.widgets.option_list import Option
 
 from meshagent.cli.tui.setup import SetupWizardApp
@@ -202,3 +204,96 @@ def test_show_codex_choice_prefers_existing_profiles(monkeypatch) -> None:
             ("Create another Codex profile", "__codex_create__"),
         ],
     }
+
+
+def test_show_claude_code_choice_renders_options(monkeypatch) -> None:
+    app = _new_setup_app(has_claude_code_cli=True)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        app,
+        "_set_text",
+        lambda *, title, message, help_text, centered=False: captured.update(
+            {
+                "title": title,
+                "message": message,
+                "help_text": help_text,
+                "centered": centered,
+            }
+        ),
+    )
+    monkeypatch.setattr(app, "_clear_error", lambda: None)
+    monkeypatch.setattr(app, "_hide_input", lambda: None)
+    monkeypatch.setattr(app, "_hide_status", lambda: None)
+    monkeypatch.setattr(app, "_hide_url", lambda: None)
+    monkeypatch.setattr(
+        app,
+        "_set_options",
+        lambda *, options: captured.update(
+            {"options": [(str(option.prompt), option.id) for option in options]}
+        ),
+    )
+
+    app._show_claude_code_choice()
+
+    assert captured == {
+        "title": "Claude Code",
+        "message": (
+            "Claude Code was detected on this machine. Launch Claude Code "
+            "through MeshAgent for this project now?"
+        ),
+        "help_text": "Use Up/Down and Enter.",
+        "centered": False,
+        "options": [
+            ("Launch Claude Code", "__claude_code_launch__"),
+            ("Skip for now", "__claude_code_skip__"),
+        ],
+    }
+
+
+def test_finish_success_reports_claude_code_launch(monkeypatch) -> None:
+    app = _new_setup_app(has_claude_code_cli=True)
+    app._selected_project_id = "project-123"
+    app._configured_codex_profile_id = "meshagent"
+    app._launch_claude_code = True
+    captured: dict[str, object] = {}
+
+    async def _noop() -> None:
+        return None
+
+    monkeypatch.setattr(app, "_stop_logo_dissolve", _noop)
+    monkeypatch.setattr(app, "_clear_error", lambda: None)
+    monkeypatch.setattr(app, "_hide_options", lambda: None)
+    monkeypatch.setattr(app, "_hide_input", lambda: None)
+    monkeypatch.setattr(app, "_hide_status", lambda: None)
+    monkeypatch.setattr(app, "_hide_url", lambda: None)
+    monkeypatch.setattr(
+        app,
+        "_set_text",
+        lambda *, title, message, help_text, centered=False: captured.update(
+            {
+                "title": title,
+                "message": message,
+                "help_text": help_text,
+                "centered": centered,
+            }
+        ),
+    )
+    monkeypatch.setattr(app, "_run_logo_fade", _noop)
+    monkeypatch.setattr(app, "exit", lambda: captured.update({"exited": True}))
+
+    asyncio.run(app._finish_success())
+
+    assert captured == {
+        "title": "Setup Complete",
+        "message": (
+            "Project activated and Codex profile meshagent created. "
+            "Claude Code will launch next."
+        ),
+        "help_text": "",
+        "centered": False,
+        "exited": True,
+    }
+    assert app.result.status == "completed"
+    assert app.result.project_id == "project-123"
+    assert app.result.launch_claude_code is True
