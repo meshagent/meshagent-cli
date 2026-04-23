@@ -44,6 +44,8 @@ from textual.binding import Binding
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
+from meshagent.cli.tool_integrations import CodexProfileConflictError
+
 from .setup_splash_frames import (
     SETUP_SPLASH_VARIANTS,
     SetupSplashVariant,
@@ -56,11 +58,17 @@ ACCOUNT_CONTINUE_OPTION_ID = "__account_continue__"
 ACCOUNT_SWITCH_OPTION_ID = "__account_switch__"
 ACCOUNT_EXIT_OPTION_ID = "__account_exit__"
 CODEX_CONTINUE_OPTION_ID = "__codex_continue__"
+CODEX_UPDATE_OPTION_ID = "__codex_update__"
+CODEX_REMOVE_OPTION_ID = "__codex_remove__"
 CODEX_CREATE_OPTION_ID = "__codex_create__"
 CODEX_SKIP_OPTION_ID = "__codex_skip__"
+CODEX_CONFLICT_UPDATE_OPTION_ID = "__codex_conflict_update__"
+CODEX_CONFLICT_REMOVE_OPTION_ID = "__codex_conflict_remove__"
+CODEX_CONFLICT_CANCEL_OPTION_ID = "__codex_conflict_cancel__"
 CODEX_DEFAULT_NONE_OPTION_ID = "__codex_default_none__"
 CODEX_DEFAULT_PROFILE_OPTION_ID_PREFIX = "__codex_default_profile__:"
 CLAUDE_CONFIGURE_OPTION_ID = "__claude_configure__"
+CLAUDE_REMOVE_OPTION_ID = "__claude_remove__"
 CLAUDE_SKIP_OPTION_ID = "__claude_skip__"
 PROJECT_CREATE_OPTION_ID = "__project_create__"
 PROJECT_EXIT_OPTION_ID = "__project_exit__"
@@ -202,6 +210,12 @@ class SetupWizardResult:
     project_id: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class SetupClaudeConfiguration:
+    configured: bool
+    project_id: str | None = None
+
+
 LoginStatusHandler = Callable[[str], Awaitable[None] | None]
 LoginOperation = Callable[[LoginStatusHandler], Awaitable[None]]
 ListProjectsOperation = Callable[[], Awaitable[Sequence[SetupProject]]]
@@ -212,9 +226,13 @@ CreateApiKeyOperation = Callable[[str, str], Awaitable[None]]
 HasLlmProxyAccessOperation = Callable[[str], Awaitable[bool]]
 ListExistingCodexProfilesOperation = Callable[[str], Awaitable[Sequence[str]]]
 ConfigureCodexProfileOperation = Callable[[str], Awaitable[None]]
+ReplaceCodexProfileOperation = Callable[[str], Awaitable[None]]
+RemoveCodexProfileOperation = Callable[[str], Awaitable[None]]
 GetCurrentCodexDefaultProfileOperation = Callable[[str], Awaitable[str | None]]
 ConfigureCodexDefaultProfileOperation = Callable[[str, str | None], Awaitable[None]]
 ConfigureClaudeOperation = Callable[[str], Awaitable[None]]
+InspectClaudeConfigurationOperation = Callable[[], Awaitable[SetupClaudeConfiguration]]
+ClearClaudeOperation = Callable[[], Awaitable[None]]
 
 SetupMode = Literal[
     "intro",
@@ -227,6 +245,7 @@ SetupMode = Literal[
     "api_key_name",
     "codex_choice",
     "codex_profile_name",
+    "codex_profile_conflict",
     "codex_default_choice",
     "claude_choice",
     "busy",
@@ -335,6 +354,8 @@ class SetupWizardApp(App[None]):
             ListExistingCodexProfilesOperation | None
         ) = None,
         configure_codex_profile_operation: ConfigureCodexProfileOperation | None = None,
+        replace_codex_profile_operation: ReplaceCodexProfileOperation | None = None,
+        remove_codex_profile_operation: RemoveCodexProfileOperation | None = None,
         get_current_codex_default_profile_operation: (
             GetCurrentCodexDefaultProfileOperation | None
         ) = None,
@@ -342,6 +363,10 @@ class SetupWizardApp(App[None]):
             ConfigureCodexDefaultProfileOperation | None
         ) = None,
         configure_claude_operation: ConfigureClaudeOperation | None = None,
+        inspect_claude_configuration_operation: (
+            InspectClaudeConfigurationOperation | None
+        ) = None,
+        clear_claude_operation: ClearClaudeOperation | None = None,
         default_codex_profile_name: str = "meshagent",
     ) -> None:
         super().__init__()
@@ -361,6 +386,8 @@ class SetupWizardApp(App[None]):
             list_existing_codex_profiles_operation
         )
         self._configure_codex_profile_operation = configure_codex_profile_operation
+        self._replace_codex_profile_operation = replace_codex_profile_operation
+        self._remove_codex_profile_operation = remove_codex_profile_operation
         self._get_current_codex_default_profile_operation = (
             get_current_codex_default_profile_operation
         )
@@ -368,6 +395,10 @@ class SetupWizardApp(App[None]):
             configure_codex_default_profile_operation
         )
         self._configure_claude_operation = configure_claude_operation
+        self._inspect_claude_configuration_operation = (
+            inspect_claude_configuration_operation
+        )
+        self._clear_claude_operation = clear_claude_operation
         self._default_codex_profile_name = default_codex_profile_name
 
         self._mode: SetupMode = "intro"
@@ -376,12 +407,19 @@ class SetupWizardApp(App[None]):
         self._existing_codex_profile_ids: list[str] = []
         self._continued_with_existing_codex_profiles = False
         self._configured_codex_profile_id: str | None = None
+        self._updated_codex_profile_ids: list[str] = []
+        self._removed_codex_profile_ids: list[str] = []
+        self._pending_codex_conflict_profile_id: str | None = None
+        self._pending_codex_conflict_project_id: str | None = None
         self._codex_profile_scan_error: str | None = None
         self._can_use_llm_proxy: bool | None = None
         self._current_codex_default_profile_id: str | None = None
         self._configured_codex_default_profile_id: str | None = None
         self._cleared_codex_default_profile = False
         self._configured_claude = False
+        self._cleared_claude = False
+        self._has_existing_claude_configuration = False
+        self._existing_claude_project_id: str | None = None
         self._status_lines: list[str] = []
         self._auth_url: str | None = None
 
@@ -560,6 +598,25 @@ class SetupWizardApp(App[None]):
             if selected_id == CODEX_CONTINUE_OPTION_ID:
                 await self._continue_with_existing_codex_profiles()
                 return
+            if selected_id == CODEX_UPDATE_OPTION_ID:
+                await self._update_existing_codex_profiles()
+                return
+            if selected_id == CODEX_REMOVE_OPTION_ID:
+                await self._remove_existing_codex_profiles()
+                return
+
+        if self._mode == "codex_profile_conflict":
+            if selected_id == CODEX_CONFLICT_UPDATE_OPTION_ID:
+                await self._replace_conflicting_codex_profile()
+                return
+            if selected_id == CODEX_CONFLICT_REMOVE_OPTION_ID:
+                await self._remove_conflicting_codex_profile()
+                return
+            if selected_id == CODEX_CONFLICT_CANCEL_OPTION_ID:
+                self._set_mode_codex_profile_name(
+                    initial_value=self._pending_codex_conflict_profile_id
+                )
+                return
 
         if self._mode == "codex_default_choice":
             if selected_id == CODEX_DEFAULT_NONE_OPTION_ID:
@@ -577,6 +634,9 @@ class SetupWizardApp(App[None]):
                 return
             if selected_id == CLAUDE_CONFIGURE_OPTION_ID:
                 await self._configure_claude()
+                return
+            if selected_id == CLAUDE_REMOVE_OPTION_ID:
+                await self._clear_claude()
                 return
 
         if self._mode == "error" and selected_id == ERROR_EXIT_OPTION_ID:
@@ -724,7 +784,7 @@ class SetupWizardApp(App[None]):
                     self._active_project_id is not None
                     and project.id == self._active_project_id
                 ):
-                    label = f"{label} [active]"
+                    label = f"{label} (active)"
                 options.append(Option(label, id=project.id))
 
         options.append(Option("Create a new project", id=PROJECT_CREATE_OPTION_ID))
@@ -874,14 +934,16 @@ class SetupWizardApp(App[None]):
             profile_message = (
                 f"{_tool_proxy_setup_message(tool_name='Codex')} Found existing MeshAgent "
                 f"Codex profiles for this project: {existing_profile_labels}. "
-                "Continue with them or create another profile."
+                "Use them as-is, update them for the current MeshAgent setup, "
+                "create another profile, or remove them."
             )
             if len(self._existing_codex_profile_ids) == 1:
                 profile_message = (
                     f"{_tool_proxy_setup_message(tool_name='Codex')} Found an "
                     "existing MeshAgent Codex profile for this "
-                    f"project: {existing_profile_labels}. Continue with it or "
-                    "create another profile."
+                    f"project: {existing_profile_labels}. Use it as-is, update it "
+                    "for the current MeshAgent setup, create another profile, or "
+                    "remove it."
                 )
 
             self._set_text(
@@ -892,10 +954,24 @@ class SetupWizardApp(App[None]):
             self._set_options(
                 options=[
                     Option(
-                        _tool_proxy_affirmative_option_label(tool_name="Codex"),
+                        "Use existing Codex profile"
+                        if len(self._existing_codex_profile_ids) == 1
+                        else "Use existing Codex profiles",
                         id=CODEX_CONTINUE_OPTION_ID,
                     ),
+                    Option(
+                        "Update existing Codex profile"
+                        if len(self._existing_codex_profile_ids) == 1
+                        else "Update existing Codex profiles",
+                        id=CODEX_UPDATE_OPTION_ID,
+                    ),
                     Option("Create another Codex profile", id=CODEX_CREATE_OPTION_ID),
+                    Option(
+                        "Remove existing Codex profile"
+                        if len(self._existing_codex_profile_ids) == 1
+                        else "Remove existing Codex profiles",
+                        id=CODEX_REMOVE_OPTION_ID,
+                    ),
                     Option(
                         _tool_proxy_skip_option_label(
                             tool_name="Codex",
@@ -904,7 +980,7 @@ class SetupWizardApp(App[None]):
                         id=CODEX_SKIP_OPTION_ID,
                     ),
                 ],
-                highlighted_id=CODEX_CONTINUE_OPTION_ID,
+                highlighted_id=CODEX_UPDATE_OPTION_ID,
             )
 
         if self._codex_profile_scan_error is not None:
@@ -924,6 +1000,53 @@ class SetupWizardApp(App[None]):
         self._show_input(
             placeholder=self._default_codex_profile_name,
             value=initial_value or self._default_codex_profile_name,
+        )
+
+    def _show_codex_profile_conflict(
+        self,
+        *,
+        profile_id: str,
+        project_id: str | None,
+    ) -> None:
+        self._mode = "codex_profile_conflict"
+        self._pending_codex_conflict_profile_id = profile_id
+        self._pending_codex_conflict_project_id = project_id
+        self._clear_error()
+        self._hide_input()
+        self._hide_status()
+        self._hide_url()
+
+        message = (
+            f"Codex profile {profile_id} is already configured for another "
+            "MeshAgent project. Update it to use the current project, remove it, "
+            "or go back to choose a different profile name."
+        )
+        if project_id is not None and project_id.strip() != "":
+            message = (
+                f"Codex profile {profile_id} is currently configured for "
+                f"MeshAgent project {project_id}. Update it to use the current "
+                "project, remove it, or go back to choose a different profile "
+                "name."
+            )
+
+        self._set_text(
+            title="Codex Profile Conflict",
+            message=message,
+            help_text="Use Up/Down and Enter.",
+        )
+        self._set_options(
+            options=[
+                Option(
+                    f"Update {profile_id} to use the current project",
+                    id=CODEX_CONFLICT_UPDATE_OPTION_ID,
+                ),
+                Option(
+                    f"Remove {profile_id}",
+                    id=CODEX_CONFLICT_REMOVE_OPTION_ID,
+                ),
+                Option("Go back", id=CODEX_CONFLICT_CANCEL_OPTION_ID),
+            ],
+            highlighted_id=CODEX_CONFLICT_UPDATE_OPTION_ID,
         )
 
     def _show_codex_default_choice(self, *, profile_ids: Sequence[str]) -> None:
@@ -995,16 +1118,47 @@ class SetupWizardApp(App[None]):
                 options=[Option("Finish setup", id=CLAUDE_SKIP_OPTION_ID)]
             )
             return
-        self._set_text(
-            title="Claude Setup",
-            message=_tool_proxy_setup_message(tool_name="Claude"),
-            help_text="Use Up/Down and Enter.",
-        )
-        self._set_options(
-            options=[
+        message = _tool_proxy_setup_message(tool_name="Claude")
+        options = [
+            Option(
+                _tool_proxy_affirmative_option_label(tool_name="Claude"),
+                id=CLAUDE_CONFIGURE_OPTION_ID,
+            ),
+            Option(
+                _tool_proxy_skip_option_label(
+                    tool_name="Claude",
+                    launch_command="claude",
+                ),
+                id=CLAUDE_SKIP_OPTION_ID,
+            ),
+        ]
+        highlighted_id = CLAUDE_CONFIGURE_OPTION_ID
+
+        if self._has_existing_claude_configuration:
+            message = (
+                f"{_tool_proxy_setup_message(tool_name='Claude')} Found an existing "
+                "MeshAgent Claude configuration on this machine."
+            )
+            if (
+                self._existing_claude_project_id is not None
+                and self._existing_claude_project_id.strip() != ""
+            ):
+                message = (
+                    f"{message} It is currently configured for project "
+                    f"{self._existing_claude_project_id}."
+                )
+            message = (
+                f"{message} Update it for the current project, remove it, or leave "
+                "Claude unchanged."
+            )
+            options = [
                 Option(
-                    _tool_proxy_affirmative_option_label(tool_name="Claude"),
+                    "Update Claude MeshAgent configuration",
                     id=CLAUDE_CONFIGURE_OPTION_ID,
+                ),
+                Option(
+                    "Remove Claude MeshAgent configuration",
+                    id=CLAUDE_REMOVE_OPTION_ID,
                 ),
                 Option(
                     _tool_proxy_skip_option_label(
@@ -1013,8 +1167,16 @@ class SetupWizardApp(App[None]):
                     ),
                     id=CLAUDE_SKIP_OPTION_ID,
                 ),
-            ],
-            highlighted_id=CLAUDE_CONFIGURE_OPTION_ID,
+            ]
+
+        self._set_text(
+            title="Claude Setup",
+            message=message,
+            help_text="Use Up/Down and Enter.",
+        )
+        self._set_options(
+            options=options,
+            highlighted_id=highlighted_id,
         )
 
     async def _create_api_key(self, project_id: str, api_key_name: str) -> None:
@@ -1064,6 +1226,10 @@ class SetupWizardApp(App[None]):
 
         self._continued_with_existing_codex_profiles = False
         self._existing_codex_profile_ids = []
+        self._updated_codex_profile_ids = []
+        self._removed_codex_profile_ids = []
+        self._pending_codex_conflict_profile_id = None
+        self._pending_codex_conflict_project_id = None
         self._codex_profile_scan_error = None
         self._current_codex_default_profile_id = None
         self._configured_codex_default_profile_id = None
@@ -1110,6 +1276,12 @@ class SetupWizardApp(App[None]):
         )
         try:
             await self._configure_codex_profile_operation(profile_name)
+        except CodexProfileConflictError as ex:
+            self._show_codex_profile_conflict(
+                profile_id=ex.profile_id,
+                project_id=ex.project_id,
+            )
+            return
         except ValueError as ex:
             self._set_mode_codex_profile_name(initial_value=profile_name)
             self._set_error_text(str(ex))
@@ -1125,6 +1297,104 @@ class SetupWizardApp(App[None]):
         self._continued_with_existing_codex_profiles = True
         await self._maybe_continue_to_codex_default_choice(
             self._existing_codex_profile_ids
+        )
+
+    async def _update_existing_codex_profiles(self) -> None:
+        if (
+            self._replace_codex_profile_operation is None
+            or len(self._existing_codex_profile_ids) == 0
+        ):
+            await self._continue_with_existing_codex_profiles()
+            return
+
+        self._set_busy(
+            title="Updating Codex",
+            message="Updating existing Codex profiles for the current project...",
+            help_text="Please wait.",
+        )
+        updated_profile_ids: list[str] = []
+        try:
+            for profile_id in self._existing_codex_profile_ids:
+                await self._replace_codex_profile_operation(profile_id)
+                updated_profile_ids.append(profile_id)
+        except Exception as ex:
+            await self._set_error_mode(f"Unable to update Codex: {ex}")
+            return
+
+        self._updated_codex_profile_ids = updated_profile_ids
+        await self._maybe_continue_to_codex_default_choice(
+            self._existing_codex_profile_ids
+        )
+
+    async def _remove_existing_codex_profiles(self) -> None:
+        if (
+            self._remove_codex_profile_operation is None
+            or len(self._existing_codex_profile_ids) == 0
+        ):
+            self._show_codex_choice()
+            return
+
+        self._set_busy(
+            title="Removing Codex Profiles",
+            message="Removing existing MeshAgent Codex profiles...",
+            help_text="Please wait.",
+        )
+        try:
+            for profile_id in self._existing_codex_profile_ids:
+                await self._remove_codex_profile_operation(profile_id)
+        except Exception as ex:
+            await self._set_error_mode(f"Unable to remove Codex profiles: {ex}")
+            return
+
+        self._removed_codex_profile_ids = list(self._existing_codex_profile_ids)
+        self._existing_codex_profile_ids = []
+        self._show_codex_choice()
+
+    async def _replace_conflicting_codex_profile(self) -> None:
+        profile_id = self._pending_codex_conflict_profile_id
+        if profile_id is None or self._replace_codex_profile_operation is None:
+            self._set_mode_codex_profile_name(initial_value=profile_id)
+            return
+
+        self._set_busy(
+            title="Updating Codex",
+            message=f"Updating Codex profile '{profile_id}'...",
+            help_text="Please wait.",
+        )
+        try:
+            await self._replace_codex_profile_operation(profile_id)
+        except Exception as ex:
+            await self._set_error_mode(f"Unable to update Codex: {ex}")
+            return
+
+        self._updated_codex_profile_ids = [profile_id]
+        self._pending_codex_conflict_profile_id = None
+        self._pending_codex_conflict_project_id = None
+        await self._maybe_continue_to_codex_default_choice([profile_id])
+
+    async def _remove_conflicting_codex_profile(self) -> None:
+        profile_id = self._pending_codex_conflict_profile_id
+        if profile_id is None or self._remove_codex_profile_operation is None:
+            self._set_mode_codex_profile_name(initial_value=profile_id)
+            return
+
+        self._set_busy(
+            title="Removing Codex Profile",
+            message=f"Removing Codex profile '{profile_id}'...",
+            help_text="Please wait.",
+        )
+        try:
+            await self._remove_codex_profile_operation(profile_id)
+        except Exception as ex:
+            await self._set_error_mode(f"Unable to remove Codex profile: {ex}")
+            return
+
+        self._removed_codex_profile_ids.append(profile_id)
+        self._pending_codex_conflict_profile_id = None
+        self._pending_codex_conflict_project_id = None
+        self._set_mode_codex_profile_name(initial_value=profile_id)
+        self._set_error_text(
+            f"Removed existing Codex profile {profile_id}. Press Enter to create it again."
         )
 
     async def _maybe_continue_to_codex_default_choice(
@@ -1198,6 +1468,23 @@ class SetupWizardApp(App[None]):
         await self._ensure_llm_proxy_access_checked()
         if self._mode == "error":
             return
+        self._has_existing_claude_configuration = False
+        self._existing_claude_project_id = None
+        if self._inspect_claude_configuration_operation is not None:
+            self._set_busy(
+                title="Checking Claude",
+                message="Inspecting the existing Claude configuration...",
+                help_text="Please wait.",
+            )
+            try:
+                status = await self._inspect_claude_configuration_operation()
+            except Exception as ex:
+                await self._set_error_mode(
+                    f"Unable to inspect the Claude configuration: {ex}"
+                )
+                return
+            self._has_existing_claude_configuration = status.configured
+            self._existing_claude_project_id = status.project_id
         self._show_claude_choice()
 
     async def _configure_claude(self) -> None:
@@ -1222,6 +1509,25 @@ class SetupWizardApp(App[None]):
         self._configured_claude = True
         await self._finish_success()
 
+    async def _clear_claude(self) -> None:
+        if self._clear_claude_operation is None:
+            await self._finish_success()
+            return
+
+        self._set_busy(
+            title="Removing Claude Configuration",
+            message="Removing the MeshAgent Claude configuration...",
+            help_text="Please wait.",
+        )
+        try:
+            await self._clear_claude_operation()
+        except Exception as ex:
+            await self._set_error_mode(f"Unable to remove Claude configuration: {ex}")
+            return
+
+        self._cleared_claude = True
+        await self._finish_success()
+
     async def _finish_success(self) -> None:
         self._mode = "done"
         await self._stop_logo_dissolve()
@@ -1236,6 +1542,18 @@ class SetupWizardApp(App[None]):
                 "Project activated and Codex profile "
                 f"{self._configured_codex_profile_id} created."
             )
+        elif len(self._updated_codex_profile_ids) > 0:
+            updated_profile_labels = ", ".join(self._updated_codex_profile_ids)
+            if len(self._updated_codex_profile_ids) == 1:
+                message = (
+                    "Project activated and existing Codex profile "
+                    f"{updated_profile_labels} was updated."
+                )
+            else:
+                message = (
+                    "Project activated and existing Codex profiles "
+                    f"{updated_profile_labels} were updated."
+                )
         elif self._continued_with_existing_codex_profiles:
             existing_profile_labels = ", ".join(self._existing_codex_profile_ids)
             if len(self._existing_codex_profile_ids) == 1:
@@ -1248,6 +1566,18 @@ class SetupWizardApp(App[None]):
                     "Project activated and existing Codex profiles "
                     f"{existing_profile_labels} are ready to use."
                 )
+        elif len(self._removed_codex_profile_ids) > 0:
+            removed_profile_labels = ", ".join(self._removed_codex_profile_ids)
+            if len(self._removed_codex_profile_ids) == 1:
+                message = (
+                    "Project activated and Codex profile "
+                    f"{removed_profile_labels} was removed."
+                )
+            else:
+                message = (
+                    "Project activated and Codex profiles "
+                    f"{removed_profile_labels} were removed."
+                )
         if self._configured_codex_default_profile_id is not None:
             message = (
                 f"{message} Codex default profile "
@@ -1257,6 +1587,8 @@ class SetupWizardApp(App[None]):
             message = f"{message} No MeshAgent Codex default profile is selected."
         if self._configured_claude:
             message = f"{message} Claude is configured to use MeshAgent."
+        elif self._cleared_claude:
+            message = f"{message} Claude MeshAgent configuration was removed."
         self._set_text(
             title="Setup Complete",
             message=message,
@@ -1666,6 +1998,8 @@ async def run_setup_wizard_tui(
         ListExistingCodexProfilesOperation | None
     ) = None,
     configure_codex_profile_operation: ConfigureCodexProfileOperation | None = None,
+    replace_codex_profile_operation: ReplaceCodexProfileOperation | None = None,
+    remove_codex_profile_operation: RemoveCodexProfileOperation | None = None,
     get_current_codex_default_profile_operation: (
         GetCurrentCodexDefaultProfileOperation | None
     ) = None,
@@ -1673,6 +2007,10 @@ async def run_setup_wizard_tui(
         ConfigureCodexDefaultProfileOperation | None
     ) = None,
     configure_claude_operation: ConfigureClaudeOperation | None = None,
+    inspect_claude_configuration_operation: (
+        InspectClaudeConfigurationOperation | None
+    ) = None,
+    clear_claude_operation: ClearClaudeOperation | None = None,
     default_codex_profile_name: str = "meshagent",
 ) -> SetupWizardResult:
     app = SetupWizardApp(
@@ -1690,6 +2028,8 @@ async def run_setup_wizard_tui(
         has_claude_code_cli=has_claude_code_cli,
         list_existing_codex_profiles_operation=list_existing_codex_profiles_operation,
         configure_codex_profile_operation=configure_codex_profile_operation,
+        replace_codex_profile_operation=replace_codex_profile_operation,
+        remove_codex_profile_operation=remove_codex_profile_operation,
         get_current_codex_default_profile_operation=(
             get_current_codex_default_profile_operation
         ),
@@ -1697,6 +2037,8 @@ async def run_setup_wizard_tui(
             configure_codex_default_profile_operation
         ),
         configure_claude_operation=configure_claude_operation,
+        inspect_claude_configuration_operation=(inspect_claude_configuration_operation),
+        clear_claude_operation=clear_claude_operation,
         default_codex_profile_name=default_codex_profile_name,
     )
 

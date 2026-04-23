@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from meshagent.cli import auth
@@ -15,6 +17,14 @@ class _FakeClient:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class _FakeTTY:
+    def __init__(self, *, is_tty: bool) -> None:
+        self._is_tty = is_tty
+
+    def isatty(self) -> bool:
+        return self._is_tty
 
 
 @pytest.mark.asyncio
@@ -135,6 +145,8 @@ async def test_switch_lists_saved_profiles(monkeypatch) -> None:
             )
         ],
     )
+    monkeypatch.setattr(auth.sys, "stdin", _FakeTTY(is_tty=False))
+    monkeypatch.setattr(auth.sys, "stdout", _FakeTTY(is_tty=False))
     monkeypatch.setattr(auth.typer, "echo", output.append)
 
     await auth.switch()
@@ -142,3 +154,156 @@ async def test_switch_lists_saved_profiles(monkeypatch) -> None:
     assert output == [
         "* Jesse Ezell [user-123] @ https://api.meshagent.test",
     ]
+
+
+def test_should_launch_switch_tui_only_when_selector_missing_in_tty() -> None:
+    assert (
+        auth._should_launch_switch_tui(
+            profile=None,
+            stdin_is_tty=True,
+            stdout_is_tty=True,
+        )
+        is True
+    )
+    assert (
+        auth._should_launch_switch_tui(
+            profile="user-123",
+            stdin_is_tty=True,
+            stdout_is_tty=True,
+        )
+        is False
+    )
+    assert (
+        auth._should_launch_switch_tui(
+            profile=None,
+            stdin_is_tty=False,
+            stdout_is_tty=True,
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_switch_launches_tui_when_no_selector_in_tty(monkeypatch) -> None:
+    output: list[str] = []
+    saved_profiles = [
+        SavedProfileRecord(
+            user_id="user-123",
+            profile=StoredUserProfile(
+                id="user-123",
+                first_name="Jesse",
+                last_name="Ezell",
+                email="jesse@example.com",
+            ),
+            api_url="https://api.meshagent.test",
+            is_active=True,
+        ),
+        SavedProfileRecord(
+            user_id="user-456",
+            profile=StoredUserProfile(
+                id="user-456",
+                first_name="Taylor",
+                last_name="Swift",
+                email="taylor@example.com",
+            ),
+            api_url="https://api.meshagent.test",
+            is_active=False,
+        ),
+    ]
+    selected_selectors: list[str] = []
+
+    async def _fake_run_auth_switch_tui(*, saved_profiles):
+        return SimpleNamespace(
+            status="completed",
+            message=None,
+            selected_profile=saved_profiles[1],
+        )
+
+    monkeypatch.setattr(auth, "list_saved_profiles", lambda: saved_profiles)
+    monkeypatch.setattr(auth.sys, "stdin", _FakeTTY(is_tty=True))
+    monkeypatch.setattr(auth.sys, "stdout", _FakeTTY(is_tty=True))
+    monkeypatch.setattr(
+        auth,
+        "_run_auth_switch_tui",
+        _fake_run_auth_switch_tui,
+    )
+    monkeypatch.setattr(
+        auth,
+        "switch_active_profile",
+        lambda selector: (
+            selected_selectors.append(selector)
+            or SavedProfileRecord(
+                user_id="user-456",
+                profile=StoredUserProfile(
+                    id="user-456",
+                    first_name="Taylor",
+                    last_name="Swift",
+                    email="taylor@example.com",
+                ),
+                api_url="https://api.meshagent.test",
+                is_active=True,
+            )
+        ),
+    )
+    monkeypatch.setattr(auth.typer, "echo", output.append)
+
+    await auth.switch()
+
+    assert selected_selectors == ["user-456"]
+    assert output == [
+        "Active profile: * Taylor Swift [user-456] @ https://api.meshagent.test",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_switch_prints_cancel_message_when_tui_is_canceled(monkeypatch) -> None:
+    output: list[str] = []
+    switch_attempted = False
+
+    monkeypatch.setattr(
+        auth,
+        "list_saved_profiles",
+        lambda: [
+            SavedProfileRecord(
+                user_id="user-123",
+                profile=StoredUserProfile(
+                    id="user-123",
+                    first_name="Jesse",
+                    last_name="Ezell",
+                    email="jesse@example.com",
+                ),
+                api_url="https://api.meshagent.test",
+                is_active=True,
+            )
+        ],
+    )
+    monkeypatch.setattr(auth.sys, "stdin", _FakeTTY(is_tty=True))
+    monkeypatch.setattr(auth.sys, "stdout", _FakeTTY(is_tty=True))
+
+    async def _fake_run_auth_switch_tui(*, saved_profiles):
+        del saved_profiles
+        return SimpleNamespace(
+            status="canceled",
+            message="Profile switch canceled.",
+            selected_profile=None,
+        )
+
+    monkeypatch.setattr(
+        auth,
+        "_run_auth_switch_tui",
+        _fake_run_auth_switch_tui,
+    )
+
+    def _unexpected_switch(selector: str):
+        del selector
+        nonlocal switch_attempted
+        switch_attempted = True
+        raise AssertionError("switch_active_profile should not be called")
+
+    monkeypatch.setattr(auth, "switch_active_profile", _unexpected_switch)
+    monkeypatch.setattr(auth.typer, "echo", output.append)
+
+    await auth.switch()
+
+    assert switch_attempted is False
+    assert output == ["Profile switch canceled."]

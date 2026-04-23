@@ -1,16 +1,169 @@
-import typer
+import builtins
+import sys
+from dataclasses import dataclass
 from typing import Annotated
+
+import typer
 from rich import print
+
+from meshagent.api.client import Meshagent
 from meshagent.cli import async_typer
 from meshagent.cli.helper import (
     get_client,
+    get_active_project,
     print_json_table,
     set_active_project,
-    get_active_project,
 )
 from meshagent.cli.common_options import OutputFormatOption
 
 app = async_typer.AsyncTyper(help="Manage or activate your meshagent projects")
+
+
+@dataclass(frozen=True, slots=True)
+class ListedProject:
+    id: str
+    name: str
+    is_active: bool
+
+
+def _parse_listed_projects(
+    response: object,
+    *,
+    active_project_id: str | None,
+) -> list[ListedProject]:
+    if not isinstance(response, dict):
+        return []
+
+    project_rows = response.get("projects")
+    if not isinstance(project_rows, builtins.list):
+        return []
+
+    selectable_projects: list[ListedProject] = []
+    for row in project_rows:
+        if not isinstance(row, dict):
+            continue
+
+        project_id = row.get("id")
+        if not isinstance(project_id, str):
+            continue
+        resolved_project_id = project_id.strip()
+        if resolved_project_id == "":
+            continue
+
+        project_name = row.get("name")
+        resolved_project_name = (
+            project_name.strip()
+            if isinstance(project_name, str) and project_name.strip() != ""
+            else resolved_project_id
+        )
+
+        selectable_projects.append(
+            ListedProject(
+                id=resolved_project_id,
+                name=resolved_project_name,
+                is_active=resolved_project_id == active_project_id,
+            )
+        )
+
+    return selectable_projects
+
+
+async def _list_selectable_projects(
+    client: Meshagent,
+    *,
+    active_project_id: str | None,
+) -> list[ListedProject]:
+    return _parse_listed_projects(
+        await client.list_projects(),
+        active_project_id=active_project_id,
+    )
+
+
+async def _create_project_id(
+    client: Meshagent,
+    *,
+    project_name: str,
+) -> str:
+    created = await client.create_project(project_name)
+    if not isinstance(created, dict):
+        raise RuntimeError("Project creation did not return a valid id.")
+
+    created_project_id = created.get("id")
+    if not isinstance(created_project_id, str):
+        raise RuntimeError("Project creation did not return a valid id.")
+
+    resolved_project_id = created_project_id.strip()
+    if resolved_project_id == "":
+        raise RuntimeError("Project creation did not return a valid id.")
+
+    return resolved_project_id
+
+
+def _should_launch_activate_tui(
+    *,
+    project_id: str | None,
+    interactive: bool,
+    stdin_is_tty: bool,
+    stdout_is_tty: bool,
+) -> bool:
+    return (project_id is None or interactive) and stdin_is_tty and stdout_is_tty
+
+
+async def _run_project_activate_tui(
+    *,
+    selectable_projects: list[ListedProject],
+):
+    from meshagent.cli.tui.project_activate import (
+        ProjectActivateProject,
+        run_project_activate_tui,
+    )
+
+    return await run_project_activate_tui(
+        projects=[
+            ProjectActivateProject(
+                id=project.id,
+                name=project.name,
+                is_active=project.is_active,
+            )
+            for project in selectable_projects
+        ]
+    )
+
+
+async def _run_interactive_activate_prompt(
+    *,
+    client: Meshagent,
+    selectable_projects: list[ListedProject],
+) -> str | None:
+    if len(selectable_projects) == 0:
+        if typer.confirm(
+            "There are no projects. Would you like to create one?",
+            default=True,
+        ):
+            project_name = typer.prompt("Project name")
+            return await _create_project_id(client, project_name=project_name)
+        raise typer.Exit(code=0)
+
+    for index, project in enumerate(selectable_projects, start=1):
+        active_label = " (active)" if project.is_active else ""
+        typer.echo(f"[{index}] {project.name} ({project.id}){active_label}")
+
+    new_project_index = len(selectable_projects) + 1
+    typer.echo(f"[{new_project_index}] Create a new project")
+    exit_index = new_project_index + 1
+    typer.echo(f"[{exit_index}] Exit")
+
+    choice = typer.prompt("Select a project", type=int)
+    if choice == exit_index:
+        return None
+    if choice == new_project_index:
+        project_name = typer.prompt("Project name")
+        return await _create_project_id(client, project_name=project_name)
+    if 1 <= choice <= len(selectable_projects):
+        return selectable_projects[choice - 1].id
+
+    print("[red]Invalid selection[/red]")
+    raise typer.Exit(code=1)
 
 
 @app.async_command("create", help="Create a new MeshAgent project.")
@@ -45,12 +198,17 @@ async def list(
     "activate", help="Set the active project for subsequent CLI commands."
 )
 async def activate(
-    project_id: str | None = typer.Argument(None),
+    project_id: Annotated[
+        str | None,
+        typer.Argument(
+            help=("Project id. If omitted, an interactive picker is shown in a TTY."),
+        ),
+    ] = None,
     interactive: bool = typer.Option(
         False,
         "-i",
         "--interactive",
-        help="Interactively select or create a project",
+        help="Interactively select or create a project. Uses the TUI in a TTY.",
     ),
     return_project_id: Annotated[
         bool,
@@ -63,57 +221,60 @@ async def activate(
 ):
     client = await get_client()
     try:
-        if interactive:
-            response = await client.list_projects()
-            projects = response["projects"]
+        selected_project_id = project_id
 
-            if not projects:
-                if typer.confirm(
-                    "There are no projects. Would you like to create one?",
-                    default=True,
-                ):
-                    name = typer.prompt("Project name")
-                    created = await client.create_project(name)
-                    project_id = created["id"]
-                else:
-                    raise typer.Exit(code=0)
-            else:
-                for idx, proj in enumerate(projects, start=1):
-                    print(f"[{idx}] {proj['name']} ({proj['id']})")
-                new_project_index = len(projects) + 1
-                print(f"[{new_project_index}] Create a new project")
-                exit_index = new_project_index + 1
-                print(f"[{exit_index}] Exit")
+        if _should_launch_activate_tui(
+            project_id=project_id,
+            interactive=interactive,
+            stdin_is_tty=sys.stdin.isatty(),
+            stdout_is_tty=sys.stdout.isatty(),
+        ):
+            selectable_projects = await _list_selectable_projects(
+                client,
+                active_project_id=await get_active_project(),
+            )
+            result = await _run_project_activate_tui(
+                selectable_projects=selectable_projects,
+            )
+            if result.status != "completed":
+                if result.message is not None:
+                    print(result.message)
+                return None
 
-                choice = typer.prompt("Select a project", type=int)
-                if choice == exit_index:
-                    return
-                elif choice == new_project_index:
-                    name = typer.prompt("Project name")
-                    # TODO: validate name
-                    created = await client.create_project(name)
-                    project_id = created["id"]
-                elif 1 <= choice <= len(projects):
-                    project_id = projects[choice - 1]["id"]
-                else:
-                    print("[red]Invalid selection[/red]")
-                    raise typer.Exit(code=1)
+            if result.new_project_name is not None:
+                selected_project_id = await _create_project_id(
+                    client,
+                    project_name=result.new_project_name,
+                )
+            elif result.selected_project_id is not None:
+                selected_project_id = result.selected_project_id
+        elif interactive:
+            selectable_projects = await _list_selectable_projects(
+                client,
+                active_project_id=await get_active_project(),
+            )
+            selected_project_id = await _run_interactive_activate_prompt(
+                client=client,
+                selectable_projects=selectable_projects,
+            )
 
-        if project_id is None and not interactive:
+        if selected_project_id is None:
             print("[red]project_id required[/red]")
             raise typer.Exit(code=1)
 
-        if project_id is not None:
-            projects = (await client.list_projects())["projects"]
-            for project in projects:
-                if project["id"] == project_id:
-                    await set_active_project(project_id=project_id)
-                    if return_project_id:
-                        return project_id
-                    print(project_id)
-                    return None
+        selectable_projects = await _list_selectable_projects(
+            client,
+            active_project_id=None,
+        )
+        for project in selectable_projects:
+            if project.id == selected_project_id:
+                await set_active_project(project_id=selected_project_id)
+                if return_project_id:
+                    return selected_project_id
+                print(selected_project_id)
+                return None
 
-            print(f"[red]Invalid project id: {project_id}[/red]")
-            raise typer.Exit(code=1)
+        print(f"[red]Invalid project id: {selected_project_id}[/red]")
+        raise typer.Exit(code=1)
     finally:
         await client.close()

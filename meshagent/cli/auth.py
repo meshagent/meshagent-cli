@@ -1,3 +1,4 @@
+import sys
 import typer
 from typing import Annotated
 
@@ -69,27 +70,62 @@ def _format_saved_profile(profile: SavedProfileRecord) -> str:
     )
 
 
+def _should_launch_switch_tui(
+    *,
+    profile: str | None,
+    stdin_is_tty: bool,
+    stdout_is_tty: bool,
+) -> bool:
+    return profile is None and stdin_is_tty and stdout_is_tty
+
+
+async def _run_auth_switch_tui(
+    *,
+    saved_profiles: list[SavedProfileRecord],
+):
+    from meshagent.cli.tui.auth_switch import run_auth_switch_tui
+
+    return await run_auth_switch_tui(saved_profiles=saved_profiles)
+
+
 @app.async_command("switch")
 async def switch(
     profile: Annotated[
         str | None,
         typer.Argument(
-            help="Saved profile user id or email. If omitted, saved profiles are listed.",
+            help=(
+                "Saved profile user id or email. If omitted, saved profiles are "
+                "listed or an interactive picker is shown in a TTY."
+            ),
         ),
     ] = None,
 ):
-    if profile is None:
+    selected_profile_selector = profile
+    if selected_profile_selector is None:
         saved_profiles = list_saved_profiles()
         if len(saved_profiles) == 0:
             typer.echo("No saved local profiles.")
             return
 
-        for saved_profile in saved_profiles:
-            typer.echo(_format_saved_profile(saved_profile))
-        return
+        if _should_launch_switch_tui(
+            profile=selected_profile_selector,
+            stdin_is_tty=sys.stdin.isatty(),
+            stdout_is_tty=sys.stdout.isatty(),
+        ):
+            result = await _run_auth_switch_tui(saved_profiles=saved_profiles)
+            if result.status != "completed" or result.selected_profile is None:
+                if result.message is not None:
+                    typer.echo(result.message)
+                return
+
+            selected_profile_selector = result.selected_profile.user_id
+        else:
+            for saved_profile in saved_profiles:
+                typer.echo(_format_saved_profile(saved_profile))
+            return
 
     try:
-        selected_profile = switch_active_profile(profile)
+        selected_profile = switch_active_profile(selected_profile_selector)
     except LookupError as exc:
         typer.echo(str(exc))
         raise typer.Exit(code=1) from exc

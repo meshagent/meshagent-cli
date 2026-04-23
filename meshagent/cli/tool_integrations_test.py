@@ -142,6 +142,41 @@ def test_configure_codex_integration_rejects_profile_name_in_use(
         )
 
 
+def test_configure_codex_integration_raises_meshagent_conflict_error(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "[model_providers.meshagent]\n"
+        'name = "MeshAgent"\n'
+        'base_url = "https://api.meshagent.com/openai/v1"\n'
+        'http_headers = {"Meshagent-Project-Id"="project-old"}\n'
+        "\n"
+        "[profiles.meshagent]\n"
+        'model_provider = "meshagent"\n'
+        'model = "gpt-5.4"\n'
+    )
+
+    monkeypatch.setattr(
+        tool_integrations,
+        "get_active_project",
+        lambda: "project-new",
+    )
+
+    with pytest.raises(tool_integrations.CodexProfileConflictError) as exc_info:
+        tool_integrations.configure_codex_integration(
+            profile_id="meshagent",
+            project_id="project-new",
+            api_url="https://api.meshagent.com",
+            meshagent_executable="/opt/homebrew/bin/meshagent",
+            config_path=config_path,
+        )
+
+    assert exc_info.value.profile_id == "meshagent"
+    assert exc_info.value.project_id == "project-old"
+
+
 def test_configure_codex_integration_does_not_create_auth_wrapper_files(
     monkeypatch,
     tmp_path: Path,
@@ -328,6 +363,106 @@ def test_clear_codex_default_profile_if_meshagent_project_removes_profile(
         is True
     )
     assert 'profile = "meshagent"\n' not in config_path.read_text()
+
+
+def test_replace_codex_integration_updates_existing_meshagent_profile(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'profile = "meshagent"\n'
+        "\n"
+        "[model_providers.meshagent]\n"
+        'name = "MeshAgent"\n'
+        'base_url = "https://api.meshagent.com/openai/v1"\n'
+        'http_headers = {"Meshagent-Project-Id"="project-old"}\n'
+        "\n"
+        "[model_providers.meshagent.auth]\n"
+        'command = "meshagent"\n'
+        'args = ["auth", "token"]\n'
+        "timeout_ms = 10000\n"
+        "refresh_interval_ms = 300000\n"
+        "\n"
+        "[profiles.meshagent]\n"
+        'model_provider = "meshagent"\n'
+        'model = "gpt-5.2"\n'
+    )
+
+    monkeypatch.setattr(
+        tool_integrations,
+        "get_active_project",
+        lambda: "project-new",
+    )
+
+    result = tool_integrations.replace_codex_integration(
+        profile_id="meshagent",
+        project_id="project-new",
+        api_url="https://api.meshagent.test",
+        meshagent_executable="/tmp/meshagent-life/bin/meshagent",
+        config_path=config_path,
+    )
+
+    assert result.changed is True
+    assert config_path.read_text() == (
+        'profile = "meshagent"\n'
+        "\n"
+        "[model_providers.meshagent]\n"
+        'name = "MeshAgent"\n'
+        'base_url = "https://api.meshagent.test/openai/v1"\n'
+        'http_headers = {"Meshagent-Project-Id"="project-new"}\n'
+        "\n"
+        "[model_providers.meshagent.auth]\n"
+        'command = "/tmp/meshagent-life/bin/meshagent"\n'
+        'args = ["auth", "token"]\n'
+        "timeout_ms = 10000\n"
+        "refresh_interval_ms = 300000\n"
+        "\n"
+        "[profiles.meshagent]\n"
+        'model_provider = "meshagent"\n'
+        'model = "gpt-5.2"\n'
+    )
+
+
+def test_remove_codex_integration_keeps_shared_provider_for_other_profiles(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'profile = "meshagent"\n'
+        "\n"
+        "[model_providers.meshagent]\n"
+        'name = "MeshAgent"\n'
+        'base_url = "https://api.meshagent.com/openai/v1"\n'
+        'http_headers = {"Meshagent-Project-Id"="project-life"}\n'
+        "\n"
+        "[profiles.meshagent]\n"
+        'model_provider = "meshagent"\n'
+        'model = "gpt-5.4"\n'
+        "\n"
+        "[profiles.meshagent-work]\n"
+        'model_provider = "meshagent"\n'
+        'model = "gpt-5.4"\n'
+    )
+
+    assert (
+        tool_integrations.remove_codex_integration(
+            profile_id="meshagent",
+            config_path=config_path,
+        )
+        is True
+    )
+
+    assert config_path.read_text() == (
+        "[model_providers.meshagent]\n"
+        'name = "MeshAgent"\n'
+        'base_url = "https://api.meshagent.com/openai/v1"\n'
+        'http_headers = {"Meshagent-Project-Id"="project-life"}\n'
+        "\n"
+        "[profiles.meshagent-work]\n"
+        'model_provider = "meshagent"\n'
+        'model = "gpt-5.4"\n'
+    )
 
 
 def test_maybe_configure_local_tool_integrations_skips_when_codex_missing() -> None:
@@ -593,6 +728,67 @@ def test_configure_claude_code_integration_prefers_meshagent_command_from_path(
     assert (
         json.loads(settings_path.read_text())["apiKeyHelper"] == "meshagent auth token"
     )
+
+
+def test_inspect_claude_code_integration_returns_meshagent_status(
+    tmp_path: Path,
+) -> None:
+    settings_path = tmp_path / "claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "env": {
+                    "MESHAGENT_API_URL": "https://api.meshagent.test",
+                    "MESHAGENT_PROJECT_ID": "project-123",
+                    "ANTHROPIC_BASE_URL": "https://api.meshagent.test/anthropic",
+                    "ANTHROPIC_CUSTOM_HEADERS": "Meshagent-Project-Id: project-123",
+                },
+                "apiKeyHelper": "meshagent auth token",
+            }
+        )
+    )
+
+    status = tool_integrations.inspect_claude_code_integration(
+        settings_path=settings_path,
+    )
+
+    assert status == tool_integrations.ClaudeIntegrationStatus(
+        configured=True,
+        project_id="project-123",
+        api_url="https://api.meshagent.test",
+    )
+
+
+def test_clear_claude_code_integration_removes_only_meshagent_settings(
+    tmp_path: Path,
+) -> None:
+    settings_path = tmp_path / "claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(
+        json.dumps(
+            {
+                "env": {
+                    "KEEP_ME": "yes",
+                    "MESHAGENT_API_URL": "https://api.meshagent.test",
+                    "MESHAGENT_PROJECT_ID": "project-123",
+                    "ANTHROPIC_BASE_URL": "https://api.meshagent.test/anthropic",
+                    "ANTHROPIC_CUSTOM_HEADERS": "Meshagent-Project-Id: project-123",
+                },
+                "apiKeyHelper": "meshagent auth token",
+                "theme": "dark",
+            }
+        )
+    )
+
+    assert (
+        tool_integrations.clear_claude_code_integration(settings_path=settings_path)
+        is True
+    )
+    assert json.loads(settings_path.read_text()) == {
+        "env": {"KEEP_ME": "yes"},
+        "theme": "dark",
+    }
 
 
 def test_build_claude_code_command_uses_api_key_helper() -> None:

@@ -83,15 +83,20 @@ def setup_command(api_url: str | None = None):
         from meshagent.cli.tool_integrations import (
             CODEX_DEFAULT_PROFILE_ID,
             clear_codex_default_profile_if_meshagent_project,
+            clear_claude_code_integration,
             configure_codex_integration,
             configure_claude_code_integration,
             find_existing_codex_profiles,
             find_current_codex_default_profile,
             has_claude_code_cli,
             has_codex_cli,
+            inspect_claude_code_integration,
+            remove_codex_integration,
+            replace_codex_integration,
             set_codex_default_profile,
         )
         from meshagent.cli.tui.setup import (
+            SetupClaudeConfiguration,
             SetupProject,
             run_setup_wizard_tui,
         )
@@ -178,6 +183,15 @@ def setup_command(api_url: str | None = None):
                 api_url=resolve_api_url(),
             )
 
+        async def replace_codex_profile(profile_id: str) -> None:
+            replace_codex_integration(
+                profile_id=profile_id,
+                api_url=resolve_api_url(),
+            )
+
+        async def remove_codex_profile(profile_id: str) -> None:
+            remove_codex_integration(profile_id=profile_id)
+
         async def list_existing_codex_profiles(project_id: str) -> list[str]:
             return find_existing_codex_profiles(
                 project_id=project_id,
@@ -208,6 +222,16 @@ def setup_command(api_url: str | None = None):
                 project_id=project_id,
                 api_url=resolve_api_url(),
             )
+
+        async def inspect_claude_configuration() -> SetupClaudeConfiguration:
+            status = inspect_claude_code_integration()
+            return SetupClaudeConfiguration(
+                configured=status.configured,
+                project_id=status.project_id,
+            )
+
+        async def clear_claude() -> None:
+            clear_claude_code_integration()
 
         current_user_name: str | None = None
         has_authenticated_session = False
@@ -246,6 +270,12 @@ def setup_command(api_url: str | None = None):
             configure_codex_profile_operation=(
                 configure_codex_profile if codex_available else None
             ),
+            replace_codex_profile_operation=(
+                replace_codex_profile if codex_available else None
+            ),
+            remove_codex_profile_operation=(
+                remove_codex_profile if codex_available else None
+            ),
             get_current_codex_default_profile_operation=(
                 get_current_codex_default_profile if codex_available else None
             ),
@@ -255,6 +285,10 @@ def setup_command(api_url: str | None = None):
             configure_claude_operation=(
                 configure_claude if claude_code_available else None
             ),
+            inspect_claude_configuration_operation=(
+                inspect_claude_configuration if claude_code_available else None
+            ),
+            clear_claude_operation=(clear_claude if claude_code_available else None),
             default_codex_profile_name=CODEX_DEFAULT_PROFILE_ID,
         )
 

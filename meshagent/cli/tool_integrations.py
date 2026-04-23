@@ -51,6 +51,44 @@ class ClaudeIntegrationResult:
 
 
 @dataclass(frozen=True, slots=True)
+class CodexProfileDetails:
+    profile_id: str
+    provider_id: str
+    project_id: str | None
+    base_url: str | None
+    model: str | None
+    is_meshagent: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ClaudeIntegrationStatus:
+    configured: bool
+    project_id: str | None
+    api_url: str | None
+
+
+class CodexProfileConflictError(ValueError):
+    def __init__(
+        self,
+        *,
+        profile_id: str,
+        project_id: str | None,
+        config_path: Path,
+    ) -> None:
+        project_label = "another MeshAgent project"
+        if project_id is not None and project_id.strip() != "":
+            project_label = f"MeshAgent project `{project_id.strip()}`"
+
+        super().__init__(
+            f"Codex profile `{profile_id}` is already configured for {project_label} "
+            f"in {config_path}."
+        )
+        self.profile_id = profile_id
+        self.project_id = project_id
+        self.config_path = config_path
+
+
+@dataclass(frozen=True, slots=True)
 class CommandInvocation:
     command: str
     args: tuple[str, ...]
@@ -120,6 +158,73 @@ def _codex_root_table(config: TomlTable, *, name: str) -> TomlTable:
     return root_table
 
 
+def _meshagent_project_id_from_provider(provider: TomlTable) -> str | None:
+    http_headers = _toml_table(provider.get("http_headers"))
+    if http_headers is None:
+        return None
+
+    for header_name in ("Meshagent-Project-Id", "MeshAgent-Project-Id"):
+        resolved_project_id = _toml_str(http_headers.get(header_name))
+        if resolved_project_id is not None:
+            return resolved_project_id
+
+    return None
+
+
+def _provider_looks_like_meshagent(provider: TomlTable) -> bool:
+    return (
+        _meshagent_project_id_from_provider(provider) is not None
+        and _toml_str(provider.get("base_url")) is not None
+    )
+
+
+def _codex_profile_details(
+    config: TomlTable,
+    *,
+    profile_id: str,
+) -> CodexProfileDetails | None:
+    profiles = _codex_root_table(config, name="profiles")
+    profile = _toml_table(profiles.get(profile_id))
+    if profile is None:
+        return None
+
+    provider_id = _toml_str(profile.get("model_provider"))
+    if provider_id is None:
+        return None
+
+    model_providers = _codex_root_table(config, name="model_providers")
+    provider = _toml_table(model_providers.get(provider_id))
+    if provider is None:
+        return None
+
+    return CodexProfileDetails(
+        profile_id=profile_id,
+        provider_id=provider_id,
+        project_id=_meshagent_project_id_from_provider(provider),
+        base_url=_toml_str(provider.get("base_url")),
+        model=_toml_str(profile.get("model")),
+        is_meshagent=_provider_looks_like_meshagent(provider),
+    )
+
+
+def _list_meshagent_codex_profiles_from_config(
+    config: TomlTable,
+) -> list[CodexProfileDetails]:
+    profiles = _codex_root_table(config, name="profiles")
+    existing_profiles: list[CodexProfileDetails] = []
+
+    for profile_id in profiles:
+        details = _codex_profile_details(config, profile_id=profile_id)
+        if details is None or not details.is_meshagent:
+            continue
+        existing_profiles.append(details)
+
+    existing_profiles.sort(
+        key=lambda profile: _codex_profile_sort_key(profile.profile_id)
+    )
+    return existing_profiles
+
+
 def _codex_profile_conflicts(
     existing: str, *, profile_id: str, config_path: Path
 ) -> list[str]:
@@ -168,20 +273,23 @@ def _provider_matches_meshagent_project(
     ):
         return False
 
-    http_headers = _toml_table(provider.get("http_headers"))
-    if http_headers is None:
-        return False
-
-    for header_name in ("Meshagent-Project-Id", "MeshAgent-Project-Id"):
-        resolved_project_id = _toml_str(http_headers.get(header_name))
-        if resolved_project_id == project_id:
-            return True
-
-    return False
+    return _meshagent_project_id_from_provider(provider) == project_id
 
 
 def _codex_profile_sort_key(profile_id: str) -> tuple[int, str]:
     return (0 if profile_id == CODEX_DEFAULT_PROFILE_ID else 1, profile_id)
+
+
+def list_meshagent_codex_profiles(
+    *,
+    config_path: Path = CODEX_CONFIG_PATH,
+) -> list[CodexProfileDetails]:
+    return _list_meshagent_codex_profiles_from_config(
+        _parse_codex_config(
+            _read_codex_config(config_path),
+            config_path=config_path,
+        )
+    )
 
 
 def find_existing_codex_profiles(
@@ -200,40 +308,15 @@ def find_existing_codex_profiles(
             "An active MeshAgent project is required to inspect Codex profiles."
         )
     resolved_project_id = resolved_project_id.strip()
-
-    config = _parse_codex_config(
-        _read_codex_config(config_path),
-        config_path=config_path,
-    )
-    model_providers = _codex_root_table(config, name="model_providers")
-    profiles = _codex_root_table(config, name="profiles")
     provider_base_url = _codex_provider_base_url(api_url=api_url)
 
-    matching_provider_ids: set[str] = set()
-    for provider_id, provider_value in model_providers.items():
-        provider = _toml_table(provider_value)
-        if provider is None:
-            continue
-        if _provider_matches_meshagent_project(
-            provider,
-            project_id=resolved_project_id,
-            provider_base_url=provider_base_url,
-        ):
-            matching_provider_ids.add(provider_id)
-
-    if len(matching_provider_ids) == 0:
-        return []
-
-    matching_profile_ids: list[str] = []
-    for profile_id, profile_value in profiles.items():
-        profile = _toml_table(profile_value)
-        if profile is None:
-            continue
-        model_provider = _toml_str(profile.get("model_provider"))
-        if model_provider in matching_provider_ids:
-            matching_profile_ids.append(profile_id)
-
-    return sorted(matching_profile_ids, key=_codex_profile_sort_key)
+    return [
+        profile.profile_id
+        for profile in list_meshagent_codex_profiles(config_path=config_path)
+        if profile.project_id == resolved_project_id
+        and profile.base_url is not None
+        and profile.base_url.rstrip("/") == provider_base_url.rstrip("/")
+    ]
 
 
 def has_codex_cli(
@@ -385,6 +468,105 @@ def _append_codex_profile(existing: str, *, profile_block: str) -> str:
     return f"{existing_content}\n\n{profile_block}"
 
 
+def _write_codex_config(config_path: Path, content: str) -> None:
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(content)
+
+
+def _toml_table_name(line: str) -> str | None:
+    stripped = line.lstrip()
+    if stripped == "" or stripped.startswith("#"):
+        return None
+
+    content = stripped.split("#", 1)[0].rstrip()
+    if not content.startswith("[") or not content.endswith("]"):
+        return None
+
+    table_name = content[1:-1].strip()
+    if table_name == "":
+        return None
+    return table_name
+
+
+def _remove_toml_table_prefix(existing: str, *, prefix: str) -> str:
+    updated_lines: list[str] = []
+    skipping_prefix = False
+
+    for line in existing.splitlines(keepends=True):
+        table_name = _toml_table_name(line)
+        if table_name is not None:
+            skipping_prefix = table_name == prefix or table_name.startswith(
+                f"{prefix}."
+            )
+            if skipping_prefix:
+                continue
+
+        if skipping_prefix:
+            continue
+        updated_lines.append(line)
+
+    return "".join(updated_lines)
+
+
+def _normalize_toml_spacing(content: str) -> str:
+    normalized_lines: list[str] = []
+    previous_blank = False
+
+    for raw_line in content.splitlines():
+        line = raw_line.rstrip()
+        if line == "":
+            if len(normalized_lines) == 0 or previous_blank:
+                continue
+            previous_blank = True
+            normalized_lines.append("")
+            continue
+
+        previous_blank = False
+        normalized_lines.append(line)
+
+    while len(normalized_lines) > 0 and normalized_lines[-1] == "":
+        normalized_lines.pop()
+
+    if len(normalized_lines) == 0:
+        return ""
+
+    return "\n".join(normalized_lines) + "\n"
+
+
+def _remove_codex_profile_tables(
+    existing: str,
+    *,
+    config: TomlTable,
+    details: CodexProfileDetails,
+    clear_default_profile: bool,
+) -> str:
+    updated = _remove_toml_table_prefix(
+        existing,
+        prefix=f"profiles.{details.profile_id}",
+    )
+
+    remaining_provider_references = [
+        profile
+        for profile in _list_meshagent_codex_profiles_from_config(config)
+        if profile.profile_id != details.profile_id
+        and profile.provider_id == details.provider_id
+    ]
+    if len(remaining_provider_references) == 0:
+        updated = _remove_toml_table_prefix(
+            updated,
+            prefix=f"model_providers.{details.provider_id}",
+        )
+
+    if clear_default_profile:
+        updated = _upsert_root_toml_string_setting(
+            updated,
+            key="profile",
+            value=None,
+        )
+
+    return updated
+
+
 def configure_codex_integration(
     *,
     profile_id: str,
@@ -418,6 +600,16 @@ def configure_codex_integration(
         config_path=config_path,
     )
     if len(conflicts) > 0:
+        existing_details = _codex_profile_details(
+            _parse_codex_config(existing, config_path=config_path),
+            profile_id=resolved_profile_id,
+        )
+        if existing_details is not None and existing_details.is_meshagent:
+            raise CodexProfileConflictError(
+                profile_id=resolved_profile_id,
+                project_id=existing_details.project_id,
+                config_path=config_path,
+            )
         raise ValueError(
             f"Codex profile name `{resolved_profile_id}` is already in use in "
             f"{', '.join(conflicts)}."
@@ -438,6 +630,106 @@ def configure_codex_integration(
         profile_id=resolved_profile_id,
         changed=True,
     )
+
+
+def replace_codex_integration(
+    *,
+    profile_id: str,
+    project_id: str | None = None,
+    api_url: str | None = None,
+    meshagent_executable: str | None = None,
+    model: str | None = None,
+    config_path: Path = CODEX_CONFIG_PATH,
+) -> CodexIntegrationResult:
+    resolved_project_id = _resolve_active_project_id(
+        project_id=project_id,
+        missing_project_message=(
+            "An active MeshAgent project is required to configure Codex."
+        ),
+    )
+    resolved_profile_id = _validate_profile_identifier(profile_id)
+    existing = _read_codex_config(config_path)
+    config = _parse_codex_config(existing, config_path=config_path)
+    existing_details = _codex_profile_details(config, profile_id=resolved_profile_id)
+    if existing_details is None:
+        raise ValueError(
+            f"Codex profile `{resolved_profile_id}` is not defined in {config_path}."
+        )
+    if not existing_details.is_meshagent:
+        raise ValueError(
+            f"Codex profile `{resolved_profile_id}` is not managed by MeshAgent in "
+            f"{config_path}."
+        )
+
+    updated = _remove_codex_profile_tables(
+        existing,
+        config=config,
+        details=existing_details,
+        clear_default_profile=False,
+    )
+    updated = _normalize_toml_spacing(updated)
+    if not _codex_profile_is_available(
+        updated,
+        profile_id=resolved_profile_id,
+        config_path=config_path,
+    ):
+        raise ValueError(
+            f"Codex profile name `{resolved_profile_id}` is still in use in "
+            f"{config_path}."
+        )
+
+    rewritten = _append_codex_profile(
+        updated,
+        profile_block=_codex_profile_block(
+            project_id=resolved_project_id,
+            profile_id=resolved_profile_id,
+            api_url=api_url,
+            meshagent_executable=meshagent_executable,
+            model=model or existing_details.model or CODEX_DEFAULT_MODEL,
+        ),
+    )
+    _write_codex_config(config_path, rewritten)
+
+    return CodexIntegrationResult(
+        config_path=config_path,
+        provider_id=resolved_profile_id,
+        profile_id=resolved_profile_id,
+        changed=rewritten != existing,
+    )
+
+
+def remove_codex_integration(
+    *,
+    profile_id: str,
+    config_path: Path = CODEX_CONFIG_PATH,
+) -> bool:
+    resolved_profile_id = _validate_profile_identifier(profile_id)
+    existing = _read_codex_config(config_path)
+    if existing.strip() == "":
+        return False
+
+    config = _parse_codex_config(existing, config_path=config_path)
+    existing_details = _codex_profile_details(config, profile_id=resolved_profile_id)
+    if existing_details is None:
+        return False
+    if not existing_details.is_meshagent:
+        raise ValueError(
+            f"Codex profile `{resolved_profile_id}` is not managed by MeshAgent in "
+            f"{config_path}."
+        )
+
+    updated = _remove_codex_profile_tables(
+        existing,
+        config=config,
+        details=existing_details,
+        clear_default_profile=_toml_str(config.get("profile")) == resolved_profile_id,
+    )
+    updated = _normalize_toml_spacing(updated)
+    if updated == existing:
+        return False
+
+    _write_codex_config(config_path, updated)
+    return True
 
 
 def maybe_configure_local_tool_integrations(
@@ -841,6 +1133,116 @@ def _parse_claude_code_settings(
     return resolved_settings
 
 
+def _claude_settings_env(
+    settings: JsonObject,
+    *,
+    settings_path: Path,
+) -> JsonObject:
+    existing_env = settings.get("env")
+    if existing_env is None:
+        return {}
+
+    env = _toml_table(existing_env)
+    if env is None:
+        raise RuntimeError(
+            f"Unable to parse Claude settings at {settings_path}: `env` must be an object."
+        )
+    return env
+
+
+def _is_meshagent_auth_command(command: str | None) -> bool:
+    if command is None or command.strip() == "":
+        return False
+
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return False
+
+    if len(parts) == 3 and Path(parts[0]).name == "meshagent":
+        return parts[1:] == ["auth", "token"]
+
+    if len(parts) >= 5 and parts[-4:] == ["-m", "meshagent.cli.cli", "auth", "token"]:
+        return Path(parts[0]).name.startswith("python")
+
+    return False
+
+
+def inspect_claude_code_integration(
+    *,
+    settings_path: Path | None = None,
+) -> ClaudeIntegrationStatus:
+    resolved_settings_path = settings_path or _default_claude_code_settings_path()
+    settings = _parse_claude_code_settings(
+        _read_claude_code_settings(resolved_settings_path),
+        settings_path=resolved_settings_path,
+    )
+    env = _claude_settings_env(settings, settings_path=resolved_settings_path)
+
+    configured = _is_meshagent_auth_command(_toml_str(settings.get("apiKeyHelper")))
+    for key in (
+        "MESHAGENT_API_URL",
+        "MESHAGENT_PROJECT_ID",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_CUSTOM_HEADERS",
+    ):
+        if _toml_str(env.get(key)) is not None:
+            configured = True
+            break
+
+    return ClaudeIntegrationStatus(
+        configured=configured,
+        project_id=_toml_str(env.get("MESHAGENT_PROJECT_ID")),
+        api_url=_toml_str(env.get("MESHAGENT_API_URL")),
+    )
+
+
+def clear_claude_code_integration(
+    *,
+    settings_path: Path | None = None,
+) -> bool:
+    resolved_settings_path = settings_path or _default_claude_code_settings_path()
+    existing = _read_claude_code_settings(resolved_settings_path)
+    settings = _parse_claude_code_settings(
+        existing,
+        settings_path=resolved_settings_path,
+    )
+    env = _claude_settings_env(settings, settings_path=resolved_settings_path)
+    changed = False
+
+    for key in (
+        "MESHAGENT_API_URL",
+        "MESHAGENT_PROJECT_ID",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_CUSTOM_HEADERS",
+    ):
+        if key in env:
+            env.pop(key)
+            changed = True
+
+    if changed:
+        if len(env) == 0:
+            settings.pop("env", None)
+        else:
+            settings["env"] = env
+
+    api_key_helper = _toml_str(settings.get("apiKeyHelper"))
+    if _is_meshagent_auth_command(api_key_helper):
+        settings.pop("apiKeyHelper", None)
+        changed = True
+
+    if not changed:
+        return False
+
+    updated = json.dumps(settings, indent=2) + "\n"
+    if updated == existing:
+        return False
+
+    resolved_settings_path.parent.mkdir(parents=True, exist_ok=True)
+    resolved_settings_path.write_text(updated)
+    return True
+
+
 def configure_claude_code_integration(
     *,
     project_id: str | None = None,
@@ -860,16 +1262,7 @@ def configure_claude_code_integration(
         existing,
         settings_path=resolved_settings_path,
     )
-
-    existing_env = settings.get("env")
-    if existing_env is None:
-        env: JsonObject = {}
-    else:
-        env = _toml_table(existing_env)
-        if env is None:
-            raise RuntimeError(
-                f"Unable to parse Claude settings at {resolved_settings_path}: `env` must be an object."
-            )
+    env = _claude_settings_env(settings, settings_path=resolved_settings_path)
 
     env["MESHAGENT_API_URL"] = resolve_api_url(api_url=api_url)
     env["MESHAGENT_PROJECT_ID"] = resolved_project_id

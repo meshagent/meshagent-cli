@@ -1,8 +1,9 @@
 import asyncio
+from types import SimpleNamespace
 
 from meshagent.cli import root_commands
 from meshagent.cli.local_settings import StoredUserProfile
-from meshagent.cli.tui.setup import SetupWizardResult
+from meshagent.cli.tui.setup import SetupClaudeConfiguration, SetupWizardResult
 
 
 def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
@@ -24,9 +25,13 @@ def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
         assert kwargs["default_codex_profile_name"] == "meshagent"
         assert callable(kwargs["list_existing_codex_profiles_operation"])
         assert callable(kwargs["configure_codex_profile_operation"])
+        assert callable(kwargs["replace_codex_profile_operation"])
+        assert callable(kwargs["remove_codex_profile_operation"])
         assert callable(kwargs["get_current_codex_default_profile_operation"])
         assert callable(kwargs["configure_codex_default_profile_operation"])
         assert callable(kwargs["configure_claude_operation"])
+        assert callable(kwargs["inspect_claude_configuration_operation"])
+        assert callable(kwargs["clear_claude_operation"])
         assert await kwargs["list_existing_codex_profiles_operation"](
             "project-123"
         ) == ["meshagent"]
@@ -141,9 +146,13 @@ def test_setup_command_does_not_pin_current_cli_path_in_claude_configuration(
         assert kwargs["has_claude_code_cli"] is True
         assert kwargs["list_existing_codex_profiles_operation"] is None
         assert kwargs["configure_codex_profile_operation"] is None
+        assert kwargs["replace_codex_profile_operation"] is None
+        assert kwargs["remove_codex_profile_operation"] is None
         assert kwargs["get_current_codex_default_profile_operation"] is None
         assert kwargs["configure_codex_default_profile_operation"] is None
         assert callable(kwargs["configure_claude_operation"])
+        assert callable(kwargs["inspect_claude_configuration_operation"])
+        assert callable(kwargs["clear_claude_operation"])
         await kwargs["configure_claude_operation"]("project-123")
         return SetupWizardResult(status="canceled", message="Setup canceled.")
 
@@ -225,6 +234,8 @@ def test_setup_command_passes_codex_default_profile_operations(
     async def _fake_run_setup_wizard_tui(**kwargs) -> SetupWizardResult:
         assert kwargs["has_codex_cli"] is True
         assert kwargs["has_claude_code_cli"] is False
+        assert callable(kwargs["replace_codex_profile_operation"])
+        assert callable(kwargs["remove_codex_profile_operation"])
         assert callable(kwargs["get_current_codex_default_profile_operation"])
         assert callable(kwargs["configure_codex_default_profile_operation"])
         assert (
@@ -365,9 +376,13 @@ def test_setup_command_does_not_launch_ask_when_not_completed(monkeypatch) -> No
         assert kwargs["has_claude_code_cli"] is False
         assert kwargs["list_existing_codex_profiles_operation"] is None
         assert kwargs["configure_codex_profile_operation"] is None
+        assert kwargs["replace_codex_profile_operation"] is None
+        assert kwargs["remove_codex_profile_operation"] is None
         assert kwargs["get_current_codex_default_profile_operation"] is None
         assert kwargs["configure_codex_default_profile_operation"] is None
         assert kwargs["configure_claude_operation"] is None
+        assert kwargs["inspect_claude_configuration_operation"] is None
+        assert kwargs["clear_claude_operation"] is None
         return SetupWizardResult(status="canceled", message="Setup canceled.")
 
     async def _fake_get_access_token() -> str | None:
@@ -490,6 +505,172 @@ def test_setup_command_does_not_pin_current_cli_path_in_codex_configuration(
     }
 
 
+def test_setup_command_passes_codex_replace_and_remove_operations(
+    monkeypatch,
+) -> None:
+    replaced: list[dict[str, str | None]] = []
+    removed: list[str] = []
+
+    async def _fake_get_active_project() -> str | None:
+        return None
+
+    async def _fake_get_access_token() -> str | None:
+        return None
+
+    async def _fake_run_setup_wizard_tui(**kwargs) -> SetupWizardResult:
+        assert kwargs["has_codex_cli"] is True
+        assert callable(kwargs["replace_codex_profile_operation"])
+        assert callable(kwargs["remove_codex_profile_operation"])
+        await kwargs["replace_codex_profile_operation"]("meshagent")
+        await kwargs["remove_codex_profile_operation"]("meshagent-work")
+        return SetupWizardResult(status="canceled", message="Setup canceled.")
+
+    def _fake_replace_codex_integration(
+        *,
+        profile_id: str,
+        api_url: str | None = None,
+        **kwargs,
+    ) -> None:
+        replaced.append(
+            {
+                "profile_id": profile_id,
+                "api_url": api_url,
+                "meshagent_executable": kwargs.get("meshagent_executable"),
+            }
+        )
+        assert kwargs == {}
+
+    def _fake_remove_codex_integration(*, profile_id: str, **kwargs) -> bool:
+        removed.append(profile_id)
+        assert kwargs == {}
+        return True
+
+    monkeypatch.setattr(
+        "meshagent.cli.helper.get_active_project",
+        _fake_get_active_project,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tui.setup.run_setup_wizard_tui",
+        _fake_run_setup_wizard_tui,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.auth_async.get_access_token",
+        _fake_get_access_token,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.has_codex_cli",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.has_claude_code_cli",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.replace_codex_integration",
+        _fake_replace_codex_integration,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.remove_codex_integration",
+        _fake_remove_codex_integration,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.local_settings.resolve_api_url",
+        lambda *, api_url=None: "https://api.meshagent.com",
+    )
+    monkeypatch.setattr(
+        root_commands,
+        "_run_async",
+        lambda coro: asyncio.run(coro),
+    )
+
+    callback = root_commands.setup_command.callback
+    assert callback is not None
+    callback()
+
+    assert replaced == [
+        {
+            "profile_id": "meshagent",
+            "api_url": "https://api.meshagent.com",
+            "meshagent_executable": None,
+        }
+    ]
+    assert removed == ["meshagent-work"]
+
+
+def test_setup_command_passes_claude_inspect_and_clear_operations(
+    monkeypatch,
+) -> None:
+    cleared = False
+
+    async def _fake_get_active_project() -> str | None:
+        return None
+
+    async def _fake_get_access_token() -> str | None:
+        return None
+
+    async def _fake_run_setup_wizard_tui(**kwargs) -> SetupWizardResult:
+        assert kwargs["has_codex_cli"] is False
+        assert kwargs["has_claude_code_cli"] is True
+        assert callable(kwargs["inspect_claude_configuration_operation"])
+        assert callable(kwargs["clear_claude_operation"])
+        assert await kwargs["inspect_claude_configuration_operation"]() == (
+            SetupClaudeConfiguration(
+                configured=True,
+                project_id="project-old",
+            )
+        )
+        await kwargs["clear_claude_operation"]()
+        return SetupWizardResult(status="canceled", message="Setup canceled.")
+
+    def _fake_inspect_claude_code_integration():
+        return SimpleNamespace(configured=True, project_id="project-old")
+
+    def _fake_clear_claude_code_integration() -> bool:
+        nonlocal cleared
+        cleared = True
+        return True
+
+    monkeypatch.setattr(
+        "meshagent.cli.helper.get_active_project",
+        _fake_get_active_project,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tui.setup.run_setup_wizard_tui",
+        _fake_run_setup_wizard_tui,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.auth_async.get_access_token",
+        _fake_get_access_token,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.has_codex_cli",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.has_claude_code_cli",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.inspect_claude_code_integration",
+        _fake_inspect_claude_code_integration,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.clear_claude_code_integration",
+        _fake_clear_claude_code_integration,
+    )
+    monkeypatch.setattr(
+        root_commands,
+        "_run_async",
+        lambda coro: asyncio.run(coro),
+    )
+
+    callback = root_commands.setup_command.callback
+    assert callback is not None
+    callback()
+
+    assert cleared is True
+
+
 def test_setup_command_passes_api_url_to_login_operation(monkeypatch) -> None:
     captured: dict[str, str | None] = {}
 
@@ -515,9 +696,13 @@ def test_setup_command_passes_api_url_to_login_operation(monkeypatch) -> None:
         assert kwargs["has_claude_code_cli"] is False
         assert kwargs["list_existing_codex_profiles_operation"] is None
         assert kwargs["configure_codex_profile_operation"] is None
+        assert kwargs["replace_codex_profile_operation"] is None
+        assert kwargs["remove_codex_profile_operation"] is None
         assert kwargs["get_current_codex_default_profile_operation"] is None
         assert kwargs["configure_codex_default_profile_operation"] is None
         assert kwargs["configure_claude_operation"] is None
+        assert kwargs["inspect_claude_configuration_operation"] is None
+        assert kwargs["clear_claude_operation"] is None
         await kwargs["login_operation"](lambda _message: None)
         return SetupWizardResult(status="canceled", message="Setup canceled.")
 
