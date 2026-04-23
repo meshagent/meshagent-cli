@@ -1,4 +1,7 @@
 import asyncio
+import shutil
+import sys
+from pathlib import Path
 
 import click
 from rich import print
@@ -43,6 +46,35 @@ def _run_async(coro):
     asyncio.run(coro)
 
 
+def _current_meshagent_executable() -> str | None:
+    argv0 = sys.argv[0].strip() if sys.argv else ""
+    if argv0 == "":
+        return None
+
+    resolved_path: str | None
+    if "/" in argv0:
+        resolved_path = argv0
+    else:
+        resolved_path = shutil.which(argv0)
+
+    if resolved_path is None:
+        return None
+
+    candidate = resolved_path.strip()
+    if candidate == "":
+        return None
+
+    try:
+        resolved_candidate = Path(candidate).expanduser().resolve()
+    except OSError:
+        return None
+
+    if not resolved_candidate.exists() or resolved_candidate.stem != "meshagent":
+        return None
+
+    return str(resolved_candidate)
+
+
 @click.command(
     "version",
     help="Print the version",
@@ -80,6 +112,8 @@ def setup_command(api_url: str | None = None):
             SetupProject,
             run_setup_wizard_tui,
         )
+
+        current_meshagent_executable = _current_meshagent_executable()
 
         async def list_setup_projects() -> list[SetupProject]:
             client = await get_client()
@@ -154,6 +188,7 @@ def setup_command(api_url: str | None = None):
             configure_codex_integration(
                 profile_id=profile_id,
                 api_url=resolve_api_url(),
+                meshagent_executable=current_meshagent_executable,
             )
 
         async def list_existing_codex_profiles(project_id: str) -> list[str]:

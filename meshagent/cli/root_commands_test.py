@@ -176,6 +176,81 @@ def test_setup_command_does_not_launch_ask_when_not_completed(monkeypatch) -> No
     assert launched is False
 
 
+def test_setup_command_passes_current_cli_path_to_codex_configuration(
+    monkeypatch,
+) -> None:
+    captured: dict[str, str | None] = {}
+
+    async def _fake_get_active_project() -> str | None:
+        return None
+
+    async def _fake_get_access_token() -> str | None:
+        return None
+
+    async def _fake_run_setup_wizard_tui(**kwargs) -> SetupWizardResult:
+        assert kwargs["has_codex_cli"] is True
+        assert callable(kwargs["configure_codex_profile_operation"])
+        await kwargs["configure_codex_profile_operation"]("meshagent-work")
+        return SetupWizardResult(status="canceled", message="Setup canceled.")
+
+    def _fake_configure_codex_integration(
+        *,
+        profile_id: str,
+        api_url: str | None = None,
+        meshagent_executable: str | None = None,
+        **kwargs,
+    ) -> None:
+        captured["profile_id"] = profile_id
+        captured["api_url"] = api_url
+        captured["meshagent_executable"] = meshagent_executable
+        assert kwargs == {}
+
+    monkeypatch.setattr(
+        "meshagent.cli.helper.get_active_project",
+        _fake_get_active_project,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tui.setup.run_setup_wizard_tui",
+        _fake_run_setup_wizard_tui,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.auth_async.get_access_token",
+        _fake_get_access_token,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.has_codex_cli",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.configure_codex_integration",
+        _fake_configure_codex_integration,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.local_settings.resolve_api_url",
+        lambda *, api_url=None: "https://api.meshagent.com",
+    )
+    monkeypatch.setattr(
+        root_commands,
+        "_current_meshagent_executable",
+        lambda: "/tmp/current/bin/meshagent",
+    )
+    monkeypatch.setattr(
+        root_commands,
+        "_run_async",
+        lambda coro: asyncio.run(coro),
+    )
+
+    callback = root_commands.setup_command.callback
+    assert callback is not None
+    callback()
+
+    assert captured == {
+        "profile_id": "meshagent-work",
+        "api_url": "https://api.meshagent.com",
+        "meshagent_executable": "/tmp/current/bin/meshagent",
+    }
+
+
 def test_setup_command_passes_api_url_to_login_operation(monkeypatch) -> None:
     captured: dict[str, str | None] = {}
 

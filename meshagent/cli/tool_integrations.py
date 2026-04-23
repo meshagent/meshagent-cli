@@ -8,13 +8,11 @@ import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from stat import S_IXGRP, S_IXOTH, S_IXUSR
 from typing import Callable, Protocol
 
 import click
 
 from meshagent.cli.local_settings import (
-    SETTINGS_DIR,
     get_active_project,
     resolve_api_url,
 )
@@ -24,7 +22,6 @@ CODEX_DEFAULT_PROFILE_ID = "meshagent"
 CODEX_AUTH_TIMEOUT_MS = 10_000
 CODEX_AUTH_REFRESH_INTERVAL_MS = 240_000
 CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
-CODEX_AUTH_WRAPPER_DIR = SETTINGS_DIR / "bin"
 CODEX_PROFILE_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -262,42 +259,17 @@ def _resolve_meshagent_auth_command(
     return shlex.join([sys.executable, "-m", "meshagent.cli.cli", "auth", "token"])
 
 
-def _default_codex_auth_wrapper_path(*, profile_id: str) -> Path:
-    return CODEX_AUTH_WRAPPER_DIR / f"codex-meshagent-auth-{profile_id}"
-
-
-def _write_codex_auth_wrapper(
-    *,
-    profile_id: str,
-    meshagent_executable: str | None = None,
-    auth_wrapper_path: Path | None = None,
-) -> Path:
-    resolved_wrapper_path = auth_wrapper_path or _default_codex_auth_wrapper_path(
-        profile_id=profile_id
-    )
-    resolved_wrapper_path.parent.mkdir(parents=True, exist_ok=True)
-    command = _resolve_meshagent_auth_command(meshagent_executable=meshagent_executable)
-    resolved_wrapper_path.write_text(f"#!/bin/sh\nexec {command}\n")
-    resolved_wrapper_path.chmod(
-        resolved_wrapper_path.stat().st_mode | S_IXUSR | S_IXGRP | S_IXOTH
-    )
-    return resolved_wrapper_path
-
-
 def _codex_profile_block(
     *,
     project_id: str,
     profile_id: str,
     api_url: str | None = None,
     meshagent_executable: str | None = None,
-    auth_wrapper_path: Path | None = None,
     model: str = CODEX_DEFAULT_MODEL,
 ) -> str:
     provider_base_url = _codex_provider_base_url(api_url=api_url)
-    wrapper_path = _write_codex_auth_wrapper(
-        profile_id=profile_id,
-        meshagent_executable=meshagent_executable,
-        auth_wrapper_path=auth_wrapper_path,
+    auth_command = _resolve_meshagent_auth_command(
+        meshagent_executable=meshagent_executable
     )
 
     lines = [
@@ -307,7 +279,7 @@ def _codex_profile_block(
         f'http_headers = {{"Meshagent-Project-Id"={json.dumps(project_id)}}}',
         "",
         f"[model_providers.{profile_id}.auth]",
-        f"command = {json.dumps(str(wrapper_path))}",
+        f"command = {json.dumps(auth_command)}",
         f"timeout_ms = {CODEX_AUTH_TIMEOUT_MS}",
         f"refresh_interval_ms = {CODEX_AUTH_REFRESH_INTERVAL_MS}",
         "",
@@ -335,7 +307,6 @@ def configure_codex_integration(
     meshagent_executable: str | None = None,
     model: str = CODEX_DEFAULT_MODEL,
     config_path: Path = CODEX_CONFIG_PATH,
-    auth_wrapper_path: Path | None = None,
 ) -> CodexIntegrationResult:
     del project_name
 
@@ -370,7 +341,6 @@ def configure_codex_integration(
         profile_id=resolved_profile_id,
         api_url=api_url,
         meshagent_executable=meshagent_executable,
-        auth_wrapper_path=auth_wrapper_path,
         model=model,
     )
     config_path.write_text(_append_codex_profile(existing, profile_block=profile_block))
@@ -395,7 +365,6 @@ def maybe_configure_local_tool_integrations(
     echo_fn: Callable[[str], None] = click.echo,
     which: Callable[[str], str | None] = shutil.which,
     config_path: Path = CODEX_CONFIG_PATH,
-    auth_wrapper_path: Path | None = None,
 ) -> None:
     del project_name
 
@@ -453,7 +422,6 @@ def maybe_configure_local_tool_integrations(
         meshagent_executable=meshagent_executable,
         model=model,
         config_path=config_path,
-        auth_wrapper_path=auth_wrapper_path,
     )
     echo_fn(
         f"Configured Codex profile `{result.profile_id}` in {result.config_path}. "

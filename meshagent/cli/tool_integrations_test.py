@@ -9,7 +9,6 @@ def test_configure_codex_integration_writes_named_profile(
     monkeypatch, tmp_path: Path
 ) -> None:
     config_path = tmp_path / "config.toml"
-    wrapper_path = tmp_path / "bin" / "codex-meshagent-auth"
 
     monkeypatch.setattr(
         tool_integrations,
@@ -22,7 +21,6 @@ def test_configure_codex_integration_writes_named_profile(
         api_url="https://api.meshagent.life",
         meshagent_executable="/tmp/meshagent-life/bin/meshagent",
         config_path=config_path,
-        auth_wrapper_path=wrapper_path,
     )
 
     assert result.changed is True
@@ -35,7 +33,7 @@ def test_configure_codex_integration_writes_named_profile(
         'http_headers = {"Meshagent-Project-Id"="project-life"}\n'
         "\n"
         "[model_providers.meshagent.auth]\n"
-        f'command = "{wrapper_path}"\n'
+        'command = "/tmp/meshagent-life/bin/meshagent auth token"\n'
         "timeout_ms = 10000\n"
         "refresh_interval_ms = 240000\n"
         "\n"
@@ -43,10 +41,6 @@ def test_configure_codex_integration_writes_named_profile(
         'model_provider = "meshagent"\n'
         'model = "gpt-5.4"\n'
     )
-    assert wrapper_path.read_text() == (
-        "#!/bin/sh\nexec /tmp/meshagent-life/bin/meshagent auth token\n"
-    )
-    assert wrapper_path.stat().st_mode & 0o111 == 0o111
 
 
 def test_configure_codex_integration_appends_after_existing_content(
@@ -54,7 +48,6 @@ def test_configure_codex_integration_appends_after_existing_content(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.toml"
-    wrapper_path = tmp_path / "bin" / "codex-meshagent-auth"
     config_path.write_text('model = "gpt-5.4"\n')
 
     monkeypatch.setattr(
@@ -68,7 +61,6 @@ def test_configure_codex_integration_appends_after_existing_content(
         api_url="https://api.meshagent.com",
         meshagent_executable="/opt/homebrew/bin/meshagent",
         config_path=config_path,
-        auth_wrapper_path=wrapper_path,
     )
 
     updated = config_path.read_text()
@@ -78,9 +70,7 @@ def test_configure_codex_integration_appends_after_existing_content(
     assert updated.startswith('model = "gpt-5.4"\n\n')
     assert "[model_providers.meshagent-prod]\n" in updated
     assert "[profiles.meshagent-prod]\n" in updated
-    assert wrapper_path.read_text() == (
-        "#!/bin/sh\nexec /opt/homebrew/bin/meshagent auth token\n"
-    )
+    assert 'command = "/opt/homebrew/bin/meshagent auth token"\n' in updated
 
 
 def test_configure_codex_integration_rejects_profile_name_in_use(
@@ -113,7 +103,7 @@ def test_configure_codex_integration_rejects_profile_name_in_use(
         )
 
 
-def test_configure_codex_integration_uses_profile_specific_default_wrapper_paths(
+def test_configure_codex_integration_does_not_create_auth_wrapper_files(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -124,11 +114,6 @@ def test_configure_codex_integration_uses_profile_specific_default_wrapper_paths
         tool_integrations,
         "get_active_project",
         lambda: "project-1",
-    )
-    monkeypatch.setattr(
-        tool_integrations,
-        "CODEX_AUTH_WRAPPER_DIR",
-        wrapper_dir,
     )
 
     tool_integrations.configure_codex_integration(
@@ -146,12 +131,13 @@ def test_configure_codex_integration_uses_profile_specific_default_wrapper_paths
         config_path=config_path,
     )
 
+    assert wrapper_dir.exists() is False
     assert (
-        wrapper_dir / "codex-meshagent-auth-meshagent"
-    ).read_text() == "#!/bin/sh\nexec /opt/homebrew/bin/meshagent auth token\n"
-    assert (
-        wrapper_dir / "codex-meshagent-auth-meshagent-work"
-    ).read_text() == "#!/bin/sh\nexec /opt/homebrew/bin/meshagent auth token\n"
+        config_path.read_text().count(
+            'command = "/opt/homebrew/bin/meshagent auth token"\n'
+        )
+        == 2
+    )
 
 
 def test_configure_codex_integration_requires_active_project(
@@ -269,7 +255,6 @@ def test_maybe_configure_local_tool_integrations_retries_until_profile_name_is_u
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.toml"
-    wrapper_path = tmp_path / "bin" / "codex-meshagent-auth"
     config_path.write_text(
         '[profiles.meshagent]\nmodel_provider = "meshagent"\nmodel = "gpt-5.4"\n'
     )
@@ -285,7 +270,6 @@ def test_maybe_configure_local_tool_integrations_retries_until_profile_name_is_u
         echo_fn=messages.append,
         which=lambda command: "/opt/homebrew/bin/codex" if command == "codex" else None,
         config_path=config_path,
-        auth_wrapper_path=wrapper_path,
     )
 
     assert messages == [
@@ -302,4 +286,6 @@ def test_maybe_configure_local_tool_integrations_retries_until_profile_name_is_u
             "Use `codex -p meshagent-work` to run Codex through MeshAgent."
         ),
     ]
-    assert "[profiles.meshagent-work]\n" in config_path.read_text()
+    updated = config_path.read_text()
+    assert "[profiles.meshagent-work]\n" in updated
+    assert 'command = "/opt/homebrew/bin/meshagent auth token"\n' in updated
