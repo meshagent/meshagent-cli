@@ -94,7 +94,10 @@ class CommandInvocation:
     args: tuple[str, ...]
 
     def shell_command(self) -> str:
-        return shlex.join([self.command, *self.args])
+        command_parts = [self.command, *self.args]
+        if sys.platform == "win32":
+            return subprocess.list2cmdline(command_parts)
+        return shlex.join(command_parts)
 
 
 type TomlTable = dict[str, object]
