@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -205,6 +206,95 @@ def test_find_existing_codex_profiles_returns_matching_profiles(
     ) == ["meshagent", "meshagent-work"]
 
 
+def test_find_current_codex_default_profile_returns_matching_profile(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'profile = "meshagent-work"\n'
+        "\n"
+        "[model_providers.meshagent-work]\n"
+        'name = "MeshAgent"\n'
+        'base_url = "https://api.meshagent.life/openai/v1"\n'
+        'http_headers = {"Meshagent-Project-Id"="project-life"}\n'
+        "\n"
+        "[profiles.meshagent-work]\n"
+        'model_provider = "meshagent-work"\n'
+        'model = "gpt-5.4"\n'
+    )
+
+    monkeypatch.setattr(
+        tool_integrations,
+        "get_active_project",
+        lambda: "project-life",
+    )
+
+    assert (
+        tool_integrations.find_current_codex_default_profile(
+            api_url="https://api.meshagent.life",
+            config_path=config_path,
+        )
+        == "meshagent-work"
+    )
+
+
+def test_set_codex_default_profile_writes_root_profile_setting(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "[model_providers.meshagent]\n"
+        'name = "MeshAgent"\n'
+        "\n"
+        "[profiles.meshagent]\n"
+        'model_provider = "meshagent"\n'
+        'model = "gpt-5.4"\n'
+    )
+
+    assert (
+        tool_integrations.set_codex_default_profile(
+            profile_id="meshagent",
+            config_path=config_path,
+        )
+        is True
+    )
+    assert config_path.read_text().startswith('profile = "meshagent"\n')
+
+
+def test_clear_codex_default_profile_if_meshagent_project_removes_profile(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'profile = "meshagent"\n'
+        "\n"
+        "[model_providers.meshagent]\n"
+        'name = "MeshAgent"\n'
+        'base_url = "https://api.meshagent.life/openai/v1"\n'
+        'http_headers = {"Meshagent-Project-Id"="project-life"}\n'
+        "\n"
+        "[profiles.meshagent]\n"
+        'model_provider = "meshagent"\n'
+        'model = "gpt-5.4"\n'
+    )
+
+    monkeypatch.setattr(
+        tool_integrations,
+        "get_active_project",
+        lambda: "project-life",
+    )
+
+    assert (
+        tool_integrations.clear_codex_default_profile_if_meshagent_project(
+            api_url="https://api.meshagent.life",
+            config_path=config_path,
+        )
+        is True
+    )
+    assert 'profile = "meshagent"\n' not in config_path.read_text()
+
+
 def test_maybe_configure_local_tool_integrations_skips_when_codex_missing() -> None:
     confirmations: list[str] = []
     prompts: list[str] = []
@@ -292,6 +382,92 @@ def test_maybe_configure_local_tool_integrations_retries_until_profile_name_is_u
     assert 'command = "/opt/homebrew/bin/meshagent auth token"\n' in updated
 
 
+def test_build_codex_launch_command_sets_profile_overrides() -> None:
+    command = tool_integrations.build_codex_launch_command(
+        project_id="project-123",
+        api_url="https://api.meshagent.test",
+        extra_args=("--search", "fix auth flow"),
+        meshagent_executable="/tmp/meshagent-life/bin/meshagent",
+        codex_executable="/tmp/codex",
+    )
+
+    assert command == [
+        "/tmp/codex",
+        "-c",
+        'model_providers.meshagent.name="MeshAgent"',
+        "-c",
+        'model_providers.meshagent.base_url="https://api.meshagent.test/openai/v1"',
+        "-c",
+        'model_providers.meshagent.http_headers={"Meshagent-Project-Id"="project-123"}',
+        "-c",
+        'model_providers.meshagent.auth.command="/tmp/meshagent-life/bin/meshagent auth token"',
+        "-c",
+        "model_providers.meshagent.auth.timeout_ms=10000",
+        "-c",
+        "model_providers.meshagent.auth.refresh_interval_ms=240000",
+        "-c",
+        'profiles.meshagent.model_provider="meshagent"',
+        "-c",
+        'profiles.meshagent.model="gpt-5.4"',
+        "-p",
+        "meshagent",
+        "--search",
+        "fix auth flow",
+    ]
+
+
+def test_build_codex_launch_command_rejects_profile_override() -> None:
+    with pytest.raises(RuntimeError, match="`meshagent launch codex`"):
+        tool_integrations.build_codex_launch_command(
+            project_id="project-123",
+            extra_args=("--profile", "custom"),
+            codex_executable="/tmp/codex",
+        )
+
+
+def test_launch_codex_runs_subprocess() -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_run(command, *, check: bool):
+        captured["command"] = command
+        captured["check"] = check
+        return SimpleNamespace(returncode=9)
+
+    exit_code = tool_integrations.launch_codex(
+        project_id="project-123",
+        api_url="https://api.meshagent.test",
+        extra_args=("write tests",),
+        meshagent_executable="/tmp/meshagent-life/bin/meshagent",
+        codex_executable="/tmp/codex",
+        command_runner=_fake_run,
+    )
+
+    assert exit_code == 9
+    assert captured["check"] is False
+    assert captured["command"] == [
+        "/tmp/codex",
+        "-c",
+        'model_providers.meshagent.name="MeshAgent"',
+        "-c",
+        'model_providers.meshagent.base_url="https://api.meshagent.test/openai/v1"',
+        "-c",
+        'model_providers.meshagent.http_headers={"Meshagent-Project-Id"="project-123"}',
+        "-c",
+        'model_providers.meshagent.auth.command="/tmp/meshagent-life/bin/meshagent auth token"',
+        "-c",
+        "model_providers.meshagent.auth.timeout_ms=10000",
+        "-c",
+        "model_providers.meshagent.auth.refresh_interval_ms=240000",
+        "-c",
+        'profiles.meshagent.model_provider="meshagent"',
+        "-c",
+        'profiles.meshagent.model="gpt-5.4"',
+        "-p",
+        "meshagent",
+        "write tests",
+    ]
+
+
 def test_build_claude_code_env_sets_project_header_and_base_url() -> None:
     env = tool_integrations.build_claude_code_env(
         project_id="project-123",
@@ -310,6 +486,38 @@ def test_build_claude_code_env_sets_project_header_and_base_url() -> None:
     assert env["ANTHROPIC_CUSTOM_HEADERS"] == "Meshagent-Project-Id: project-123"
     assert "ANTHROPIC_API_KEY" not in env
     assert "ANTHROPIC_AUTH_TOKEN" not in env
+
+
+def test_configure_claude_code_integration_writes_settings_json(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    settings_path = tmp_path / "claude" / "settings.json"
+
+    monkeypatch.setattr(
+        tool_integrations,
+        "get_active_project",
+        lambda: "project-123",
+    )
+
+    result = tool_integrations.configure_claude_code_integration(
+        project_id="project-123",
+        api_url="https://api.meshagent.test",
+        meshagent_executable="/tmp/meshagent-life/bin/meshagent",
+        settings_path=settings_path,
+    )
+
+    assert result.changed is True
+    assert result.settings_path == settings_path
+    assert json.loads(settings_path.read_text()) == {
+        "env": {
+            "MESHAGENT_API_URL": "https://api.meshagent.test",
+            "MESHAGENT_PROJECT_ID": "project-123",
+            "ANTHROPIC_BASE_URL": "https://api.meshagent.test/anthropic",
+            "ANTHROPIC_CUSTOM_HEADERS": "Meshagent-Project-Id: project-123",
+        },
+        "apiKeyHelper": "/tmp/meshagent-life/bin/meshagent auth token",
+    }
 
 
 def test_build_claude_code_command_uses_api_key_helper() -> None:
@@ -346,7 +554,7 @@ def test_resolve_meshagent_auth_command_falls_back_for_non_executable_argv0(
 
 
 def test_build_claude_code_command_rejects_settings_override() -> None:
-    with pytest.raises(RuntimeError, match="`meshagent claude-code`"):
+    with pytest.raises(RuntimeError, match="`meshagent launch claude`"):
         tool_integrations.build_claude_code_command(
             extra_args=("--settings", "{}"),
             claude_executable="/tmp/claude",

@@ -98,10 +98,10 @@ app.add_lazy_command(
     attribute="ask_command",
 )
 app.add_lazy_command(
-    name="claude-code",
-    module="meshagent.cli.claude_code",
-    attribute="claude_code_command",
-    help="Launch Claude Code through MeshAgent",
+    name="launch",
+    module="meshagent.cli.launch",
+    attribute="launch_group",
+    help="Launch CLI apps through MeshAgent",
 )
 app.add_lazy_command(
     name="token",

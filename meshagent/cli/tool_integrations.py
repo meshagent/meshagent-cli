@@ -44,7 +44,14 @@ class CodexIntegrationResult:
     changed: bool
 
 
+@dataclass(frozen=True, slots=True)
+class ClaudeIntegrationResult:
+    settings_path: Path
+    changed: bool
+
+
 type TomlTable = dict[str, object]
+type JsonObject = dict[str, object]
 
 
 def _codex_provider_base_url(*, api_url: str | None = None) -> str:
@@ -232,6 +239,44 @@ def has_claude_code_cli(
     return which("claude") is not None
 
 
+def resolve_current_meshagent_executable(
+    *,
+    argv: Sequence[str] | None = None,
+    which: Callable[[str], str | None] = shutil.which,
+) -> str | None:
+    resolved_argv = argv if argv is not None else sys.argv
+    argv0 = resolved_argv[0].strip() if len(resolved_argv) > 0 else ""
+    if argv0 == "":
+        return None
+
+    resolved_path: str | None
+    if "/" in argv0:
+        resolved_path = argv0
+    else:
+        resolved_path = which(argv0)
+
+    if resolved_path is None:
+        return None
+
+    candidate = resolved_path.strip()
+    if candidate == "":
+        return None
+
+    try:
+        resolved_candidate = Path(candidate).expanduser().resolve()
+    except OSError:
+        return None
+
+    if (
+        not resolved_candidate.exists()
+        or resolved_candidate.stem != "meshagent"
+        or not os.access(resolved_candidate, os.X_OK)
+    ):
+        return None
+
+    return str(resolved_candidate)
+
+
 def _resolve_meshagent_auth_command(
     *,
     meshagent_executable: str | None = None,
@@ -240,14 +285,9 @@ def _resolve_meshagent_auth_command(
         return shlex.join([meshagent_executable.strip(), "auth", "token"])
 
     candidates: list[Path] = []
-    argv0 = sys.argv[0].strip() if sys.argv[0] else ""
-    if argv0 != "":
-        if "/" in argv0:
-            candidates.append(Path(argv0).expanduser())
-        else:
-            resolved_argv0 = shutil.which(argv0)
-            if resolved_argv0 is not None:
-                candidates.append(Path(resolved_argv0))
+    current_meshagent_executable = resolve_current_meshagent_executable()
+    if current_meshagent_executable is not None:
+        candidates.append(Path(current_meshagent_executable))
 
     resolved_meshagent = shutil.which("meshagent")
     if resolved_meshagent is not None:
@@ -453,8 +493,365 @@ def _resolve_active_project_id(
     return resolved_project_id.strip()
 
 
+def find_current_codex_default_profile(
+    *,
+    project_id: str | None = None,
+    api_url: str | None = None,
+    config_path: Path = CODEX_CONFIG_PATH,
+) -> str | None:
+    resolved_project_id = _resolve_active_project_id(
+        project_id=project_id,
+        missing_project_message=(
+            "An active MeshAgent project is required to inspect the Codex default profile."
+        ),
+    )
+
+    config = _parse_codex_config(
+        _read_codex_config(config_path),
+        config_path=config_path,
+    )
+    default_profile_id = _toml_str(config.get("profile"))
+    if default_profile_id is None:
+        return None
+
+    profiles = _codex_root_table(config, name="profiles")
+    model_providers = _codex_root_table(config, name="model_providers")
+    profile = _toml_table(profiles.get(default_profile_id))
+    if profile is None:
+        return None
+
+    model_provider_id = _toml_str(profile.get("model_provider"))
+    if model_provider_id is None:
+        return None
+
+    provider = _toml_table(model_providers.get(model_provider_id))
+    if provider is None:
+        return None
+
+    if not _provider_matches_meshagent_project(
+        provider,
+        project_id=resolved_project_id,
+        provider_base_url=_codex_provider_base_url(api_url=api_url),
+    ):
+        return None
+
+    return default_profile_id
+
+
+def _is_toml_table_header_line(line: str) -> bool:
+    stripped = line.lstrip()
+    if stripped == "" or stripped.startswith("#"):
+        return False
+
+    content = stripped.split("#", 1)[0].rstrip()
+    return content.startswith("[") and content.endswith("]")
+
+
+def _is_root_toml_key_assignment(line: str, *, key: str) -> bool:
+    stripped = line.lstrip()
+    if stripped == "" or stripped.startswith("#"):
+        return False
+
+    content = stripped.split("#", 1)[0].rstrip()
+    return re.match(rf"^{re.escape(key)}\s*=", content) is not None
+
+
+def _upsert_root_toml_string_setting(
+    existing: str,
+    *,
+    key: str,
+    value: str | None,
+) -> str:
+    lines = existing.splitlines(keepends=True)
+    updated_lines: list[str] = []
+    in_root_section = True
+    replaced_existing = False
+
+    for line in lines:
+        if in_root_section and _is_toml_table_header_line(line):
+            if value is not None and not replaced_existing:
+                updated_lines.append(f"{key} = {json.dumps(value)}\n")
+                replaced_existing = True
+            in_root_section = False
+
+        if in_root_section and _is_root_toml_key_assignment(line, key=key):
+            if value is not None and not replaced_existing:
+                updated_lines.append(f"{key} = {json.dumps(value)}\n")
+                replaced_existing = True
+            continue
+
+        updated_lines.append(line)
+    if in_root_section and value is not None and not replaced_existing:
+        updated_lines.append(f"{key} = {json.dumps(value)}\n")
+
+    return "".join(updated_lines)
+
+
+def set_codex_default_profile(
+    *,
+    profile_id: str | None,
+    config_path: Path = CODEX_CONFIG_PATH,
+) -> bool:
+    existing = _read_codex_config(config_path)
+    if profile_id is not None:
+        resolved_profile_id = _validate_profile_identifier(profile_id)
+        config = _parse_codex_config(existing, config_path=config_path)
+        profiles = _codex_root_table(config, name="profiles")
+        if resolved_profile_id not in profiles:
+            raise ValueError(
+                f"Codex profile `{resolved_profile_id}` is not defined in {config_path}."
+            )
+    else:
+        resolved_profile_id = None
+
+    updated = _upsert_root_toml_string_setting(
+        existing,
+        key="profile",
+        value=resolved_profile_id,
+    )
+    if updated == existing:
+        return False
+
+    if updated == "":
+        if config_path.exists():
+            config_path.write_text("")
+        return True
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(updated)
+    return True
+
+
+def clear_codex_default_profile_if_meshagent_project(
+    *,
+    project_id: str | None = None,
+    api_url: str | None = None,
+    config_path: Path = CODEX_CONFIG_PATH,
+) -> bool:
+    current_default_profile_id = find_current_codex_default_profile(
+        project_id=project_id,
+        api_url=api_url,
+        config_path=config_path,
+    )
+    if current_default_profile_id is None:
+        return False
+
+    return set_codex_default_profile(profile_id=None, config_path=config_path)
+
+
+def _toml_inline_string_map(values: dict[str, str]) -> str:
+    items = ", ".join(
+        f"{json.dumps(key)}={json.dumps(value)}" for key, value in values.items()
+    )
+    return f"{{{items}}}"
+
+
+def build_codex_launch_command(
+    *,
+    project_id: str | None = None,
+    api_url: str | None = None,
+    extra_args: Sequence[str] = (),
+    meshagent_executable: str | None = None,
+    codex_executable: str | None = None,
+    profile_id: str = CODEX_DEFAULT_PROFILE_ID,
+    model: str = CODEX_DEFAULT_MODEL,
+) -> list[str]:
+    resolved_project_id = _resolve_active_project_id(
+        project_id=project_id,
+        missing_project_message=(
+            "An active MeshAgent project is required to launch Codex."
+        ),
+    )
+    resolved_codex_executable = codex_executable or shutil.which("codex")
+    if resolved_codex_executable is None:
+        raise RuntimeError("Codex is not installed.")
+
+    normalized_profile_id = _validate_profile_identifier(profile_id)
+    normalized_extra_args = list(extra_args)
+
+    for index, arg in enumerate(normalized_extra_args):
+        if arg in ("-p", "--profile") or arg.startswith("--profile="):
+            raise RuntimeError(
+                "`meshagent launch codex` manages the Codex profile automatically; "
+                "remove `--profile` from the forwarded Codex arguments."
+            )
+        if arg in ("-c", "--config") and index + 1 < len(normalized_extra_args):
+            next_arg = normalized_extra_args[index + 1].strip()
+            if next_arg.startswith("profile="):
+                raise RuntimeError(
+                    "`meshagent launch codex` manages the Codex profile automatically; "
+                    "remove profile overrides from the forwarded Codex arguments."
+                )
+        if arg.startswith("--config="):
+            config_override = arg.split("=", 1)[1].strip()
+            if config_override.startswith("profile="):
+                raise RuntimeError(
+                    "`meshagent launch codex` manages the Codex profile automatically; "
+                    "remove profile overrides from the forwarded Codex arguments."
+                )
+
+    provider_base_url = _codex_provider_base_url(api_url=api_url)
+    auth_command = _resolve_meshagent_auth_command(
+        meshagent_executable=meshagent_executable
+    )
+    http_headers = _toml_inline_string_map(
+        {"Meshagent-Project-Id": resolved_project_id}
+    )
+
+    return [
+        resolved_codex_executable,
+        "-c",
+        f"model_providers.{normalized_profile_id}.name={json.dumps('MeshAgent')}",
+        "-c",
+        f"model_providers.{normalized_profile_id}.base_url={json.dumps(provider_base_url)}",
+        "-c",
+        f"model_providers.{normalized_profile_id}.http_headers={http_headers}",
+        "-c",
+        f"model_providers.{normalized_profile_id}.auth.command={json.dumps(auth_command)}",
+        "-c",
+        (
+            f"model_providers.{normalized_profile_id}.auth.timeout_ms="
+            f"{CODEX_AUTH_TIMEOUT_MS}"
+        ),
+        "-c",
+        (
+            f"model_providers.{normalized_profile_id}.auth.refresh_interval_ms="
+            f"{CODEX_AUTH_REFRESH_INTERVAL_MS}"
+        ),
+        "-c",
+        (
+            f"profiles.{normalized_profile_id}.model_provider="
+            f"{json.dumps(normalized_profile_id)}"
+        ),
+        "-c",
+        f"profiles.{normalized_profile_id}.model={json.dumps(model)}",
+        "-p",
+        normalized_profile_id,
+        *normalized_extra_args,
+    ]
+
+
+def launch_codex(
+    *,
+    project_id: str | None = None,
+    api_url: str | None = None,
+    extra_args: Sequence[str] = (),
+    meshagent_executable: str | None = None,
+    codex_executable: str | None = None,
+    profile_id: str = CODEX_DEFAULT_PROFILE_ID,
+    model: str = CODEX_DEFAULT_MODEL,
+    command_runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+) -> int:
+    command = build_codex_launch_command(
+        project_id=project_id,
+        api_url=api_url,
+        extra_args=extra_args,
+        meshagent_executable=meshagent_executable,
+        codex_executable=codex_executable,
+        profile_id=profile_id,
+        model=model,
+    )
+    result = command_runner(command, check=False)
+    return result.returncode
+
+
 def _claude_code_base_url(*, api_url: str | None = None) -> str:
     return f"{resolve_api_url(api_url=api_url)}/anthropic"
+
+
+def _default_claude_code_settings_path() -> Path:
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    if config_dir is not None and config_dir.strip() != "":
+        return Path(config_dir.strip()).expanduser() / "settings.json"
+    return Path.home() / ".claude" / "settings.json"
+
+
+def _read_claude_code_settings(settings_path: Path) -> str:
+    if settings_path.exists():
+        return settings_path.read_text()
+    return ""
+
+
+def _parse_claude_code_settings(
+    existing: str,
+    *,
+    settings_path: Path,
+) -> JsonObject:
+    if existing.strip() == "":
+        return {}
+
+    try:
+        parsed = json.loads(existing)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Unable to parse Claude settings at {settings_path}: {exc}"
+        ) from exc
+
+    resolved_settings = _toml_table(parsed)
+    if resolved_settings is None:
+        raise RuntimeError(
+            f"Unable to parse Claude settings at {settings_path}: top-level object expected."
+        )
+    return resolved_settings
+
+
+def configure_claude_code_integration(
+    *,
+    project_id: str | None = None,
+    api_url: str | None = None,
+    meshagent_executable: str | None = None,
+    settings_path: Path | None = None,
+) -> ClaudeIntegrationResult:
+    resolved_project_id = _resolve_active_project_id(
+        project_id=project_id,
+        missing_project_message=(
+            "An active MeshAgent project is required to configure Claude."
+        ),
+    )
+    resolved_settings_path = settings_path or _default_claude_code_settings_path()
+    existing = _read_claude_code_settings(resolved_settings_path)
+    settings = _parse_claude_code_settings(
+        existing,
+        settings_path=resolved_settings_path,
+    )
+
+    existing_env = settings.get("env")
+    if existing_env is None:
+        env: JsonObject = {}
+    else:
+        env = _toml_table(existing_env)
+        if env is None:
+            raise RuntimeError(
+                f"Unable to parse Claude settings at {resolved_settings_path}: `env` must be an object."
+            )
+
+    env["MESHAGENT_API_URL"] = resolve_api_url(api_url=api_url)
+    env["MESHAGENT_PROJECT_ID"] = resolved_project_id
+    env["ANTHROPIC_BASE_URL"] = _claude_code_base_url(api_url=api_url)
+    env["ANTHROPIC_CUSTOM_HEADERS"] = (
+        f"{CLAUDE_CODE_PROJECT_HEADER}: {resolved_project_id}"
+    )
+    env.pop("ANTHROPIC_API_KEY", None)
+    env.pop("ANTHROPIC_AUTH_TOKEN", None)
+
+    settings["env"] = env
+    settings["apiKeyHelper"] = _resolve_meshagent_auth_command(
+        meshagent_executable=meshagent_executable
+    )
+
+    updated = json.dumps(settings, indent=2) + "\n"
+    if updated == existing:
+        return ClaudeIntegrationResult(
+            settings_path=resolved_settings_path,
+            changed=False,
+        )
+
+    resolved_settings_path.parent.mkdir(parents=True, exist_ok=True)
+    resolved_settings_path.write_text(updated)
+    return ClaudeIntegrationResult(
+        settings_path=resolved_settings_path,
+        changed=True,
+    )
 
 
 def build_claude_code_env(
@@ -466,7 +863,7 @@ def build_claude_code_env(
     resolved_project_id = _resolve_active_project_id(
         project_id=project_id,
         missing_project_message=(
-            "An active MeshAgent project is required to launch Claude Code."
+            "An active MeshAgent project is required to launch Claude."
         ),
     )
     env = dict(base_env) if base_env is not None else os.environ.copy()
@@ -489,7 +886,7 @@ def build_claude_code_command(
 ) -> list[str]:
     resolved_claude_executable = claude_executable or shutil.which("claude")
     if resolved_claude_executable is None:
-        raise RuntimeError("Claude Code is not installed.")
+        raise RuntimeError("Claude is not installed.")
 
     normalized_extra_args = list(extra_args)
     if any(
@@ -497,8 +894,8 @@ def build_claude_code_command(
         for arg in normalized_extra_args
     ):
         raise RuntimeError(
-            "`meshagent claude-code` manages Claude Code auth settings automatically; "
-            "remove `--settings` from the forwarded Claude Code arguments."
+            "`meshagent launch claude` manages Claude auth settings automatically; "
+            "remove `--settings` from the forwarded Claude arguments."
         )
 
     settings_payload = json.dumps(
@@ -538,3 +935,24 @@ def launch_claude_code(
     )
     result = command_runner(command, env=env, check=False)
     return result.returncode
+
+
+def launch_claude(
+    *,
+    project_id: str | None = None,
+    api_url: str | None = None,
+    extra_args: Sequence[str] = (),
+    meshagent_executable: str | None = None,
+    claude_executable: str | None = None,
+    command_runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    base_env: dict[str, str] | None = None,
+) -> int:
+    return launch_claude_code(
+        project_id=project_id,
+        api_url=api_url,
+        extra_args=extra_args,
+        meshagent_executable=meshagent_executable,
+        claude_executable=claude_executable,
+        command_runner=command_runner,
+        base_env=base_env,
+    )

@@ -1,7 +1,4 @@
 import asyncio
-import shutil
-import sys
-from pathlib import Path
 
 import click
 from rich import print
@@ -11,7 +8,9 @@ from meshagent.cli.version import __version__
 
 _SETUP_WELCOME_PROMPT = (
     "welcome {user_name} to meshagent and let them know they can use "
-    "'meshagent ask' to ask questions about meshagent"
+    "'meshagent ask' to ask questions about meshagent. also let them know they "
+    "can run 'meshagent launch codex' or 'meshagent launch claude' to use those "
+    "apps through the meshagent proxy"
 )
 
 
@@ -19,7 +18,9 @@ def _setup_welcome_prompt(*, user_name: str | None) -> str:
     if user_name is None or user_name.strip() == "":
         return (
             "welcome them to meshagent and let them know they can use "
-            "'meshagent ask' to ask questions about meshagent"
+            "'meshagent ask' to ask questions about meshagent. also let them know "
+            "they can run 'meshagent launch codex' or 'meshagent launch claude' "
+            "to use those apps through the meshagent proxy"
         )
 
     return _SETUP_WELCOME_PROMPT.format(user_name=user_name.strip())
@@ -47,32 +48,9 @@ def _run_async(coro):
 
 
 def _current_meshagent_executable() -> str | None:
-    argv0 = sys.argv[0].strip() if sys.argv else ""
-    if argv0 == "":
-        return None
+    from meshagent.cli.tool_integrations import resolve_current_meshagent_executable
 
-    resolved_path: str | None
-    if "/" in argv0:
-        resolved_path = argv0
-    else:
-        resolved_path = shutil.which(argv0)
-
-    if resolved_path is None:
-        return None
-
-    candidate = resolved_path.strip()
-    if candidate == "":
-        return None
-
-    try:
-        resolved_candidate = Path(candidate).expanduser().resolve()
-    except OSError:
-        return None
-
-    if not resolved_candidate.exists() or resolved_candidate.stem != "meshagent":
-        return None
-
-    return str(resolved_candidate)
+    return resolve_current_meshagent_executable()
 
 
 @click.command(
@@ -104,11 +82,14 @@ def setup_command(api_url: str | None = None):
         from meshagent.cli.local_settings import get_active_profile, resolve_api_url
         from meshagent.cli.tool_integrations import (
             CODEX_DEFAULT_PROFILE_ID,
+            clear_codex_default_profile_if_meshagent_project,
             configure_codex_integration,
+            configure_claude_code_integration,
             find_existing_codex_profiles,
+            find_current_codex_default_profile,
             has_claude_code_cli,
             has_codex_cli,
-            launch_claude_code,
+            set_codex_default_profile,
         )
         from meshagent.cli.tui.setup import (
             SetupProject,
@@ -186,6 +167,13 @@ def setup_command(api_url: str | None = None):
                 name=api_key_name,
             )
 
+        async def has_llm_proxy_access(project_id: str) -> bool:
+            client = await get_client()
+            try:
+                return await client.can_use_llm_proxy(project_id)
+            finally:
+                await client.close()
+
         async def configure_codex_profile(profile_id: str) -> None:
             configure_codex_integration(
                 profile_id=profile_id,
@@ -197,6 +185,32 @@ def setup_command(api_url: str | None = None):
             return find_existing_codex_profiles(
                 project_id=project_id,
                 api_url=resolve_api_url(),
+            )
+
+        async def get_current_codex_default_profile(project_id: str) -> str | None:
+            return find_current_codex_default_profile(
+                project_id=project_id,
+                api_url=resolve_api_url(),
+            )
+
+        async def configure_codex_default_profile(
+            project_id: str,
+            profile_id: str | None,
+        ) -> None:
+            if profile_id is None:
+                clear_codex_default_profile_if_meshagent_project(
+                    project_id=project_id,
+                    api_url=resolve_api_url(),
+                )
+                return
+
+            set_codex_default_profile(profile_id=profile_id)
+
+        async def configure_claude(project_id: str) -> None:
+            configure_claude_code_integration(
+                project_id=project_id,
+                api_url=resolve_api_url(),
+                meshagent_executable=current_meshagent_executable,
             )
 
         current_user_name: str | None = None
@@ -224,6 +238,7 @@ def setup_command(api_url: str | None = None):
             activate_project_operation=activate_project,
             has_active_api_key_operation=has_active_api_key,
             create_api_key_operation=create_and_activate_api_key,
+            has_llm_proxy_access_operation=has_llm_proxy_access,
             active_project_id=await get_active_project(),
             has_authenticated_session=has_authenticated_session,
             authenticated_user_name=current_user_name,
@@ -234,6 +249,15 @@ def setup_command(api_url: str | None = None):
             ),
             configure_codex_profile_operation=(
                 configure_codex_profile if codex_available else None
+            ),
+            get_current_codex_default_profile_operation=(
+                get_current_codex_default_profile if codex_available else None
+            ),
+            configure_codex_default_profile_operation=(
+                configure_codex_default_profile if codex_available else None
+            ),
+            configure_claude_operation=(
+                configure_claude if claude_code_available else None
             ),
             default_codex_profile_name=CODEX_DEFAULT_PROFILE_ID,
         )
@@ -266,12 +290,5 @@ def setup_command(api_url: str | None = None):
                     ),
                 ),
             )
-            if result.launch_claude_code:
-                exit_code = launch_claude_code(
-                    project_id=result.project_id,
-                    api_url=resolve_api_url(),
-                )
-                if exit_code != 0:
-                    print(f"Claude Code exited with status {exit_code}.")
 
     _run_async(runner())

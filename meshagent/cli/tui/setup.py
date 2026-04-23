@@ -58,13 +58,26 @@ ACCOUNT_EXIT_OPTION_ID = "__account_exit__"
 CODEX_CONTINUE_OPTION_ID = "__codex_continue__"
 CODEX_CREATE_OPTION_ID = "__codex_create__"
 CODEX_SKIP_OPTION_ID = "__codex_skip__"
-CLAUDE_CODE_LAUNCH_OPTION_ID = "__claude_code_launch__"
-CLAUDE_CODE_SKIP_OPTION_ID = "__claude_code_skip__"
+CODEX_DEFAULT_NONE_OPTION_ID = "__codex_default_none__"
+CODEX_DEFAULT_PROFILE_OPTION_ID_PREFIX = "__codex_default_profile__:"
+CLAUDE_CONFIGURE_OPTION_ID = "__claude_configure__"
+CLAUDE_SKIP_OPTION_ID = "__claude_skip__"
 PROJECT_CREATE_OPTION_ID = "__project_create__"
 PROJECT_EXIT_OPTION_ID = "__project_exit__"
 API_KEY_CREATE_OPTION_ID = "__api_key_create__"
 API_KEY_SKIP_OPTION_ID = "__api_key_skip__"
 ERROR_EXIT_OPTION_ID = "__error_exit__"
+
+
+def _codex_default_profile_option_id(profile_id: str) -> str:
+    return f"{CODEX_DEFAULT_PROFILE_OPTION_ID_PREFIX}{profile_id}"
+
+
+def _codex_default_profile_id_from_option_id(option_id: str) -> str | None:
+    if not option_id.startswith(CODEX_DEFAULT_PROFILE_OPTION_ID_PREFIX):
+        return None
+    return option_id.removeprefix(CODEX_DEFAULT_PROFILE_OPTION_ID_PREFIX)
+
 
 MESHAGENT_SETUP_LOGO_LINES: tuple[str, ...] = (
     "                                                                                ",
@@ -156,7 +169,6 @@ class SetupWizardResult:
     status: Literal["completed", "canceled", "error"]
     message: str | None = None
     project_id: str | None = None
-    launch_claude_code: bool = False
 
 
 LoginStatusHandler = Callable[[str], Awaitable[None] | None]
@@ -166,8 +178,12 @@ CreateProjectOperation = Callable[[str], Awaitable[str]]
 ActivateProjectOperation = Callable[[str], Awaitable[str]]
 HasActiveApiKeyOperation = Callable[[str], Awaitable[bool]]
 CreateApiKeyOperation = Callable[[str, str], Awaitable[None]]
+HasLlmProxyAccessOperation = Callable[[str], Awaitable[bool]]
 ListExistingCodexProfilesOperation = Callable[[str], Awaitable[Sequence[str]]]
 ConfigureCodexProfileOperation = Callable[[str], Awaitable[None]]
+GetCurrentCodexDefaultProfileOperation = Callable[[str], Awaitable[str | None]]
+ConfigureCodexDefaultProfileOperation = Callable[[str, str | None], Awaitable[None]]
+ConfigureClaudeOperation = Callable[[str], Awaitable[None]]
 
 SetupMode = Literal[
     "intro",
@@ -180,7 +196,8 @@ SetupMode = Literal[
     "api_key_name",
     "codex_choice",
     "codex_profile_name",
-    "claude_code_choice",
+    "codex_default_choice",
+    "claude_choice",
     "busy",
     "error",
     "done",
@@ -277,6 +294,7 @@ class SetupWizardApp(App[None]):
         activate_project_operation: ActivateProjectOperation,
         has_active_api_key_operation: HasActiveApiKeyOperation,
         create_api_key_operation: CreateApiKeyOperation,
+        has_llm_proxy_access_operation: HasLlmProxyAccessOperation | None = None,
         active_project_id: str | None = None,
         has_authenticated_session: bool = False,
         authenticated_user_name: str | None = None,
@@ -286,6 +304,13 @@ class SetupWizardApp(App[None]):
             ListExistingCodexProfilesOperation | None
         ) = None,
         configure_codex_profile_operation: ConfigureCodexProfileOperation | None = None,
+        get_current_codex_default_profile_operation: (
+            GetCurrentCodexDefaultProfileOperation | None
+        ) = None,
+        configure_codex_default_profile_operation: (
+            ConfigureCodexDefaultProfileOperation | None
+        ) = None,
+        configure_claude_operation: ConfigureClaudeOperation | None = None,
         default_codex_profile_name: str = "meshagent",
     ) -> None:
         super().__init__()
@@ -295,6 +320,7 @@ class SetupWizardApp(App[None]):
         self._activate_project_operation = activate_project_operation
         self._has_active_api_key_operation = has_active_api_key_operation
         self._create_api_key_operation = create_api_key_operation
+        self._has_llm_proxy_access_operation = has_llm_proxy_access_operation
         self._active_project_id = active_project_id
         self._has_authenticated_session = has_authenticated_session
         self._authenticated_user_name = authenticated_user_name
@@ -304,6 +330,13 @@ class SetupWizardApp(App[None]):
             list_existing_codex_profiles_operation
         )
         self._configure_codex_profile_operation = configure_codex_profile_operation
+        self._get_current_codex_default_profile_operation = (
+            get_current_codex_default_profile_operation
+        )
+        self._configure_codex_default_profile_operation = (
+            configure_codex_default_profile_operation
+        )
+        self._configure_claude_operation = configure_claude_operation
         self._default_codex_profile_name = default_codex_profile_name
 
         self._mode: SetupMode = "intro"
@@ -313,7 +346,11 @@ class SetupWizardApp(App[None]):
         self._continued_with_existing_codex_profiles = False
         self._configured_codex_profile_id: str | None = None
         self._codex_profile_scan_error: str | None = None
-        self._launch_claude_code = False
+        self._can_use_llm_proxy: bool | None = None
+        self._current_codex_default_profile_id: str | None = None
+        self._configured_codex_default_profile_id: str | None = None
+        self._cleared_codex_default_profile = False
+        self._configured_claude = False
         self._status_lines: list[str] = []
         self._auth_url: str | None = None
 
@@ -484,7 +521,7 @@ class SetupWizardApp(App[None]):
 
         if self._mode == "codex_choice":
             if selected_id == CODEX_SKIP_OPTION_ID:
-                await self._maybe_continue_to_claude_code_setup()
+                await self._maybe_continue_to_claude_setup()
                 return
             if selected_id == CODEX_CREATE_OPTION_ID:
                 self._set_mode_codex_profile_name()
@@ -493,12 +530,22 @@ class SetupWizardApp(App[None]):
                 await self._continue_with_existing_codex_profiles()
                 return
 
-        if self._mode == "claude_code_choice":
-            if selected_id == CLAUDE_CODE_SKIP_OPTION_ID:
+        if self._mode == "codex_default_choice":
+            if selected_id == CODEX_DEFAULT_NONE_OPTION_ID:
+                await self._configure_codex_default_profile(None)
+                return
+
+            default_profile_id = _codex_default_profile_id_from_option_id(selected_id)
+            if default_profile_id is not None:
+                await self._configure_codex_default_profile(default_profile_id)
+                return
+
+        if self._mode == "claude_choice":
+            if selected_id == CLAUDE_SKIP_OPTION_ID:
                 await self._finish_success()
                 return
-            if selected_id == CLAUDE_CODE_LAUNCH_OPTION_ID:
-                await self._continue_with_claude_code_launch()
+            if selected_id == CLAUDE_CONFIGURE_OPTION_ID:
+                await self._configure_claude()
                 return
 
         if self._mode == "error" and selected_id == ERROR_EXIT_OPTION_ID:
@@ -703,6 +750,7 @@ class SetupWizardApp(App[None]):
             return
 
         self._selected_project_id = activated_project_id
+        self._can_use_llm_proxy = None
 
         try:
             has_active_key = await self._has_active_api_key_operation(
@@ -758,34 +806,67 @@ class SetupWizardApp(App[None]):
         self._hide_input()
         self._hide_status()
         self._hide_url()
+        if self._can_use_llm_proxy is False:
+            self._set_text(
+                title="Codex Setup",
+                message=(
+                    "Codex was detected on this machine. The MeshAgent proxy "
+                    "lets your team centralize OpenAI and Anthropic billing, "
+                    "usage analytics, and governance in MeshAgent instead of "
+                    "managing separate provider subscriptions. Your MeshAgent "
+                    "account is not currently configured for LLM access for "
+                    "this project. Talk to your account administrator to turn "
+                    "it on, then run setup again."
+                ),
+                help_text="Use Up/Down and Enter.",
+            )
+            self._set_options(
+                options=[Option("Continue setup", id=CODEX_SKIP_OPTION_ID)]
+            )
+            return
         if len(self._existing_codex_profile_ids) == 0:
             self._set_text(
                 title="Codex Setup",
                 message=(
-                    "Codex was detected on this machine. Add a profile so Codex "
-                    "can use your MeshAgent account?"
+                    "Codex was detected on this machine. Update Codex to use "
+                    "the MeshAgent proxy so you can centralize OpenAI and "
+                    "Anthropic billing, usage analytics, and governance in "
+                    "your MeshAgent account instead of managing separate "
+                    "provider subscriptions."
                 ),
                 help_text="Use Up/Down and Enter.",
             )
             self._set_options(
                 options=[
-                    Option("Add Codex profile", id=CODEX_CREATE_OPTION_ID),
-                    Option("Skip for now", id=CODEX_SKIP_OPTION_ID),
+                    Option(
+                        "Yes, update Codex to use the MeshAgent proxy",
+                        id=CODEX_CREATE_OPTION_ID,
+                    ),
+                    Option(
+                        'No, I will use "meshagent launch codex" if I want to use Codex via MeshAgent.',
+                        id=CODEX_SKIP_OPTION_ID,
+                    ),
                 ]
             )
         else:
             existing_profile_labels = ", ".join(self._existing_codex_profile_ids)
             profile_message = (
-                "Codex was detected on this machine. Found existing MeshAgent "
+                "Codex was detected on this machine. MeshAgent proxy profiles "
+                "centralize OpenAI and Anthropic billing, usage analytics, and "
+                "governance in your MeshAgent account instead of managing "
+                "separate provider subscriptions. Found existing MeshAgent "
                 f"Codex profiles for this project: {existing_profile_labels}. "
                 "Continue with them or create another profile."
             )
             if len(self._existing_codex_profile_ids) == 1:
                 profile_message = (
-                    "Codex was detected on this machine. Found an existing "
-                    "MeshAgent Codex profile for this project: "
-                    f"{existing_profile_labels}. Continue with it or create "
-                    "another profile."
+                    "Codex was detected on this machine. MeshAgent proxy "
+                    "profiles centralize OpenAI and Anthropic billing, usage "
+                    "analytics, and governance in your MeshAgent account "
+                    "instead of managing separate provider subscriptions. "
+                    "Found an existing MeshAgent Codex profile for this "
+                    f"project: {existing_profile_labels}. Continue with it or "
+                    "create another profile."
                 )
 
             self._set_text(
@@ -795,8 +876,15 @@ class SetupWizardApp(App[None]):
             )
             self._set_options(
                 options=[
-                    Option("Continue", id=CODEX_CONTINUE_OPTION_ID),
+                    Option(
+                        "Yes, update Codex to use the MeshAgent proxy",
+                        id=CODEX_CONTINUE_OPTION_ID,
+                    ),
                     Option("Create another Codex profile", id=CODEX_CREATE_OPTION_ID),
+                    Option(
+                        'No, I will use "meshagent launch codex" if I want to use Codex via MeshAgent.',
+                        id=CODEX_SKIP_OPTION_ID,
+                    ),
                 ]
             )
 
@@ -819,24 +907,100 @@ class SetupWizardApp(App[None]):
             value=initial_value or self._default_codex_profile_name,
         )
 
-    def _show_claude_code_choice(self) -> None:
-        self._mode = "claude_code_choice"
+    def _show_codex_default_choice(self, *, profile_ids: Sequence[str]) -> None:
+        self._mode = "codex_default_choice"
         self._clear_error()
         self._hide_input()
         self._hide_status()
         self._hide_url()
+
+        options: list[Option] = []
+        if len(profile_ids) == 1:
+            profile_id = profile_ids[0]
+            self._set_text(
+                title="Codex Default",
+                message=f"Make Codex profile {profile_id} the default profile?",
+                help_text="Use Up/Down and Enter.",
+            )
+            options.append(
+                Option(
+                    f"Yes, make {profile_id} the default profile",
+                    id=_codex_default_profile_option_id(profile_id),
+                )
+            )
+        else:
+            self._set_text(
+                title="Codex Default",
+                message="Choose which MeshAgent Codex profile should be the default profile.",
+                help_text="Use Up/Down and Enter.",
+            )
+            for profile_id in profile_ids:
+                options.append(
+                    Option(
+                        f"Make {profile_id} the default profile",
+                        id=_codex_default_profile_option_id(profile_id),
+                    )
+                )
+
+        options.append(
+            Option(
+                'No, I will use "meshagent launch codex" if I want to use Codex via MeshAgent.',
+                id=CODEX_DEFAULT_NONE_OPTION_ID,
+            )
+        )
+
+        highlighted_id = CODEX_DEFAULT_NONE_OPTION_ID
+        if self._current_codex_default_profile_id in profile_ids:
+            highlighted_id = _codex_default_profile_option_id(
+                self._current_codex_default_profile_id
+            )
+
+        self._set_options(options=options, highlighted_id=highlighted_id)
+
+    def _show_claude_choice(self) -> None:
+        self._mode = "claude_choice"
+        self._clear_error()
+        self._hide_input()
+        self._hide_status()
+        self._hide_url()
+        if self._can_use_llm_proxy is False:
+            self._set_text(
+                title="Claude Setup",
+                message=(
+                    "Claude was detected on this machine. The MeshAgent proxy "
+                    "lets your team centralize OpenAI and Anthropic billing, "
+                    "usage analytics, and governance in MeshAgent instead of "
+                    "managing separate provider subscriptions. Your MeshAgent "
+                    "account is not currently configured for LLM access for "
+                    "this project. Talk to your account administrator to turn "
+                    "it on, then run setup again."
+                ),
+                help_text="Use Up/Down and Enter.",
+            )
+            self._set_options(
+                options=[Option("Finish setup", id=CLAUDE_SKIP_OPTION_ID)]
+            )
+            return
         self._set_text(
-            title="Claude Code",
+            title="Claude Setup",
             message=(
-                "Claude Code was detected on this machine. Launch Claude Code "
-                "through MeshAgent for this project now?"
+                "Claude was detected on this machine. Update Claude to use the "
+                "MeshAgent proxy so you can centralize OpenAI and Anthropic "
+                "billing, usage analytics, and governance in your MeshAgent "
+                "account instead of managing separate provider subscriptions."
             ),
             help_text="Use Up/Down and Enter.",
         )
         self._set_options(
             options=[
-                Option("Launch Claude Code", id=CLAUDE_CODE_LAUNCH_OPTION_ID),
-                Option("Skip for now", id=CLAUDE_CODE_SKIP_OPTION_ID),
+                Option(
+                    "Yes, update Claude to use the MeshAgent proxy",
+                    id=CLAUDE_CONFIGURE_OPTION_ID,
+                ),
+                Option(
+                    'No, I will use "meshagent launch claude" if I want to use Claude via MeshAgent.',
+                    id=CLAUDE_SKIP_OPTION_ID,
+                ),
             ]
         )
 
@@ -854,14 +1018,49 @@ class SetupWizardApp(App[None]):
 
         await self._maybe_continue_to_codex_setup()
 
+    async def _ensure_llm_proxy_access_checked(self) -> bool:
+        if self._can_use_llm_proxy is not None:
+            return self._can_use_llm_proxy
+
+        if (
+            self._selected_project_id is None
+            or self._has_llm_proxy_access_operation is None
+        ):
+            self._can_use_llm_proxy = True
+            return True
+
+        self._set_busy(
+            title="Checking LLM Proxy Access",
+            message="Checking whether your MeshAgent account can use the LLM proxy for this project...",
+            help_text="Please wait.",
+        )
+        try:
+            self._can_use_llm_proxy = await self._has_llm_proxy_access_operation(
+                self._selected_project_id
+            )
+        except Exception as ex:
+            await self._set_error_mode(f"Unable to check LLM proxy access: {ex}")
+            return False
+
+        return self._can_use_llm_proxy
+
     async def _maybe_continue_to_codex_setup(self) -> None:
         if not self._has_codex_cli or self._configure_codex_profile_operation is None:
-            await self._maybe_continue_to_claude_code_setup()
+            await self._maybe_continue_to_claude_setup()
             return
 
         self._continued_with_existing_codex_profiles = False
         self._existing_codex_profile_ids = []
         self._codex_profile_scan_error = None
+        self._current_codex_default_profile_id = None
+        self._configured_codex_default_profile_id = None
+        self._cleared_codex_default_profile = False
+        can_use_llm_proxy = await self._ensure_llm_proxy_access_checked()
+        if self._mode == "error":
+            return
+        if not can_use_llm_proxy:
+            self._show_codex_choice()
+            return
         if (
             self._selected_project_id is not None
             and self._list_existing_codex_profiles_operation is not None
@@ -888,7 +1087,7 @@ class SetupWizardApp(App[None]):
 
     async def _create_codex_profile(self, profile_name: str) -> None:
         if self._configure_codex_profile_operation is None:
-            await self._maybe_continue_to_claude_code_setup()
+            await self._maybe_continue_to_claude_setup()
             return
 
         self._set_busy(
@@ -907,21 +1106,107 @@ class SetupWizardApp(App[None]):
             return
 
         self._configured_codex_profile_id = profile_name
-        await self._maybe_continue_to_claude_code_setup()
+        await self._maybe_continue_to_codex_default_choice([profile_name])
 
     async def _continue_with_existing_codex_profiles(self) -> None:
         self._continued_with_existing_codex_profiles = True
-        await self._maybe_continue_to_claude_code_setup()
+        await self._maybe_continue_to_codex_default_choice(
+            self._existing_codex_profile_ids
+        )
 
-    async def _maybe_continue_to_claude_code_setup(self) -> None:
-        if not self._has_claude_code_cli:
+    async def _maybe_continue_to_codex_default_choice(
+        self,
+        profile_ids: Sequence[str],
+    ) -> None:
+        if (
+            self._selected_project_id is None
+            or len(profile_ids) == 0
+            or self._configure_codex_default_profile_operation is None
+        ):
+            await self._maybe_continue_to_claude_setup()
+            return
+
+        self._current_codex_default_profile_id = None
+        if self._get_current_codex_default_profile_operation is not None:
+            self._set_busy(
+                title="Checking Codex Default",
+                message="Inspecting the current Codex default profile...",
+                help_text="Please wait.",
+            )
+            try:
+                self._current_codex_default_profile_id = (
+                    await self._get_current_codex_default_profile_operation(
+                        self._selected_project_id
+                    )
+                )
+            except Exception as ex:
+                await self._set_error_mode(
+                    f"Unable to inspect the Codex default profile: {ex}"
+                )
+                return
+
+        self._show_codex_default_choice(profile_ids=profile_ids)
+
+    async def _configure_codex_default_profile(self, profile_id: str | None) -> None:
+        if (
+            self._selected_project_id is None
+            or self._configure_codex_default_profile_operation is None
+        ):
+            await self._maybe_continue_to_claude_setup()
+            return
+
+        message = "Clearing any MeshAgent Codex default profile..."
+        if profile_id is not None:
+            message = f"Setting Codex profile '{profile_id}' as the default..."
+
+        self._set_busy(
+            title="Configuring Codex Default",
+            message=message,
+            help_text="Please wait.",
+        )
+        try:
+            await self._configure_codex_default_profile_operation(
+                self._selected_project_id,
+                profile_id,
+            )
+        except Exception as ex:
+            await self._set_error_mode(f"Unable to configure the Codex default: {ex}")
+            return
+
+        self._configured_codex_default_profile_id = profile_id
+        self._cleared_codex_default_profile = profile_id is None
+        await self._maybe_continue_to_claude_setup()
+
+    async def _maybe_continue_to_claude_setup(self) -> None:
+        if not self._has_claude_code_cli or self._configure_claude_operation is None:
             await self._finish_success()
             return
 
-        self._show_claude_code_choice()
+        await self._ensure_llm_proxy_access_checked()
+        if self._mode == "error":
+            return
+        self._show_claude_choice()
 
-    async def _continue_with_claude_code_launch(self) -> None:
-        self._launch_claude_code = True
+    async def _configure_claude(self) -> None:
+        if (
+            self._selected_project_id is None
+            or self._configure_claude_operation is None
+        ):
+            await self._finish_success()
+            return
+
+        self._set_busy(
+            title="Configuring Claude",
+            message="Configuring Claude to use MeshAgent...",
+            help_text="Please wait.",
+        )
+        try:
+            await self._configure_claude_operation(self._selected_project_id)
+        except Exception as ex:
+            await self._set_error_mode(f"Unable to configure Claude: {ex}")
+            return
+
+        self._configured_claude = True
         await self._finish_success()
 
     async def _finish_success(self) -> None:
@@ -950,8 +1235,15 @@ class SetupWizardApp(App[None]):
                     "Project activated and existing Codex profiles "
                     f"{existing_profile_labels} are ready to use."
                 )
-        if self._launch_claude_code:
-            message = f"{message} Claude Code will launch next."
+        if self._configured_codex_default_profile_id is not None:
+            message = (
+                f"{message} Codex default profile "
+                f"{self._configured_codex_default_profile_id} is selected."
+            )
+        elif self._cleared_codex_default_profile:
+            message = f"{message} No MeshAgent Codex default profile is selected."
+        if self._configured_claude:
+            message = f"{message} Claude is configured to use MeshAgent."
         self._set_text(
             title="Setup Complete",
             message=message,
@@ -961,7 +1253,6 @@ class SetupWizardApp(App[None]):
         self.result = SetupWizardResult(
             status="completed",
             project_id=self._selected_project_id,
-            launch_claude_code=self._launch_claude_code,
         )
 
         await self._run_logo_fade()
@@ -1063,13 +1354,24 @@ class SetupWizardApp(App[None]):
                 return index
         return None
 
-    def _set_options(self, *, options: Sequence[Option]) -> None:
+    def _set_options(
+        self,
+        *,
+        options: Sequence[Option],
+        highlighted_id: str | None = None,
+    ) -> None:
         if self._options_view is None:
             return
         option_list = list(options)
         self._options_view.clear_options()
         self._options_view.add_options(option_list)
-        self._options_view.highlighted = self._first_enabled_option_index(option_list)
+        highlighted_index = self._first_enabled_option_index(option_list)
+        if highlighted_id is not None:
+            for index, option in enumerate(option_list):
+                if option.id == highlighted_id and not option.disabled:
+                    highlighted_index = index
+                    break
+        self._options_view.highlighted = highlighted_index
         self._options_view.display = True
         self._options_view.focus()
 
@@ -1342,6 +1644,7 @@ async def run_setup_wizard_tui(
     has_active_api_key_operation: HasActiveApiKeyOperation,
     create_api_key_operation: CreateApiKeyOperation,
     active_project_id: str | None,
+    has_llm_proxy_access_operation: HasLlmProxyAccessOperation | None = None,
     has_authenticated_session: bool = False,
     authenticated_user_name: str | None = None,
     has_codex_cli: bool = False,
@@ -1350,6 +1653,13 @@ async def run_setup_wizard_tui(
         ListExistingCodexProfilesOperation | None
     ) = None,
     configure_codex_profile_operation: ConfigureCodexProfileOperation | None = None,
+    get_current_codex_default_profile_operation: (
+        GetCurrentCodexDefaultProfileOperation | None
+    ) = None,
+    configure_codex_default_profile_operation: (
+        ConfigureCodexDefaultProfileOperation | None
+    ) = None,
+    configure_claude_operation: ConfigureClaudeOperation | None = None,
     default_codex_profile_name: str = "meshagent",
 ) -> SetupWizardResult:
     app = SetupWizardApp(
@@ -1359,6 +1669,7 @@ async def run_setup_wizard_tui(
         activate_project_operation=activate_project_operation,
         has_active_api_key_operation=has_active_api_key_operation,
         create_api_key_operation=create_api_key_operation,
+        has_llm_proxy_access_operation=has_llm_proxy_access_operation,
         active_project_id=active_project_id,
         has_authenticated_session=has_authenticated_session,
         authenticated_user_name=authenticated_user_name,
@@ -1366,6 +1677,13 @@ async def run_setup_wizard_tui(
         has_claude_code_cli=has_claude_code_cli,
         list_existing_codex_profiles_operation=list_existing_codex_profiles_operation,
         configure_codex_profile_operation=configure_codex_profile_operation,
+        get_current_codex_default_profile_operation=(
+            get_current_codex_default_profile_operation
+        ),
+        configure_codex_default_profile_operation=(
+            configure_codex_default_profile_operation
+        ),
+        configure_claude_operation=configure_claude_operation,
         default_codex_profile_name=default_codex_profile_name,
     )
 
