@@ -20,6 +20,11 @@ from meshagent.cli.helper import (
 
 app = async_typer.AsyncTyper(help="Manage feeds for your project")
 
+_FEED_BATCHING_NOTE = (
+    "[yellow]Feed subscriptions are batched for performance. "
+    "Messages may take up to a minute to appear in room storage.[/]"
+)
+
 
 def _parse_annotations(annotations: Optional[str]) -> Optional[dict[str, str]]:
     if annotations is None:
@@ -341,6 +346,7 @@ async def feed_send(
             message=payload,
         )
         print(f"[green]Published message to feed:[/] {feed_id}")
+        print(_FEED_BATCHING_NOTE)
     finally:
         await client.close()
 
@@ -366,5 +372,6 @@ async def feed_send_batch(
             messages=messages,
         )
         print(f"[green]Published {len(messages)} messages to feed:[/] {feed_id}")
+        print(_FEED_BATCHING_NOTE)
     finally:
         await client.close()
