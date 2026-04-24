@@ -155,6 +155,13 @@ async def scheduled_task_add(
             help='annotations in json format {"name":"value"}',
         ),
     ] = None,
+    storage_write_path: Annotated[
+        Optional[str],
+        typer.Option(
+            "--storage-write-path",
+            help="Optional room storage folder to write scheduled payloads into",
+        ),
+    ] = None,
 ):
     """Add a scheduled task."""
     client = await get_client()
@@ -175,6 +182,7 @@ async def scheduled_task_add(
                 task_id=task_id,
                 once=once,
                 annotations=parsed_annotations,
+                storage_write_path=storage_write_path,
             )
         except ConflictError:
             print("[red]Scheduled task already exists[/red]")
@@ -305,8 +313,27 @@ async def scheduled_task_update(
             help='annotations in json format {"name":"value"}',
         ),
     ] = None,
+    storage_write_path: Annotated[
+        Optional[str],
+        typer.Option(
+            "--storage-write-path",
+            help="Optional room storage folder to write scheduled payloads into",
+        ),
+    ] = None,
+    clear_storage_write_path: Annotated[
+        bool,
+        typer.Option(
+            "--clear-storage-write-path",
+            help="Clear the stored room storage folder for this task",
+        ),
+    ] = False,
 ):
     """Update a scheduled task."""
+    if clear_storage_write_path and storage_write_path is not None:
+        raise typer.BadParameter(
+            "Provide only one of --storage-write-path or --clear-storage-write-path"
+        )
+
     active_state = _parse_active_state(active=active, inactive=inactive)
     parsed_annotations = (
         _parse_annotations(annotations) if annotations is not None else None
@@ -324,6 +351,8 @@ async def scheduled_task_update(
             task_payload,
             active_state,
             parsed_annotations,
+            storage_write_path,
+            clear_storage_write_path,
         )
     ):
         raise typer.BadParameter("No changes specified")
@@ -341,6 +370,8 @@ async def scheduled_task_update(
                 schedule=schedule,
                 active=active_state,
                 annotations=parsed_annotations,
+                storage_write_path=storage_write_path,
+                clear_storage_write_path=clear_storage_write_path,
             )
         except NotFoundError:
             print(f"[red]Scheduled task not found:[/] {task_id}")

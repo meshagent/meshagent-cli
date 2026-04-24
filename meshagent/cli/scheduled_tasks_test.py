@@ -101,6 +101,8 @@ class _FakeScheduledTasksClient:
         schedule: str | None = None,
         active: bool | None = None,
         annotations: dict[str, str] | None = None,
+        storage_write_path: str | None = None,
+        clear_storage_write_path: bool = False,
     ) -> None:
         self.update_calls.append(
             {
@@ -112,6 +114,8 @@ class _FakeScheduledTasksClient:
                 "schedule": schedule,
                 "active": active,
                 "annotations": annotations,
+                "storage_write_path": storage_write_path,
+                "clear_storage_write_path": clear_storage_write_path,
             }
         )
 
@@ -194,6 +198,7 @@ async def test_scheduled_task_list_prints_table_rows(monkeypatch) -> None:
                     "active": True,
                     "once": False,
                     "annotations": {"env": "prod"},
+                    "storage_write_path": "",
                     "room_id": "",
                     "last_run_id": "",
                     "last_start_time": "2026-03-16T00:00:00Z",
@@ -289,6 +294,7 @@ async def test_scheduled_task_update_sends_partial_patch(monkeypatch) -> None:
         active=False,
         inactive=True,
         annotations='{"env":"staging"}',
+        storage_write_path="scheduled/archive",
     )
 
     assert fake_client.update_calls == [
@@ -301,10 +307,58 @@ async def test_scheduled_task_update_sends_partial_patch(monkeypatch) -> None:
             "schedule": "15 * * * *",
             "active": False,
             "annotations": {"env": "staging"},
+            "storage_write_path": "scheduled/archive",
+            "clear_storage_write_path": False,
         }
     ]
     assert fake_client.closed is True
     assert printed == ["[green]Updated scheduled task:[/] task-1"]
+
+
+@pytest.mark.asyncio
+async def test_scheduled_task_update_can_clear_storage_write_path(monkeypatch) -> None:
+    fake_client = _FakeScheduledTasksClient()
+
+    async def fake_get_client() -> _FakeScheduledTasksClient:
+        return fake_client
+
+    async def fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-1"
+        return "resolved-project"
+
+    monkeypatch.setattr(scheduled_tasks, "get_client", fake_get_client)
+    monkeypatch.setattr(scheduled_tasks, "resolve_project_id", fake_resolve_project_id)
+
+    await scheduled_tasks.scheduled_task_update(
+        project_id="project-1",
+        task_id="task-1",
+        room=None,
+        queue=None,
+        schedule=None,
+        payload=None,
+        payload_file=None,
+        active=False,
+        inactive=False,
+        annotations=None,
+        storage_write_path=None,
+        clear_storage_write_path=True,
+    )
+
+    assert fake_client.update_calls == [
+        {
+            "project_id": "resolved-project",
+            "task_id": "task-1",
+            "room_name": None,
+            "queue_name": None,
+            "payload": None,
+            "schedule": None,
+            "active": None,
+            "annotations": None,
+            "storage_write_path": None,
+            "clear_storage_write_path": True,
+        }
+    ]
+    assert fake_client.closed is True
 
 
 @pytest.mark.asyncio

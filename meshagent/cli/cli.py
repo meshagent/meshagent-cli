@@ -157,6 +157,16 @@ app.add_lazy_command(
     help="Manage mailboxes for your project",
 )
 app.add_lazy_command(
+    name="feed",
+    module="meshagent.cli.feeds",
+    help="Manage feeds for your project",
+)
+app.add_lazy_command(
+    name="subscription",
+    module="meshagent.cli.subscriptions",
+    help="Manage feed subscriptions for your project",
+)
+app.add_lazy_command(
     name="route",
     module="meshagent.cli.routes",
     help="Manage routes for your project",
