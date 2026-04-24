@@ -912,7 +912,16 @@ async def service_spec(
     *,
     file: Annotated[
         Optional[str],
-        typer.Option("--file", "-f", help="File path to a service definition"),
+        typer.Option(
+            "--file",
+            "-f",
+            help=(
+                "File path to a service definition. Beginner fallback: point "
+                "this at a meshagent.yaml when the app has no Dockerfile. For "
+                "a public HTTP route, set container.private: false and "
+                "metadata.annotations.meshagent.service.id in the file."
+            ),
+        ),
     ] = None,
     url: Annotated[
         Optional[str],
@@ -1004,7 +1013,14 @@ async def service_create(
         ),
     ] = False,
 ):
-    """Create a service attached to the project."""
+    """Create a service attached to the project.
+
+    Beginner fallback when an app does not have a Dockerfile: write a minimal
+    meshagent.yaml, set the HTTP port to published/public, set
+    container.private: false for a public route, and include
+    metadata.annotations.meshagent.service.id so a route can target the created
+    service.
+    """
     client: Meshagent | None = None
     try:
         _validate_replace_flags(force=force, replace=replace)

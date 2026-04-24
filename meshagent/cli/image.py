@@ -115,9 +115,23 @@ ImageRoomOption = Annotated[
     Optional[str],
     typer.Option(
         "--room",
-        help="Room name",
+        help=(
+            "Existing room name. meshagent deploy does not create rooms; create "
+            "the room first with 'meshagent rooms create --name <room>'."
+        ),
     ),
 ]
+_DEPLOY_DOCKERFILE_HAPPY_PATH = (
+    "Happy path for a Dockerfile app: create the room with "
+    "'meshagent rooms create --name <room> --if-not-exists', then run "
+    "'meshagent deploy PATH --room <room> --tag <tag> --public --domain <domain>' "
+    "so deploy creates the service and the public route together."
+)
+_DEPLOY_MISSING_DOCKERFILE_GUIDANCE = (
+    "If PATH does not include a Dockerfile yet, create a minimal Dockerfile in "
+    "the app directory first or create one elsewhere in PATH and pass it with "
+    "--dockerfile-path."
+)
 
 
 def default_pack_architecture() -> str:
@@ -2703,7 +2717,12 @@ async def build_image(
 
 @app.async_command(
     "deploy",
-    help="Create or update a room service from an image, optionally building it first.",
+    help=(
+        "Create or update a room service from an image, optionally building it "
+        "first. The target room must already exist. Create it first with "
+        "'meshagent rooms create --name <room> --if-not-exists'. "
+        f"{_DEPLOY_DOCKERFILE_HAPPY_PATH} {_DEPLOY_MISSING_DOCKERFILE_GUIDANCE}"
+    ),
     hidden=True,
 )
 async def deploy_image(
@@ -2716,7 +2735,8 @@ async def deploy_image(
             metavar="PATH",
             help=(
                 "Local directory to stream as the build context before deploy. "
-                "Format '<path>[:<mount>]'. Defaults mount to /context."
+                "Format '<path>[:<mount>]'. Defaults mount to /context. PATH is "
+                "typically the app directory you want to deploy."
             ),
         ),
     ] = None,
@@ -2748,7 +2768,9 @@ async def deploy_image(
             "--dockerfile-path",
             help=(
                 "Optional Dockerfile path inside the packed build context (absolute "
-                "path). Only used with PATH."
+                "path). Only used with PATH. Use this when the app directory has "
+                "no top-level Dockerfile or when you create the Dockerfile under "
+                "a different path."
             ),
         ),
     ] = None,
@@ -2781,8 +2803,11 @@ async def deploy_image(
         typer.Option(
             "--domain",
             help=(
-                "Create or update a room route for the deployed service. "
-                "Requires exactly one published service port."
+                "Create or update a room route for the deployed service and "
+                "return a public URL. Use this with --public when you need an "
+                "external URL from deploy. In MeshAgent dev/.life, domains "
+                "must end with .meshagent.dev; in prod they must end with "
+                ".meshagent.app. Requires exactly one published service port."
             ),
         ),
     ] = None,
@@ -2880,6 +2905,7 @@ async def deploy_image(
         ),
     ] = True,
 ) -> None:
+    """Create or update a room service from an image."""
     parsed_tag = _parse_build_tag(tag)
     project_registry: str | None = None
     _validate_deploy_build_stage_options(

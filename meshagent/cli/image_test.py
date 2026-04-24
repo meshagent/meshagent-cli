@@ -1,4 +1,5 @@
 import tempfile
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -107,6 +108,24 @@ def test_root_deploy_help_uses_optional_positional_path() -> None:
     assert result.exit_code == 0
     assert "Usage: meshagent deploy [OPTIONS] [PATH]" in result.output
     assert "--pack" not in result.output
+
+
+def test_root_deploy_help_mentions_existing_room_flow() -> None:
+    result = CliRunner().invoke(async_typer.get_command(cli.app), ["deploy", "--help"])
+    normalized_output = re.sub(r"[\s│]+", " ", result.output)
+
+    assert result.exit_code == 0
+    assert "The target room must already exist." in result.output
+    assert "meshagent rooms" in result.output
+    assert "create --name <room> --if-not-exists" in result.output
+    assert "Existing room name." in result.output
+    assert "--public --domain <domain>" in result.output
+    assert "public route together" in result.output
+    assert "return a public URL" in normalized_output
+    assert ".meshagent.dev" in result.output
+    assert ".meshagent.app" in result.output
+    assert "If PATH does not include a Dockerfile yet" in normalized_output
+    assert "--dockerfile-path" in result.output
 
 
 def test_replace_meshagent_image_vars_defaults_to_pkg_dev() -> None:

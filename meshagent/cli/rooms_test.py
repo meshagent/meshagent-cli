@@ -1,9 +1,10 @@
 import json
 
 import pytest
+from click.testing import CliRunner
 
 from meshagent.api.client import Room
-from meshagent.cli import rooms
+from meshagent.cli import async_typer, cli, rooms
 
 
 class _FakeRoomsClient:
@@ -57,6 +58,31 @@ def _patch_room_list_command(
 
     monkeypatch.setattr(rooms, "get_client", fake_get_client)
     monkeypatch.setattr(rooms, "resolve_project_id", fake_resolve_project_id)
+
+
+def test_rooms_create_help_mentions_deploy_prerequisite() -> None:
+    result = CliRunner().invoke(
+        async_typer.get_command(cli.app),
+        ["rooms", "create", "--help"],
+    )
+
+    assert result.exit_code == 0
+    assert "Use this before meshagent deploy --room" in result.output
+    assert "meshagent deploy PATH --room" in result.output
+    assert "<room> --tag <tag>" in result.output
+    assert "--public --domain <domain>" in result.output
+
+
+def test_route_create_help_mentions_short_domains_and_service_id_annotation() -> None:
+    result = CliRunner().invoke(
+        async_typer.get_command(cli.app),
+        ["route", "create", "--help"],
+    )
+
+    assert result.exit_code == 0
+    assert "Use a short, DNS-safe domain name" in result.output
+    assert "room-name-derived domains may be rejected" in result.output
+    assert "meshagent.service.id" in result.output
 
 
 @pytest.mark.asyncio
