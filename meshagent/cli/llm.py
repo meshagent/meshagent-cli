@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import secrets
@@ -8,7 +9,7 @@ import shlex
 import subprocess
 import sys
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 from rich import print
@@ -17,9 +18,11 @@ from rich.table import Table
 
 from meshagent.api.helpers import meshagent_base_url
 from meshagent.cli import async_typer, auth_async
-from meshagent.cli.common_options import ProjectIdOption
+from meshagent.cli.common_options import OutputFormatOption, ProjectIdOption
 from meshagent.cli.helper import (
+    get_client,
     get_llm_proxy_bearer_token,
+    print_json_table,
     resolve_project_id,
     set_llm_proxy_bearer_token,
 )
@@ -36,6 +39,7 @@ if TYPE_CHECKING:
 
 
 app = async_typer.AsyncTyper(help="Local LLM proxy utilities")
+logger_app = async_typer.AsyncTyper(help="Manage project LLM loggers")
 _DEFAULT_TOKEN_ENV = "MESHAGENT_TOKEN"
 
 
@@ -60,6 +64,29 @@ def _format_token_summary(tokens: dict[str, float]) -> str:
     return ", ".join(
         f"{key}={_format_quantity(value)}" for key, value in sorted(tokens.items())
     )
+
+
+def _parse_annotations(annotations: str | None) -> dict[str, str] | None:
+    if annotations is None:
+        return None
+    if annotations.strip() == "":
+        return {}
+    try:
+        payload = json.loads(annotations)
+    except json.JSONDecodeError as exc:
+        raise typer.BadParameter("Invalid JSON for --annotations") from exc
+    if not isinstance(payload, dict):
+        raise typer.BadParameter("--annotations must be a JSON object")
+    return {str(key): str(value) for key, value in payload.items()}
+
+
+def _logger_table_row(logger_config: Any) -> dict[str, Any]:
+    return {
+        "id": logger_config.id,
+        "destination_feed_id": logger_config.destination_feed_id,
+        "filter_expression": logger_config.filter_expression,
+        "paused": logger_config.paused,
+    }
 
 
 def _render_model_table(summaries: tuple[UsageSummary, ...]) -> Table:
@@ -193,6 +220,154 @@ def _build_proxy_setup_lines(
     lines = [*status_messages, "", "Use these environment variables:"]
     lines.extend(f"export {key}={shlex.quote(value)}" for key, value in env.items())
     return tuple(lines)
+
+
+@logger_app.async_command("create")
+async def logger_create(
+    *,
+    project_id: ProjectIdOption,
+    destination_feed_id: Annotated[
+        str,
+        typer.Option("--destination-feed-id", "--feed-id", help="Destination feed id"),
+    ],
+    filter_expression: Annotated[
+        str,
+        typer.Option("--filter-expression", "-f", help="JMESPath metadata filter"),
+    ],
+    paused: Annotated[
+        bool,
+        typer.Option("--paused", help="Create the logger in a paused state"),
+    ] = False,
+    annotations: Annotated[
+        str | None,
+        typer.Option(
+            "--annotations", help='annotations in json format {"name":"value"}'
+        ),
+    ] = None,
+):
+    """Create an LLM logger."""
+    client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        logger_config = await client.create_llm_logger(
+            project_id=project_id,
+            destination_feed_id=destination_feed_id,
+            filter_expression=filter_expression,
+            paused=paused,
+            annotations=_parse_annotations(annotations) or {},
+        )
+        print(logger_config.model_dump(mode="json"))
+    finally:
+        await client.close()
+
+
+@logger_app.async_command("update")
+async def logger_update(
+    *,
+    project_id: ProjectIdOption,
+    logger_id: Annotated[str, typer.Argument(help="LLM logger id to update")],
+    destination_feed_id: Annotated[
+        str | None,
+        typer.Option("--destination-feed-id", "--feed-id", help="Destination feed id"),
+    ] = None,
+    filter_expression: Annotated[
+        str | None,
+        typer.Option("--filter-expression", "-f", help="JMESPath metadata filter"),
+    ] = None,
+    paused: Annotated[
+        bool,
+        typer.Option("--paused", help="Pause the logger"),
+    ] = False,
+    resume: Annotated[
+        bool,
+        typer.Option("--resume", help="Resume a paused logger"),
+    ] = False,
+    annotations: Annotated[
+        str | None,
+        typer.Option(
+            "--annotations", help='annotations in json format {"name":"value"}'
+        ),
+    ] = None,
+):
+    """Update an LLM logger."""
+    if paused and resume:
+        raise typer.BadParameter("Use either --paused or --resume, not both")
+
+    client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        existing = await client.get_llm_logger(
+            project_id=project_id,
+            logger_id=logger_id,
+        )
+        await client.update_llm_logger(
+            project_id=project_id,
+            logger_id=logger_id,
+            destination_feed_id=destination_feed_id or existing.destination_feed_id,
+            filter_expression=filter_expression or existing.filter_expression,
+            paused=True if paused else False if resume else existing.paused,
+            annotations=_parse_annotations(annotations)
+            if annotations is not None
+            else existing.annotations,
+        )
+    finally:
+        await client.close()
+
+
+@logger_app.async_command("show")
+async def logger_show(
+    *,
+    project_id: ProjectIdOption,
+    logger_id: Annotated[str, typer.Argument(help="LLM logger id to show")],
+):
+    """Show an LLM logger."""
+    client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        logger_config = await client.get_llm_logger(
+            project_id=project_id,
+            logger_id=logger_id,
+        )
+        print(logger_config.model_dump(mode="json"))
+    finally:
+        await client.close()
+
+
+@logger_app.async_command("list")
+async def logger_list(
+    *,
+    project_id: ProjectIdOption,
+    output: OutputFormatOption = "table",
+):
+    """List LLM loggers for the project."""
+    client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        loggers = await client.list_llm_loggers(project_id=project_id)
+        if output == "json":
+            print({"loggers": [logger.model_dump(mode="json") for logger in loggers]})
+        else:
+            print_json_table(
+                [_logger_table_row(logger) for logger in loggers],
+                empty="No LLM loggers found",
+            )
+    finally:
+        await client.close()
+
+
+@logger_app.async_command("delete")
+async def logger_delete(
+    *,
+    project_id: ProjectIdOption,
+    logger_id: Annotated[str, typer.Argument(help="LLM logger id to delete")],
+):
+    """Delete an LLM logger."""
+    client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        await client.delete_llm_logger(project_id=project_id, logger_id=logger_id)
+    finally:
+        await client.close()
 
 
 def _copy_text_to_clipboard(
@@ -518,6 +693,9 @@ async def _resolve_upstream_token_provider(
         auth_async.get_access_token,
         "Using OAuth access token from your meshagent auth session for upstream requests.",
     )
+
+
+app.add_typer(logger_app, name="logger")
 
 
 @app.async_command(

@@ -12,12 +12,24 @@ from meshagent.cli import llm as llm_module
 from meshagent.llm_proxy.usage import RequestActivityEvent, UsageSnapshot
 
 
-def test_llm_help_lists_proxy_subcommand() -> None:
+def test_llm_help_lists_proxy_and_logger_subcommands() -> None:
     result = CliRunner().invoke(async_typer.get_command(cli.app), ["llm", "--help"])
 
     assert result.exit_code == 0
     assert "proxy" in result.output
+    assert "logger" in result.output
     assert "--project-id" not in result.output
+
+
+def test_llm_logger_help_exposes_logger_commands() -> None:
+    result = CliRunner().invoke(
+        async_typer.get_command(cli.app), ["llm", "logger", "--help"]
+    )
+
+    assert result.exit_code == 0
+    assert "create" in result.output
+    assert "update" in result.output
+    assert "delete" in result.output
 
 
 def test_llm_proxy_help_exposes_proxy_options() -> None:
