@@ -57,9 +57,16 @@ app.add_lazy_command(
     help="Developer utilities for a room",
 )
 app.add_lazy_command(
+    name="dataset",
+    module="meshagent.cli.dataset",
+    help="Manage dataset tables in a room",
+)
+app.add_lazy_command(
     name="database",
-    module="meshagent.cli.database",
-    help="Manage database tables in a room",
+    module="meshagent.cli.dataset",
+    help="Manage dataset tables in a room",
+    hidden=True,
+    deprecated=True,
 )
 app.add_lazy_command(
     name="memory",

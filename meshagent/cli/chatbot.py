@@ -56,7 +56,7 @@ from meshagent.cli.helper import (
     cleanup_args,
     cleanup_args_strip_options,
     DEPRECATED_REQUIRE_OPTION_ALIASES,
-    DEFAULT_DATABASE_NAMESPACE,
+    DEFAULT_DATASET_NAMESPACE,
     DUPLICATE_REQUIRE_OPTION_NAMES,
     get_client,
     merge_option_lists,
@@ -64,7 +64,7 @@ from meshagent.cli.helper import (
     parse_shell_tool_mounts,
     parse_memory_selector,
     parse_storage_tool_mounts,
-    resolve_database_namespace,
+    resolve_dataset_namespace,
     resolve_shell_image,
     resolve_key,
     resolve_project_id,
@@ -94,7 +94,7 @@ from meshagent.openai.tools.responses_adapter import (
     ImageGenerationTool,
 )
 
-from meshagent.tools.database import make_database_toolkit
+from meshagent.tools.dataset import make_dataset_toolkit
 from meshagent.agents.adapter import LLMAdapter, MessageStreamLLMAdapter
 from meshagent.agents.process import ContentScheme
 
@@ -161,7 +161,9 @@ async def _run_agent_room_session(
 
 
 app = async_typer.AsyncTyper(help="Join a chatbot to a room")
-app.add_deprecated_option_aliases(DEPRECATED_REQUIRE_OPTION_ALIASES)
+app.add_deprecated_option_aliases(
+    {**DEPRECATED_REQUIRE_OPTION_ALIASES, "--database-namespace": "--dataset-namespace"}
+)
 
 ThreadingMode = Literal["none", "default-new"]
 
@@ -293,17 +295,17 @@ def _current_command_runtime() -> Literal["chatbot", "process"]:
     return "chatbot"
 
 
-def _resolved_database_namespace(
+def _resolved_dataset_namespace(
     *,
     runtime: Literal["chatbot", "process"],
-    database_namespace: Optional[str],
+    dataset_namespace: Optional[str],
 ) -> Optional[list[str]]:
     default_namespace: tuple[str, ...] | None = None
     if runtime == "chatbot":
-        default_namespace = DEFAULT_DATABASE_NAMESPACE
+        default_namespace = DEFAULT_DATASET_NAMESPACE
 
-    return resolve_database_namespace(
-        namespace=database_namespace,
+    return resolve_dataset_namespace(
+        namespace=dataset_namespace,
         default_namespace=default_namespace,
     )
 
@@ -677,7 +679,7 @@ def _build_runtime_agent(
     threading_mode: ThreadingMode,
     thread_dir: Optional[str],
     working_dir: Optional[str],
-    database_namespace: Optional[list[str]],
+    dataset_namespace: Optional[list[str]],
     skill_dirs: Optional[list[str]],
     shell_image: Optional[str],
     delegate_shell_token: Optional[bool],
@@ -732,7 +734,7 @@ def _build_runtime_agent(
         always_reply=always_reply,
         threading_mode=threading_mode,
         thread_dir=thread_dir,
-        database_namespace=database_namespace,
+        dataset_namespace=dataset_namespace,
         skill_dirs=skill_dirs,
         shell_image=shell_image,
         delegate_shell_token=delegate_shell_token,
@@ -866,7 +868,7 @@ def build_chatbot(
     working_dir: Optional[str] = None,
     llm_participant: Optional[str] = None,
     decision_model: Optional[str] = None,
-    database_namespace: Optional[list[str]] = None,
+    dataset_namespace: Optional[list[str]] = None,
     always_reply: Optional[bool] = None,
     thread_dir: Optional[str] = None,
     skill_dirs: Optional[list[str]] = None,
@@ -1225,11 +1227,11 @@ def build_chatbot(
 
             if len(require_table_read) > 0:
                 add_toolkit(
-                    await make_database_toolkit(
+                    await make_dataset_toolkit(
                         room=self.room,
                         tables=require_table_read,
                         read_only=True,
-                        namespace=database_namespace,
+                        namespace=dataset_namespace,
                     )
                 )
 
@@ -1252,11 +1254,11 @@ def build_chatbot(
 
             if len(require_table_write) > 0:
                 add_toolkit(
-                    await make_database_toolkit(
+                    await make_dataset_toolkit(
                         room=self.room,
                         tables=require_table_write,
                         read_only=False,
-                        namespace=database_namespace,
+                        namespace=dataset_namespace,
                     )
                 )
 
@@ -1355,7 +1357,7 @@ def build_process_agent(
     working_dir: Optional[str] = None,
     llm_participant: Optional[str] = None,
     decision_model: Optional[str] = None,
-    database_namespace: Optional[list[str]] = None,
+    dataset_namespace: Optional[list[str]] = None,
     always_reply: Optional[bool] = None,
     thread_dir: Optional[str] = None,
     skill_dirs: Optional[list[str]] = None,
@@ -1881,11 +1883,11 @@ def build_process_agent(
 
             if len(require_table_read) > 0:
                 add_toolkit(
-                    await make_database_toolkit(
+                    await make_dataset_toolkit(
                         room=self.room,
                         tables=require_table_read,
                         read_only=True,
-                        namespace=database_namespace,
+                        namespace=dataset_namespace,
                     )
                 )
 
@@ -1908,11 +1910,11 @@ def build_process_agent(
 
             if len(require_table_write) > 0:
                 add_toolkit(
-                    await make_database_toolkit(
+                    await make_dataset_toolkit(
                         room=self.room,
                         tables=require_table_write,
                         read_only=False,
-                        namespace=database_namespace,
+                        namespace=dataset_namespace,
                     )
                 )
 
@@ -2178,9 +2180,9 @@ async def join(
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
-    database_namespace: Annotated[
+    dataset_namespace: Annotated[
         Optional[str],
-        typer.Option(..., help="Use a specific database namespace"),
+        typer.Option("--dataset-namespace", help="Use a specific dataset namespace"),
     ] = None,
     require_table_read: Annotated[
         list[str],
@@ -2286,9 +2288,9 @@ async def join(
         working_dir=working_dir,
         working_directory=working_directory,
     )
-    resolved_database_namespace = _resolved_database_namespace(
+    resolved_dataset_namespace = _resolved_dataset_namespace(
         runtime=runtime,
-        database_namespace=database_namespace,
+        dataset_namespace=dataset_namespace,
     )
     normalized_tool_options = normalize_required_tool_options(
         toolkit=toolkit,
@@ -2402,7 +2404,7 @@ async def join(
             threading_mode=threading_mode,
             thread_dir=thread_dir,
             working_dir=working_dir,
-            database_namespace=resolved_database_namespace,
+            dataset_namespace=resolved_dataset_namespace,
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
@@ -2587,9 +2589,9 @@ async def service(
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
-    database_namespace: Annotated[
+    dataset_namespace: Annotated[
         Optional[str],
-        typer.Option(..., help="Use a specific database namespace"),
+        typer.Option("--dataset-namespace", help="Use a specific dataset namespace"),
     ] = None,
     require_table_read: Annotated[
         list[str],
@@ -2691,9 +2693,9 @@ async def service(
         working_dir=working_dir,
         working_directory=working_directory,
     )
-    resolved_database_namespace = _resolved_database_namespace(
+    resolved_dataset_namespace = _resolved_dataset_namespace(
         runtime=runtime,
-        database_namespace=database_namespace,
+        dataset_namespace=dataset_namespace,
     )
     normalized_tool_options = normalize_required_tool_options(
         toolkit=toolkit,
@@ -2791,7 +2793,7 @@ async def service(
             threading_mode=threading_mode,
             thread_dir=thread_dir,
             working_dir=working_dir,
-            database_namespace=resolved_database_namespace,
+            dataset_namespace=resolved_dataset_namespace,
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
@@ -2950,9 +2952,9 @@ async def spec(
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
-    database_namespace: Annotated[
+    dataset_namespace: Annotated[
         Optional[str],
-        typer.Option(..., help="Use a specific database namespace"),
+        typer.Option("--dataset-namespace", help="Use a specific dataset namespace"),
     ] = None,
     require_table_read: Annotated[
         list[str],
@@ -3046,9 +3048,9 @@ async def spec(
         working_dir=working_dir,
         working_directory=working_directory,
     )
-    resolved_database_namespace = _resolved_database_namespace(
+    resolved_dataset_namespace = _resolved_dataset_namespace(
         runtime=runtime,
-        database_namespace=database_namespace,
+        dataset_namespace=dataset_namespace,
     )
     normalized_tool_options = normalize_required_tool_options(
         toolkit=toolkit,
@@ -3144,7 +3146,7 @@ async def spec(
             threading_mode=threading_mode,
             thread_dir=thread_dir,
             working_dir=working_dir,
-            database_namespace=resolved_database_namespace,
+            dataset_namespace=resolved_dataset_namespace,
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
@@ -3323,9 +3325,9 @@ async def deploy(
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
-    database_namespace: Annotated[
+    dataset_namespace: Annotated[
         Optional[str],
-        typer.Option(..., help="Use a specific database namespace"),
+        typer.Option("--dataset-namespace", help="Use a specific dataset namespace"),
     ] = None,
     require_table_read: Annotated[
         list[str],
@@ -3426,9 +3428,9 @@ async def deploy(
     )
     project_id = await resolve_project_id(project_id=project_id)
 
-    resolved_database_namespace = _resolved_database_namespace(
+    resolved_dataset_namespace = _resolved_dataset_namespace(
         runtime=runtime,
-        database_namespace=database_namespace,
+        dataset_namespace=dataset_namespace,
     )
     normalized_tool_options = normalize_required_tool_options(
         toolkit=toolkit,
@@ -3524,7 +3526,7 @@ async def deploy(
             threading_mode=threading_mode,
             thread_dir=thread_dir,
             working_dir=working_dir,
-            database_namespace=resolved_database_namespace,
+            dataset_namespace=resolved_dataset_namespace,
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,
@@ -5188,9 +5190,9 @@ async def run(
     require_storage: Annotated[
         Optional[bool], typer.Option(..., help="Enable storage toolkit")
     ] = False,
-    database_namespace: Annotated[
+    dataset_namespace: Annotated[
         Optional[str],
-        typer.Option(..., help="Use a specific database namespace"),
+        typer.Option("--dataset-namespace", help="Use a specific dataset namespace"),
     ] = None,
     require_table_read: Annotated[
         list[str],
@@ -5322,9 +5324,9 @@ async def run(
         root = logging.getLogger()
         root.setLevel(logging.ERROR)
 
-    resolved_database_namespace = _resolved_database_namespace(
+    resolved_dataset_namespace = _resolved_dataset_namespace(
         runtime=runtime,
-        database_namespace=database_namespace,
+        dataset_namespace=dataset_namespace,
     )
     normalized_tool_options = normalize_required_tool_options(
         toolkit=toolkit,
@@ -5430,7 +5432,7 @@ async def run(
             threading_mode=threading_mode,
             thread_dir=thread_dir,
             working_dir=working_dir,
-            database_namespace=resolved_database_namespace,
+            dataset_namespace=resolved_dataset_namespace,
             skill_dirs=skill_dir,
             shell_image=shell_image,
             delegate_shell_token=delegate_shell_token,

@@ -618,7 +618,7 @@ def test_process_spec_uses_process_runtime_and_chat_channel(monkeypatch) -> None
     )
     assert build_calls[0]["channels"] == ["chat"]
     assert build_calls[0]["decision_model"] == "gpt-5.4-nano"
-    assert build_calls[0]["database_namespace"] is None
+    assert build_calls[0]["dataset_namespace"] is None
     assert "mcp" not in build_calls[0]
     assert build_calls[0]["require_mcp"] is False
     assert len(fake_service.agents) == 1
@@ -629,7 +629,7 @@ def test_process_spec_uses_process_runtime_and_chat_channel(monkeypatch) -> None
     assert "meshagent process join --agent-name helper" in printed[0]
 
 
-def test_chatbot_spec_defaults_database_namespace(monkeypatch) -> None:
+def test_chatbot_spec_defaults_dataset_namespace(monkeypatch) -> None:
     fake_service = _FakeService()
     build_calls: list[dict[str, object]] = []
     allowed_build_kwargs = set(inspect.signature(chatbot.build_chatbot).parameters)
@@ -690,7 +690,7 @@ def test_chatbot_spec_defaults_database_namespace(monkeypatch) -> None:
         allowed=allowed_build_kwargs,
         kwargs=build_calls[0],
     )
-    assert build_calls[0]["database_namespace"] == [".database"]
+    assert build_calls[0]["dataset_namespace"] == [".datasets"]
     assert "mcp" not in build_calls[0]
     assert build_calls[0]["require_mcp"] is False
 

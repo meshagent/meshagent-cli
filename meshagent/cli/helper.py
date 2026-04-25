@@ -49,7 +49,7 @@ import json
 from rich import print
 
 DEFAULT_SHELL_IMAGE = "meshagent/python:default"
-DEFAULT_DATABASE_NAMESPACE = (".database",)
+DEFAULT_DATASET_NAMESPACE = (".datasets",)
 
 
 class NormalizedRequiredToolOptions(TypedDict):
@@ -421,7 +421,7 @@ def parse_memory_selector(value: str) -> tuple[str, Optional[list[str]]]:
     return memory_name, namespace or None
 
 
-def resolve_database_namespace(
+def resolve_dataset_namespace(
     *,
     namespace: Optional[str],
     default_namespace: tuple[str, ...] | None = None,

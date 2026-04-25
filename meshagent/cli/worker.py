@@ -26,7 +26,7 @@ from meshagent.cli.helper import (
     cleanup_args,
     cleanup_args_strip_options,
     DEPRECATED_REQUIRE_OPTION_ALIASES,
-    DEFAULT_DATABASE_NAMESPACE,
+    DEFAULT_DATASET_NAMESPACE,
     DUPLICATE_REQUIRE_OPTION_NAMES,
     get_client,
     merge_option_lists,
@@ -34,7 +34,7 @@ from meshagent.cli.helper import (
     parse_shell_tool_mounts,
     parse_memory_selector,
     parse_storage_tool_mounts,
-    resolve_database_namespace,
+    resolve_dataset_namespace,
     resolve_shell_image,
     resolve_key,
     resolve_project_id,
@@ -64,7 +64,7 @@ from meshagent.tools import (
     MemoriesToolkit,
 )
 from meshagent.tools.storage import StorageToolkit
-from meshagent.tools.database import make_database_toolkit
+from meshagent.tools.dataset import make_dataset_toolkit
 from meshagent.tools.datetime import DatetimeToolkit
 from meshagent.tools.uuid import UUIDToolkit
 from meshagent.tools.script import get_script_tools
@@ -104,7 +104,9 @@ from meshagent.api.client import ConflictError
 logger = logging.getLogger("worker_cli")
 
 app = async_typer.AsyncTyper(help="Join a worker agent to a room")
-app.add_deprecated_option_aliases(DEPRECATED_REQUIRE_OPTION_ALIASES)
+app.add_deprecated_option_aliases(
+    {**DEPRECATED_REQUIRE_OPTION_ALIASES, "--database-namespace": "--dataset-namespace"}
+)
 
 
 def _require_storage_tool_mounts(
@@ -321,7 +323,7 @@ def build_worker(
     require_uuid: bool = False,
     use_memory: Optional[str] = None,
     memory_model: Optional[str] = None,
-    database_namespace: Optional[list[str]] = None,
+    dataset_namespace: Optional[list[str]] = None,
     require_table_read: list[str] | None = None,
     require_table_write: list[str] | None = None,
     require_computer_use: bool,
@@ -672,11 +674,11 @@ def build_worker(
             if len(require_table_read) > 0:
                 thread_toolkit.tools.extend(
                     (
-                        await make_database_toolkit(
+                        await make_dataset_toolkit(
                             room=self.room,
                             tables=require_table_read,
                             read_only=True,
-                            namespace=database_namespace,
+                            namespace=dataset_namespace,
                         )
                     ).tools
                 )
@@ -684,11 +686,11 @@ def build_worker(
             if len(require_table_write) > 0:
                 thread_toolkit.tools.extend(
                     (
-                        await make_database_toolkit(
+                        await make_dataset_toolkit(
                             room=self.room,
                             tables=require_table_write,
                             read_only=False,
-                            namespace=database_namespace,
+                            namespace=dataset_namespace,
                         )
                     ).tools
                 )
@@ -890,9 +892,9 @@ async def join(
             help="Model name for memory LLM ingestion",
         ),
     ] = None,
-    database_namespace: Annotated[
+    dataset_namespace: Annotated[
         Optional[str],
-        typer.Option(..., help="Database namespace (e.g. foo::bar)"),
+        typer.Option("--dataset-namespace", help="Dataset namespace (e.g. foo::bar)"),
     ] = None,
     require_table_read: Annotated[
         list[str],
@@ -948,9 +950,9 @@ async def join(
         working_dir=working_dir,
         working_directory=working_directory,
     )
-    resolved_database_namespace = resolve_database_namespace(
-        namespace=database_namespace,
-        default_namespace=DEFAULT_DATABASE_NAMESPACE,
+    resolved_dataset_namespace = resolve_dataset_namespace(
+        namespace=dataset_namespace,
+        default_namespace=DEFAULT_DATASET_NAMESPACE,
     )
     key = await resolve_key(project_id=project_id, key=key)
 
@@ -1049,7 +1051,7 @@ async def join(
             require_computer_use=require_computer_use,
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
-            database_namespace=resolved_database_namespace,
+            dataset_namespace=resolved_dataset_namespace,
             title=title,
             description=description,
             working_dir=working_dir,
@@ -1241,9 +1243,9 @@ async def service(
             help="Model name for memory LLM ingestion",
         ),
     ] = None,
-    database_namespace: Annotated[
+    dataset_namespace: Annotated[
         Optional[str],
-        typer.Option(..., help="Database namespace (e.g. foo::bar)"),
+        typer.Option("--dataset-namespace", help="Dataset namespace (e.g. foo::bar)"),
     ] = None,
     require_table_read: Annotated[
         list[str],
@@ -1303,9 +1305,9 @@ async def service(
         working_dir=working_dir,
         working_directory=working_directory,
     )
-    resolved_database_namespace = resolve_database_namespace(
-        namespace=database_namespace,
-        default_namespace=DEFAULT_DATABASE_NAMESPACE,
+    resolved_dataset_namespace = resolve_dataset_namespace(
+        namespace=dataset_namespace,
+        default_namespace=DEFAULT_DATASET_NAMESPACE,
     )
     service = get_service(host=host, port=port)
     default_room_storage_mount = bool(
@@ -1383,7 +1385,7 @@ async def service(
             require_computer_use=require_computer_use,
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
-            database_namespace=resolved_database_namespace,
+            dataset_namespace=resolved_dataset_namespace,
             title=title,
             description=description,
             working_dir=working_dir,
@@ -1563,9 +1565,9 @@ async def spec(
             help="Model name for memory LLM ingestion",
         ),
     ] = None,
-    database_namespace: Annotated[
+    dataset_namespace: Annotated[
         Optional[str],
-        typer.Option(..., help="Database namespace (e.g. foo::bar)"),
+        typer.Option("--dataset-namespace", help="Dataset namespace (e.g. foo::bar)"),
     ] = None,
     require_table_read: Annotated[
         list[str],
@@ -1626,9 +1628,9 @@ async def spec(
         working_dir=working_dir,
         working_directory=working_directory,
     )
-    resolved_database_namespace = resolve_database_namespace(
-        namespace=database_namespace,
-        default_namespace=DEFAULT_DATABASE_NAMESPACE,
+    resolved_dataset_namespace = resolve_dataset_namespace(
+        namespace=dataset_namespace,
+        default_namespace=DEFAULT_DATASET_NAMESPACE,
     )
     service = get_service(host=None, port=None)
     default_room_storage_mount = bool(
@@ -1705,7 +1707,7 @@ async def spec(
             require_computer_use=require_computer_use,
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
-            database_namespace=resolved_database_namespace,
+            dataset_namespace=resolved_dataset_namespace,
             title=title,
             description=description,
             working_dir=working_dir,
@@ -1898,9 +1900,9 @@ async def deploy(
             help="Model name for memory LLM ingestion",
         ),
     ] = None,
-    database_namespace: Annotated[
+    dataset_namespace: Annotated[
         Optional[str],
-        typer.Option(..., help="Database namespace (e.g. foo::bar)"),
+        typer.Option("--dataset-namespace", help="Dataset namespace (e.g. foo::bar)"),
     ] = None,
     require_table_read: Annotated[
         list[str],
@@ -1973,9 +1975,9 @@ async def deploy(
         working_dir=working_dir,
         working_directory=working_directory,
     )
-    resolved_database_namespace = resolve_database_namespace(
-        namespace=database_namespace,
-        default_namespace=DEFAULT_DATABASE_NAMESPACE,
+    resolved_dataset_namespace = resolve_dataset_namespace(
+        namespace=dataset_namespace,
+        default_namespace=DEFAULT_DATASET_NAMESPACE,
     )
     project_id = await resolve_project_id(project_id=project_id)
 
@@ -2054,7 +2056,7 @@ async def deploy(
             require_computer_use=require_computer_use,
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
-            database_namespace=resolved_database_namespace,
+            dataset_namespace=resolved_dataset_namespace,
             title=title,
             description=description,
             working_dir=working_dir,

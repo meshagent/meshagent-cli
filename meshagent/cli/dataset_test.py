@@ -1,10 +1,10 @@
 from click.testing import CliRunner
 
 from meshagent.cli import async_typer
-from meshagent.cli.database import app
+from meshagent.cli.dataset import app
 
 
-def test_database_help_groups_branch_commands() -> None:
+def test_datasets_help_groups_branch_commands() -> None:
     result = CliRunner().invoke(async_typer.get_command(app), ["--help"])
 
     assert result.exit_code == 0
@@ -13,7 +13,7 @@ def test_database_help_groups_branch_commands() -> None:
     assert "branch-delete" not in result.output
 
 
-def test_database_branch_help_lists_branch_subcommands() -> None:
+def test_datasets_branch_help_lists_branch_subcommands() -> None:
     result = CliRunner().invoke(async_typer.get_command(app), ["branch", "--help"])
 
     assert result.exit_code == 0

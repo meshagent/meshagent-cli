@@ -53,7 +53,7 @@ from meshagent.api import RequiredToolkit, RequiredSchema, RoomException
 
 import logging
 
-from meshagent.tools.database import make_database_toolkit
+from meshagent.tools.dataset import make_dataset_toolkit
 
 from meshagent.tools.storage import (
     StorageToolMount,
@@ -88,7 +88,9 @@ from meshagent.agents.adapter import MessageStreamLLMAdapter
 logger = logging.getLogger("mailbot")
 
 app = async_typer.AsyncTyper(help="Join a mailbot to a room")
-app.add_deprecated_option_aliases(DEPRECATED_REQUIRE_OPTION_ALIASES)
+app.add_deprecated_option_aliases(
+    {**DEPRECATED_REQUIRE_OPTION_ALIASES, "--database-namespace": "--dataset-namespace"}
+)
 
 
 def _require_storage_tool_mounts(
@@ -258,7 +260,7 @@ def build_mailbot(
     starting_url: Optional[str] = None,
     allow_goto_url: bool = False,
     reply_all: bool,
-    database_namespace: Optional[list[str]] = None,
+    dataset_namespace: Optional[list[str]] = None,
     enable_attachments: bool,
     working_dir: Optional[str] = None,
     skill_dirs: Optional[list[str]] = None,
@@ -562,11 +564,11 @@ def build_mailbot(
             if len(require_table_read) > 0:
                 thread_toolkit.tools.extend(
                     (
-                        await make_database_toolkit(
+                        await make_dataset_toolkit(
                             room=self.room,
                             tables=require_table_read,
                             read_only=True,
-                            namespace=database_namespace,
+                            namespace=dataset_namespace,
                         )
                     ).tools
                 )
@@ -574,11 +576,11 @@ def build_mailbot(
             if len(require_table_write) > 0:
                 thread_toolkit.tools.extend(
                     (
-                        await make_database_toolkit(
+                        await make_dataset_toolkit(
                             room=self.room,
                             tables=require_table_write,
                             read_only=False,
-                            namespace=database_namespace,
+                            namespace=dataset_namespace,
                         )
                     ).tools
                 )
@@ -772,9 +774,9 @@ async def join(
             help="Model name for memory LLM ingestion",
         ),
     ] = None,
-    database_namespace: Annotated[
+    dataset_namespace: Annotated[
         Optional[str],
-        typer.Option(..., help="Use a specific database namespace"),
+        typer.Option("--dataset-namespace", help="Use a specific dataset namespace"),
     ] = None,
     require_table_read: Annotated[
         list[str],
@@ -924,7 +926,7 @@ async def join(
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
             reply_all=reply_all,
-            database_namespace=database_namespace,
+            dataset_namespace=dataset_namespace,
             enable_attachments=enable_attachments,
             working_dir=working_dir,
             skill_dirs=skill_dir,
@@ -1104,9 +1106,9 @@ async def service(
             help="Model name for memory LLM ingestion",
         ),
     ] = None,
-    database_namespace: Annotated[
+    dataset_namespace: Annotated[
         Optional[str],
-        typer.Option(..., help="Use a specific database namespace"),
+        typer.Option("--dataset-namespace", help="Use a specific dataset namespace"),
     ] = None,
     require_table_read: Annotated[
         list[str],
@@ -1230,7 +1232,7 @@ async def service(
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
             reply_all=reply_all,
-            database_namespace=database_namespace,
+            dataset_namespace=dataset_namespace,
             enable_attachments=enable_attachments,
             working_dir=working_dir,
             skill_dirs=skill_dir,
@@ -1395,9 +1397,9 @@ async def spec(
             help="Model name for memory LLM ingestion",
         ),
     ] = None,
-    database_namespace: Annotated[
+    dataset_namespace: Annotated[
         Optional[str],
-        typer.Option(..., help="Use a specific database namespace"),
+        typer.Option("--dataset-namespace", help="Use a specific dataset namespace"),
     ] = None,
     require_table_read: Annotated[
         list[str],
@@ -1521,7 +1523,7 @@ async def spec(
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
             reply_all=reply_all,
-            database_namespace=database_namespace,
+            dataset_namespace=dataset_namespace,
             enable_attachments=enable_attachments,
             working_dir=working_dir,
             skill_dirs=skill_dir,
@@ -1706,9 +1708,9 @@ async def deploy(
             help="Model name for memory LLM ingestion",
         ),
     ] = None,
-    database_namespace: Annotated[
+    dataset_namespace: Annotated[
         Optional[str],
-        typer.Option(..., help="Use a specific database namespace"),
+        typer.Option("--dataset-namespace", help="Use a specific dataset namespace"),
     ] = None,
     require_table_read: Annotated[
         list[str],
@@ -1839,7 +1841,7 @@ async def deploy(
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
             reply_all=reply_all,
-            database_namespace=database_namespace,
+            dataset_namespace=dataset_namespace,
             enable_attachments=enable_attachments,
             working_dir=working_dir,
             skill_dirs=skill_dir,

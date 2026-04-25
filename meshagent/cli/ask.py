@@ -549,7 +549,7 @@ def _build_ask_instructions(
         ),
         (
             "If asked for coding assistance, refer to the installed meshagent sdk "
-            "for questions about agents, rooms, databases, queues, file storage, "
+            "for questions about agents, rooms, datasets, queues, file storage, "
             "and related APIs. If the project doesn't already have the meshagent "
             "sdk installed, ask the user if they would like you to add it to "
             "their project for them if it seems like they are asking for "

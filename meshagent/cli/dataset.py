@@ -20,14 +20,12 @@ from meshagent.api.room_server_client import _data_type_adapter, SqlTableReferen
 from meshagent.api.sql import ALLOWED_DATA_TYPES, SchemaParseError, parse_table_schema
 from meshagent.api import RoomException  # or wherever you defined it
 
-app = async_typer.AsyncTyper(help="Manage database tables in a room")
-branch_app = async_typer.AsyncTyper(
-    help="Manage database branches in a room namespace."
-)
+app = async_typer.AsyncTyper(help="Manage dataset tables in a room")
+branch_app = async_typer.AsyncTyper(help="Manage dataset branches in a room namespace.")
 app.add_typer(
     branch_app,
     name="branch",
-    help="Manage database branches in a room namespace.",
+    help="Manage dataset branches in a room namespace.",
 )
 
 COLUMN_DEFINITIONS_HELP = (
@@ -145,7 +143,7 @@ NamespaceOption = Annotated[
 
 BranchOption = Annotated[
     Optional[str],
-    typer.Option("--branch", help="Database branch name (defaults to main)"),
+    typer.Option("--branch", help="Dataset branch name (defaults to main)"),
 ]
 
 VersionOption = Annotated[
@@ -163,8 +161,8 @@ VersionOption = Annotated[
 # ---------------------------
 
 
-@app.async_command("tables", help="List database tables in a room.", hidden=True)
-@app.async_command("table", help="List database tables in a room.")
+@app.async_command("tables", help="List dataset tables in a room.", hidden=True)
+@app.async_command("table", help="List dataset tables in a room.")
 async def list_tables(
     *,
     project_id: ProjectIdOption,
@@ -186,7 +184,7 @@ async def list_tables(
                 token=connection.jwt,
             ).create_factory()
         ) as client:
-            tables = await client.database.list_tables(
+            tables = await client.datasets.list_tables(
                 namespace=_ns(namespace),
                 branch=branch,
             )
@@ -203,7 +201,7 @@ async def list_tables(
         await account_client.close()
 
 
-@app.async_command("inspect", help="Inspect a table schema in a room database.")
+@app.async_command("inspect", help="Inspect a table schema in a room dataset.")
 async def inspect(
     *,
     project_id: ProjectIdOption,
@@ -230,7 +228,7 @@ async def inspect(
                 token=connection.jwt,
             ).create_factory()
         ) as client:
-            schema = await client.database.inspect(
+            schema = await client.datasets.inspect(
                 table=table,
                 namespace=_ns(namespace),
                 branch=branch,
@@ -272,7 +270,7 @@ async def install_requirements(
     ] = None,
 ):
     """
-    Create a database from a json file containing a list of RequiredTables.
+    Create a dataset from a json file containing a list of RequiredTables.
     """
     account_client = await get_client()
     try:
@@ -303,7 +301,7 @@ async def install_requirements(
 
 
 @app.async_command(
-    "create", help="Create a room database table with optional schema and seed data."
+    "create", help="Create a room dataset table with optional schema and seed data."
 )
 async def create_table(
     *,
@@ -398,7 +396,7 @@ async def create_table(
 
             if data_obj is not None:
                 records = _coerce_record_list(value=data_obj, name="create")
-                await client.database.create_table_from_data_stream(
+                await client.datasets.create_table_from_data_stream(
                     name=table,
                     chunks=_record_chunks(records),
                     schema=schema,
@@ -407,7 +405,7 @@ async def create_table(
                     branch=branch,
                 )
             elif schema is not None:
-                await client.database.create_table_with_schema(
+                await client.datasets.create_table_with_schema(
                     name=table,
                     schema=schema,
                     mode=mode,  # type: ignore
@@ -415,7 +413,7 @@ async def create_table(
                     branch=branch,
                 )
             else:
-                await client.database.create_table_from_data_stream(
+                await client.datasets.create_table_from_data_stream(
                     name=table,
                     chunks=_record_chunks([]),
                     mode=mode,  # type: ignore
@@ -432,7 +430,7 @@ async def create_table(
         await account_client.close()
 
 
-@app.async_command("drop", help="Drop a room database table.")
+@app.async_command("drop", help="Drop a room dataset table.")
 async def drop_table(
     *,
     project_id: ProjectIdOption,
@@ -458,7 +456,7 @@ async def drop_table(
                 token=connection.jwt,
             ).create_factory()
         ) as client:
-            await client.database.drop_table(
+            await client.datasets.drop_table(
                 name=table,
                 ignore_missing=ignore_missing,
                 namespace=_ns(namespace),
@@ -473,7 +471,7 @@ async def drop_table(
         await account_client.close()
 
 
-@app.async_command("add-columns", help="Add columns to a room database table.")
+@app.async_command("add-columns", help="Add columns to a room dataset table.")
 async def add_columns(
     *,
     project_id: ProjectIdOption,
@@ -552,7 +550,7 @@ async def add_columns(
                     else:
                         new_cols[k] = v
 
-            await client.database.add_columns(
+            await client.datasets.add_columns(
                 table=table,
                 new_columns=new_cols,
                 namespace=_ns(namespace),
@@ -567,7 +565,7 @@ async def add_columns(
         await account_client.close()
 
 
-@app.async_command("drop-columns", help="Drop columns from a room database table.")
+@app.async_command("drop-columns", help="Drop columns from a room dataset table.")
 async def drop_columns(
     *,
     project_id: ProjectIdOption,
@@ -594,7 +592,7 @@ async def drop_columns(
                 token=connection.jwt,
             ).create_factory()
         ) as client:
-            await client.database.drop_columns(
+            await client.datasets.drop_columns(
                 table=table,
                 columns=columns,
                 namespace=_ns(namespace),
@@ -609,7 +607,7 @@ async def drop_columns(
         await account_client.close()
 
 
-@app.async_command("insert", help="Insert records into a room database table.")
+@app.async_command("insert", help="Insert records into a room dataset table.")
 async def insert(
     *,
     project_id: ProjectIdOption,
@@ -645,7 +643,7 @@ async def insert(
                 token=connection.jwt,
             ).create_factory()
         ) as client:
-            await client.database.insert_stream(
+            await client.datasets.insert_stream(
                 table=table,
                 chunks=_record_chunks(records),
                 namespace=_ns(namespace),
@@ -662,7 +660,7 @@ async def insert(
         await account_client.close()
 
 
-@app.async_command("merge", help="Upsert records into a room database table.")
+@app.async_command("merge", help="Upsert records into a room dataset table.")
 async def merge(
     *,
     project_id: ProjectIdOption,
@@ -698,7 +696,7 @@ async def merge(
                 token=connection.jwt,
             ).create_factory()
         ) as client:
-            await client.database.merge_stream(
+            await client.datasets.merge_stream(
                 table=table,
                 on=on,
                 chunks=_record_chunks(records),
@@ -716,7 +714,7 @@ async def merge(
         await account_client.close()
 
 
-@app.async_command("update", help="Update rows in a room database table.")
+@app.async_command("update", help="Update rows in a room dataset table.")
 async def update(
     *,
     project_id: ProjectIdOption,
@@ -751,7 +749,7 @@ async def update(
                 token=connection.jwt,
             ).create_factory()
         ) as client:
-            await client.database.update(
+            await client.datasets.update(
                 table=table,
                 where=where,
                 values=values,
@@ -767,7 +765,7 @@ async def update(
         await account_client.close()
 
 
-@app.async_command("delete", help="Delete rows from a room database table.")
+@app.async_command("delete", help="Delete rows from a room dataset table.")
 async def delete(
     *,
     project_id: ProjectIdOption,
@@ -791,7 +789,7 @@ async def delete(
                 token=connection.jwt,
             ).create_factory()
         ) as client:
-            await client.database.delete(
+            await client.datasets.delete(
                 table=table,
                 where=where,
                 namespace=_ns(namespace),
@@ -806,7 +804,7 @@ async def delete(
         await account_client.close()
 
 
-@app.async_command("search", help="Search rows in a room database table.")
+@app.async_command("search", help="Search rows in a room dataset table.")
 async def search(
     *,
     project_id: ProjectIdOption,
@@ -864,7 +862,7 @@ async def search(
             ).create_factory()
         ) as client:
             await _print_row_batches(
-                batches=client.database.search_stream(
+                batches=client.datasets.search_stream(
                     table=table,
                     text=text,
                     vector=vec,
@@ -886,7 +884,7 @@ async def search(
         await account_client.close()
 
 
-@app.async_command("sql", help="Execute SQL against room database tables.")
+@app.async_command("sql", help="Execute SQL against room dataset tables.")
 async def sql(
     *,
     project_id: ProjectIdOption,
@@ -947,7 +945,7 @@ async def sql(
     ] = True,
 ):
     """
-    Execute SQL against one or more room database tables.
+    Execute SQL against one or more room dataset tables.
 
     You can pass table names with --table/-t, and optionally provide detailed table
     references with --tables-json/--tables-file for alias/namespace control.
@@ -1036,7 +1034,7 @@ async def sql(
             ).create_factory()
         ) as client:
             await _print_row_batches(
-                batches=client.database.sql_stream(
+                batches=client.datasets.sql_stream(
                     query=query,
                     tables=table_refs,
                     params=params_obj,
@@ -1051,7 +1049,7 @@ async def sql(
         await account_client.close()
 
 
-@app.async_command("optimize", help="Optimize a room database table.")
+@app.async_command("optimize", help="Optimize a room dataset table.")
 async def optimize(
     *,
     project_id: ProjectIdOption,
@@ -1074,7 +1072,7 @@ async def optimize(
                 token=connection.jwt,
             ).create_factory()
         ) as client:
-            await client.database.optimize(
+            await client.datasets.optimize(
                 table=table,
                 namespace=_ns(namespace),
                 branch=branch,
@@ -1090,10 +1088,10 @@ async def optimize(
 
 @app.async_command(
     "versions",
-    help="List versions for a room database table.",
+    help="List versions for a room dataset table.",
     hidden=True,
 )
-@app.async_command("version", help="List versions for a room database table.")
+@app.async_command("version", help="List versions for a room dataset table.")
 async def list_versions(
     *,
     project_id: ProjectIdOption,
@@ -1119,7 +1117,7 @@ async def list_versions(
                 token=connection.jwt,
             ).create_factory()
         ) as client:
-            versions = await client.database.list_versions(
+            versions = await client.datasets.list_versions(
                 table=table,
                 namespace=_ns(namespace),
                 branch=branch,
@@ -1134,7 +1132,7 @@ async def list_versions(
         await account_client.close()
 
 
-@branch_app.async_command("list", help="List database branches in a room namespace.")
+@branch_app.async_command("list", help="List dataset branches in a room namespace.")
 async def list_branches(
     *,
     project_id: ProjectIdOption,
@@ -1158,7 +1156,7 @@ async def list_branches(
                 token=connection.jwt,
             ).create_factory()
         ) as client:
-            branches = await client.database.list_branches(namespace=_ns(namespace))
+            branches = await client.datasets.list_branches(namespace=_ns(namespace))
             out = [branch.model_dump(mode="json") for branch in branches]
             print(_json.dumps(out, indent=2 if pretty else None))
 
@@ -1169,7 +1167,7 @@ async def list_branches(
         await account_client.close()
 
 
-@branch_app.async_command("create", help="Create a database branch.")
+@branch_app.async_command("create", help="Create a dataset branch.")
 async def create_branch(
     *,
     project_id: ProjectIdOption,
@@ -1195,7 +1193,7 @@ async def create_branch(
                 token=connection.jwt,
             ).create_factory()
         ) as client:
-            await client.database.create_branch(
+            await client.datasets.create_branch(
                 branch=branch,
                 from_branch=from_branch,
                 namespace=_ns(namespace),
@@ -1214,7 +1212,7 @@ async def create_branch(
         await account_client.close()
 
 
-@branch_app.async_command("delete", help="Delete a database branch.")
+@branch_app.async_command("delete", help="Delete a dataset branch.")
 async def delete_branch(
     *,
     project_id: ProjectIdOption,
@@ -1236,7 +1234,7 @@ async def delete_branch(
                 token=connection.jwt,
             ).create_factory()
         ) as client:
-            await client.database.delete_branch(
+            await client.datasets.delete_branch(
                 branch=branch,
                 namespace=_ns(namespace),
             )
@@ -1250,7 +1248,7 @@ async def delete_branch(
 
 
 @app.async_command(
-    "restore", help="Restore a room database table to a specific version."
+    "restore", help="Restore a room dataset table to a specific version."
 )
 async def restore(
     *,
@@ -1275,7 +1273,7 @@ async def restore(
                 token=connection.jwt,
             ).create_factory()
         ) as client:
-            await client.database.restore(
+            await client.datasets.restore(
                 table=table,
                 version=version,
                 namespace=_ns(namespace),
@@ -1292,10 +1290,10 @@ async def restore(
 
 @app.async_command(
     "indexes",
-    help="List indexes on a room database table.",
+    help="List indexes on a room dataset table.",
     hidden=True,
 )
-@app.async_command("index", help="List indexes on a room database table.")
+@app.async_command("index", help="List indexes on a room dataset table.")
 async def list_indexes(
     *,
     project_id: ProjectIdOption,
@@ -1322,7 +1320,7 @@ async def list_indexes(
                 token=connection.jwt,
             ).create_factory()
         ) as client:
-            idxs = await client.database.list_indexes(
+            idxs = await client.datasets.list_indexes(
                 table=table,
                 namespace=_ns(namespace),
                 branch=branch,
@@ -1338,7 +1336,7 @@ async def list_indexes(
         await account_client.close()
 
 
-@app.async_command("index-create", help="Create an index on a room database table.")
+@app.async_command("index-create", help="Create an index on a room dataset table.")
 async def create_index(
     *,
     project_id: ProjectIdOption,
@@ -1373,7 +1371,7 @@ async def create_index(
             ).create_factory()
         ) as client:
             if kind == "vector":
-                await client.database.create_vector_index(
+                await client.datasets.create_vector_index(
                     table=table,
                     column=column,
                     replace=replace,
@@ -1381,7 +1379,7 @@ async def create_index(
                     branch=branch,
                 )
             elif kind == "scalar":
-                await client.database.create_scalar_index(
+                await client.datasets.create_scalar_index(
                     table=table,
                     column=column,
                     replace=replace,
@@ -1389,7 +1387,7 @@ async def create_index(
                     branch=branch,
                 )
             elif kind in "fts":
-                await client.database.create_full_text_search_index(
+                await client.datasets.create_full_text_search_index(
                     table=table,
                     column=column,
                     replace=replace,
@@ -1408,7 +1406,7 @@ async def create_index(
         await account_client.close()
 
 
-@app.async_command("index-drop", help="Drop an index from a room database table.")
+@app.async_command("index-drop", help="Drop an index from a room dataset table.")
 async def drop_index(
     *,
     project_id: ProjectIdOption,
@@ -1432,7 +1430,7 @@ async def drop_index(
                 token=connection.jwt,
             ).create_factory()
         ) as client:
-            await client.database.drop_index(
+            await client.datasets.drop_index(
                 table=table,
                 name=name,
                 namespace=_ns(namespace),

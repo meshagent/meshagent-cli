@@ -36,7 +36,7 @@ def _service_spec() -> ServiceSpec:
     )
 
 
-def test_task_runner_spec_defaults_database_namespace(monkeypatch) -> None:
+def test_task_runner_spec_defaults_dataset_namespace(monkeypatch) -> None:
     fake_service = _FakeService()
     build_calls: list[dict[str, object]] = []
 
@@ -75,7 +75,7 @@ def test_task_runner_spec_defaults_database_namespace(monkeypatch) -> None:
     asyncio.run(invoke_spec())
 
     assert len(build_calls) == 1
-    assert build_calls[0]["database_namespace"] == [".database"]
+    assert build_calls[0]["dataset_namespace"] == [".datasets"]
     assert "mcp" not in build_calls[0]
     assert "require_mcp" not in build_calls[0]
 
