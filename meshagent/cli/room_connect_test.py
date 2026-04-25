@@ -102,9 +102,13 @@ def test_room_connect_runs_command_with_connected_room_env(
     monkeypatch.setattr(room_connect, "get_client", _fake_get_client)
     monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
     monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
+    monkeypatch.setattr(
+        room_connect,
+        "resolve_api_url",
+        lambda: "https://env.meshagent.test",
+    )
     monkeypatch.setattr(room_connect.subprocess, "run", _fake_run)
     monkeypatch.setenv("UNCHANGED_ENV", "keep-me")
-    monkeypatch.setenv("MESHAGENT_API_URL", "https://env.meshagent.test")
 
     result = CliRunner().invoke(
         get_command(root_cli.app),
@@ -149,6 +153,60 @@ def test_room_connect_runs_command_with_connected_room_env(
     )
     assert captured_env["OPENAI_API_KEY"] == "room-jwt"
     assert captured_env["ANTHROPIC_API_KEY"] == "room-jwt"
+
+
+@pytest.mark.asyncio
+async def test_room_connect_env_satisfies_llm_proxy_docs_samples(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account_client = _FakeAccountClient()
+
+    async def _fake_get_client() -> _FakeAccountClient:
+        return account_client
+
+    async def _fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-input"
+        return "project-1"
+
+    def _fake_resolve_room(room: str | None) -> str | None:
+        assert room == "room-input"
+        return room
+
+    monkeypatch.setattr(room_connect, "get_client", _fake_get_client)
+    monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
+    monkeypatch.setenv("MESHAGENT_API_URL", "https://env.meshagent.test")
+
+    child_env = await room_connect._build_connected_command_env(
+        project_id="project-input",
+        room="room-input",
+        env=(),
+        env_secret=(),
+        identity=None,
+        meshagent_token=None,
+    )
+
+    sample_required_env = {
+        "MESHAGENT_TOKEN",
+        "MESHAGENT_PROJECT_ID",
+        "MESHAGENT_ROOM",
+        "OPENAI_BASE_URL",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_API_KEY",
+    }
+    assert sample_required_env <= child_env.keys()
+    assert child_env["MESHAGENT_TOKEN"] == "room-jwt"
+    assert child_env["OPENAI_API_KEY"] == child_env["MESHAGENT_TOKEN"]
+    assert child_env["ANTHROPIC_API_KEY"] == child_env["MESHAGENT_TOKEN"]
+    assert (
+        child_env["OPENAI_BASE_URL"]
+        == "https://room-proxy.meshagent.test/rooms/connected-room/openai/v1"
+    )
+    assert (
+        child_env["ANTHROPIC_BASE_URL"]
+        == "https://room-proxy.meshagent.test/rooms/connected-room/anthropic"
+    )
 
 
 @pytest.mark.asyncio
