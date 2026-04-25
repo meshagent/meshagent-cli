@@ -39,6 +39,51 @@ class _FakeTTY:
 
 
 @pytest.mark.asyncio
+async def test_list_includes_project_key_column(monkeypatch) -> None:
+    client = _FakeClient(
+        [
+            {
+                "id": "project-1",
+                "name": "Powerboards",
+                "project_key": "powerboards",
+            }
+        ]
+    )
+    printed_tables: list[tuple[object, ...]] = []
+
+    async def _fake_get_client():
+        return client
+
+    async def _fake_get_active_project() -> str | None:
+        return "project-1"
+
+    def _fake_print_json_table(*args):
+        printed_tables.append(args)
+
+    monkeypatch.setattr(projects, "get_client", _fake_get_client)
+    monkeypatch.setattr(projects, "get_active_project", _fake_get_active_project)
+    monkeypatch.setattr(projects, "print_json_table", _fake_print_json_table)
+
+    await projects.list(o="table")
+
+    assert printed_tables == [
+        (
+            [
+                {
+                    "id": "project-1",
+                    "name": "*Powerboards",
+                    "project_key": "powerboards",
+                }
+            ],
+            "id",
+            "name",
+            "project_key",
+        )
+    ]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
 async def test_activate_sets_selected_project(monkeypatch) -> None:
     active_project_ids: list[str | None] = []
     output: list[str] = []

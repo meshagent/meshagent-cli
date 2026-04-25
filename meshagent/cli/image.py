@@ -517,6 +517,21 @@ async def _resolve_room_registry_target(
         await account_client.close()
 
 
+async def _resolve_deploy_image_tag(
+    *,
+    project_id: str,
+    parsed_tag: _ParsedImageTag,
+) -> _ParsedImageTag:
+    if not _room_registry_tag_needs_project_key(parsed_tag=parsed_tag):
+        return parsed_tag
+
+    _project_registry, resolved_tag = await _resolve_room_registry_target(
+        project_id=project_id,
+        parsed_tag=parsed_tag,
+    )
+    return resolved_tag
+
+
 def _require_room_pack_tag(
     *,
     parsed_tag: _ParsedImageTag,
@@ -2917,6 +2932,11 @@ async def deploy_image(
         _require_room_pack_tag(
             parsed_tag=parsed_tag,
             project_registry=project_registry,
+        )
+    else:
+        parsed_tag = await _resolve_deploy_image_tag(
+            project_id=resolved_project_id,
+            parsed_tag=parsed_tag,
         )
     if domain is not None:
         domain = domain.strip()

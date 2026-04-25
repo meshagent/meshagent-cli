@@ -190,7 +190,7 @@ async def list(
     if o == "json":
         print(projects)
     else:
-        print_json_table(projects["projects"], "id", "name")
+        print_json_table(projects["projects"], "id", "name", "project_key")
     await client.close()
 
 

@@ -1854,6 +1854,101 @@ async def test_deploy_image_no_wait_skips_live_wait(
 
 
 @pytest.mark.asyncio
+async def test_deploy_image_normalizes_shorthand_tag_without_build_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeConfigClient:
+        async def get_config(self) -> MeshagentDeploymentConfig:
+            captured["get_config_called"] = True
+            return MeshagentDeploymentConfig(
+                domains=MeshagentDomains(registry="registry.meshagent.com")
+            )
+
+        async def get_project_info(self, project_id: str) -> ProjectInfo:
+            captured["project_info_project_id"] = project_id
+            return ProjectInfo(
+                id=project_id,
+                owner_user_id="user-1",
+                name="Powerboards",
+                project_key="powerboards",
+            )
+
+        async def close(self) -> None:
+            captured["config_client_closed"] = True
+
+    class _FakeRoomClient:
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+            captured["room_client_closed"] = True
+
+    class _FakeAccountClient:
+        async def list_room_services(self, *, project_id: str, room_name: str):
+            captured.setdefault("list_room_services", []).append(
+                (project_id, room_name)
+            )
+            return []
+
+        async def create_room_service(
+            self, *, project_id: str, room_name: str, service
+        ):
+            captured["created_service"] = (project_id, room_name, service)
+            return "service-1"
+
+        async def close(self) -> None:
+            captured["account_client_closed"] = True
+
+    async def _fake_get_client() -> _FakeConfigClient:
+        return _FakeConfigClient()
+
+    async def _fake_with_client(*, project_id, room):
+        captured["project_id"] = project_id
+        captured["room"] = room
+        return _FakeAccountClient(), _FakeRoomClient()
+
+    async def _fake_resolve_project_id(*, project_id):
+        captured["project_id_arg"] = project_id
+        return "project-1"
+
+    monkeypatch.setattr(image, "get_client", _fake_get_client)
+    monkeypatch.setattr(image, "_with_client", _fake_with_client)
+    monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
+
+    await image.deploy_image(
+        project_id=None,
+        room="room-1",
+        tag="test:latest",
+        domain=None,
+        room_mount=[],
+        project_mount=[],
+        empty_dir_mount=[],
+        image_mount=[],
+        env=[],
+        meshagent_token=None,
+        private=True,
+        wait=False,
+    )
+
+    assert captured["project_id_arg"] is None
+    assert captured["project_info_project_id"] == "project-1"
+    assert captured["config_client_closed"] is True
+    assert captured["project_id"] == "project-1"
+    assert captured["room"] == "room-1"
+    created_service = captured["created_service"]
+    assert isinstance(created_service, tuple)
+    service_spec = created_service[2]
+    assert service_spec.container is not None
+    assert (
+        service_spec.container.image == "registry.meshagent.com/powerboards/test:latest"
+    )
+    assert captured["room_client_closed"] is True
+    assert captured["account_client_closed"] is True
+
+
+@pytest.mark.asyncio
 async def test_deploy_image_creates_room_service_with_mounts_env_secret_and_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
