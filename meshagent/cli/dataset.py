@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 from urllib.request import urlopen
 
 import typer
+import pyarrow as pa
 from rich import print
 
 from meshagent.api import RequiredTable
@@ -16,7 +17,7 @@ from meshagent.cli import async_typer
 from meshagent.cli.helper import resolve_project_id, resolve_room, get_client
 from meshagent.api.helpers import websocket_room_url
 from meshagent.api import RoomClient, WebSocketClientProtocol
-from meshagent.api.room_server_client import _data_type_adapter, SqlTableReference
+from meshagent.api.room_server_client import SqlTableReference
 from meshagent.api.sql import ALLOWED_DATA_TYPES, SchemaParseError, parse_table_schema
 from meshagent.api import RoomException  # or wherever you defined it
 
@@ -31,7 +32,7 @@ app.add_typer(
 COLUMN_DEFINITIONS_HELP = (
     "Comma-separated column definitions. Example: "
     '"names vector(20) null, tags list(text), meta struct(owner text, score float)". '
-    f"Allowed types: {', '.join(ALLOWED_DATA_TYPES)}. "
+    f"CLI shorthand types: {', '.join(ALLOWED_DATA_TYPES)}. "
     "Vector syntax: vector(size[, element_type]). "
     "List syntax: list(element_type). "
     "Struct syntax: struct(field_name type[, ...])."
@@ -110,13 +111,14 @@ def _indent_block(text: str, prefix: str) -> str:
 
 async def _print_row_batches(
     *,
-    batches: AsyncIterable[list[dict[str, Any]]],
+    batches: AsyncIterable[Any],
     pretty: bool,
 ) -> None:
     typer.echo("[", nl=False)
     first = True
     async for batch in batches:
-        for row in batch:
+        rows = batch.to_pylist() if isinstance(batch, pa.Table) else batch
+        for row in rows:
             if first:
                 if pretty:
                     typer.echo("\n", nl=False)
@@ -236,20 +238,10 @@ async def inspect(
             )
 
             if json:
-                out = {
-                    k: v.model_dump(mode="json", exclude_none=True)
-                    for k, v in schema.items()
-                }
-                print(_json.dumps(out, indent=2))
+                print(schema.to_string())
             else:
                 print(f"[bold]{table}[/bold]")
-                for k, v in schema.items():
-                    print(
-                        "  [cyan]"
-                        f"{k}"
-                        "[/cyan]: "
-                        f"{v.model_dump(mode='json', exclude_none=True)}"
-                    )
+                print(schema.to_string())
 
     except RoomException as e:
         print(e)
@@ -301,7 +293,8 @@ async def install_requirements(
 
 
 @app.async_command(
-    "create", help="Create a room dataset table with optional schema and seed data."
+    "create",
+    help="Create a room dataset table with optional Arrow schema and seed data.",
 )
 async def create_table(
     *,
@@ -321,12 +314,6 @@ async def create_table(
             help=COLUMN_DEFINITIONS_HELP,
         ),
     ] = None,
-    schema_json: Annotated[
-        Optional[str], typer.Option("--schema-json", help="Schema JSON as a string")
-    ] = None,
-    schema_file: Annotated[
-        Optional[str], typer.Option("--schema-file", help="Path to schema JSON file")
-    ] = None,
     data_json: Annotated[
         Optional[str], typer.Option("--data-json", help="Initial rows (JSON list)")
     ] = None,
@@ -336,10 +323,7 @@ async def create_table(
     ] = None,
 ):
     """
-    Create a table with optional schema + optional initial data.
-
-    Schema JSON format matches your DataType.to_json() structure, e.g.:
-      {"id":{"type":"int"}, "body":{"type":"text"}, "embedding":{"type":"vector","size":1536,"element_type":{"type":"float"}}}
+    Create a table with optional Arrow schema + optional initial data.
 
     Column definitions via --columns/-c use SQL-like syntax:
       names vector(20) null, tags list(text), meta struct(owner text, score float)
@@ -357,17 +341,6 @@ async def create_table(
             project_id=project_id, room=room_name
         )
 
-        if columns and (schema_json is not None or schema_file is not None):
-            raise typer.BadParameter(
-                "Use --columns or --schema-json/--schema-file, not both"
-            )
-
-        schema_obj = None
-        if schema_json is not None:
-            schema_obj = _parse_json_arg(schema_json, name="--schema-json")
-        elif schema_file is not None:
-            schema_obj = _load_json_file(schema_file, name="--schema-file")
-
         data_obj = _parse_json_arg(data_json, name="--data-json")
         data_obj = (
             data_obj
@@ -381,44 +354,43 @@ async def create_table(
                 token=connection.jwt,
             ).create_factory()
         ) as client:
-            # Build DataType objects from json if schema provided
-            schema = None
+            arrow_schema: pa.Schema | None = None
             if columns is not None:
                 try:
-                    schema = parse_table_schema(columns)
+                    arrow_schema = parse_table_schema(columns)
                 except SchemaParseError as e:
                     raise typer.BadParameter(str(e))
-            elif schema_obj is not None:
-                schema = {
-                    k: _data_type_adapter.validate_python(v)
-                    for k, v in schema_obj.items()
-                }  # hacky but local import-safe
 
             if data_obj is not None:
                 records = _coerce_record_list(value=data_obj, name="create")
-                await client.datasets.create_table_from_data_stream(
-                    name=table,
-                    chunks=_record_chunks(records),
-                    schema=schema,
-                    mode=mode,  # type: ignore
-                    namespace=_ns(namespace),
-                    branch=branch,
-                )
-            elif schema is not None:
+                if arrow_schema is not None:
+                    await client.datasets.create_table_with_schema(
+                        name=table,
+                        schema=arrow_schema,
+                        data=pa.Table.from_pylist(records, schema=arrow_schema),
+                        mode=mode,  # type: ignore
+                        namespace=_ns(namespace),
+                        branch=branch,
+                    )
+                else:
+                    await client.datasets.create_table_from_json_data(
+                        name=table,
+                        data=records,
+                        mode=mode,  # type: ignore
+                        namespace=_ns(namespace),
+                        branch=branch,
+                    )
+            elif arrow_schema is not None:
                 await client.datasets.create_table_with_schema(
                     name=table,
-                    schema=schema,
+                    schema=arrow_schema,
                     mode=mode,  # type: ignore
                     namespace=_ns(namespace),
                     branch=branch,
                 )
             else:
-                await client.datasets.create_table_from_data_stream(
-                    name=table,
-                    chunks=_record_chunks([]),
-                    mode=mode,  # type: ignore
-                    namespace=_ns(namespace),
-                    branch=branch,
+                raise typer.BadParameter(
+                    "Provide --columns for an Arrow schema or --data-json/--data-file for JSON data"
                 )
 
             print(f"[bold green]Created table:[/bold green] {table}")
@@ -492,18 +464,15 @@ async def add_columns(
         typer.Option(
             "--columns-json",
             help=(
-                "JSON object of new columns. Supports DataType JSON including "
-                "list/struct (e.g. "
-                '\'{"meta":{"type":"struct","fields":{"owner":{"type":"text"}}}}\''
-                ")."
+                "JSON object of new columns mapped to SQL default expressions "
+                '(e.g. \'{"created_at":"now()"}\').'
             ),
         ),
     ] = None,
 ):
     """
-    Add columns. JSON supports either:
-      - DataType JSON: {"col":{"type":"text"}}
-      - or server default SQL expr strings: {"col":"'default'"}
+    Add columns. JSON supports server default SQL expression strings:
+      {"col":"'default'"}
 
     Column definitions via --columns/-c use SQL-like syntax:
       names vector(20) null, tags list(text), meta struct(owner text, score float)
@@ -542,13 +511,13 @@ async def add_columns(
                 except SchemaParseError as e:
                     raise typer.BadParameter(str(e))
             else:
-                # Convert DataType json objects into DataType instances; pass strings through.
                 new_cols = {}
                 for k, v in cols_obj.items():
-                    if isinstance(v, dict) and "type" in v:
-                        new_cols[k] = _data_type_adapter.validate_python(v)
-                    else:
-                        new_cols[k] = v
+                    if not isinstance(v, str):
+                        raise typer.BadParameter(
+                            "--columns-json values must be SQL expression strings"
+                        )
+                    new_cols[k] = v
 
             await client.datasets.add_columns(
                 table=table,
@@ -645,7 +614,7 @@ async def insert(
         ) as client:
             await client.datasets.insert_stream(
                 table=table,
-                chunks=_record_chunks(records),
+                chunks=[pa.Table.from_pylist(records)],
                 namespace=_ns(namespace),
                 branch=branch,
             )
@@ -699,7 +668,7 @@ async def merge(
             await client.datasets.merge_stream(
                 table=table,
                 on=on,
-                chunks=_record_chunks(records),
+                chunks=[pa.Table.from_pylist(records)],
                 namespace=_ns(namespace),
                 branch=branch,
             )
