@@ -17,7 +17,7 @@ from meshagent.cli import async_typer
 from meshagent.cli.helper import resolve_project_id, resolve_room, get_client
 from meshagent.api.helpers import websocket_room_url
 from meshagent.api import RoomClient, WebSocketClientProtocol
-from meshagent.api.room_server_client import SqlTableReference
+from meshagent.api.room_server_client import DatasetSqlStatement, SqlTableReference
 from meshagent.api.sql import ALLOWED_DATA_TYPES, SchemaParseError, parse_table_schema
 from meshagent.api import RoomException  # or wherever you defined it
 
@@ -80,6 +80,53 @@ def _load_json_file(path: Optional[str], *, name: str) -> Any:
 
 def _ns(namespace: Optional[List[str]]) -> Optional[List[str]]:
     return namespace or None
+
+
+def _build_sql_table_refs(
+    *,
+    table: Optional[List[str]],
+    tables_obj: Any,
+    namespace: Optional[list[str]],
+    branch: Optional[str],
+    version: Optional[int],
+) -> list[SqlTableReference]:
+    table_refs: list[SqlTableReference] = []
+
+    if table is not None:
+        for table_name in table:
+            table_refs.append(
+                SqlTableReference(
+                    name=table_name,
+                    namespace=namespace,
+                    branch=branch,
+                    version=version,
+                )
+            )
+
+    if tables_obj is not None:
+        for idx, entry in enumerate(tables_obj):
+            if not isinstance(entry, dict):
+                raise typer.BadParameter(
+                    f"table reference at index {idx} must be a JSON object"
+                )
+
+            table_ref_payload = dict(entry)
+            if namespace is not None and "namespace" not in table_ref_payload:
+                table_ref_payload["namespace"] = namespace
+            if branch is not None and "branch" not in table_ref_payload:
+                table_ref_payload["branch"] = branch
+            if version is not None and "version" not in table_ref_payload:
+                table_ref_payload["version"] = version
+
+            table_refs.append(SqlTableReference.model_validate(table_ref_payload))
+
+    return table_refs
+
+
+def _sql_params_table(params_obj: Any) -> pa.Table | None:
+    if params_obj is None:
+        return None
+    return pa.table({key: [value] for key, value in params_obj.items()})
 
 
 def _coerce_record_list(*, value: Any, name: str) -> list[dict[str, Any]]:
@@ -952,43 +999,14 @@ async def sql(
             )
 
         resolved_namespace = _ns(namespace)
-        table_refs: list[SqlTableReference] = []
-
-        if table is not None:
-            for table_name in table:
-                table_refs.append(
-                    SqlTableReference(
-                        name=table_name,
-                        namespace=resolved_namespace,
-                        branch=branch,
-                        version=version,
-                    )
-                )
-
-        if tables_obj is not None:
-            for idx, entry in enumerate(tables_obj):
-                if not isinstance(entry, dict):
-                    raise typer.BadParameter(
-                        f"table reference at index {idx} must be a JSON object"
-                    )
-
-                table_ref_payload = dict(entry)
-                if (
-                    resolved_namespace is not None
-                    and "namespace" not in table_ref_payload
-                ):
-                    table_ref_payload["namespace"] = resolved_namespace
-                if branch is not None and "branch" not in table_ref_payload:
-                    table_ref_payload["branch"] = branch
-                if version is not None and "version" not in table_ref_payload:
-                    table_ref_payload["version"] = version
-
-                table_refs.append(SqlTableReference.model_validate(table_ref_payload))
-
-        if len(table_refs) == 0:
-            raise typer.BadParameter(
-                "Provide at least one table via --table or --tables-json/--tables-file"
-            )
+        table_refs = _build_sql_table_refs(
+            table=table,
+            tables_obj=tables_obj,
+            namespace=resolved_namespace,
+            branch=branch,
+            version=version,
+        )
+        params_table = _sql_params_table(params_obj)
 
         project_id = await resolve_project_id(project_id=project_id)
         room_name = resolve_room(room)
@@ -1002,13 +1020,157 @@ async def sql(
                 token=connection.jwt,
             ).create_factory()
         ) as client:
-            await _print_row_batches(
-                batches=client.datasets.sql_stream(
-                    query=query,
-                    tables=table_refs,
-                    params=params_obj,
-                ),
-                pretty=pretty,
+            result = await client.datasets.execute_sql(
+                query=query,
+                tables=table_refs or None,
+                params=params_table,
+                namespace=resolved_namespace,
+                branch=branch,
+            )
+            if isinstance(result, DatasetSqlStatement):
+                print(
+                    _json.dumps(
+                        {"rows_affected": result.rows_affected},
+                        indent=2 if pretty else None,
+                    )
+                )
+            else:
+                try:
+                    await _print_row_batches(
+                        batches=client.datasets.read_sql_query(
+                            query_id=result.query_id,
+                        ),
+                        pretty=pretty,
+                    )
+                finally:
+                    await client.datasets.close_sql_query(query_id=result.query_id)
+
+    except (RoomException, typer.BadParameter, ValidationError) as e:
+        print(e)
+        raise typer.Exit(1)
+    finally:
+        await account_client.close()
+
+
+@app.async_command(
+    "sql-exec",
+    help="Execute a SQL statement that does not return rows.",
+)
+async def sql_exec(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    query: Annotated[
+        str,
+        typer.Option(
+            ...,
+            "--query",
+            "-q",
+            help="SQL statement to execute",
+        ),
+    ],
+    table: Annotated[
+        Optional[List[str]],
+        typer.Option(
+            "--table",
+            "-t",
+            help="Table name to register in SQL context (repeatable)",
+        ),
+    ] = None,
+    namespace: NamespaceOption = None,
+    tables_json: Annotated[
+        Optional[str],
+        typer.Option("--tables-json", help="JSON array of table refs"),
+    ] = None,
+    tables_file: Annotated[
+        Optional[str],
+        typer.Option("--tables-file", help="Path/URL to JSON array of table refs"),
+    ] = None,
+    params_json: Annotated[
+        Optional[str],
+        typer.Option(
+            "--params-json",
+            help="JSON object of SQL parameters, sent as one Arrow parameter row",
+        ),
+    ] = None,
+    params_file: Annotated[
+        Optional[str],
+        typer.Option("--params-file", help="Path/URL to JSON object of SQL parameters"),
+    ] = None,
+    branch: BranchOption = None,
+    version: VersionOption = None,
+    pretty: Annotated[
+        bool, typer.Option("--pretty/--no-pretty", help="Pretty-print JSON")
+    ] = True,
+):
+    """
+    Execute SQL that returns an affected-row count instead of result rows.
+    """
+    account_client = await get_client()
+    try:
+        if query.strip() == "":
+            raise typer.BadParameter("--query cannot be empty")
+        if tables_json is not None and tables_file is not None:
+            raise typer.BadParameter("Use --tables-json or --tables-file, not both")
+        if params_json is not None and params_file is not None:
+            raise typer.BadParameter("Use --params-json or --params-file, not both")
+
+        tables_obj = _parse_json_arg(tables_json, name="--tables-json")
+        tables_obj = (
+            tables_obj
+            if tables_obj is not None
+            else _load_json_file(tables_file, name="--tables-file")
+        )
+        if tables_obj is not None and not isinstance(tables_obj, list):
+            raise typer.BadParameter(
+                "--tables-json/--tables-file must be a JSON array of table references"
+            )
+
+        params_obj = _parse_json_arg(params_json, name="--params-json")
+        params_obj = (
+            params_obj
+            if params_obj is not None
+            else _load_json_file(params_file, name="--params-file")
+        )
+        if params_obj is not None and not isinstance(params_obj, dict):
+            raise typer.BadParameter(
+                "--params-json/--params-file must be a JSON object"
+            )
+
+        resolved_namespace = _ns(namespace)
+        table_refs = _build_sql_table_refs(
+            table=table,
+            tables_obj=tables_obj,
+            namespace=resolved_namespace,
+            branch=branch,
+            version=version,
+        )
+        params_table = _sql_params_table(params_obj)
+
+        project_id = await resolve_project_id(project_id=project_id)
+        room_name = resolve_room(room)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
+
+        async with RoomClient(
+            protocol_factory=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room_name),
+                token=connection.jwt,
+            ).create_factory()
+        ) as client:
+            rows_affected = await client.datasets.execute_sql_statement(
+                query=query,
+                tables=table_refs or None,
+                params=params_table,
+                namespace=resolved_namespace,
+                branch=branch,
+            )
+            print(
+                _json.dumps(
+                    {"rows_affected": rows_affected},
+                    indent=2 if pretty else None,
+                )
             )
 
     except (RoomException, typer.BadParameter, ValidationError) as e:
