@@ -12,12 +12,13 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Optional
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
 
+from aiohttp import ClientTimeout
 import typer
 from pydantic import ValidationError
 from rich import print
 
+from meshagent.api.http import new_client_session
 from meshagent.cli import async_typer
 from meshagent.cli.containers import (
     _drain_stream_plain,
@@ -2103,20 +2104,20 @@ def _build_domain_liveness_url(*, domain: str, liveness_path: str) -> str:
     return f"{scheme}://{netloc}{base_path}{liveness_path}"
 
 
-def _probe_liveness_url(*, url: str) -> bool:
-    request = Request(
-        url,
-        headers={
-            "Accept": "*/*",
-            "User-Agent": f"meshagent-cli/{__version__}",
-        },
-    )
+async def _probe_liveness_url(*, url: str) -> bool:
     try:
-        with urlopen(request, timeout=_DEPLOY_LIVENESS_REQUEST_TIMEOUT_SECONDS) as resp:
-            status_code = resp.getcode()
+        async with new_client_session(
+            timeout=ClientTimeout(total=_DEPLOY_LIVENESS_REQUEST_TIMEOUT_SECONDS)
+        ) as session:
+            async with session.get(
+                url,
+                headers={
+                    "Accept": "*/*",
+                    "User-Agent": f"meshagent-cli/{__version__}",
+                },
+            ) as resp:
+                status_code = resp.status
     except Exception:
-        return False
-    if status_code is None:
         return False
     return 200 <= status_code < 400
 
@@ -2388,7 +2389,7 @@ async def _wait_for_deployed_service_live(
                 print(f"[green]Service is live:[/] {service_name} ({service_id})")
                 return
 
-            if await asyncio.to_thread(_probe_liveness_url, url=liveness_url):
+            if await _probe_liveness_url(url=liveness_url):
                 print(f"[green]Liveness URL responded:[/] {liveness_url}")
                 return
 

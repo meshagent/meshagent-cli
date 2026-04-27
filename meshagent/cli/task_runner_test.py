@@ -45,7 +45,7 @@ def test_task_runner_spec_defaults_dataset_namespace(monkeypatch) -> None:
         del port
         return fake_service
 
-    def fake_build_task_runner(**kwargs):
+    async def fake_build_task_runner(**kwargs):
         build_calls.append(kwargs)
         return type("DummyTaskRunner", (), {})
 
@@ -112,7 +112,7 @@ def test_task_runner_join_passes_room_jwt_as_api_key(monkeypatch) -> None:
         del key
         return None
 
-    def fake_build_task_runner(**kwargs):
+    async def fake_build_task_runner(**kwargs):
         build_calls.append(kwargs)
         return type("DummyTaskRunner", (), {})
 

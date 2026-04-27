@@ -5,13 +5,12 @@ import typer
 from rich import print
 from typing import Annotated, Literal, Optional
 from meshagent.cli.common_options import ProjectIdOption
-from aiohttp import ClientResponseError
+from aiohttp import ClientResponseError, ClientTimeout
 import pathlib
 import json
 import re
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse, urlunparse
-from urllib.request import Request, urlopen
 import yaml
 from meshagent.cli import async_typer
 from meshagent.api.services import well_known_service_path
@@ -57,6 +56,7 @@ from meshagent.api import (
     RoomException,
 )
 from meshagent.api.client import Meshagent
+from meshagent.api.http import new_client_session
 from meshagent.cli.common_options import OutputFormatOption
 
 from pydantic import RootModel
@@ -145,7 +145,26 @@ def _load_template_values(
     return template_values
 
 
-def _load_yaml_bytes(*, file: Optional[str], url: Optional[str], name: str) -> bytes:
+async def _fetch_url_bytes(
+    url: str,
+    *,
+    headers: Optional[dict[str, str]] = None,
+    timeout: Optional[float] = None,
+) -> tuple[bytes, str]:
+    kwargs = {}
+    if timeout is not None:
+        kwargs["timeout"] = ClientTimeout(total=timeout)
+    async with new_client_session(**kwargs) as session:
+        async with session.get(url, headers=headers) as resp:
+            if resp.status >= 400:
+                body = await resp.text()
+                raise RuntimeError(f"HTTP {resp.status}: {body}")
+            return await resp.read(), resp.charset or "utf-8"
+
+
+async def _load_yaml_bytes(
+    *, file: Optional[str], url: Optional[str], name: str
+) -> bytes:
     if file and url:
         raise typer.BadParameter("Provide only one of --file or --url")
     if not file and not url:
@@ -156,8 +175,8 @@ def _load_yaml_bytes(*, file: Optional[str], url: Optional[str], name: str) -> b
         if parsed.scheme not in ("http", "https"):
             raise typer.BadParameter("URL must start with http:// or https://")
         try:
-            with urlopen(url) as resp:
-                return resp.read()
+            data, _charset = await _fetch_url_bytes(url)
+            return data
         except Exception as exc:
             raise typer.BadParameter(f"Unable to read {name} from {url}: {exc}")
 
@@ -168,7 +187,7 @@ def _load_yaml_bytes(*, file: Optional[str], url: Optional[str], name: str) -> b
         raise typer.BadParameter(f"Unable to read {name} from {file}: {exc}")
 
 
-def _load_yaml_text(*, file: Optional[str], url: Optional[str], name: str) -> str:
+async def _load_yaml_text(*, file: Optional[str], url: Optional[str], name: str) -> str:
     if file and url:
         raise typer.BadParameter("Provide only one of --file or --url")
     if not file and not url:
@@ -179,9 +198,8 @@ def _load_yaml_text(*, file: Optional[str], url: Optional[str], name: str) -> st
         if parsed.scheme not in ("http", "https"):
             raise typer.BadParameter("URL must start with http:// or https://")
         try:
-            with urlopen(url) as resp:
-                charset = resp.headers.get_content_charset() or "utf-8"
-                return resp.read().decode(charset)
+            data, charset = await _fetch_url_bytes(url)
+            return data.decode(charset)
         except Exception as exc:
             raise typer.BadParameter(f"Unable to read {name} from {url}: {exc}")
 
@@ -297,17 +315,16 @@ def _normalize_discovered_endpoint(
     return urljoin(metadata_url, endpoint)
 
 
-def _fetch_json_url(url: str) -> dict[str, object]:
-    request = Request(
+async def _fetch_json_url(url: str) -> dict[str, object]:
+    data, charset = await _fetch_url_bytes(
         url,
         headers={
             "Accept": "application/json",
             "User-Agent": "meshagent-cli/0.28",
         },
+        timeout=10,
     )
-    with urlopen(request, timeout=10) as resp:
-        charset = resp.headers.get_content_charset() or "utf-8"
-        payload = json.loads(resp.read().decode(charset))
+    payload = json.loads(data.decode(charset))
 
     if not isinstance(payload, dict):
         raise ValueError("metadata payload is not an object")
@@ -319,7 +336,7 @@ async def _discover_oauth_endpoints_for_mcp(
 ) -> Optional[_DiscoveredOAuthEndpoints]:
     for metadata_url in _oauth_discovery_urls(server_url=server_url):
         try:
-            payload = await asyncio.to_thread(_fetch_json_url, metadata_url)
+            payload = await _fetch_json_url(metadata_url)
         except Exception:
             continue
 
@@ -449,7 +466,9 @@ async def _load_service_spec(
 ) -> ServiceSpec:
     _ensure_single_source(file=file, url=url, mcp=mcp, name="service definition")
     if mcp is None:
-        spec_bytes = _load_yaml_bytes(file=file, url=url, name="service definition")
+        spec_bytes = await _load_yaml_bytes(
+            file=file, url=url, name="service definition"
+        )
         return parse_yaml_raw_as(ServiceSpec, spec_bytes)
 
     normalized_mcp_url = _normalize_http_url(mcp)
@@ -789,22 +808,24 @@ async def _update_service_from_template_in_scope(
     return service.id or service_id
 
 
-def _load_input_as_service_spec(
+async def _load_input_as_service_spec(
     *, file: Optional[str], url: Optional[str]
 ) -> ServiceSpec:
-    spec_bytes = _load_yaml_bytes(file=file, url=url, name="service definition")
+    spec_bytes = await _load_yaml_bytes(file=file, url=url, name="service definition")
     try:
         return parse_yaml_raw_as(ServiceSpec, spec_bytes)
     except Exception:
-        template_text = _load_yaml_text(file=file, url=url, name="service template")
+        template_text = await _load_yaml_text(
+            file=file, url=url, name="service template"
+        )
         template = parse_yaml_raw_as(ServiceTemplateSpec, template_text)
         return template.to_service_spec()
 
 
-def _load_input_as_template_spec(
+async def _load_input_as_template_spec(
     *, file: Optional[str], url: Optional[str]
 ) -> ServiceTemplateSpec:
-    template_text = _load_yaml_text(file=file, url=url, name="service template")
+    template_text = await _load_yaml_text(file=file, url=url, name="service template")
     try:
         return parse_yaml_raw_as(ServiceTemplateSpec, template_text)
     except Exception:
@@ -812,13 +833,13 @@ def _load_input_as_template_spec(
         return _service_spec_to_template_spec(service)
 
 
-def _load_command_service_spec(
+async def _load_command_service_spec(
     *,
     file: Optional[str],
     url: Optional[str],
     wrong_type_command: str,
 ) -> ServiceSpec:
-    spec_text = _load_yaml_text(file=file, url=url, name="service definition")
+    spec_text = await _load_yaml_text(file=file, url=url, name="service definition")
     try:
         return parse_yaml_raw_as(ServiceSpec, spec_text.encode("utf-8"))
     except Exception as spec_error:
@@ -845,13 +866,13 @@ def _load_command_service_spec(
         ) from spec_error
 
 
-def _load_command_template_text(
+async def _load_command_template_text(
     *,
     file: Optional[str],
     url: Optional[str],
     wrong_type_command: str,
 ) -> str:
-    template_text = _load_yaml_text(file=file, url=url, name="service template")
+    template_text = await _load_yaml_text(file=file, url=url, name="service template")
     try:
         parse_yaml_raw_as(ServiceSpec, template_text.encode("utf-8"))
     except Exception:
@@ -900,7 +921,7 @@ async def _load_spec_output(
     if mcp is not None:
         service_spec = await _load_service_spec(file=None, url=None, mcp=mcp)
     else:
-        service_spec = _load_input_as_service_spec(file=file, url=url)
+        service_spec = await _load_input_as_service_spec(file=file, url=url)
 
     if format == "service":
         return service_spec
@@ -1027,7 +1048,7 @@ async def service_create(
         scope = _resolve_service_command_scope(room=room, global_=global_)
         try:
             if mcp is None:
-                spec = _load_command_service_spec(
+                spec = await _load_command_service_spec(
                     file=file,
                     url=url,
                     wrong_type_command="meshagent service create-template",
@@ -1159,7 +1180,7 @@ async def service_update(
         scope = _resolve_service_command_scope(room=room, global_=global_)
         try:
             if mcp is None:
-                spec = _load_command_service_spec(
+                spec = await _load_command_service_spec(
                     file=file,
                     url=url,
                     wrong_type_command="meshagent service update-template",
@@ -1300,7 +1321,7 @@ async def service_create_template(
         _validate_replace_flags(force=force, replace=replace)
         scope = _resolve_service_command_scope(room=room, global_=global_)
         try:
-            template_text = _load_command_template_text(
+            template_text = await _load_command_template_text(
                 file=file,
                 url=url,
                 wrong_type_command="meshagent service create",
@@ -1429,7 +1450,7 @@ async def service_update_template(
         _validate_replace_flags(force=force, replace=replace)
         scope = _resolve_service_command_scope(room=room, global_=global_)
         try:
-            template_text = _load_command_template_text(
+            template_text = await _load_command_template_text(
                 file=file,
                 url=url,
                 wrong_type_command="meshagent service update",
@@ -1534,7 +1555,7 @@ async def service_validate_template(
     client: Meshagent | None = None
     try:
         try:
-            template_text = _load_command_template_text(
+            template_text = await _load_command_template_text(
                 file=file,
                 url=url,
                 wrong_type_command="meshagent service validate",
@@ -1589,7 +1610,7 @@ async def service_render_template(
     client: Meshagent | None = None
     try:
         try:
-            template_text = _load_command_template_text(
+            template_text = await _load_command_template_text(
                 file=file,
                 url=url,
                 wrong_type_command="meshagent service spec --format template",

@@ -3,13 +3,13 @@ from pydantic import ValidationError
 import json as _json
 from typing import Annotated, Optional, List, Any
 from urllib.parse import urlparse
-from urllib.request import urlopen
 
 import typer
 import pyarrow as pa
 from rich import print
 
 from meshagent.api import RequiredTable
+from meshagent.api.http import new_client_session
 from meshagent.agents.agent import install_required_table
 
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
@@ -53,7 +53,7 @@ def _parse_json_arg(json_str: Optional[str], *, name: str) -> Any:
         raise typer.BadParameter(f"Invalid JSON for {name}: {e}")
 
 
-def _load_json_file(path: Optional[str], *, name: str) -> Any:
+async def _load_json_file(path: Optional[str], *, name: str) -> Any:
     """
     Load JSON from a local file path or an HTTP(S) URL.
     """
@@ -65,9 +65,13 @@ def _load_json_file(path: Optional[str], *, name: str) -> Any:
 
         # URL case
         if parsed.scheme in ("http", "https"):
-            with urlopen(path) as resp:
-                charset = resp.headers.get_content_charset() or "utf-8"
-                data = resp.read().decode(charset)
+            async with new_client_session() as session:
+                async with session.get(path) as resp:
+                    if resp.status >= 400:
+                        body = await resp.text()
+                        raise RuntimeError(f"HTTP {resp.status}: {body}")
+                    charset = resp.charset or "utf-8"
+                    data = (await resp.read()).decode(charset)
                 return _json.loads(data)
 
         # Local file case
@@ -319,7 +323,7 @@ async def install_requirements(
             project_id=project_id, room=room_name
         )
 
-        requirements = _load_json_file(file, name="--file")
+        requirements = await _load_json_file(file, name="--file")
 
         async with RoomClient(
             protocol_factory=WebSocketClientProtocol(
@@ -392,7 +396,7 @@ async def create_table(
         data_obj = (
             data_obj
             if data_obj is not None
-            else _load_json_file(data_file, name="--data-file")
+            else await _load_json_file(data_file, name="--data-file")
         )
 
         async with RoomClient(
@@ -643,7 +647,9 @@ async def insert(
     try:
         records = _parse_json_arg(json, name="--json")
         records = (
-            records if records is not None else _load_json_file(file, name="--file")
+            records
+            if records is not None
+            else await _load_json_file(file, name="--file")
         )
         records = _coerce_record_list(value=records, name="insert")
 
@@ -696,7 +702,9 @@ async def merge(
     try:
         records = _parse_json_arg(json, name="--json")
         records = (
-            records if records is not None else _load_json_file(file, name="--file")
+            records
+            if records is not None
+            else await _load_json_file(file, name="--file")
         )
         records = _coerce_record_list(value=records, name="merge")
 
@@ -980,7 +988,7 @@ async def sql(
         tables_obj = (
             tables_obj
             if tables_obj is not None
-            else _load_json_file(tables_file, name="--tables-file")
+            else await _load_json_file(tables_file, name="--tables-file")
         )
         if tables_obj is not None and not isinstance(tables_obj, list):
             raise typer.BadParameter(
@@ -991,7 +999,7 @@ async def sql(
         params_obj = (
             params_obj
             if params_obj is not None
-            else _load_json_file(params_file, name="--params-file")
+            else await _load_json_file(params_file, name="--params-file")
         )
         if params_obj is not None and not isinstance(params_obj, dict):
             raise typer.BadParameter(
@@ -1119,7 +1127,7 @@ async def sql_exec(
         tables_obj = (
             tables_obj
             if tables_obj is not None
-            else _load_json_file(tables_file, name="--tables-file")
+            else await _load_json_file(tables_file, name="--tables-file")
         )
         if tables_obj is not None and not isinstance(tables_obj, list):
             raise typer.BadParameter(
@@ -1130,7 +1138,7 @@ async def sql_exec(
         params_obj = (
             params_obj
             if params_obj is not None
-            else _load_json_file(params_file, name="--params-file")
+            else await _load_json_file(params_file, name="--params-file")
         )
         if params_obj is not None and not isinstance(params_obj, dict):
             raise typer.BadParameter(

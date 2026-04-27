@@ -580,40 +580,50 @@ async def test_load_service_spec_mcp_notion_with_dynamic_registration_adds_oauth
     )
 
 
-def test_fetch_json_url_sets_user_agent_header(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_fetch_json_url_sets_user_agent_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     seen = {}
 
-    class _Headers:
-        @staticmethod
-        def get_content_charset():
-            return "utf-8"
-
     class _Response:
-        headers = _Headers()
+        status = 200
+        charset = "utf-8"
 
-        def read(self) -> bytes:
+        async def read(self) -> bytes:
             return json.dumps({"ok": True}).encode("utf-8")
 
-        def __enter__(self):
+        async def __aenter__(self):
             return self
 
-        def __exit__(self, exc_type, exc, tb):
+        async def __aexit__(self, exc_type, exc, tb):
             return None
 
-    def _fake_urlopen(request, timeout):
-        seen["headers"] = dict(request.header_items())
+    class _Session:
+        def get(self, url: str, *, headers=None):
+            seen["url"] = url
+            seen["headers"] = headers
+            return _Response()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    def _fake_new_client_session(*, timeout):
         seen["timeout"] = timeout
-        return _Response()
+        return _Session()
 
-    monkeypatch.setattr(services, "urlopen", _fake_urlopen)
+    monkeypatch.setattr(services, "new_client_session", _fake_new_client_session)
 
-    payload = services._fetch_json_url(
+    payload = await services._fetch_json_url(
         "https://example.com/.well-known/oauth-authorization-server"
     )
 
     assert payload == {"ok": True}
-    assert seen["timeout"] == 10
-    assert seen["headers"].get("User-agent") == "meshagent-cli/0.28"
+    assert seen["timeout"].total == 10
+    assert seen["headers"].get("User-Agent") == "meshagent-cli/0.28"
 
 
 def test_service_spec_to_template_spec_preserves_mcp_shape() -> None:

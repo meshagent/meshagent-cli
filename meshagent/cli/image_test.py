@@ -1676,7 +1676,7 @@ async def test_wait_for_deployed_service_live_streams_logs_and_checks_liveness(
 
     probe_results = iter([False, True])
 
-    def _fake_probe_liveness_url(*, url: str) -> bool:
+    async def _fake_probe_liveness_url(*, url: str) -> bool:
         captured["probe_urls"].append(url)
         return next(probe_results)
 

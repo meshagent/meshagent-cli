@@ -101,13 +101,12 @@ from meshagent.api.specs.service import (
 import logging
 import os.path
 
-from urllib.request import urlopen
-
 import yaml
 import shlex
 import sys
 
 from meshagent.api.client import ConflictError
+from meshagent.api.http import new_client_session
 
 logger = logging.getLogger("taskrunner")
 
@@ -288,7 +287,16 @@ def read_task_runner_input(input_value: Optional[str]) -> str:
     return input_value
 
 
-def build_task_runner(
+async def _load_remote_json(url: str) -> object:
+    async with new_client_session() as session:
+        async with session.get(url) as resp:
+            if resp.status >= 400:
+                body = await resp.text()
+                raise RuntimeError(f"HTTP {resp.status}: {body}")
+            return json.loads(await resp.read())
+
+
+async def build_task_runner(
     *,
     client: RoomClient | None = None,
     api_key: str | None = None,
@@ -358,10 +366,9 @@ def build_task_runner(
         if output_schema_path.startswith("http://") or output_schema_path.startswith(
             "https://"
         ):
-            with urlopen(output_schema_path) as r:
-                output_schema = json.loads(r.read())
+            output_schema = await _load_remote_json(output_schema_path)
         else:
-            with open(Path(os.path.expanduser(rules_file)).resolve(), "r") as f:
+            with open(Path(os.path.expanduser(output_schema_path)).resolve(), "r") as f:
                 output_schema = json.loads(f.read())
 
     from meshagent.agents.llmrunner import LLMTaskRunner
@@ -1080,7 +1087,7 @@ async def join(
             ).create_factory()
         )
 
-        CustomTaskRunner = build_task_runner(
+        CustomTaskRunner = await build_task_runner(
             client=client,
             api_key=jwt,
             title=title,
@@ -1460,7 +1467,7 @@ async def run(
             ).create_factory()
         )
 
-        CustomTaskRunner = build_task_runner(
+        CustomTaskRunner = await build_task_runner(
             client=client,
             api_key=jwt,
             title=title,
@@ -1825,7 +1832,7 @@ async def service(
     service.add_path(
         identity=agent_name,
         path=path,
-        cls=build_task_runner(
+        cls=await build_task_runner(
             client=None,
             model=model,
             shell=shell,
@@ -2145,7 +2152,7 @@ async def spec(
     service.add_path(
         identity=agent_name,
         path=path,
-        cls=build_task_runner(
+        cls=await build_task_runner(
             client=None,
             model=model,
             shell=shell,
@@ -2484,7 +2491,7 @@ async def deploy(
     service.add_path(
         identity=agent_name,
         path=path,
-        cls=build_task_runner(
+        cls=await build_task_runner(
             client=None,
             model=model,
             shell=shell,

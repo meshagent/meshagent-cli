@@ -18,6 +18,8 @@ import aiohttp
 import pathspec
 import zstandard
 
+from meshagent.api.http import new_client_session
+
 
 DEFAULT_ARCHITECTURE = "amd64"
 DEFAULT_OS = "linux"
@@ -840,7 +842,7 @@ class _RegistryClient:
         self._tokens: dict[tuple[str, str], str] = {}
 
     async def __aenter__(self) -> "_RegistryClient":
-        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300))
+        self._session = new_client_session(timeout=aiohttp.ClientTimeout(total=300))
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
