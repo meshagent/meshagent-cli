@@ -2,7 +2,6 @@ import asyncio
 import base64
 import hashlib
 import inspect
-import json
 import os
 import secrets
 import time
@@ -10,7 +9,7 @@ import webbrowser
 from typing import Awaitable, Callable, Optional
 from urllib.parse import urlencode
 
-from aiohttp import ClientSession, web
+from aiohttp import web
 
 from meshagent.api.client import Meshagent, User
 from meshagent.api.oauth_scopes import FULL_OAUTH_SCOPE
@@ -57,10 +56,6 @@ def _api_base(*, api_url: str | None = None) -> str:
 
 def _authorization_url(*, api_url: str | None = None) -> str:
     return f"{_api_base(api_url=api_url)}/oauth/authorize"
-
-
-def _token_url(*, api_url: str | None = None) -> str:
-    return f"{_api_base(api_url=api_url)}/oauth/token"
 
 
 def _client_id() -> str:
@@ -142,27 +137,14 @@ async def _persist_tokens(
     apply_active_profile_api_url_environment()
 
 
-async def _post_form(url: str, form: dict[str, str]) -> dict[str, object]:
-    """
-    POST application/x-www-form-urlencoded and return parsed JSON or raise.
-    """
-    headers = {"Accept": "application/json"}
-    async with ClientSession() as session:
-        async with session.post(url, data=form, headers=headers) as resp:
-            text = await resp.text()
-            if resp.status >= 400:
-                raise RuntimeError(f"Token endpoint error {resp.status}: {text}")
-            try:
-                payload = json.loads(text)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError(
-                    f"Unexpected non-JSON response from token endpoint: {text}"
-                ) from exc
+async def _post_token_form(*, api_url: str, form: dict[str, str]) -> dict[str, object]:
+    client = Meshagent(base_url=api_url, token="")
+    try:
+        token_response = await client.exchange_oauth_token(form=form)
+    finally:
+        await client.close()
 
-    if not isinstance(payload, dict):
-        raise RuntimeError("Unexpected token payload.")
-
-    return payload
+    return token_response.model_dump(mode="json", exclude_none=True)
 
 
 async def _wait_for_code(expected_state: str) -> str:
@@ -214,7 +196,7 @@ async def _exchange_code_for_tokens(
     if client_secret is not None:
         form["client_secret"] = client_secret
 
-    token_json = await _post_form(_token_url(api_url=api_url), form)
+    token_json = await _post_token_form(api_url=api_url, form=form)
 
     expires_in = int(token_json.get("expires_in", 3600))
     token_json["expires_at"] = _now() + max(0, expires_in - 30)
@@ -239,7 +221,7 @@ async def _refresh_tokens(
     if client_secret is not None:
         form["client_secret"] = client_secret
 
-    token_json = await _post_form(_token_url(api_url=api_url), form)
+    token_json = await _post_token_form(api_url=api_url, form=form)
     token_json["refresh_token"] = token_json.get("refresh_token", refresh_token)
     expires_in = int(token_json.get("expires_in", 3600))
     token_json["expires_at"] = _now() + max(0, expires_in - 30)

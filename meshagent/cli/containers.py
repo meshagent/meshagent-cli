@@ -48,6 +48,7 @@ from meshagent.api.specs.service import (
 import sys
 
 app = async_typer.LazyTyper(help="Manage containers and images inside a room")
+_STDERR_CONSOLE = Console(stderr=True)
 _LOG_STREAM_SETTLE_TIMEOUT_SECONDS = 1.0
 _CRI_LOG_LINE_PATTERN = re.compile(
     r"^(?P<timestamp>\S+)\s+(?P<stream>stdout|stderr)\s+(?P<flags>[FP])\s(?P<message>.*)$"
@@ -256,6 +257,13 @@ async def _stream_build_job_logs_and_wait_for_exit(
 
     if exit_code is None:
         raise RuntimeError("build log stream closed before an exit code was returned")
+
+    if exit_code != 0:
+        _STDERR_CONSOLE.print(
+            f"Unable to complete build {build_id}: "
+            f"build failed with exit code {exit_code}.",
+            style="red",
+        )
 
     return exit_code
 

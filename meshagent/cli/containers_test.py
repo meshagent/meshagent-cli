@@ -324,6 +324,32 @@ async def test_stream_build_job_logs_and_wait_for_exit_uses_build_log_stream(
 
 
 @pytest.mark.asyncio
+async def test_stream_build_job_logs_and_wait_for_exit_reports_nonzero_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    stream = _FakeBuildStream(lines=["line 1\n"], result=17)
+    client = _FakeBuildClient(stream=stream)
+
+    async def _fake_drain(log_stream, *, show_progress: bool):
+        assert log_stream is stream
+        assert show_progress is False
+        return await log_stream
+
+    monkeypatch.setattr(containers, "_drain_stream_plain", _fake_drain)
+
+    exit_code = await containers._stream_build_job_logs_and_wait_for_exit(
+        client=client,
+        build_id="build-1",
+    )
+
+    assert exit_code == 17
+    assert capsys.readouterr().err == (
+        "Unable to complete build build-1: build failed with exit code 17.\n"
+    )
+
+
+@pytest.mark.asyncio
 async def test_images_load_uses_room_storage_load_path(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
