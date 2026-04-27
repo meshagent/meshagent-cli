@@ -87,6 +87,11 @@ app.add_lazy_command(
     help="Manage or activate api-keys for your project",
 )
 app.add_lazy_command(
+    name="config",
+    module="meshagent.cli.config",
+    help="Read MeshAgent deployment configuration",
+)
+app.add_lazy_command(
     name="session",
     module="meshagent.cli.sessions",
     help="Inspect recent sessions and events",

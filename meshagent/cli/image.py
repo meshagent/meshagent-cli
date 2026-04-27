@@ -41,6 +41,7 @@ from meshagent.api.client import (
     CreateRepositoryTokenRequest,
     Meshagent,
     MeshagentDeploymentConfig,
+    NotFoundError,
     PermissionDeniedError,
     ProjectRepository,
 )
@@ -115,17 +116,14 @@ ImageRoomOption = Annotated[
     Optional[str],
     typer.Option(
         "--room",
-        help=(
-            "Existing room name. meshagent deploy does not create rooms; create "
-            "the room first with 'meshagent rooms create --name <room>'."
-        ),
+        help="Existing room name.",
     ),
 ]
 _DEPLOY_DOCKERFILE_HAPPY_PATH = (
-    "Happy path for a Dockerfile app: create the room with "
-    "'meshagent rooms create --name <room> --if-not-exists', then run "
-    "'meshagent deploy PATH --room <room> --tag <tag> --public --domain <domain>' "
-    "so deploy creates the service and the public route together."
+    "Happy path for a Dockerfile app: run "
+    "'meshagent deploy PATH --room <room> --tag <tag> --public --domain <domain>'. "
+    "Use 'meshagent config get domains.pages' to find the pages domain for "
+    "--domain."
 )
 _DEPLOY_MISSING_DOCKERFILE_GUIDANCE = (
     "If PATH does not include a Dockerfile yet, create a minimal Dockerfile in "
@@ -2263,6 +2261,15 @@ async def _apply_deploy_plan(
     )
 
 
+def _format_deploy_room_not_found_message(*, room_name: str) -> str:
+    return (
+        f"Room does not exist: {room_name}\n"
+        "Create it first with "
+        f"'meshagent rooms create --name {shlex.quote(room_name)} --if-not-exists', "
+        "then retry deploy."
+    )
+
+
 async def _get_service_runtime_state(
     *,
     client: RoomClient,
@@ -2734,8 +2741,7 @@ async def build_image(
     "deploy",
     help=(
         "Create or update a room service from an image, optionally building it "
-        "first. The target room must already exist. Create it first with "
-        "'meshagent rooms create --name <room> --if-not-exists'. "
+        "first. The target room must already exist. "
         f"{_DEPLOY_DOCKERFILE_HAPPY_PATH} {_DEPLOY_MISSING_DOCKERFILE_GUIDANCE}"
     ),
     hidden=True,
@@ -2820,9 +2826,9 @@ async def deploy_image(
             help=(
                 "Create or update a room route for the deployed service and "
                 "return a public URL. Use this with --public when you need an "
-                "external URL from deploy. In MeshAgent dev/.life, domains "
-                "must end with .meshagent.dev; in prod they must end with "
-                ".meshagent.app. Requires exactly one published service port."
+                "external URL from deploy. Use 'meshagent config get domains.pages' "
+                "to find the pages domain for --domain. Requires exactly one "
+                "published service port."
             ),
         ),
     ] = None,
@@ -2990,10 +2996,16 @@ async def deploy_image(
             dockerfile_metadata=packed_dockerfile_metadata,
         )
     meshagent_token_identity = _derive_service_name(parsed_tag=parsed_tag)
-    account_client, client = await _with_client(
-        project_id=resolved_project_id,
-        room=resolved_room,
-    )
+    try:
+        account_client, client = await _with_client(
+            project_id=resolved_project_id,
+            room=resolved_room,
+        )
+    except NotFoundError as exc:
+        print(
+            f"[red]{_format_deploy_room_not_found_message(room_name=resolved_room)}[/red]"
+        )
+        raise typer.Exit(1) from exc
     try:
         existing_service = await _find_room_service_by_name(
             account_client=account_client,

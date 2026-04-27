@@ -60,17 +60,16 @@ def _patch_room_list_command(
     monkeypatch.setattr(rooms, "resolve_project_id", fake_resolve_project_id)
 
 
-def test_rooms_create_help_mentions_deploy_prerequisite() -> None:
+def test_rooms_create_help_does_not_mention_deploy_prerequisite() -> None:
     result = CliRunner().invoke(
         async_typer.get_command(cli.app),
         ["rooms", "create", "--help"],
     )
 
     assert result.exit_code == 0
-    assert "Use this before meshagent deploy --room" in result.output
-    assert "meshagent deploy PATH --room" in result.output
-    assert "<room> --tag <tag>" in result.output
-    assert "--public --domain <domain>" in result.output
+    assert "Create a room in the project." in result.output
+    assert "Use this before meshagent deploy --room" not in result.output
+    assert "meshagent deploy PATH --room" not in result.output
 
 
 def test_route_create_help_mentions_short_domains_and_service_id_annotation() -> None:

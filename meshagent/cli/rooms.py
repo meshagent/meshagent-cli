@@ -77,11 +77,7 @@ def _maybe_parse_string_dict_json(
 
 @app.async_command(
     "create",
-    help=(
-        "Create a room in the project. Use this before meshagent deploy --room "
-        "when the room does not already exist, then deploy with "
-        "'meshagent deploy PATH --room <room> --tag <tag> --public --domain <domain>'."
-    ),
+    help="Create a room in the project.",
 )
 async def room_create_command(
     *,

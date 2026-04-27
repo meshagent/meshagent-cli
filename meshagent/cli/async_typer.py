@@ -11,6 +11,7 @@ from typing import Any, Callable, Sequence, TypeVar
 
 import click
 import typer
+from meshagent.api import RoomException
 from typer import Typer
 from typer.main import DeveloperExceptionConfig
 from typer.main import _typer_developer_exception_attr_name
@@ -384,6 +385,11 @@ class AsyncTyper(Typer):
             if explicit_standalone_mode:
                 raise
             raise SystemExit(e.exit_code)
+        except RoomException as e:
+            if explicit_standalone_mode:
+                raise
+            click.secho(str(e), fg="red", err=True)
+            raise SystemExit(1)
         except Exception as e:
             setattr(
                 e,

@@ -13,6 +13,7 @@ from meshagent.api import ApiScope
 from meshagent.api.client import (
     MeshagentDeploymentConfig,
     MeshagentDomains,
+    NotFoundError,
     PermissionDeniedError,
     ProjectInfo,
     ProjectRepository,
@@ -116,16 +117,58 @@ def test_root_deploy_help_mentions_existing_room_flow() -> None:
 
     assert result.exit_code == 0
     assert "The target room must already exist." in result.output
-    assert "meshagent rooms" in result.output
-    assert "create --name <room> --if-not-exists" in result.output
     assert "Existing room name." in result.output
     assert "--public --domain <domain>" in result.output
-    assert "public route together" in result.output
+    assert "meshagent config get domains.pages" in result.output
+    assert "create --name <room> --if-not-exists" not in result.output
     assert "return a public URL" in normalized_output
-    assert ".meshagent.dev" in result.output
-    assert ".meshagent.app" in result.output
+    assert ".meshagent.dev" not in result.output
+    assert ".meshagent.life" not in result.output
     assert "If PATH does not include a Dockerfile yet" in normalized_output
     assert "--dockerfile-path" in result.output
+
+
+@pytest.mark.asyncio
+async def test_deploy_image_missing_room_prints_create_room_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    printed: list[str] = []
+
+    async def _fake_with_client(*, project_id, room):
+        del project_id, room
+        raise NotFoundError("Status=404, body=room not found")
+
+    async def _fake_resolve_project_id(*, project_id):
+        del project_id
+        return "project-1"
+
+    monkeypatch.setattr(image, "_with_client", _fake_with_client)
+    monkeypatch.setattr(image, "resolve_room", lambda room: room)
+    monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(image, "print", lambda message: printed.append(message))
+
+    with pytest.raises(typer.Exit) as exc_info:
+        await image.deploy_image(
+            project_id="project-1",
+            room="missing-room",
+            tag="repo/web:1",
+            domain=None,
+            room_mount=[],
+            project_mount=[],
+            empty_dir_mount=[],
+            image_mount=[],
+            env=[],
+            meshagent_token=None,
+            private=True,
+        )
+
+    assert exc_info.value.exit_code == 1
+    assert printed == [
+        "[red]Room does not exist: missing-room\n"
+        "Create it first with "
+        "'meshagent rooms create --name missing-room --if-not-exists', "
+        "then retry deploy.[/red]"
+    ]
 
 
 def test_replace_meshagent_image_vars_defaults_to_pkg_dev() -> None:
