@@ -75,7 +75,14 @@ def _maybe_parse_string_dict_json(
 # ---------------------------
 
 
-@app.async_command("create")
+@app.async_command(
+    "create",
+    help=(
+        "Create a room in the project. Use this before meshagent deploy --room "
+        "when the room does not already exist, then deploy with "
+        "'meshagent deploy PATH --room <room> --tag <tag> --public --domain <domain>'."
+    ),
+)
 async def room_create_command(
     *,
     project_id: ProjectIdOption,
@@ -94,9 +101,7 @@ async def room_create_command(
         ),
     ] = None,
 ):
-    """
-    Create a room in the project.
-    """
+    """Create a room in the project."""
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)

@@ -52,7 +52,10 @@ async def route_create(
         typer.Option(
             "--domain",
             "-d",
-            help="Domain name to route (unique per project)",
+            help=(
+                "Domain name to route (unique per project). Keep it short and "
+                "DNS-safe; long room-name-derived domains may be rejected."
+            ),
         ),
     ],
     room: Annotated[
@@ -71,11 +74,19 @@ async def route_create(
         typer.Option(
             "--annotations",
             "-n",
-            help='annotations in json format {"name":"value"}',
+            help=(
+                'annotations in json format {"name":"value"}. When routing to a '
+                "room service, include meshagent.service.id."
+            ),
         ),
     ] = None,
 ):
-    """Create a route attached to the project."""
+    """Create a route attached to the project.
+
+    Use a short, DNS-safe domain name that matches the suffix accepted by your
+    environment. When routing to a room service, include the
+    meshagent.service.id annotation so the route targets the created service.
+    """
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)

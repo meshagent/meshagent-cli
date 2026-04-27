@@ -3,8 +3,9 @@ import typer
 import json
 import pathlib
 from typing import Optional
+from click.testing import CliRunner
 
-from meshagent.cli import services
+from meshagent.cli import async_typer, cli, services
 
 
 _SERVICE_YAML = """\
@@ -82,6 +83,19 @@ version: v1
 kind: ServiceTemplate
 ports: []
 """
+
+
+def test_service_create_help_mentions_beginner_manifest_flow() -> None:
+    result = CliRunner().invoke(
+        async_typer.get_command(cli.app),
+        ["service", "create", "--help"],
+    )
+
+    assert result.exit_code == 0
+    assert "meshagent.yaml" in result.output
+    assert "does not have a Dockerfile" in result.output
+    assert "container.private: false" in result.output
+    assert "meshagent.service.id" in result.output
 
 
 class _UnusedServicesClient:
