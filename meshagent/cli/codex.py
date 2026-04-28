@@ -1061,9 +1061,7 @@ async def chatbot_join(
             "--schema", "-s", help="The name or url of a required schema", hidden=True
         ),
     ] = [],
-    model: Annotated[
-        str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.4-codex",
+    model: Annotated[str, typer.Option(..., help="Codex model to use")] = "gpt-5.5",
     threading_mode: ChatbotThreadingModeOption = "none",
     thread_dir: ChatbotThreadDirOption = None,
     command: Annotated[
@@ -1281,9 +1279,7 @@ async def task_runner_join(
             "--schema", "-s", help="The name or url of a required schema", hidden=True
         ),
     ] = [],
-    model: Annotated[
-        str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.4-codex",
+    model: Annotated[str, typer.Option(..., help="Codex model to use")] = "gpt-5.5",
     title: Annotated[
         Optional[str], typer.Option(..., help="A friendly title for the task runner")
     ] = None,
@@ -1505,9 +1501,7 @@ async def chatbot_service(
             "--schema", "-s", help="The name or url of a required schema", hidden=True
         ),
     ] = [],
-    model: Annotated[
-        str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.4-codex",
+    model: Annotated[str, typer.Option(..., help="Codex model to use")] = "gpt-5.5",
     threading_mode: ChatbotThreadingModeOption = "none",
     thread_dir: ChatbotThreadDirOption = None,
     command: Annotated[
@@ -1701,9 +1695,7 @@ async def chatbot_spec(
             "--schema", "-s", help="The name or url of a required schema", hidden=True
         ),
     ] = [],
-    model: Annotated[
-        str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.4-codex",
+    model: Annotated[str, typer.Option(..., help="Codex model to use")] = "gpt-5.5",
     threading_mode: ChatbotThreadingModeOption = "none",
     thread_dir: ChatbotThreadDirOption = None,
     command: Annotated[
@@ -1913,9 +1905,7 @@ async def chatbot_deploy(
             "--schema", "-s", help="The name or url of a required schema", hidden=True
         ),
     ] = [],
-    model: Annotated[
-        str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.4-codex",
+    model: Annotated[str, typer.Option(..., help="Codex model to use")] = "gpt-5.5",
     threading_mode: ChatbotThreadingModeOption = "none",
     thread_dir: ChatbotThreadDirOption = None,
     command: Annotated[
@@ -2147,9 +2137,7 @@ async def worker_join(
             "--schema", "-s", help="The name or url of a required schema", hidden=True
         ),
     ] = [],
-    model: Annotated[
-        str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.4-codex",
+    model: Annotated[str, typer.Option(..., help="Codex model to use")] = "gpt-5.5",
     command: Annotated[
         Optional[str], typer.Option(..., help="Command used to launch codex app-server")
     ] = None,
@@ -2372,9 +2360,7 @@ async def worker_service(
             "--schema", "-s", help="The name or url of a required schema", hidden=True
         ),
     ] = [],
-    model: Annotated[
-        str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.4-codex",
+    model: Annotated[str, typer.Option(..., help="Codex model to use")] = "gpt-5.5",
     command: Annotated[
         Optional[str], typer.Option(..., help="Command used to launch codex app-server")
     ] = None,
@@ -2574,9 +2560,7 @@ async def worker_spec(
             "--schema", "-s", help="The name or url of a required schema", hidden=True
         ),
     ] = [],
-    model: Annotated[
-        str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.4-codex",
+    model: Annotated[str, typer.Option(..., help="Codex model to use")] = "gpt-5.5",
     command: Annotated[
         Optional[str], typer.Option(..., help="Command used to launch codex app-server")
     ] = None,
@@ -2799,9 +2783,7 @@ async def worker_deploy(
             "--schema", "-s", help="The name or url of a required schema", hidden=True
         ),
     ] = [],
-    model: Annotated[
-        str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.4-codex",
+    model: Annotated[str, typer.Option(..., help="Codex model to use")] = "gpt-5.5",
     command: Annotated[
         Optional[str], typer.Option(..., help="Command used to launch codex app-server")
     ] = None,
@@ -3026,9 +3008,7 @@ async def chatbot_run(
             "--schema", "-s", help="The name or url of a required schema", hidden=True
         ),
     ] = [],
-    model: Annotated[
-        str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.4-codex",
+    model: Annotated[str, typer.Option(..., help="Codex model to use")] = "gpt-5.5",
     threading_mode: ChatbotThreadingModeOption = "none",
     thread_dir: ChatbotThreadDirOption = None,
     command: Annotated[
@@ -3330,9 +3310,7 @@ async def task_runner_run(
             "--schema", "-s", help="The name or url of a required schema", hidden=True
         ),
     ] = [],
-    model: Annotated[
-        str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.4-codex",
+    model: Annotated[str, typer.Option(..., help="Codex model to use")] = "gpt-5.5",
     title: Annotated[
         Optional[str], typer.Option(..., help="A friendly title for the task runner")
     ] = None,
@@ -3588,9 +3566,7 @@ async def task_runner_service(
             "--schema", "-s", help="The name or url of a required schema", hidden=True
         ),
     ] = [],
-    model: Annotated[
-        str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.4-codex",
+    model: Annotated[str, typer.Option(..., help="Codex model to use")] = "gpt-5.5",
     command: Annotated[
         Optional[str], typer.Option(..., help="Command used to launch codex app-server")
     ] = None,
@@ -3783,9 +3759,7 @@ async def task_runner_spec(
             "--schema", "-s", help="The name or url of a required schema", hidden=True
         ),
     ] = [],
-    model: Annotated[
-        str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.4-codex",
+    model: Annotated[str, typer.Option(..., help="Codex model to use")] = "gpt-5.5",
     command: Annotated[
         Optional[str], typer.Option(..., help="Command used to launch codex app-server")
     ] = None,
@@ -4001,9 +3975,7 @@ async def task_runner_deploy(
             "--schema", "-s", help="The name or url of a required schema", hidden=True
         ),
     ] = [],
-    model: Annotated[
-        str, typer.Option(..., help="Codex model to use")
-    ] = "gpt-5.4-codex",
+    model: Annotated[str, typer.Option(..., help="Codex model to use")] = "gpt-5.5",
     command: Annotated[
         Optional[str], typer.Option(..., help="Command used to launch codex app-server")
     ] = None,

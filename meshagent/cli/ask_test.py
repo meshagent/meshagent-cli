@@ -18,7 +18,7 @@ from meshagent.openai import OpenAIResponsesAdapter
 
 class _FakeAskAdapter(LLMAdapter[object]):
     def default_model(self) -> str:
-        return "gpt-5.4"
+        return "gpt-5.5"
 
     def create_session(self) -> AgentSessionContext:
         return AgentSessionContext()
@@ -44,7 +44,7 @@ class _FakeAskAdapter(LLMAdapter[object]):
         del on_behalf_of
         del tool_choice
         del options
-        assert model == "gpt-5.4"
+        assert model == "gpt-5.5"
         thread_id = str(context.metadata["thread_id"])
         turn_id = str(context.metadata["turn_id"])
         assert event_handler is not None
@@ -97,7 +97,7 @@ class _FakeTTY:
 async def test_run_ask_process_returns_text_output() -> None:
     result = await ask_module._run_ask_process(
         prompt="hi",
-        model="gpt-5.4",
+        model="gpt-5.5",
         llm_adapter=_FakeAskAdapter(),
     )
 
@@ -110,7 +110,7 @@ async def test_run_ask_process_streams_text_deltas() -> None:
 
     result = await ask_module._run_ask_process(
         prompt="hi",
-        model="gpt-5.4",
+        model="gpt-5.5",
         llm_adapter=_FakeAskAdapter(),
         on_delta=deltas.append,
     )
@@ -128,7 +128,7 @@ async def test_run_ask_process_awaits_async_text_delta_callback() -> None:
 
     result = await ask_module._run_ask_process(
         prompt="hi",
-        model="gpt-5.4",
+        model="gpt-5.5",
         llm_adapter=_FakeAskAdapter(),
         on_delta=_on_delta,
     )
@@ -140,7 +140,7 @@ async def test_run_ask_process_awaits_async_text_delta_callback() -> None:
 @pytest.mark.asyncio
 async def test_ask_session_reuses_process_for_multiple_prompts() -> None:
     async with ask_module._AskSession(
-        model="gpt-5.4",
+        model="gpt-5.5",
         llm_adapter=_FakeAskAdapter(),
     ) as session:
         first = await session.ask(prompt="first")
@@ -153,7 +153,7 @@ async def test_ask_session_reuses_process_for_multiple_prompts() -> None:
 @pytest.mark.asyncio
 async def test_ask_session_adds_cwd_storage_and_builtin_tools() -> None:
     session = ask_module._AskSession(
-        model="gpt-5.4",
+        model="gpt-5.5",
         llm_adapter=_FakeAskAdapter(),
         current_working_directory="/tmp/ask-project",
     )
@@ -179,7 +179,7 @@ async def test_ask_session_adds_cwd_storage_and_builtin_tools() -> None:
 @pytest.mark.asyncio
 async def test_ask_session_adds_noninteractive_instruction_for_non_tty_mode() -> None:
     session = ask_module._AskSession(
-        model="gpt-5.4",
+        model="gpt-5.5",
         llm_adapter=_FakeAskAdapter(),
         current_working_directory="/tmp/ask-project",
         interactive=False,
@@ -226,7 +226,7 @@ def test_suppress_ask_process_logs_restores_logger_state() -> None:
 
 def test_build_ask_adapter_uses_websocket_mode_for_openai() -> None:
     adapter = ask_module._build_ask_adapter(
-        model="gpt-5.4",
+        model="gpt-5.5",
         project_id="project-123",
         access_token="oauth-token",
     )
@@ -314,11 +314,11 @@ async def test_ask_command_uses_oauth_token_and_prints_result(monkeypatch) -> No
     await ask_module.ask(
         project_id="project-123",
         message="hello",
-        model="gpt-5.4",
+        model="gpt-5.5",
     )
 
     assert captured == {
-        "model": "gpt-5.4",
+        "model": "gpt-5.5",
         "project_id": "project-123",
         "access_token": "oauth-token",
     }
@@ -375,11 +375,11 @@ async def test_ask_command_prints_markdown_without_streaming(monkeypatch) -> Non
         project_id="project-123",
         message="hello",
         format="markdown",
-        model="gpt-5.4",
+        model="gpt-5.5",
     )
 
     assert captured == {
-        "model": "gpt-5.4",
+        "model": "gpt-5.5",
         "project_id": "project-123",
         "access_token": "oauth-token",
     }
@@ -424,13 +424,13 @@ async def test_ask_command_launches_tui_when_prompt_missing_in_tty(monkeypatch) 
     await ask_module.ask(
         project_id="project-123",
         message=None,
-        model="gpt-5.4",
+        model="gpt-5.5",
     )
 
-    assert captured["model"] == "gpt-5.4"
+    assert captured["model"] == "gpt-5.5"
     assert captured["project_id"] == "project-123"
     assert captured["access_token"] == "oauth-token"
-    assert captured["tui_model"] == "gpt-5.4"
+    assert captured["tui_model"] == "gpt-5.5"
 
 
 @pytest.mark.asyncio
@@ -455,7 +455,7 @@ async def test_ask_command_requires_message_when_not_tty(monkeypatch) -> None:
         await ask_module.ask(
             project_id="project-123",
             message=None,
-            model="gpt-5.4",
+            model="gpt-5.5",
         )
 
     assert exc.value.exit_code == 1
@@ -484,7 +484,7 @@ async def test_ask_command_requires_oauth_access_token(monkeypatch) -> None:
         await ask_module.ask(
             project_id="project-123",
             message="hello",
-            model="gpt-5.4",
+            model="gpt-5.5",
         )
 
     assert exc.value.exit_code == 1
@@ -532,11 +532,11 @@ async def test_ask_command_prefers_meshagent_token_over_oauth(monkeypatch) -> No
     await ask_module.ask(
         project_id="project-123",
         message="hello",
-        model="gpt-5.4",
+        model="gpt-5.5",
     )
 
     assert captured == {
-        "model": "gpt-5.4",
+        "model": "gpt-5.5",
         "project_id": "project-123",
         "access_token": "room-token",
     }

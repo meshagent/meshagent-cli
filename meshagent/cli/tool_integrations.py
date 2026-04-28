@@ -19,7 +19,7 @@ from meshagent.cli.local_settings import (
     resolve_api_url,
 )
 
-CODEX_DEFAULT_MODEL = "gpt-5.4"
+CODEX_DEFAULT_MODEL = "gpt-5.5"
 CODEX_DEFAULT_PROFILE_ID = "meshagent"
 CODEX_AUTH_TIMEOUT_MS = 10_000
 CODEX_AUTH_REFRESH_INTERVAL_MS = 300_000
