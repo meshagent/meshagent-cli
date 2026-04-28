@@ -32,6 +32,7 @@ def test_doctor_reports_python_roomclient_deploy_gaps(tmp_path) -> None:
     assert "Detected project: Python" in result.output
     assert "Official RoomClient SDK: detected (meshagent-api)" in result.output
     assert "[missing] Deployment artifact" in result.output
+    assert "--no-wait" in result.output
     assert "--meshagent-token full" in result.output
     assert 'MESHAGENT_ROOM="$MESHAGENT_ROOM"' in result.output
 

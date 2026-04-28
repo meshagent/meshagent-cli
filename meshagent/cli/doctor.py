@@ -275,6 +275,7 @@ def _deploy_command(diagnosis: ProjectDiagnosis) -> str:
         "--domain <domain>",
         "--liveness /health",
         "--no-optimize",
+        "--no-wait",
     ]
     if diagnosis.sdk is not None:
         parts.extend(
