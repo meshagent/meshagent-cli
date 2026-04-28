@@ -210,13 +210,23 @@ async def room_list_command(
     *,
     project_id: ProjectIdOption,
     o: OutputFormatOption = "table",
+    count: Annotated[
+        int, typer.Option("--count", help="Max rooms to return", min=1, max=500)
+    ] = 100,
     limit: Annotated[
-        int, typer.Option(help="Max rooms to return", min=1, max=500)
-    ] = 50,
+        Optional[int],
+        typer.Option(
+            "--limit", help="Max rooms to return", min=1, max=500, hidden=True
+        ),
+    ] = None,
     offset: Annotated[int, typer.Option(help="Offset for pagination", min=0)] = 0,
     order_by: Annotated[
         str, typer.Option(help='Order by column (e.g. "room_name", "created_at")')
     ] = "room_name",
+    filter: Annotated[
+        Optional[str],
+        typer.Option("--filter", help="Lowercase contains filter for room names"),
+    ] = None,
 ):
     """
     List rooms in the project.
@@ -226,9 +236,10 @@ async def room_list_command(
         project_id = await resolve_project_id(project_id=project_id)
         rooms = await account_client.list_rooms(
             project_id=project_id,
-            limit=limit,
+            limit=limit if limit is not None else count,
             offset=offset,
             order_by=order_by,
+            filter=filter,
         )
         output = [
             {

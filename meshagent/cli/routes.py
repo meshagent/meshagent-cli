@@ -243,6 +243,15 @@ async def route_list(
     room: Annotated[
         Optional[str], typer.Option("--room", help="Room name")
     ] = os.getenv("MESHAGENT_ROOM"),
+    filter: Annotated[
+        Optional[str], typer.Option("--filter", help="Lowercase contains filter")
+    ] = None,
+    count: Annotated[
+        int, typer.Option("--count", help="Maximum number of routes to return")
+    ] = 100,
+    offset: Annotated[
+        int, typer.Option("--offset", help="Row offset for pagination")
+    ] = 0,
     o: OutputFormatOption = "table",
 ):
     """List routes for the project."""
@@ -253,10 +262,19 @@ async def route_list(
 
         if room is not None:
             routes = await client.list_room_routes(
-                project_id=project_id, room_name=room
+                project_id=project_id,
+                room_name=room,
+                count=count,
+                offset=offset,
+                filter=filter,
             )
         else:
-            routes = await client.list_routes(project_id=project_id)
+            routes = await client.list_routes(
+                project_id=project_id,
+                count=count,
+                offset=offset,
+                filter=filter,
+            )
 
         if o == "json":
             print({"routes": [route.model_dump(mode="json") for route in routes]})

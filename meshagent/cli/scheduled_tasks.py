@@ -213,10 +213,16 @@ async def scheduled_task_list(
         bool,
         typer.Option("--inactive", help="Filter to inactive tasks only"),
     ] = False,
+    filter: Annotated[
+        Optional[str], typer.Option("--filter", help="Lowercase contains filter")
+    ] = None,
+    count: Annotated[
+        int, typer.Option("--count", help="Maximum number of tasks to return")
+    ] = 100,
     limit: Annotated[
         int,
-        typer.Option("--limit", help="Maximum number of tasks to return"),
-    ] = 200,
+        typer.Option("--limit", help="Maximum number of tasks to return", hidden=True),
+    ] = 100,
     offset: Annotated[
         int,
         typer.Option("--offset", help="Row offset for pagination"),
@@ -228,14 +234,17 @@ async def scheduled_task_list(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         active_filter = _parse_active_state(active=active, inactive=inactive)
-        tasks = await client.list_scheduled_tasks(
-            project_id=project_id,
-            room_name=room,
-            task_id=task_id,
-            active=active_filter,
-            limit=limit,
-            offset=offset,
-        )
+        list_kwargs = {
+            "project_id": project_id,
+            "room_name": room,
+            "task_id": task_id,
+            "active": active_filter,
+            "limit": count if count != 100 else limit,
+            "offset": offset,
+        }
+        if filter is not None:
+            list_kwargs["filter"] = filter
+        tasks = await client.list_scheduled_tasks(**list_kwargs)
 
         if o == "json":
             print(

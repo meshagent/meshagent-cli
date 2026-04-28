@@ -237,6 +237,15 @@ async def mailbox_list(
     room: Annotated[
         Optional[str], typer.Option("--room", help="Room name")
     ] = os.getenv("MESHAGENT_ROOM"),
+    filter: Annotated[
+        Optional[str], typer.Option("--filter", help="Lowercase contains filter")
+    ] = None,
+    count: Annotated[
+        int, typer.Option("--count", help="Maximum number of mailboxes to return")
+    ] = 100,
+    offset: Annotated[
+        int, typer.Option("--offset", help="Row offset for pagination")
+    ] = 0,
     o: OutputFormatOption = "table",
 ):
     """List mailboxes for the project."""
@@ -247,10 +256,19 @@ async def mailbox_list(
 
         if room is not None:
             mailboxes = await client.list_room_mailboxes(
-                project_id=project_id, room_name=room
+                project_id=project_id,
+                room_name=room,
+                count=count,
+                offset=offset,
+                filter=filter,
             )
         else:
-            mailboxes = await client.list_mailboxes(project_id=project_id)
+            mailboxes = await client.list_mailboxes(
+                project_id=project_id,
+                count=count,
+                offset=offset,
+                filter=filter,
+            )
 
         if o == "json":
             # Keep your existing conventions: wrap in an object.
