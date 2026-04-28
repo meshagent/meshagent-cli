@@ -12,12 +12,22 @@ from meshagent.api import RequiredTable
 from meshagent.api.http import new_client_session
 from meshagent.agents.agent import install_required_table
 
-from meshagent.cli.common_options import ProjectIdOption, RoomOption
+from meshagent.cli.common_options import OutputFormatOption, ProjectIdOption, RoomOption
 from meshagent.cli import async_typer
-from meshagent.cli.helper import resolve_project_id, resolve_room, get_client
+from meshagent.cli.helper import (
+    get_client,
+    print_json_table,
+    resolve_project_id,
+    resolve_room,
+)
 from meshagent.api.helpers import websocket_room_url
 from meshagent.api import RoomClient, WebSocketClientProtocol
-from meshagent.api.room_server_client import DatasetSqlStatement, SqlTableReference
+from meshagent.api.room_server_client import (
+    DatasetIndexConfig,
+    DatasetOptimizeConfig,
+    DatasetSqlStatement,
+    SqlTableReference,
+)
 from meshagent.api.sql import ALLOWED_DATA_TYPES, SchemaParseError, parse_table_schema
 from meshagent.api import RoomException  # or wherever you defined it
 
@@ -1194,8 +1204,79 @@ async def optimize(
     project_id: ProjectIdOption,
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
+    compact_files: Annotated[
+        Optional[bool],
+        typer.Option("--compact-files/--no-compact-files"),
+    ] = None,
+    optimize_indices: Annotated[
+        Optional[bool],
+        typer.Option("--optimize-indices/--no-optimize-indices"),
+    ] = None,
+    cleanup_old_versions: Annotated[
+        Optional[bool],
+        typer.Option("--cleanup-old-versions/--no-cleanup-old-versions"),
+    ] = None,
+    target_rows_per_fragment: Annotated[
+        Optional[int], typer.Option("--target-rows-per-fragment")
+    ] = None,
+    max_rows_per_group: Annotated[
+        Optional[int], typer.Option("--max-rows-per-group")
+    ] = None,
+    max_bytes_per_file: Annotated[
+        Optional[int], typer.Option("--max-bytes-per-file")
+    ] = None,
+    materialize_deletions: Annotated[
+        Optional[bool],
+        typer.Option("--materialize-deletions/--no-materialize-deletions"),
+    ] = None,
+    materialize_deletions_threshold: Annotated[
+        Optional[float], typer.Option("--materialize-deletions-threshold")
+    ] = None,
+    defer_index_remap: Annotated[
+        Optional[bool],
+        typer.Option("--defer-index-remap/--no-defer-index-remap"),
+    ] = None,
+    num_threads: Annotated[Optional[int], typer.Option("--num-threads")] = None,
+    batch_size: Annotated[Optional[int], typer.Option("--batch-size")] = None,
+    compaction_mode: Annotated[
+        Optional[str],
+        typer.Option(
+            "--compaction-mode",
+            help="Compaction mode: reencode, try_binary_copy, or force_binary_copy",
+        ),
+    ] = None,
+    binary_copy_read_batch_bytes: Annotated[
+        Optional[int], typer.Option("--binary-copy-read-batch-bytes")
+    ] = None,
+    num_indices_to_merge: Annotated[
+        Optional[int], typer.Option("--num-indices-to-merge")
+    ] = None,
+    index_names: Annotated[
+        Optional[List[str]],
+        typer.Option("--index-name", help="Index name to optimize. Repeatable."),
+    ] = None,
+    retrain: Annotated[Optional[bool], typer.Option("--retrain/--no-retrain")] = None,
+    older_than_seconds: Annotated[
+        Optional[float], typer.Option("--older-than-seconds")
+    ] = None,
+    retain_versions: Annotated[Optional[int], typer.Option("--retain-versions")] = None,
+    delete_unverified: Annotated[
+        Optional[bool], typer.Option("--delete-unverified/--keep-unverified")
+    ] = None,
+    error_if_tagged_old_versions: Annotated[
+        Optional[bool],
+        typer.Option("--error-if-tagged-old-versions/--ignore-tagged-old-versions"),
+    ] = None,
+    delete_rate_limit: Annotated[
+        Optional[int], typer.Option("--delete-rate-limit")
+    ] = None,
+    config_json: Annotated[
+        Optional[str],
+        typer.Option("--config-json", help="JSON object with optimization fields."),
+    ] = None,
     namespace: NamespaceOption = None,
     branch: BranchOption = None,
+    o: OutputFormatOption = "table",
 ):
     account_client = await get_client()
     try:
@@ -1211,12 +1292,133 @@ async def optimize(
                 token=connection.jwt,
             ).create_factory()
         ) as client:
-            await client.datasets.optimize(
+            if config_json is not None:
+                try:
+                    config_data = _json.loads(config_json)
+                except ValueError as exc:
+                    raise typer.BadParameter(
+                        "--config-json must be a JSON object",
+                        param_hint="--config-json",
+                    ) from exc
+                if not isinstance(config_data, dict):
+                    raise typer.BadParameter(
+                        "--config-json must be a JSON object",
+                        param_hint="--config-json",
+                    )
+            else:
+                config_data = {}
+
+            def add_config(key: str, value: Any) -> None:
+                if value is not None:
+                    config_data[key] = value
+
+            add_config("compact_files", compact_files)
+            add_config("optimize_indices", optimize_indices)
+            add_config("cleanup_old_versions", cleanup_old_versions)
+            add_config("target_rows_per_fragment", target_rows_per_fragment)
+            add_config("max_rows_per_group", max_rows_per_group)
+            add_config("max_bytes_per_file", max_bytes_per_file)
+            add_config("materialize_deletions", materialize_deletions)
+            add_config(
+                "materialize_deletions_threshold",
+                materialize_deletions_threshold,
+            )
+            add_config("defer_index_remap", defer_index_remap)
+            add_config("num_threads", num_threads)
+            add_config("batch_size", batch_size)
+            add_config("compaction_mode", compaction_mode)
+            add_config("binary_copy_read_batch_bytes", binary_copy_read_batch_bytes)
+            add_config("num_indices_to_merge", num_indices_to_merge)
+            add_config("index_names", index_names)
+            add_config("retrain", retrain)
+            add_config("older_than_seconds", older_than_seconds)
+            add_config("retain_versions", retain_versions)
+            add_config("delete_unverified", delete_unverified)
+            add_config("error_if_tagged_old_versions", error_if_tagged_old_versions)
+            add_config("delete_rate_limit", delete_rate_limit)
+
+            config = (
+                DatasetOptimizeConfig.model_validate(config_data)
+                if config_data
+                else None
+            )
+            result = await client.datasets.optimize(
                 table=table,
                 namespace=_ns(namespace),
                 branch=branch,
+                config=config,
             )
-            print(f"[bold green]Optimized[/bold green] {table}")
+            out = result.model_dump(mode="json")
+            if o == "json":
+                print(_json.dumps(out, indent=2))
+            else:
+                rows = []
+                for group, values in out.items():
+                    if isinstance(values, dict):
+                        rows.extend(
+                            {"group": group, "name": key, "value": value}
+                            for key, value in values.items()
+                        )
+                    else:
+                        rows.append(
+                            {"group": "optimize", "name": group, "value": values}
+                        )
+                print_json_table(rows, "group", "name", "value")
+
+    except (RoomException, typer.BadParameter, ValidationError) as e:
+        print(e)
+        raise typer.Exit(1)
+    finally:
+        await account_client.close()
+
+
+@app.async_command("stats", help="Show statistics for a room dataset table.")
+async def stats(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
+    namespace: NamespaceOption = None,
+    branch: BranchOption = None,
+    version: VersionOption = None,
+    max_rows_per_group: Annotated[
+        Optional[int], typer.Option("--max-rows-per-group")
+    ] = None,
+    o: OutputFormatOption = "table",
+):
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        room_name = resolve_room(room)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
+
+        async with RoomClient(
+            protocol_factory=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room_name),
+                token=connection.jwt,
+            ).create_factory()
+        ) as client:
+            result = await client.datasets.stats(
+                table=table,
+                namespace=_ns(namespace),
+                branch=branch,
+                version=version,
+                max_rows_per_group=max_rows_per_group,
+            )
+            out = result.model_dump(mode="json")
+            if o == "json":
+                print(_json.dumps(out, indent=2))
+                return
+
+            rows = []
+            for group, values in out.items():
+                rows.extend(
+                    {"group": group, "name": key, "value": value}
+                    for key, value in values.items()
+                )
+            print_json_table(rows, "group", "name", "value")
 
     except RoomException as e:
         print(e)
@@ -1481,15 +1683,137 @@ async def create_index(
     project_id: ProjectIdOption,
     room: RoomOption,
     table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
-    column: Annotated[str, typer.Option(..., "--column", "-c", help="Column name")],
-    kind: Annotated[
-        str, typer.Option(..., "--kind", help="vector | scalar | fts")
-    ] = "scalar",
+    column: Annotated[
+        Optional[List[str]],
+        typer.Option(
+            "--column",
+            "-c",
+            help="Column name. Repeat this option to pass multiple columns.",
+        ),
+    ] = None,
+    index_type: Annotated[
+        Optional[str],
+        typer.Option(
+            "--index-type",
+            help=(
+                "Lance index type, such as IVF_PQ, IVF_HNSW_PQ, IVF_HNSW_SQ, "
+                "IVF_RQ, BTREE, BITMAP, LABEL_LIST, NGRAM, ZONEMAP, INVERTED, "
+                "FTS, BLOOMFILTER, or RTREE."
+            ),
+        ),
+    ] = None,
+    name: Annotated[Optional[str], typer.Option("--name", help="Index name")] = None,
+    metric: Annotated[
+        Optional[str],
+        typer.Option(
+            "--metric", help="Vector distance metric, such as L2, cosine, or dot"
+        ),
+    ] = None,
     replace: Annotated[
         Optional[bool],
         typer.Option(
             "--replace/--no-replace",
             help="Replace existing index if it already exists",
+        ),
+    ] = None,
+    train: Annotated[
+        Optional[bool],
+        typer.Option("--train/--no-train", help="Train the index on existing data"),
+    ] = None,
+    num_partitions: Annotated[Optional[int], typer.Option("--num-partitions")] = None,
+    target_partition_size: Annotated[
+        Optional[int], typer.Option("--target-partition-size")
+    ] = None,
+    num_sub_vectors: Annotated[Optional[int], typer.Option("--num-sub-vectors")] = None,
+    num_bits: Annotated[Optional[int], typer.Option("--num-bits")] = None,
+    accelerator: Annotated[Optional[str], typer.Option("--accelerator")] = None,
+    index_cache_size: Annotated[
+        Optional[int], typer.Option("--index-cache-size")
+    ] = None,
+    shuffle_partition_batches: Annotated[
+        Optional[int], typer.Option("--shuffle-partition-batches")
+    ] = None,
+    shuffle_partition_concurrency: Annotated[
+        Optional[int], typer.Option("--shuffle-partition-concurrency")
+    ] = None,
+    ivf_centroids_file: Annotated[
+        Optional[str], typer.Option("--ivf-centroids-file")
+    ] = None,
+    precomputed_partition_dataset: Annotated[
+        Optional[str], typer.Option("--precomputed-partition-dataset")
+    ] = None,
+    filter_nan: Annotated[
+        Optional[bool],
+        typer.Option(
+            "--filter-nan/--no-filter-nan", help="Filter null or NaN vector values"
+        ),
+    ] = None,
+    index_uuid: Annotated[Optional[str], typer.Option("--index-uuid")] = None,
+    skip_transpose: Annotated[
+        Optional[bool],
+        typer.Option(
+            "--skip-transpose/--no-skip-transpose",
+            help="Skip vector index transposition",
+        ),
+    ] = None,
+    index_file_version: Annotated[
+        Optional[str], typer.Option("--index-file-version")
+    ] = None,
+    max_level: Annotated[Optional[int], typer.Option("--max-level")] = None,
+    m: Annotated[Optional[int], typer.Option("--m")] = None,
+    ef_construction: Annotated[Optional[int], typer.Option("--ef-construction")] = None,
+    with_position: Annotated[
+        Optional[bool],
+        typer.Option(
+            "--with-position/--no-with-position",
+            help="Store token positions for text indexes",
+        ),
+    ] = None,
+    memory_limit: Annotated[Optional[int], typer.Option("--memory-limit")] = None,
+    num_workers: Annotated[Optional[int], typer.Option("--num-workers")] = None,
+    skip_merge: Annotated[
+        Optional[bool],
+        typer.Option(
+            "--skip-merge/--no-skip-merge", help="Skip text index partition merge"
+        ),
+    ] = None,
+    base_tokenizer: Annotated[Optional[str], typer.Option("--base-tokenizer")] = None,
+    language: Annotated[Optional[str], typer.Option("--language")] = None,
+    max_token_length: Annotated[
+        Optional[int], typer.Option("--max-token-length")
+    ] = None,
+    lower_case: Annotated[
+        Optional[bool],
+        typer.Option(
+            "--lower-case/--no-lower-case", help="Lowercase text index tokens"
+        ),
+    ] = None,
+    stem: Annotated[
+        Optional[bool], typer.Option("--stem/--no-stem", help="Stem text index tokens")
+    ] = None,
+    remove_stop_words: Annotated[
+        Optional[bool],
+        typer.Option(
+            "--remove-stop-words/--keep-stop-words", help="Remove text index stop words"
+        ),
+    ] = None,
+    custom_stop_words: Annotated[
+        Optional[List[str]],
+        typer.Option(
+            "--custom-stop-word",
+            help="Custom stop word. Repeat to pass multiple words.",
+        ),
+    ] = None,
+    ascii_folding: Annotated[
+        Optional[bool],
+        typer.Option(
+            "--ascii-folding/--no-ascii-folding", help="Fold text index tokens to ASCII"
+        ),
+    ] = None,
+    config_json: Annotated[
+        Optional[str],
+        typer.Option(
+            "--config-json", help="JSON object with Lance index configuration fields."
         ),
     ] = None,
     namespace: NamespaceOption = None,
@@ -1509,34 +1833,84 @@ async def create_index(
                 token=connection.jwt,
             ).create_factory()
         ) as client:
-            if kind == "vector":
-                await client.datasets.create_vector_index(
-                    table=table,
-                    column=column,
-                    replace=replace,
-                    namespace=_ns(namespace),
-                    branch=branch,
-                )
-            elif kind == "scalar":
-                await client.datasets.create_scalar_index(
-                    table=table,
-                    column=column,
-                    replace=replace,
-                    namespace=_ns(namespace),
-                    branch=branch,
-                )
-            elif kind in "fts":
-                await client.datasets.create_full_text_search_index(
-                    table=table,
-                    column=column,
-                    replace=replace,
-                    namespace=_ns(namespace),
-                    branch=branch,
-                )
+            if config_json is not None:
+                try:
+                    config_data = _json.loads(config_json)
+                except ValueError as exc:
+                    raise typer.BadParameter(
+                        "--config-json must be a JSON object",
+                        param_hint="--config-json",
+                    ) from exc
+                if not isinstance(config_data, dict):
+                    raise typer.BadParameter(
+                        "--config-json must be a JSON object",
+                        param_hint="--config-json",
+                    )
             else:
-                raise typer.BadParameter("--kind must be one of: vector, scalar, fts")
+                if not column:
+                    raise typer.BadParameter(
+                        "--column is required when --config-json is not provided",
+                        param_hint="--column",
+                    )
+                if index_type is None:
+                    raise typer.BadParameter(
+                        "--index-type is required when --config-json is not provided",
+                        param_hint="--index-type",
+                    )
+                selected_column: str | list[str] = (
+                    column[0] if len(column) == 1 else column
+                )
+                config_data = {"column": selected_column, "index_type": index_type}
 
-            print(f"[bold green]Created[/bold green] {kind} index on {table}.{column}")
+            def add_config(key: str, value: Any) -> None:
+                if value is not None:
+                    config_data[key] = value
+
+            add_config("name", name)
+            add_config("metric", metric)
+            add_config("replace", replace)
+            add_config("train", train)
+            add_config("num_partitions", num_partitions)
+            add_config("target_partition_size", target_partition_size)
+            add_config("num_sub_vectors", num_sub_vectors)
+            add_config("num_bits", num_bits)
+            add_config("accelerator", accelerator)
+            add_config("index_cache_size", index_cache_size)
+            add_config("shuffle_partition_batches", shuffle_partition_batches)
+            add_config("shuffle_partition_concurrency", shuffle_partition_concurrency)
+            add_config("ivf_centroids_file", ivf_centroids_file)
+            add_config("precomputed_partition_dataset", precomputed_partition_dataset)
+            add_config("filter_nan", filter_nan)
+            add_config("index_uuid", index_uuid)
+            add_config("skip_transpose", skip_transpose)
+            add_config("index_file_version", index_file_version)
+            add_config("max_level", max_level)
+            add_config("m", m)
+            add_config("ef_construction", ef_construction)
+            add_config("with_position", with_position)
+            add_config("memory_limit", memory_limit)
+            add_config("num_workers", num_workers)
+            add_config("skip_merge", skip_merge)
+            add_config("base_tokenizer", base_tokenizer)
+            add_config("language", language)
+            add_config("max_token_length", max_token_length)
+            add_config("lower_case", lower_case)
+            add_config("stem", stem)
+            add_config("remove_stop_words", remove_stop_words)
+            add_config("custom_stop_words", custom_stop_words)
+            add_config("ascii_folding", ascii_folding)
+
+            config = DatasetIndexConfig.model_validate(config_data)
+            await client.datasets.create_index(
+                table=table,
+                config=config,
+                namespace=_ns(namespace),
+                branch=branch,
+            )
+
+            print(
+                f"[bold green]Created[/bold green] {config.index_type} index on {table}"
+            )
 
     except (RoomException, typer.BadParameter) as e:
         print(e)
