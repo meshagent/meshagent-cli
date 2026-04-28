@@ -8,6 +8,7 @@ import typer
 from aiohttp import ClientResponseError
 from rich import print
 
+from meshagent.api.client import ValidationErrorResponse
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import ProjectIdOption, OutputFormatOption
 from meshagent.cli.helper import (
@@ -21,6 +22,19 @@ import json
 import os
 
 app = async_typer.AsyncTyper(help="Manage mailboxes for your project")
+
+
+def _validation_error_message(
+    exc: ClientResponseError | ValidationErrorResponse,
+) -> str:
+    message = exc.message if isinstance(exc, ClientResponseError) else str(exc)
+    for marker in ("body=", "body: "):
+        if marker in message:
+            message = message.split(marker, 1)[1]
+            break
+    if message.startswith("400: "):
+        message = message.removeprefix("400: ")
+    return message.strip()
 
 
 def _parse_annotations(annotations: Optional[str]) -> Optional[dict[str, str]]:
@@ -88,10 +102,14 @@ async def mailbox_create(
                 public=public,
                 annotations=parsed_annotations,
             )
-        except ClientResponseError as exc:
+        except (ClientResponseError, ValidationErrorResponse) as exc:
             # Common patterns: 409 conflict on duplicate address, 400 validation, etc.
-            if exc.status == 409:
+            status = exc.status if isinstance(exc, ClientResponseError) else 400
+            if status == 409:
                 print(f"[red]Mailbox address already in use:[/] {address}")
+                raise typer.Exit(code=1)
+            if status == 400:
+                print(f"[red]{_validation_error_message(exc)}[/]")
                 raise typer.Exit(code=1)
             raise
         else:
@@ -151,9 +169,13 @@ async def mailbox_update(
         if room is None or queue is None or parsed_annotations is None:
             try:
                 mb = await client.get_mailbox(project_id=project_id, address=address)
-            except ClientResponseError as exc:
-                if exc.status == 404:
+            except (ClientResponseError, ValidationErrorResponse) as exc:
+                status = exc.status if isinstance(exc, ClientResponseError) else 400
+                if status == 404:
                     print(f"[red]Mailbox not found:[/] {address}")
+                    raise typer.Exit(code=1)
+                if status == 400:
+                    print(f"[red]{_validation_error_message(exc)}[/]")
                     raise typer.Exit(code=1)
                 raise
             room = room or mb.room
@@ -171,9 +193,13 @@ async def mailbox_update(
                 public=public,
                 annotations=parsed_annotations,
             )
-        except ClientResponseError as exc:
-            if exc.status == 404:
+        except (ClientResponseError, ValidationErrorResponse) as exc:
+            status = exc.status if isinstance(exc, ClientResponseError) else 400
+            if status == 404:
                 print(f"[red]Mailbox not found:[/] {address}")
+                raise typer.Exit(code=1)
+            if status == 400:
+                print(f"[red]{_validation_error_message(exc)}[/]")
                 raise typer.Exit(code=1)
             raise
         else:
