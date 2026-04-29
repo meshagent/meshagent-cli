@@ -290,6 +290,12 @@ def _deploy_command(diagnosis: ProjectDiagnosis) -> str:
 
 
 def _sdk_guidance(diagnosis: ProjectDiagnosis) -> list[str]:
+    if diagnosis.sdk == "@meshagent/meshagent":
+        return [
+            "The Node RoomClient SDK currently resolves reliably through its "
+            "CommonJS entrypoint; use `require(\"@meshagent/meshagent\")` or "
+            "compile TypeScript to CommonJS before deploying RoomClient routes."
+        ]
     if diagnosis.language == ".NET" and diagnosis.sdk == "Meshagent.Api":
         return [
             "RoomClient lives in the Meshagent.Api.Room namespace; add "
@@ -297,6 +303,66 @@ def _sdk_guidance(diagnosis: ProjectDiagnosis) -> list[str]:
             "RoomClient."
         ]
     return []
+
+
+def _local_build_check(diagnosis: ProjectDiagnosis) -> str | None:
+    return {
+        "Python": "python -m py_compile server.py",
+        "TypeScript": "npm install && npm run build",
+        "JavaScript": "npm install --omit=dev",
+        ".NET": "dotnet publish -c Release -o /tmp/meshagent-doctor-publish",
+        "Dart": "dart pub get && dart compile exe bin/server.dart -o /tmp/meshagent-doctor-server",
+        "Go": "go build -o /tmp/meshagent-doctor-server server.go",
+        "Ruby": "ruby -c server.rb",
+    }.get(diagnosis.language)
+
+
+def _codex_diagnostics(diagnosis: ProjectDiagnosis) -> list[str]:
+    diagnostics = [
+        "If deployment fails, fix the first compiler, build, or container-start "
+        "error in the deploy output before retrying with a fresh tag/domain.",
+        "Keep `/health` returning 200 ok on port 8080; add task-specific routes "
+        "such as `/status`, `/api/ping`, or `/room` before deploying.",
+    ]
+    build_check = _local_build_check(diagnosis)
+    if build_check is not None:
+        diagnostics.append(f"Fast local build/syntax check: `{build_check}`.")
+    if diagnosis.sdk is not None:
+        diagnostics.extend(
+            [
+                "Before testing a RoomClient route, confirm the runtime has "
+                "`MESHAGENT_ROOM`, `MESHAGENT_TOKEN`, `MESHAGENT_API_URL`, and "
+                "`MESHAGENT_ROOM_URL`.",
+                "For RoomClient deploys, use `--meshagent-token full` plus the "
+                "`MESHAGENT_API_URL`, `MESHAGENT_ROOM`, and `MESHAGENT_ROOM_URL` "
+                "env passthrough shown below.",
+            ]
+        )
+    if diagnosis.sdk == "@meshagent/meshagent":
+        diagnostics.append(
+            "If Node reports `ERR_MODULE_NOT_FOUND` under "
+            "`@meshagent/meshagent/dist/esm`, switch the app to the SDK's "
+            "CommonJS path with `require(\"@meshagent/meshagent\")` or compile "
+            "TypeScript with `module: \"CommonJS\"`."
+        )
+    if diagnosis.sdk == "meshagent-api":
+        diagnostics.append(
+            "If Python reports `RoomClient.__init__()` got an unexpected keyword, "
+            "inspect the installed SDK signature and construct RoomClient with "
+            "`WebSocketClientProtocol(url=..., token=MESHAGENT_TOKEN)`."
+        )
+    if diagnosis.language == ".NET" and diagnosis.sdk == "Meshagent.Api":
+        diagnostics.append(
+            "If .NET publish cannot find `RoomClient`, add "
+            "`using Meshagent.Api.Room;` and rebuild before deploying."
+        )
+    if diagnosis.language == "Dart" and diagnosis.sdk == "meshagent":
+        diagnostics.append(
+            "If Dart deploy times out during `dart compile`, run "
+            "`dart run bin/server.dart` to isolate SDK/runtime errors from "
+            "ahead-of-time compilation."
+        )
+    return diagnostics
 
 
 def _print_report(diagnosis: ProjectDiagnosis) -> None:
@@ -345,6 +411,12 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
     if guidance:
         click.echo(f"{next_step_number}. SDK runtime guidance:")
         for item in guidance:
+            click.echo(f"   - {item}")
+        next_step_number += 1
+    diagnostics = _codex_diagnostics(diagnosis)
+    if diagnostics:
+        click.echo(f"{next_step_number}. Diagnostics for Codex:")
+        for item in diagnostics:
             click.echo(f"   - {item}")
         next_step_number += 1
     click.echo(f"{next_step_number}. Deploy from this directory:")
