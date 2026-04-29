@@ -20,6 +20,7 @@ class _FakeRoomsClient:
         limit: int,
         offset: int,
         order_by: str,
+        filter: str | None = None,
     ) -> list[Room]:
         self.list_rooms_calls.append(
             {
@@ -27,6 +28,7 @@ class _FakeRoomsClient:
                 "limit": limit,
                 "offset": offset,
                 "order_by": order_by,
+                "filter": filter,
             }
         )
         return self.rooms_result
@@ -106,9 +108,10 @@ async def test_room_list_defaults_to_table_output(
     assert client.list_rooms_calls == [
         {
             "project_id": "resolved-project",
-            "limit": 50,
+            "limit": 100,
             "offset": 0,
             "order_by": "room_name",
+            "filter": None,
         }
     ]
     assert printed == [
@@ -125,6 +128,27 @@ async def test_room_list_defaults_to_table_output(
         )
     ]
     assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_room_list_passes_count_and_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeRoomsClient(rooms_result=[])
+    _patch_room_list_command(monkeypatch, client=client)
+    monkeypatch.setattr(rooms, "print", lambda *args, **kwargs: None)
+
+    await rooms.room_list_command(project_id="project-1", count=25, filter="demo")
+
+    assert client.list_rooms_calls == [
+        {
+            "project_id": "resolved-project",
+            "limit": 25,
+            "offset": 0,
+            "order_by": "room_name",
+            "filter": "demo",
+        }
+    ]
 
 
 @pytest.mark.asyncio

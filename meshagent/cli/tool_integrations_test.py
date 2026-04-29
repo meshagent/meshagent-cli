@@ -42,7 +42,7 @@ def test_configure_codex_integration_writes_named_profile(
         "\n"
         "[profiles.meshagent]\n"
         'model_provider = "meshagent"\n'
-        'model = "gpt-5.4"\n'
+        'model = "gpt-5.5"\n'
     )
 
 
@@ -92,7 +92,7 @@ def test_configure_codex_integration_appends_after_existing_content(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.toml"
-    config_path.write_text('model = "gpt-5.4"\n')
+    config_path.write_text('model = "gpt-5.5"\n')
 
     monkeypatch.setattr(
         tool_integrations,
@@ -111,7 +111,7 @@ def test_configure_codex_integration_appends_after_existing_content(
     assert result.changed is True
     assert result.provider_id == "meshagent-prod"
     assert result.profile_id == "meshagent-prod"
-    assert updated.startswith('model = "gpt-5.4"\n\n')
+    assert updated.startswith('model = "gpt-5.5"\n\n')
     assert "[model_providers.meshagent-prod]\n" in updated
     assert "[profiles.meshagent-prod]\n" in updated
     assert 'command = "/opt/homebrew/bin/meshagent"\n' in updated
@@ -129,7 +129,7 @@ def test_configure_codex_integration_rejects_profile_name_in_use(
         "\n"
         "[profiles.meshagent]\n"
         'model_provider = "meshagent"\n'
-        'model = "gpt-5.4"\n'
+        'model = "gpt-5.5"\n'
     )
 
     monkeypatch.setattr(
@@ -161,7 +161,7 @@ def test_configure_codex_integration_raises_meshagent_conflict_error(
         "\n"
         "[profiles.meshagent]\n"
         'model_provider = "meshagent"\n'
-        'model = "gpt-5.4"\n'
+        'model = "gpt-5.5"\n'
     )
 
     monkeypatch.setattr(
@@ -259,15 +259,15 @@ def test_find_existing_codex_profiles_returns_matching_profiles(
         "\n"
         "[profiles.default]\n"
         'model_provider = "openai"\n'
-        'model = "gpt-5.4"\n'
+        'model = "gpt-5.5"\n'
         "\n"
         "[profiles.meshagent-work]\n"
         'model_provider = "meshagent-work"\n'
-        'model = "gpt-5.4"\n'
+        'model = "gpt-5.5"\n'
         "\n"
         "[profiles.meshagent]\n"
         'model_provider = "meshagent-work"\n'
-        'model = "gpt-5.4"\n'
+        'model = "gpt-5.5"\n'
     )
 
     monkeypatch.setattr(
@@ -296,7 +296,7 @@ def test_find_current_codex_default_profile_returns_matching_profile(
         "\n"
         "[profiles.meshagent-work]\n"
         'model_provider = "meshagent-work"\n'
-        'model = "gpt-5.4"\n'
+        'model = "gpt-5.5"\n'
     )
 
     monkeypatch.setattr(
@@ -324,7 +324,7 @@ def test_set_codex_default_profile_writes_root_profile_setting(
         "\n"
         "[profiles.meshagent]\n"
         'model_provider = "meshagent"\n'
-        'model = "gpt-5.4"\n'
+        'model = "gpt-5.5"\n'
     )
 
     assert (
@@ -352,7 +352,7 @@ def test_clear_codex_default_profile_if_meshagent_project_removes_profile(
         "\n"
         "[profiles.meshagent]\n"
         'model_provider = "meshagent"\n'
-        'model = "gpt-5.4"\n'
+        'model = "gpt-5.5"\n'
     )
 
     monkeypatch.setattr(
@@ -444,11 +444,11 @@ def test_remove_codex_integration_keeps_shared_provider_for_other_profiles(
         "\n"
         "[profiles.meshagent]\n"
         'model_provider = "meshagent"\n'
-        'model = "gpt-5.4"\n'
+        'model = "gpt-5.5"\n'
         "\n"
         "[profiles.meshagent-work]\n"
         'model_provider = "meshagent"\n'
-        'model = "gpt-5.4"\n'
+        'model = "gpt-5.5"\n'
     )
 
     assert (
@@ -467,7 +467,7 @@ def test_remove_codex_integration_keeps_shared_provider_for_other_profiles(
         "\n"
         "[profiles.meshagent-work]\n"
         'model_provider = "meshagent"\n'
-        'model = "gpt-5.4"\n'
+        'model = "gpt-5.5"\n'
     )
 
 
@@ -523,7 +523,7 @@ def test_maybe_configure_local_tool_integrations_retries_until_profile_name_is_u
 ) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(
-        '[profiles.meshagent]\nmodel_provider = "meshagent"\nmodel = "gpt-5.4"\n'
+        '[profiles.meshagent]\nmodel_provider = "meshagent"\nmodel = "gpt-5.5"\n'
     )
     messages: list[str] = []
     prompt_values = iter(["bad name", "meshagent", "meshagent-work"])
@@ -587,7 +587,7 @@ def test_build_codex_launch_command_sets_profile_overrides() -> None:
         "-c",
         'profiles.meshagent.model_provider="meshagent"',
         "-c",
-        'profiles.meshagent.model="gpt-5.4"',
+        'profiles.meshagent.model="gpt-5.5"',
         "-p",
         "meshagent",
         "--search",
@@ -642,7 +642,7 @@ def test_launch_codex_runs_subprocess() -> None:
         "-c",
         'profiles.meshagent.model_provider="meshagent"',
         "-c",
-        'profiles.meshagent.model="gpt-5.4"',
+        'profiles.meshagent.model="gpt-5.5"',
         "-p",
         "meshagent",
         "write tests",

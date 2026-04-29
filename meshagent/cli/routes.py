@@ -11,6 +11,7 @@ import typer
 from aiohttp import ClientResponseError
 from rich import print
 
+from meshagent.api.client import ValidationErrorResponse
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import ProjectIdOption, OutputFormatOption
 from meshagent.cli.helper import (
@@ -22,6 +23,19 @@ from meshagent.cli.helper import (
 
 app = async_typer.AsyncTyper(help="Manage routes for your project")
 MESHAGENT_APP_DOMAIN_SUFFIX = os.getenv("MESAHGENT_APP_DOMAIN_SUFFIX", ".meshagent.app")
+
+
+def _validation_error_message(
+    exc: ClientResponseError | ValidationErrorResponse,
+) -> str:
+    message = exc.message if isinstance(exc, ClientResponseError) else str(exc)
+    for marker in ("body=", "body: "):
+        if marker in message:
+            message = message.split(marker, 1)[1]
+            break
+    if message.startswith("400: "):
+        message = message.removeprefix("400: ")
+    return message.strip()
 
 
 def _parse_annotations(annotations: Optional[str]) -> Optional[dict[str, str]]:
@@ -101,9 +115,13 @@ async def route_create(
                 port=port,
                 annotations=parsed_annotations,
             )
-        except ClientResponseError as exc:
-            if exc.status == 409:
+        except (ClientResponseError, ValidationErrorResponse) as exc:
+            status = exc.status if isinstance(exc, ClientResponseError) else 400
+            if status == 409:
                 print(f"[red]Route domain already in use:[/] {domain}")
+                raise typer.Exit(code=1)
+            if status == 400:
+                print(f"[red]{_validation_error_message(exc)}[/]")
                 raise typer.Exit(code=1)
             raise
         else:
@@ -156,9 +174,13 @@ async def route_update(
         if room is None or port is None or parsed_annotations is None:
             try:
                 route = await client.get_route(project_id=project_id, domain=domain)
-            except ClientResponseError as exc:
-                if exc.status == 404:
+            except (ClientResponseError, ValidationErrorResponse) as exc:
+                status = exc.status if isinstance(exc, ClientResponseError) else 400
+                if status == 404:
                     print(f"[red]Route not found:[/] {domain}")
+                    raise typer.Exit(code=1)
+                if status == 400:
+                    print(f"[red]{_validation_error_message(exc)}[/]")
                     raise typer.Exit(code=1)
                 raise
             room = room or route.room_name
@@ -177,9 +199,13 @@ async def route_update(
                 port=port,
                 annotations=parsed_annotations,
             )
-        except ClientResponseError as exc:
-            if exc.status == 404:
+        except (ClientResponseError, ValidationErrorResponse) as exc:
+            status = exc.status if isinstance(exc, ClientResponseError) else 400
+            if status == 404:
                 print(f"[red]Route not found:[/] {domain}")
+                raise typer.Exit(code=1)
+            if status == 400:
+                print(f"[red]{_validation_error_message(exc)}[/]")
                 raise typer.Exit(code=1)
             raise
         else:
@@ -217,6 +243,15 @@ async def route_list(
     room: Annotated[
         Optional[str], typer.Option("--room", help="Room name")
     ] = os.getenv("MESHAGENT_ROOM"),
+    filter: Annotated[
+        Optional[str], typer.Option("--filter", help="Lowercase contains filter")
+    ] = None,
+    count: Annotated[
+        int, typer.Option("--count", help="Maximum number of routes to return")
+    ] = 100,
+    offset: Annotated[
+        int, typer.Option("--offset", help="Row offset for pagination")
+    ] = 0,
     o: OutputFormatOption = "table",
 ):
     """List routes for the project."""
@@ -227,10 +262,19 @@ async def route_list(
 
         if room is not None:
             routes = await client.list_room_routes(
-                project_id=project_id, room_name=room
+                project_id=project_id,
+                room_name=room,
+                count=count,
+                offset=offset,
+                filter=filter,
             )
         else:
-            routes = await client.list_routes(project_id=project_id)
+            routes = await client.list_routes(
+                project_id=project_id,
+                count=count,
+                offset=offset,
+                filter=filter,
+            )
 
         if o == "json":
             print({"routes": [route.model_dump(mode="json") for route in routes]})

@@ -268,6 +268,15 @@ async def feed_list(
         Optional[str],
         typer.Option("--room", help="Room name to filter feeds by"),
     ] = None,
+    filter: Annotated[
+        Optional[str], typer.Option("--filter", help="Lowercase contains filter")
+    ] = None,
+    count: Annotated[
+        int, typer.Option("--count", help="Maximum number of feeds to return")
+    ] = 100,
+    offset: Annotated[
+        int, typer.Option("--offset", help="Row offset for pagination")
+    ] = 0,
     o: OutputFormatOption = "table",
 ):
     """List feeds for the project."""
@@ -276,9 +285,20 @@ async def feed_list(
         project_id = await resolve_project_id(project_id)
         room = resolve_room(room)
         feeds = (
-            await client.list_room_feeds(project_id=project_id, room_name=room)
+            await client.list_room_feeds(
+                project_id=project_id,
+                room_name=room,
+                count=count,
+                offset=offset,
+                filter=filter,
+            )
             if room is not None
-            else await client.list_feeds(project_id=project_id)
+            else await client.list_feeds(
+                project_id=project_id,
+                count=count,
+                offset=offset,
+                filter=filter,
+            )
         )
         if o == "json":
             print({"feeds": [feed.model_dump(mode="json") for feed in feeds]})

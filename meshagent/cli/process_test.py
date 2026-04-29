@@ -265,7 +265,7 @@ async def test_process_agent_passes_threading_mode_to_queue_channel(
     monkeypatch.setattr(meshagent.agents, "QueueChannel", _RecordingQueueChannel)
 
     agent_cls = chatbot.build_process_agent(
-        model="gpt-5.4",
+        model="gpt-5.5",
         rule=[],
         toolkit=[],
         schema=[],
@@ -332,7 +332,7 @@ async def test_process_agent_passes_threading_mode_to_mail_channel(
     monkeypatch.setattr(meshagent.agents, "MailChannel", _RecordingMailChannel)
 
     agent_cls = chatbot.build_process_agent(
-        model="gpt-5.4",
+        model="gpt-5.5",
         rule=[],
         toolkit=[],
         schema=[],
@@ -480,7 +480,7 @@ async def test_process_agent_uses_shared_decision_adapter_for_threaded_channels(
     monkeypatch.setattr(meshagent.agents, "MailChannel", _RecordingMailChannel)
 
     agent_cls = chatbot.build_process_agent(
-        model="gpt-5.4",
+        model="gpt-5.5",
         rule=[],
         toolkit=[],
         schema=[],
@@ -500,7 +500,7 @@ async def test_process_agent_uses_shared_decision_adapter_for_threaded_channels(
         channel_adapter = created_adapters[0]
         main_adapter = created_adapters[1]
         assert channel_adapter.default_model() == "gpt-5.4-mini"
-        assert main_adapter.default_model() == "gpt-5.4"
+        assert main_adapter.default_model() == "gpt-5.5"
         assert len(captured_calls) == 3
         assert {call["kind"] for call in captured_calls} == {"chat", "queue", "mail"}
         assert all(call["llm_adapter"] is channel_adapter for call in captured_calls)
@@ -942,7 +942,7 @@ class _SteeringRecordingAdapter:
         self.tool_call_approval_handler = None
 
     def default_model(self) -> str:
-        return "gpt-5.4"
+        return "gpt-5.5"
 
     def create_session(self) -> AgentSessionContext:
         return self.session
@@ -1014,7 +1014,7 @@ async def test_process_turn_toolkits_keep_computer_toolkit_top_level(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent_cls = chatbot.build_process_agent(
-        model="gpt-5.4",
+        model="gpt-5.5",
         rule=[],
         toolkit=[],
         schema=[],
@@ -1034,7 +1034,7 @@ async def test_process_turn_toolkits_keep_computer_toolkit_top_level(
     combined_toolkits = await agent.get_process_turn_toolkits(
         process=_FakeProcessState(),
         sender=None,
-        model="gpt-5.4",
+        model="gpt-5.5",
         turns=[
             TurnStart(
                 type="meshagent.agent.turn.start",
@@ -1062,7 +1062,7 @@ async def test_process_turn_toolkits_preserve_required_toolkit_names(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent_cls = chatbot.build_process_agent(
-        model="gpt-5.4",
+        model="gpt-5.5",
         rule=[],
         toolkit=[],
         schema=[],
@@ -1085,7 +1085,7 @@ async def test_process_turn_toolkits_preserve_required_toolkit_names(
     combined_toolkits = await agent.get_process_turn_toolkits(
         process=_FakeProcessState(),
         sender=None,
-        model="gpt-5.4",
+        model="gpt-5.5",
         turns=[
             TurnStart(
                 type="meshagent.agent.turn.start",
@@ -1109,7 +1109,7 @@ async def test_process_turn_toolkits_include_thread_id_in_caller_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent_cls = chatbot.build_process_agent(
-        model="gpt-5.4",
+        model="gpt-5.5",
         rule=[],
         toolkit=[],
         schema=[],
@@ -1130,7 +1130,7 @@ async def test_process_turn_toolkits_include_thread_id_in_caller_context(
     await agent.get_process_turn_toolkits(
         process=_FakeProcessState(),
         sender=None,
-        model="gpt-5.4",
+        model="gpt-5.5",
         turns=[
             TurnStart(
                 type="meshagent.agent.turn.start",
@@ -1168,7 +1168,7 @@ async def test_build_process_agent_forwards_tool_boundary_steering_callback(
     )
 
     agent_cls = chatbot.build_process_agent(
-        model="gpt-5.4",
+        model="gpt-5.5",
         rule=[],
         toolkit=[],
         schema=[],
@@ -1604,7 +1604,7 @@ async def test_chatbot_require_advanced_shell_uses_container_toolkit_with_shell_
 ) -> None:
     monkeypatch.setenv("COPIED_ENV", "copied")
     custom_chatbot = chatbot.build_chatbot(
-        model="gpt-5.4",
+        model="gpt-5.5",
         rule=[],
         toolkit=[],
         schema=[],
@@ -1645,7 +1645,7 @@ async def test_process_agent_require_advanced_shell_uses_container_toolkit_with_
 
     monkeypatch.setenv("COPIED_ENV", "copied")
     custom_process_agent = chatbot.build_process_agent(
-        model="gpt-5.4",
+        model="gpt-5.5",
         rule=[],
         toolkit=[],
         schema=[],
@@ -1695,7 +1695,7 @@ async def test_process_agent_require_advanced_shell_reuses_container_toolkit_acr
     import meshagent.agents.process as process_module
 
     custom_process_agent = chatbot.build_process_agent(
-        model="gpt-5.4",
+        model="gpt-5.5",
         rule=[],
         toolkit=[],
         schema=[],
@@ -1739,13 +1739,13 @@ async def test_process_agent_require_advanced_shell_reuses_container_toolkit_acr
         first_toolkits = await agent.get_process_turn_toolkits(
             process=_FakeProcessState(),
             sender=None,
-            model="gpt-5.4",
+            model="gpt-5.5",
             turns=turns,
         )
         second_toolkits = await agent.get_process_turn_toolkits(
             process=_FakeProcessState(),
             sender=None,
-            model="gpt-5.4",
+            model="gpt-5.5",
             turns=turns,
         )
 

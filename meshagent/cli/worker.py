@@ -772,7 +772,7 @@ async def join(
     ] = [],
     model: Annotated[
         str, typer.Option(..., help="Name of the LLM model to use")
-    ] = "gpt-5.4",
+    ] = "gpt-5.5",
     threading_mode: ThreadingModeOption = "none",
     thread_dir: ThreadDirOption = ".threads",
     initial_message: InitialMessageOption = "code",
@@ -1118,7 +1118,7 @@ async def service(
     model: Annotated[
         str,
         typer.Option(..., help="Name of the LLM model to use"),
-    ] = "gpt-5.4",
+    ] = "gpt-5.5",
     threading_mode: ThreadingModeOption = "none",
     thread_dir: ThreadDirOption = ".threads",
     initial_message: InitialMessageOption = "code",
@@ -1449,7 +1449,7 @@ async def spec(
     model: Annotated[
         str,
         typer.Option(..., help="Name of the LLM model to use"),
-    ] = "gpt-5.4",
+    ] = "gpt-5.5",
     threading_mode: ThreadingModeOption = "none",
     thread_dir: ThreadDirOption = ".threads",
     initial_message: InitialMessageOption = "code",
@@ -1791,7 +1791,7 @@ async def deploy(
     model: Annotated[
         str,
         typer.Option(..., help="Name of the LLM model to use"),
-    ] = "gpt-5.4",
+    ] = "gpt-5.5",
     threading_mode: ThreadingModeOption = "none",
     thread_dir: ThreadDirOption = ".threads",
     initial_message: InitialMessageOption = "code",

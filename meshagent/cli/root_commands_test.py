@@ -54,7 +54,7 @@ def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
         async def close(self) -> None:
             return None
 
-    async def _fake_ask(*, project_id, message, model="gpt-5.4") -> None:
+    async def _fake_ask(*, project_id, message, model="gpt-5.5") -> None:
         launched.append(
             {
                 "project_id": project_id,
@@ -124,7 +124,7 @@ def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
         {
             "project_id": None,
             "message": root_commands._setup_welcome_prompt(user_name="Jesse Ezell"),
-            "model": "gpt-5.4",
+            "model": "gpt-5.5",
         }
     ]
     assert existing_codex_profile_requests == ["project-123"]
@@ -388,7 +388,7 @@ def test_setup_command_does_not_launch_ask_when_not_completed(monkeypatch) -> No
     async def _fake_get_access_token() -> str | None:
         return None
 
-    async def _fake_ask(*, project_id, message, model="gpt-5.4") -> None:
+    async def _fake_ask(*, project_id, message, model="gpt-5.5") -> None:
         del project_id, message, model
         nonlocal launched
         launched = True
