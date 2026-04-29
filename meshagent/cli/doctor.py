@@ -88,7 +88,9 @@ def _contains_any(paths: Iterable[Path], needles: tuple[str, ...]) -> bool:
 
 
 def _source_files(root: Path) -> list[Path]:
-    return [path for path in _iter_files(root) if path.suffix.lower() in SOURCE_SUFFIXES]
+    return [
+        path for path in _iter_files(root) if path.suffix.lower() in SOURCE_SUFFIXES
+    ]
 
 
 def _package_json_dependencies(root: Path) -> dict[str, object]:
@@ -259,7 +261,9 @@ def diagnose_project(root: Path) -> ProjectDiagnosis:
         sdk=_detect_sdk(resolved_root, language, source_files),
         has_deployment_artifact=bool(artifacts),
         deployment_artifacts=artifacts,
-        has_health_route=_contains_any(source_files, ('"/health"', "'/health'", "/health")),
+        has_health_route=_contains_any(
+            source_files, ('"/health"', "'/health'", "/health")
+        ),
         has_port_8080_hint=_contains_any(source_files, ("8080",)),
         start_command=_start_command(language),
         dockerfile=_dockerfile_for(language),
@@ -293,7 +297,7 @@ def _sdk_guidance(diagnosis: ProjectDiagnosis) -> list[str]:
     if diagnosis.sdk == "@meshagent/meshagent":
         return [
             "The Node RoomClient SDK currently resolves reliably through its "
-            "CommonJS entrypoint; use `require(\"@meshagent/meshagent\")` or "
+            'CommonJS entrypoint; use `require("@meshagent/meshagent")` or '
             "compile TypeScript to CommonJS before deploying RoomClient routes."
         ]
     if diagnosis.language == ".NET" and diagnosis.sdk == "Meshagent.Api":
@@ -342,14 +346,22 @@ def _codex_diagnostics(diagnosis: ProjectDiagnosis) -> list[str]:
         diagnostics.append(
             "If Node reports `ERR_MODULE_NOT_FOUND` under "
             "`@meshagent/meshagent/dist/esm`, switch the app to the SDK's "
-            "CommonJS path with `require(\"@meshagent/meshagent\")` or compile "
-            "TypeScript with `module: \"CommonJS\"`."
+            'CommonJS path with `require("@meshagent/meshagent")` or compile '
+            'TypeScript with `module: "CommonJS"`.'
         )
     if diagnosis.sdk == "meshagent-api":
-        diagnostics.append(
-            "If Python reports `RoomClient.__init__()` got an unexpected keyword, "
-            "inspect the installed SDK signature and construct RoomClient with "
-            "`WebSocketClientProtocol(url=..., token=MESHAGENT_TOKEN)`."
+        diagnostics.extend(
+            [
+                "For Python `meshagent-api`, build the RoomClient explicitly with "
+                "`RoomClient(protocol=WebSocketClientProtocol(url=websocket_room_url("
+                'room_name=os.environ["MESHAGENT_ROOM"]), token=os.environ["MESHAGENT_TOKEN"]))`.',
+                "`MESHAGENT_ROOM_URL` is the in-room HTTP endpoint; do not pass it "
+                "directly to `WebSocketClientProtocol` or the SDK may fail with "
+                "`WSServerHandshakeError: 200`.",
+                "If Python reports `RoomClient.__init__()` got an unexpected keyword, "
+                "inspect the installed SDK signature and use the explicit "
+                "`protocol=WebSocketClientProtocol(...)` constructor above.",
+            ]
         )
     if diagnosis.language == ".NET" and diagnosis.sdk == "Meshagent.Api":
         diagnostics.append(
@@ -423,7 +435,9 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
     click.echo(f"   {_deploy_command(diagnosis)}")
 
 
-@click.command("doctor", help="Inspect the current directory for MeshAgent deployment gaps.")
+@click.command(
+    "doctor", help="Inspect the current directory for MeshAgent deployment gaps."
+)
 @click.argument(
     "path",
     required=False,

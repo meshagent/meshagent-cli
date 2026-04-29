@@ -38,6 +38,9 @@ def test_doctor_reports_python_roomclient_deploy_gaps(tmp_path) -> None:
     assert "Diagnostics for Codex" in result.output
     assert "python -m py_compile server.py" in result.output
     assert "WebSocketClientProtocol" in result.output
+    assert "websocket_room_url" in result.output
+    assert "MESHAGENT_ROOM_URL` is the in-room HTTP endpoint" in result.output
+    assert "WSServerHandshakeError: 200" in result.output
 
 
 def test_doctor_reports_javascript_roomclient_deploy_gaps(tmp_path) -> None:
