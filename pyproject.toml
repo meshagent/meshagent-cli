@@ -33,6 +33,8 @@ dynamic = ["version", "readme"]
 all = [
   "meshagent-agents[all]==0.39.2",
   "meshagent-api[all]==0.39.2",
+  "meshagent-commoncrawl==0.39.2",
+  "meshagent-scrapy==0.39.2",
   "meshagent-computers==0.39.2",
   "meshagent-openai==0.39.2",
   "meshagent-anthropic==0.39.2",
