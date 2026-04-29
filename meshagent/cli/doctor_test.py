@@ -33,12 +33,13 @@ def test_doctor_reports_python_roomclient_deploy_gaps(tmp_path) -> None:
     assert "Detected project: Python" in result.output
     assert "Official RoomClient SDK: detected (meshagent-api)" in result.output
     assert "[missing] Deployment artifact" in result.output
-    assert "--no-wait" in result.output
+    assert "--wait" in result.output
     assert "--meshagent-token full" in result.output
     assert 'MESHAGENT_ROOM="$MESHAGENT_ROOM"' in result.output
     assert "Diagnostics for Codex" in result.output
     assert "FROM python:3.13-slim" in result.output
     assert "MeshAgent Python deployments must target Python 3.13" in result.output
+    assert "No local Python virtual environment detected" in result.output
     assert "python3 -m py_compile server.py" in result.output
     assert "WebSocketClientProtocol" in result.output
     assert "websocket_room_url" in result.output
@@ -49,6 +50,11 @@ def test_doctor_reports_python_roomclient_deploy_gaps(tmp_path) -> None:
 def test_doctor_reports_older_python_runtime_upgrade_guidance(tmp_path) -> None:
     (tmp_path / ".python-version").write_text("3.11.9\n", encoding="utf-8")
     (tmp_path / "runtime.txt").write_text("python-3.11.9\n", encoding="utf-8")
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / ".venv" / "pyvenv.cfg").write_text(
+        "home = /usr/bin\nversion = 3.11.9\n",
+        encoding="utf-8",
+    )
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nrequires-python = ">=3.10,<3.13"\n',
         encoding="utf-8",
@@ -70,12 +76,43 @@ def test_doctor_reports_older_python_runtime_upgrade_guidance(tmp_path) -> None:
     assert result.exit_code == 0
     assert diagnosis.language == "Python"
     assert diagnosis.python_runtime_findings
+    assert diagnosis.python_virtualenv_versions == ((".venv", "3.11.9"),)
     assert "Upgrade Python runtime metadata to 3.13 before deploying" in result.output
+    assert "No local Python 3.13 virtual environment detected" in result.output
+    assert "Local virtual environment `.venv` uses Python `3.11.9`" in result.output
+    assert "python3.13 -m venv .venv" in result.output
     assert ".python-version declares `3.11.9`" in result.output
     assert "runtime.txt declares `python-3.11.9`" in result.output
     assert "`pyproject.toml` project.requires-python is `>=3.10,<3.13`" in result.output
     assert "MeshAgent Python deployments must target Python 3.13" in result.output
     assert "FROM python:3.13-slim" in result.output
+
+
+def test_doctor_detects_nested_python_313_virtualenv(tmp_path) -> None:
+    service_dir = tmp_path / "service"
+    service_dir.mkdir()
+    (service_dir / "venv").mkdir()
+    (service_dir / "venv" / "pyvenv.cfg").write_text(
+        "home = /opt/python3.13\nversion = 3.13.5\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "requirements.txt").write_text("", encoding="utf-8")
+    (tmp_path / "server.py").write_text(
+        "from http.server import ThreadingHTTPServer\n"
+        "ThreadingHTTPServer(('0.0.0.0', 8080), Handler)\n"
+        "if self.path == '/health': pass\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path)])
+    diagnosis = diagnose_project(tmp_path)
+
+    assert result.exit_code == 0
+    assert diagnosis.python_virtualenv_versions == (("service/venv", "3.13.5"),)
+    assert "Local Python 3.13 virtual environment detected" in result.output
+    assert (
+        "Local virtual environment `service/venv` uses Python `3.13.5`" in result.output
+    )
 
 
 def test_doctor_reports_javascript_roomclient_deploy_gaps(tmp_path) -> None:

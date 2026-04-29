@@ -25,6 +25,24 @@ SOURCE_SUFFIXES = {
 }
 PYTHON_REQUIRED_VERSION = "3.13"
 PYTHON_REQUIRED_MAJOR_MINOR = (3, 13)
+PYTHON_VIRTUAL_ENV_DIR_NAMES = {
+    ".env",
+    ".venv",
+    ".virtualenv",
+    "env",
+    "venv",
+    "virtualenv",
+}
+PYTHON_VIRTUAL_ENV_SCAN_IGNORES = {
+    ".git",
+    "__pycache__",
+    "bin",
+    "build",
+    "dist",
+    "node_modules",
+    "obj",
+    "target",
+}
 
 
 @dataclass(frozen=True)
@@ -39,6 +57,7 @@ class ProjectDiagnosis:
     has_port_8080_hint: bool
     package_scripts: tuple[tuple[str, str], ...]
     python_runtime_findings: tuple[str, ...]
+    python_virtualenv_versions: tuple[tuple[str, str], ...]
     liveness_path: str
     start_command: str
     dockerfile: str
@@ -108,6 +127,91 @@ def _python_runtime_is_older(value: str, *, constraint: bool = False) -> bool:
         return False
     parsed = _python_major_minor(normalized)
     return parsed is not None and parsed < PYTHON_REQUIRED_MAJOR_MINOR
+
+
+def _python_version_is_required(value: str) -> bool:
+    parsed = _python_major_minor(value)
+    return parsed == PYTHON_REQUIRED_MAJOR_MINOR
+
+
+def _is_python_virtualenv_dir(path: Path) -> bool:
+    return path.is_dir() and (
+        path.name in PYTHON_VIRTUAL_ENV_DIR_NAMES or (path / "pyvenv.cfg").is_file()
+    )
+
+
+def _python_virtualenv_dirs(root: Path) -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+
+    def add_candidate(path: Path) -> None:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return
+        if resolved not in seen and _is_python_virtualenv_dir(path):
+            candidates.append(path)
+            seen.add(resolved)
+
+    add_candidate(root)
+    try:
+        children = sorted(root.iterdir())
+    except OSError:
+        return candidates
+
+    parents = [root]
+    parents.extend(
+        path
+        for path in children
+        if path.is_dir() and path.name not in PYTHON_VIRTUAL_ENV_SCAN_IGNORES
+    )
+    for parent in parents:
+        try:
+            env_candidates = sorted(parent.iterdir())
+        except OSError:
+            continue
+        for path in env_candidates:
+            add_candidate(path)
+    return candidates
+
+
+def _python_virtualenv_version(env_dir: Path) -> str | None:
+    pyvenv_cfg = _read_text(env_dir / "pyvenv.cfg")
+    for line in pyvenv_cfg.splitlines():
+        name, separator, value = line.partition("=")
+        if separator and name.strip().lower() == "version":
+            version = value.strip()
+            if version:
+                return version
+
+    for scripts_dir in ("bin", "Scripts"):
+        python_dir = env_dir / scripts_dir
+        try:
+            names = {path.name.lower() for path in python_dir.iterdir()}
+        except OSError:
+            continue
+        if any(name.startswith("python3.13") for name in names):
+            return PYTHON_REQUIRED_VERSION
+    return None
+
+
+def _python_virtualenv_versions(
+    root: Path, language: str
+) -> tuple[tuple[str, str], ...]:
+    if language != "Python":
+        return ()
+
+    versions: list[tuple[str, str]] = []
+    for env_dir in _python_virtualenv_dirs(root):
+        version = _python_virtualenv_version(env_dir)
+        if version is None:
+            continue
+        try:
+            relative_path = env_dir.relative_to(root)
+        except ValueError:
+            relative_path = env_dir
+        versions.append((str(relative_path), version))
+    return tuple(versions)
 
 
 def _python_runtime_findings(root: Path, language: str) -> tuple[str, ...]:
@@ -441,6 +545,7 @@ def diagnose_project(root: Path) -> ProjectDiagnosis:
     language = _detect_language(resolved_root)
     javascript_flavor = _javascript_flavor(resolved_root, language, source_files)
     python_runtime_findings = _python_runtime_findings(resolved_root, language)
+    python_virtualenv_versions = _python_virtualenv_versions(resolved_root, language)
     artifacts = _deployment_artifacts(resolved_root)
     has_health_route = _contains_any(
         source_files, ('"/health"', "'/health'", "/health")
@@ -457,6 +562,7 @@ def diagnose_project(root: Path) -> ProjectDiagnosis:
         has_port_8080_hint=_contains_any(source_files, ("8080",)),
         package_scripts=tuple(sorted(_package_json_scripts(resolved_root).items())),
         python_runtime_findings=python_runtime_findings,
+        python_virtualenv_versions=python_virtualenv_versions,
         liveness_path=liveness_path,
         start_command=_start_command(language, javascript_flavor),
         dockerfile=_dockerfile_for(language, javascript_flavor),
@@ -472,7 +578,7 @@ def _deploy_command(diagnosis: ProjectDiagnosis) -> str:
         "--domain <domain>",
         f"--liveness {diagnosis.liveness_path}",
         "--no-optimize",
-        "--no-wait",
+        "--wait",
     ]
     if diagnosis.sdk is not None:
         parts.extend(
@@ -561,8 +667,35 @@ def _codex_diagnostics(diagnosis: ProjectDiagnosis) -> list[str]:
     if diagnosis.language == "Python":
         diagnostics.append(
             "MeshAgent Python deployments must target Python 3.13; use a "
-            "`python:3.13-slim` or `python:3.13-alpine` base image."
+            "`python:3.13-slim` base image."
         )
+        if diagnosis.python_virtualenv_versions:
+            virtualenv_list = ", ".join(
+                f"`{path}`={version}"
+                for path, version in diagnosis.python_virtualenv_versions
+            )
+            if any(
+                _python_version_is_required(version)
+                for _, version in diagnosis.python_virtualenv_versions
+            ):
+                diagnostics.append(
+                    "A local Python 3.13 virtual environment was detected "
+                    f"({virtualenv_list}); still deploy with a Python 3.13 "
+                    "Docker base image."
+                )
+            else:
+                diagnostics.append(
+                    "Local virtual environments were found but none report "
+                    f"Python {PYTHON_REQUIRED_VERSION} ({virtualenv_list}); "
+                    "recreate the local venv with `python3.13 -m venv .venv` "
+                    "before relying on local build checks."
+                )
+        else:
+            diagnostics.append(
+                "No local Python virtual environment metadata was detected; if "
+                "you create one for troubleshooting, use "
+                "`python3.13 -m venv .venv`."
+            )
         if diagnosis.python_runtime_findings:
             diagnostics.append(
                 "Upgrade older Python runtime metadata before deploying: update "
@@ -721,6 +854,26 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
                 f"  [ok] Python Dockerfile guidance targets "
                 f"Python {PYTHON_REQUIRED_VERSION}"
             )
+        if diagnosis.python_virtualenv_versions:
+            if any(
+                _python_version_is_required(version)
+                for _, version in diagnosis.python_virtualenv_versions
+            ):
+                click.echo(
+                    f"  [ok] Local Python {PYTHON_REQUIRED_VERSION} virtual "
+                    "environment detected"
+                )
+            else:
+                click.echo(
+                    f"  [check] No local Python {PYTHON_REQUIRED_VERSION} "
+                    "virtual environment detected"
+                )
+            for path, version in diagnosis.python_virtualenv_versions:
+                click.echo(
+                    f"    - Local virtual environment `{path}` uses Python `{version}`"
+                )
+        else:
+            click.echo("  [check] No local Python virtual environment detected")
     if _is_javascript_project(diagnosis.language):
         scripts = dict(diagnosis.package_scripts)
         if not _is_static_javascript_flavor(diagnosis.javascript_flavor):
