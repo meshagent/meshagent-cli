@@ -59,9 +59,11 @@ def test_doctor_reports_javascript_roomclient_deploy_gaps(tmp_path) -> None:
     diagnosis = diagnose_project(tmp_path)
 
     assert diagnosis.language == "JavaScript"
+    assert diagnosis.javascript_flavor == "Node.js"
     assert diagnosis.sdk == "@meshagent/meshagent"
     assert diagnosis.has_deployment_artifact is False
     assert "npm install --omit=dev" in diagnosis.dockerfile
+    assert diagnosis.liveness_path == "/health"
 
 
 def test_doctor_reports_node_roomclient_commonjs_guidance(tmp_path) -> None:
@@ -81,12 +83,105 @@ def test_doctor_reports_node_roomclient_commonjs_guidance(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "Detected project: JavaScript" in result.output
+    assert "JavaScript flavor: Node.js" in result.output
     assert "SDK runtime guidance" in result.output
     assert 'require("@meshagent/meshagent")' in result.output
     assert "compile TypeScript to CommonJS" in result.output
     assert "Diagnostics for Codex" in result.output
     assert "ERR_MODULE_NOT_FOUND" in result.output
     assert 'module: "CommonJS"' in result.output
+
+
+def test_doctor_reports_typescript_node_build_guidance(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    (tmp_path / "package.json").write_text(
+        '{"scripts":{"build":"tsc","start":"node dist/server.js"},'
+        '"dependencies":{"@meshagent/meshagent":"0.38.4"},'
+        '"devDependencies":{"typescript":"5.8.2"}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "tsconfig.json").write_text(
+        '{"compilerOptions":{"outDir":"dist","module":"CommonJS"}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "server.ts").write_text(
+        "import http from 'node:http';\n"
+        "import { RoomClient } from '@meshagent/meshagent';\n"
+        "http.createServer((req, res) => { if (req.url === '/health') res.end('ok'); }).listen(8080, '0.0.0.0');\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path)])
+    diagnosis = diagnose_project(tmp_path)
+
+    assert result.exit_code == 0
+    assert diagnosis.language == "TypeScript"
+    assert diagnosis.javascript_flavor == "Node.js/TypeScript"
+    assert "JavaScript flavor: Node.js/TypeScript" in result.output
+    assert "RUN npm run build && npm prune --omit=dev" in result.output
+    assert (
+        "Fast local build/syntax check: `npm install && npm run build`" in result.output
+    )
+    assert "--meshagent-token full" in result.output
+
+
+def test_doctor_reports_react_vite_static_deploy_guidance(tmp_path) -> None:
+    (tmp_path / "package.json").write_text(
+        '{"scripts":{"build":"vite build"},'
+        '"dependencies":{"@vitejs/plugin-react":"latest","vite":"latest","react":"latest","react-dom":"latest"},'
+        '"devDependencies":{"typescript":"5.8.2"}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "tsconfig.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "App.tsx").write_text(
+        "export function App() { return <main>ok</main>; }\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path)])
+    diagnosis = diagnose_project(tmp_path)
+
+    assert result.exit_code == 0
+    assert diagnosis.language == "TypeScript"
+    assert diagnosis.javascript_flavor == "React/Vite"
+    assert diagnosis.liveness_path == "/health"
+    assert "JavaScript flavor: React/Vite" in result.output
+    assert "nginx:1.27-alpine" in result.output
+    assert "COPY --from=build /app/dist /usr/share/nginx/html" in result.output
+    assert "nginx /health route returning 200" in result.output
+    assert "serve the generated `dist` or `build` directory with nginx" in result.output
+    assert 'curl -fsS "$PUBLIC_URL/"' in result.output
+    assert "Add a package.json start script" not in result.output
+    assert "--meshagent-token full" not in result.output
+
+
+def test_doctor_reports_nextjs_liveness_root_guidance(tmp_path) -> None:
+    (tmp_path / "package.json").write_text(
+        '{"scripts":{"build":"next build","start":"next start"},'
+        '"dependencies":{"next":"latest","react":"latest","react-dom":"latest"}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "page.jsx").write_text(
+        "export default function Page() { return <main>ok</main>; }\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path)])
+    diagnosis = diagnose_project(tmp_path)
+
+    assert result.exit_code == 0
+    assert diagnosis.language == "JavaScript"
+    assert diagnosis.javascript_flavor == "Next.js"
+    assert diagnosis.liveness_path == "/"
+    assert "JavaScript flavor: Next.js" in result.output
+    assert "ENV HOSTNAME=0.0.0.0" in result.output
+    assert 'CMD ["npm", "start", "--", "-H", "0.0.0.0", "-p", "8080"]' in result.output
+    assert "--liveness /" in result.output
+    assert "public root URL returns HTTP 200" in result.output
 
 
 def test_doctor_reports_go_without_roomclient_token_guidance(

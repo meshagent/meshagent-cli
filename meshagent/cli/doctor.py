@@ -28,11 +28,14 @@ SOURCE_SUFFIXES = {
 class ProjectDiagnosis:
     root: Path
     language: str
+    javascript_flavor: str | None
     sdk: str | None
     has_deployment_artifact: bool
     deployment_artifacts: tuple[str, ...]
     has_health_route: bool
     has_port_8080_hint: bool
+    package_scripts: tuple[tuple[str, str], ...]
+    liveness_path: str
     start_command: str
     dockerfile: str
 
@@ -104,6 +107,47 @@ def _package_json_dependencies(root: Path) -> dict[str, object]:
     return dependencies
 
 
+def _package_json_scripts(root: Path) -> dict[str, str]:
+    scripts = _read_json(root / "package.json").get("scripts")
+    if not isinstance(scripts, dict):
+        return {}
+    return {str(name): str(command) for name, command in scripts.items()}
+
+
+def _javascript_flavor(
+    root: Path, language: str, source_files: list[Path]
+) -> str | None:
+    if language not in {"JavaScript", "TypeScript"}:
+        return None
+
+    dependencies = _package_json_dependencies(root)
+    scripts = _package_json_scripts(root)
+    script_text = " ".join(scripts.values()).lower()
+    suffixes = {path.suffix.lower() for path in source_files}
+
+    if "next" in dependencies or "next " in f"{script_text} ":
+        return "Next.js"
+    if "vite" in dependencies or "vite" in script_text:
+        if "react" in dependencies or suffixes & {".jsx", ".tsx"}:
+            return "React/Vite"
+        return "Vite"
+    if "react-scripts" in dependencies or "react-scripts" in script_text:
+        return "React"
+    if "react" in dependencies or suffixes & {".jsx", ".tsx"}:
+        return "React"
+    if language == "TypeScript":
+        return "Node.js/TypeScript"
+    return "Node.js"
+
+
+def _is_static_javascript_flavor(javascript_flavor: str | None) -> bool:
+    return javascript_flavor in {"React", "React/Vite", "Vite"}
+
+
+def _is_javascript_project(language: str) -> bool:
+    return language in {"JavaScript", "TypeScript"}
+
+
 def _detect_language(root: Path) -> str:
     package_dependencies = _package_json_dependencies(root)
     if (root / "tsconfig.json").is_file() or "typescript" in package_dependencies:
@@ -170,7 +214,11 @@ def _deployment_artifacts(root: Path) -> tuple[str, ...]:
     return tuple(artifacts)
 
 
-def _start_command(language: str) -> str:
+def _start_command(language: str, javascript_flavor: str | None) -> str:
+    if javascript_flavor in {"React", "React/Vite", "Vite"}:
+        return "nginx -g 'daemon off;'"
+    if javascript_flavor == "Next.js":
+        return "npm start -- -H 0.0.0.0 -p 8080"
     return {
         "Python": "python server.py",
         "TypeScript": "npm start",
@@ -182,7 +230,7 @@ def _start_command(language: str) -> str:
     }.get(language, "<start command>")
 
 
-def _dockerfile_for(language: str) -> str:
+def _dockerfile_for(language: str, javascript_flavor: str | None) -> str:
     snippets = {
         "Python": """
             FROM python:3.12-alpine
@@ -196,17 +244,19 @@ def _dockerfile_for(language: str) -> str:
         "TypeScript": """
             FROM node:22-alpine
             WORKDIR /app
-            COPY package.json tsconfig.json ./
-            COPY src ./src
-            RUN npm install && npm run build
+            COPY package*.json tsconfig.json ./
+            RUN npm install
+            COPY . .
+            RUN npm run build && npm prune --omit=dev
             EXPOSE 8080
             CMD ["npm", "start"]
         """,
         "JavaScript": """
             FROM node:22-alpine
             WORKDIR /app
-            COPY package.json server.js ./
+            COPY package*.json ./
             RUN npm install --omit=dev
+            COPY . .
             EXPOSE 8080
             CMD ["npm", "start"]
         """,
@@ -248,26 +298,95 @@ def _dockerfile_for(language: str) -> str:
             CMD ["ruby", "server.rb"]
         """,
     }
+
+    if javascript_flavor in {"React/Vite", "Vite"}:
+        return textwrap.dedent(
+            """
+            FROM node:22-alpine AS build
+            WORKDIR /app
+            COPY package*.json ./
+            RUN npm install
+            COPY . .
+            RUN npm run build
+
+            FROM nginx:1.27-alpine
+            COPY --from=build /app/dist /usr/share/nginx/html
+            RUN printf 'server { listen 8080; location = /health { return 200 "ok\\n"; } location / { try_files $uri $uri/ /index.html; } }\\n' > /etc/nginx/conf.d/default.conf
+            EXPOSE 8080
+            CMD ["nginx", "-g", "daemon off;"]
+            """
+        ).strip()
+
+    if javascript_flavor == "React":
+        return textwrap.dedent(
+            """
+            FROM node:22-alpine AS build
+            WORKDIR /app
+            COPY package*.json ./
+            RUN npm install
+            COPY . .
+            RUN npm run build
+
+            FROM nginx:1.27-alpine
+            COPY --from=build /app/build /usr/share/nginx/html
+            RUN printf 'server { listen 8080; location = /health { return 200 "ok\\n"; } location / { try_files $uri $uri/ /index.html; } }\\n' > /etc/nginx/conf.d/default.conf
+            EXPOSE 8080
+            CMD ["nginx", "-g", "daemon off;"]
+            """
+        ).strip()
+
+    if javascript_flavor == "Next.js":
+        return textwrap.dedent(
+            """
+            FROM node:22-alpine
+            WORKDIR /app
+            ENV HOSTNAME=0.0.0.0
+            ENV PORT=8080
+            COPY package*.json ./
+            RUN npm install
+            COPY . .
+            RUN npm run build
+            EXPOSE 8080
+            CMD ["npm", "start", "--", "-H", "0.0.0.0", "-p", "8080"]
+            """
+        ).strip()
+
     return textwrap.dedent(snippets.get(language, "")).strip()
+
+
+def _liveness_path_for(
+    language: str, javascript_flavor: str | None, has_health_route: bool
+) -> str:
+    if has_health_route or javascript_flavor in {"React", "React/Vite", "Vite"}:
+        return "/health"
+    if _is_javascript_project(language) and javascript_flavor == "Next.js":
+        return "/"
+    return "/health"
 
 
 def diagnose_project(root: Path) -> ProjectDiagnosis:
     resolved_root = root.resolve()
     source_files = _source_files(resolved_root)
     language = _detect_language(resolved_root)
+    javascript_flavor = _javascript_flavor(resolved_root, language, source_files)
     artifacts = _deployment_artifacts(resolved_root)
+    has_health_route = _contains_any(
+        source_files, ('"/health"', "'/health'", "/health")
+    )
+    liveness_path = _liveness_path_for(language, javascript_flavor, has_health_route)
     return ProjectDiagnosis(
         root=resolved_root,
         language=language,
+        javascript_flavor=javascript_flavor,
         sdk=_detect_sdk(resolved_root, language, source_files),
         has_deployment_artifact=bool(artifacts),
         deployment_artifacts=artifacts,
-        has_health_route=_contains_any(
-            source_files, ('"/health"', "'/health'", "/health")
-        ),
+        has_health_route=has_health_route,
         has_port_8080_hint=_contains_any(source_files, ("8080",)),
-        start_command=_start_command(language),
-        dockerfile=_dockerfile_for(language),
+        package_scripts=tuple(sorted(_package_json_scripts(resolved_root).items())),
+        liveness_path=liveness_path,
+        start_command=_start_command(language, javascript_flavor),
+        dockerfile=_dockerfile_for(language, javascript_flavor),
     )
 
 
@@ -278,7 +397,7 @@ def _deploy_command(diagnosis: ProjectDiagnosis) -> str:
         "--tag <tag>",
         "--public",
         "--domain <domain>",
-        "--liveness /health",
+        f"--liveness {diagnosis.liveness_path}",
         "--no-optimize",
         "--no-wait",
     ]
@@ -296,11 +415,18 @@ def _deploy_command(diagnosis: ProjectDiagnosis) -> str:
 
 def _sdk_guidance(diagnosis: ProjectDiagnosis) -> list[str]:
     if diagnosis.sdk == "@meshagent/meshagent":
-        return [
+        guidance = [
             "The Node RoomClient SDK currently resolves reliably through its "
             'CommonJS entrypoint; use `require("@meshagent/meshagent")` or '
             "compile TypeScript to CommonJS before deploying RoomClient routes."
         ]
+        if _is_static_javascript_flavor(diagnosis.javascript_flavor):
+            guidance.append(
+                "Static React/Vite browser bundles cannot hold a room token safely; "
+                "keep RoomClient calls in a Node server or API route and have the "
+                "frontend call that route."
+            )
+        return guidance
     if diagnosis.language == ".NET" and diagnosis.sdk == "Meshagent.Api":
         return [
             "RoomClient lives in the Meshagent.Api.Room namespace; add "
@@ -311,6 +437,10 @@ def _sdk_guidance(diagnosis: ProjectDiagnosis) -> list[str]:
 
 
 def _local_build_check(diagnosis: ProjectDiagnosis) -> tuple[str, str] | None:
+    if diagnosis.javascript_flavor in {"React", "React/Vite", "Vite", "Next.js"}:
+        return ("npm", "npm install && npm run build")
+    if diagnosis.javascript_flavor == "Node.js/TypeScript":
+        return ("npm", "npm install && npm run build")
     return {
         "Python": ("python3", "python3 -m py_compile server.py"),
         "TypeScript": ("npm", "npm install && npm run build"),
@@ -347,6 +477,45 @@ def _codex_diagnostics(diagnosis: ProjectDiagnosis) -> list[str]:
             )
         else:
             diagnostics.append(f"Fast local build/syntax check: `{command}`.")
+    if _is_javascript_project(diagnosis.language):
+        scripts = dict(diagnosis.package_scripts)
+        if "start" not in scripts and not _is_static_javascript_flavor(
+            diagnosis.javascript_flavor
+        ):
+            diagnostics.append(
+                "Add a `package.json` start script that binds the production server "
+                "to `0.0.0.0:8080` before deploying."
+            )
+        if diagnosis.javascript_flavor in {"React", "React/Vite", "Vite"}:
+            if "build" not in scripts:
+                diagnostics.append(
+                    "Add a `package.json` build script, usually `vite build` or "
+                    "`react-scripts build`, before deploying a static frontend."
+                )
+            diagnostics.append(
+                "For static React/Vite apps, build assets with `npm run build`, "
+                "serve the generated `dist` or `build` directory with nginx on "
+                "port 8080, and include a `/health` location that returns 200."
+            )
+            diagnostics.append(
+                "After deploy, verify the public app URL itself returns 200 with "
+                '`curl -fsS "$PUBLIC_URL/"`.'
+            )
+        elif diagnosis.javascript_flavor == "Next.js":
+            diagnostics.append(
+                "For Next.js, ensure the production server binds to "
+                "`0.0.0.0:8080`; `next start -H 0.0.0.0 -p 8080` is the expected "
+                "shape when using npm scripts."
+            )
+            diagnostics.append(
+                "If the app has no dedicated `/health` route, deploy with "
+                "`--liveness /` and verify the public root URL returns HTTP 200."
+            )
+        else:
+            diagnostics.append(
+                "For Node.js servers, read `process.env.PORT || 8080`, bind to "
+                "`0.0.0.0`, and make `/health` return 200 before deploying."
+            )
     if diagnosis.sdk is not None:
         diagnostics.extend(
             [
@@ -397,6 +566,8 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
     click.echo("MeshAgent doctor")
     click.echo(f"Project: {diagnosis.root}")
     click.echo(f"Detected project: {diagnosis.language}")
+    if diagnosis.javascript_flavor is not None:
+        click.echo(f"JavaScript flavor: {diagnosis.javascript_flavor}")
     if diagnosis.sdk is None:
         click.echo("Official RoomClient SDK: not detected")
     else:
@@ -413,12 +584,38 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
         click.echo("  [missing] Deployment artifact: add Dockerfile or meshagent.yaml")
     if diagnosis.has_health_route:
         click.echo("  [ok] HTTP liveness route appears to exist: /health")
+    elif _is_static_javascript_flavor(diagnosis.javascript_flavor):
+        click.echo(
+            "  [ok] Static web app Dockerfile guidance includes an nginx /health "
+            "route returning 200"
+        )
+    elif diagnosis.javascript_flavor == "Next.js":
+        click.echo(
+            "  [check] Add a /health route or deploy Next.js with --liveness / "
+            "and verify / returns 200"
+        )
     else:
         click.echo("  [check] Add an HTTP /health route that returns 200 ok")
     if diagnosis.has_port_8080_hint:
         click.echo("  [ok] App appears to listen on port 8080")
+    elif _is_static_javascript_flavor(diagnosis.javascript_flavor):
+        click.echo("  [ok] Static web Dockerfile guidance serves nginx on port 8080")
+    elif diagnosis.javascript_flavor == "Next.js":
+        click.echo("  [check] Ensure Next.js binds to 0.0.0.0:8080")
     else:
         click.echo("  [check] Ensure the service listens on 0.0.0.0:8080")
+    if _is_javascript_project(diagnosis.language):
+        scripts = dict(diagnosis.package_scripts)
+        if not _is_static_javascript_flavor(diagnosis.javascript_flavor):
+            if "start" in scripts:
+                click.echo(f"  [ok] package.json start script: {scripts['start']}")
+            else:
+                click.echo("  [check] Add a package.json start script for production")
+        if diagnosis.javascript_flavor in {"React", "React/Vite", "Vite", "Next.js"}:
+            if "build" in scripts:
+                click.echo(f"  [ok] package.json build script: {scripts['build']}")
+            else:
+                click.echo("  [check] Add a package.json build script")
     if diagnosis.sdk is not None:
         click.echo(
             "  [required] RoomClient deployment needs --meshagent-token full "
