@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from click.testing import CliRunner
 
+from meshagent.cli import doctor as doctor_module
 from meshagent.cli.doctor import diagnose_project, doctor_command
 
 
@@ -36,7 +37,7 @@ def test_doctor_reports_python_roomclient_deploy_gaps(tmp_path) -> None:
     assert "--meshagent-token full" in result.output
     assert 'MESHAGENT_ROOM="$MESHAGENT_ROOM"' in result.output
     assert "Diagnostics for Codex" in result.output
-    assert "python -m py_compile server.py" in result.output
+    assert "python3 -m py_compile server.py" in result.output
     assert "WebSocketClientProtocol" in result.output
     assert "websocket_room_url" in result.output
     assert "MESHAGENT_ROOM_URL` is the in-room HTTP endpoint" in result.output
@@ -88,7 +89,11 @@ def test_doctor_reports_node_roomclient_commonjs_guidance(tmp_path) -> None:
     assert 'module: "CommonJS"' in result.output
 
 
-def test_doctor_reports_go_without_roomclient_token_guidance(tmp_path) -> None:
+def test_doctor_reports_go_without_roomclient_token_guidance(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda name: f"/usr/bin/{name}")
+
     (tmp_path / "server.go").write_text(
         'package main\nfunc main() { http.ListenAndServe(":8080", nil) }\n',
         encoding="utf-8",
@@ -104,7 +109,11 @@ def test_doctor_reports_go_without_roomclient_token_guidance(tmp_path) -> None:
     assert "go build -o server server.go" in result.output
 
 
-def test_doctor_reports_dotnet_roomclient_namespace_guidance(tmp_path) -> None:
+def test_doctor_reports_dotnet_roomclient_namespace_guidance(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(doctor_module.shutil, "which", lambda name: f"/usr/bin/{name}")
+
     (tmp_path / "DoctorDotnetRoomClient.csproj").write_text(
         '<Project Sdk="Microsoft.NET.Sdk.Web">\n'
         "  <ItemGroup>\n"
@@ -130,6 +139,39 @@ def test_doctor_reports_dotnet_roomclient_namespace_guidance(tmp_path) -> None:
     assert "using Meshagent.Api.Room;" in result.output
     assert "Diagnostics for Codex" in result.output
     assert "dotnet publish -c Release" in result.output
+
+
+def test_doctor_reports_unavailable_local_tool_without_recommending_check(
+    tmp_path, monkeypatch
+) -> None:
+    def fake_which(name: str) -> str | None:
+        return None if name == "dotnet" else f"/usr/bin/{name}"
+
+    monkeypatch.setattr(doctor_module.shutil, "which", fake_which)
+
+    (tmp_path / "DoctorDotnetRoomClient.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk.Web">\n'
+        "  <ItemGroup>\n"
+        '    <PackageReference Include="Meshagent.Api" Version="0.38.4" />\n'
+        "  </ItemGroup>\n"
+        "</Project>\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Program.cs").write_text(
+        "using Meshagent.Api;\n"
+        'app.MapGet("/health", () => "ok");\n'
+        'app.Run("http://0.0.0.0:8080");\n',
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert (
+        "Local build/syntax check unavailable here because `dotnet` is not on PATH"
+        in result.output
+    )
+    assert "Fast local build/syntax check: `dotnet publish" not in result.output
 
 
 def test_doctor_reports_existing_dockerfile(tmp_path) -> None:

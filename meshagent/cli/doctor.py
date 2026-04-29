@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import shutil
 import textwrap
 import tomllib
 from typing import Iterable
@@ -309,15 +310,21 @@ def _sdk_guidance(diagnosis: ProjectDiagnosis) -> list[str]:
     return []
 
 
-def _local_build_check(diagnosis: ProjectDiagnosis) -> str | None:
+def _local_build_check(diagnosis: ProjectDiagnosis) -> tuple[str, str] | None:
     return {
-        "Python": "python -m py_compile server.py",
-        "TypeScript": "npm install && npm run build",
-        "JavaScript": "npm install --omit=dev",
-        ".NET": "dotnet publish -c Release -o /tmp/meshagent-doctor-publish",
-        "Dart": "dart pub get && dart compile exe bin/server.dart -o /tmp/meshagent-doctor-server",
-        "Go": "go build -o /tmp/meshagent-doctor-server server.go",
-        "Ruby": "ruby -c server.rb",
+        "Python": ("python3", "python3 -m py_compile server.py"),
+        "TypeScript": ("npm", "npm install && npm run build"),
+        "JavaScript": ("npm", "npm install --omit=dev"),
+        ".NET": (
+            "dotnet",
+            "dotnet publish -c Release -o /tmp/meshagent-doctor-publish",
+        ),
+        "Dart": (
+            "dart",
+            "dart pub get && dart compile exe bin/server.dart -o /tmp/meshagent-doctor-server",
+        ),
+        "Go": ("go", "go build -o /tmp/meshagent-doctor-server server.go"),
+        "Ruby": ("ruby", "ruby -c server.rb"),
     }.get(diagnosis.language)
 
 
@@ -330,7 +337,16 @@ def _codex_diagnostics(diagnosis: ProjectDiagnosis) -> list[str]:
     ]
     build_check = _local_build_check(diagnosis)
     if build_check is not None:
-        diagnostics.append(f"Fast local build/syntax check: `{build_check}`.")
+        executable, command = build_check
+        if shutil.which(executable) is None:
+            diagnostics.append(
+                "Local build/syntax check unavailable here because "
+                f"`{executable}` is not on PATH; use the first Docker or "
+                "MeshAgent deploy build error instead of installing a local "
+                "toolchain."
+            )
+        else:
+            diagnostics.append(f"Fast local build/syntax check: `{command}`.")
     if diagnosis.sdk is not None:
         diagnostics.extend(
             [
