@@ -72,6 +72,32 @@ def test_doctor_reports_go_without_roomclient_token_guidance(tmp_path) -> None:
     assert "go build -o server server.go" in result.output
 
 
+def test_doctor_reports_dotnet_roomclient_namespace_guidance(tmp_path) -> None:
+    (tmp_path / "DoctorDotnetRoomClient.csproj").write_text(
+        '<Project Sdk="Microsoft.NET.Sdk.Web">\n'
+        "  <ItemGroup>\n"
+        '    <PackageReference Include="Meshagent.Api" Version="0.38.4" />\n'
+        "  </ItemGroup>\n"
+        "</Project>\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Program.cs").write_text(
+        "using Meshagent.Api;\n"
+        "var room = new RoomClient();\n"
+        'app.MapGet("/health", () => "ok");\n'
+        'app.Run("http://0.0.0.0:8080");\n',
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Detected project: .NET" in result.output
+    assert "Official RoomClient SDK: detected (Meshagent.Api)" in result.output
+    assert "SDK runtime guidance" in result.output
+    assert "using Meshagent.Api.Room;" in result.output
+
+
 def test_doctor_reports_existing_dockerfile(tmp_path) -> None:
     (tmp_path / "Dockerfile").write_text(
         "FROM ruby:3.4-alpine\n",

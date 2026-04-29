@@ -289,6 +289,16 @@ def _deploy_command(diagnosis: ProjectDiagnosis) -> str:
     return " ".join(parts)
 
 
+def _sdk_guidance(diagnosis: ProjectDiagnosis) -> list[str]:
+    if diagnosis.language == ".NET" and diagnosis.sdk == "Meshagent.Api":
+        return [
+            "RoomClient lives in the Meshagent.Api.Room namespace; add "
+            "`using Meshagent.Api.Room;` before deploying if the app references "
+            "RoomClient."
+        ]
+    return []
+
+
 def _print_report(diagnosis: ProjectDiagnosis) -> None:
     click.echo("MeshAgent doctor")
     click.echo(f"Project: {diagnosis.root}")
@@ -331,6 +341,12 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
         next_step_number = 2
     else:
         next_step_number = 1
+    guidance = _sdk_guidance(diagnosis)
+    if guidance:
+        click.echo(f"{next_step_number}. SDK runtime guidance:")
+        for item in guidance:
+            click.echo(f"   - {item}")
+        next_step_number += 1
     click.echo(f"{next_step_number}. Deploy from this directory:")
     click.echo(f"   {_deploy_command(diagnosis)}")
 
