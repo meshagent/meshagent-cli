@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import re
 import shutil
 import textwrap
 import tomllib
@@ -22,6 +23,8 @@ SOURCE_SUFFIXES = {
     ".ts",
     ".tsx",
 }
+PYTHON_REQUIRED_VERSION = "3.13"
+PYTHON_REQUIRED_MAJOR_MINOR = (3, 13)
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,7 @@ class ProjectDiagnosis:
     has_health_route: bool
     has_port_8080_hint: bool
     package_scripts: tuple[tuple[str, str], ...]
+    python_runtime_findings: tuple[str, ...]
     liveness_path: str
     start_command: str
     dockerfile: str
@@ -81,6 +85,73 @@ def _read_toml(path: Path) -> dict[str, object]:
     except (OSError, tomllib.TOMLDecodeError):
         return {}
     return raw if isinstance(raw, dict) else {}
+
+
+def _python_major_minor(value: str) -> tuple[int, int] | None:
+    match = re.search(r"(?<!\d)(\d+)\.(\d+)", value)
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def _python_runtime_is_older(value: str, *, constraint: bool = False) -> bool:
+    normalized = value.strip().lower()
+    if normalized == "":
+        return False
+    if constraint:
+        if re.search(r"<\s*3\.13(?:\D|$)", normalized):
+            return True
+        if re.search(r"<=\s*3\.12(?:\D|$)", normalized):
+            return True
+        if re.search(r"==\s*3\.(?:[0-9]|1[0-2])(?:\D|$)", normalized):
+            return True
+        return False
+    parsed = _python_major_minor(normalized)
+    return parsed is not None and parsed < PYTHON_REQUIRED_MAJOR_MINOR
+
+
+def _python_runtime_findings(root: Path, language: str) -> tuple[str, ...]:
+    if language != "Python":
+        return ()
+
+    findings: list[str] = []
+    for file_name in (".python-version", "runtime.txt"):
+        value = _read_text(root / file_name).strip().splitlines()
+        if value and _python_runtime_is_older(value[0]):
+            findings.append(
+                f"{file_name} declares `{value[0]}`; MeshAgent Python apps "
+                f"must target Python {PYTHON_REQUIRED_VERSION}."
+            )
+
+    pyproject = _read_toml(root / "pyproject.toml")
+    project = pyproject.get("project")
+    if isinstance(project, dict):
+        requires_python = project.get("requires-python")
+        if isinstance(requires_python, str) and _python_runtime_is_older(
+            requires_python, constraint=True
+        ):
+            findings.append(
+                "`pyproject.toml` project.requires-python is "
+                f"`{requires_python}`; update it so Python "
+                f"{PYTHON_REQUIRED_VERSION} is allowed."
+            )
+
+    tool = pyproject.get("tool")
+    poetry = tool.get("poetry") if isinstance(tool, dict) else None
+    dependencies = poetry.get("dependencies") if isinstance(poetry, dict) else None
+    python_constraint = (
+        dependencies.get("python") if isinstance(dependencies, dict) else None
+    )
+    if isinstance(python_constraint, str) and _python_runtime_is_older(
+        python_constraint, constraint=True
+    ):
+        findings.append(
+            "`pyproject.toml` tool.poetry.dependencies.python is "
+            f"`{python_constraint}`; update it so Python "
+            f"{PYTHON_REQUIRED_VERSION} is allowed."
+        )
+
+    return tuple(findings)
 
 
 def _contains_any(paths: Iterable[Path], needles: tuple[str, ...]) -> bool:
@@ -233,7 +304,7 @@ def _start_command(language: str, javascript_flavor: str | None) -> str:
 def _dockerfile_for(language: str, javascript_flavor: str | None) -> str:
     snippets = {
         "Python": """
-            FROM python:3.12-alpine
+            FROM python:3.13-slim
             WORKDIR /app
             COPY requirements.txt .
             RUN pip install --no-cache-dir -r requirements.txt
@@ -369,6 +440,7 @@ def diagnose_project(root: Path) -> ProjectDiagnosis:
     source_files = _source_files(resolved_root)
     language = _detect_language(resolved_root)
     javascript_flavor = _javascript_flavor(resolved_root, language, source_files)
+    python_runtime_findings = _python_runtime_findings(resolved_root, language)
     artifacts = _deployment_artifacts(resolved_root)
     has_health_route = _contains_any(
         source_files, ('"/health"', "'/health'", "/health")
@@ -384,6 +456,7 @@ def diagnose_project(root: Path) -> ProjectDiagnosis:
         has_health_route=has_health_route,
         has_port_8080_hint=_contains_any(source_files, ("8080",)),
         package_scripts=tuple(sorted(_package_json_scripts(resolved_root).items())),
+        python_runtime_findings=python_runtime_findings,
         liveness_path=liveness_path,
         start_command=_start_command(language, javascript_flavor),
         dockerfile=_dockerfile_for(language, javascript_flavor),
@@ -420,6 +493,14 @@ def _sdk_guidance(diagnosis: ProjectDiagnosis) -> list[str]:
             'CommonJS entrypoint; use `require("@meshagent/meshagent")` or '
             "compile TypeScript to CommonJS before deploying RoomClient routes."
         ]
+        if diagnosis.javascript_flavor == "Node.js/TypeScript":
+            guidance.append(
+                "For TypeScript RoomClient servers, set `compilerOptions.module` "
+                'to `"CommonJS"` and `moduleResolution` to `"Node"`, remove '
+                '`"type": "module"` from `package.json` or set it to `"commonjs"`, '
+                "and make `npm start` run the built CommonJS entrypoint, for "
+                "example `node dist/server.js`."
+            )
         if _is_static_javascript_flavor(diagnosis.javascript_flavor):
             guidance.append(
                 "Static React/Vite browser bundles cannot hold a room token safely; "
@@ -477,6 +558,18 @@ def _codex_diagnostics(diagnosis: ProjectDiagnosis) -> list[str]:
             )
         else:
             diagnostics.append(f"Fast local build/syntax check: `{command}`.")
+    if diagnosis.language == "Python":
+        diagnostics.append(
+            "MeshAgent Python deployments must target Python 3.13; use a "
+            "`python:3.13-slim` or `python:3.13-alpine` base image."
+        )
+        if diagnosis.python_runtime_findings:
+            diagnostics.append(
+                "Upgrade older Python runtime metadata before deploying: update "
+                "`.python-version`, `runtime.txt`, `pyproject.toml` "
+                "`requires-python`, and any Dockerfile base image to allow Python "
+                f"{PYTHON_REQUIRED_VERSION}."
+            )
     if _is_javascript_project(diagnosis.language):
         scripts = dict(diagnosis.package_scripts)
         if "start" not in scripts and not _is_static_javascript_flavor(
@@ -516,6 +609,11 @@ def _codex_diagnostics(diagnosis: ProjectDiagnosis) -> list[str]:
                 "For Node.js servers, read `process.env.PORT || 8080`, bind to "
                 "`0.0.0.0`, and make `/health` return 200 before deploying."
             )
+            diagnostics.append(
+                "After deploy, verify the public root URL returns HTTP 200 with "
+                '`curl -fsS "$PUBLIC_URL/"`; the JavaScript-family evals require '
+                "the app URL itself to be reachable, not just `/health`."
+            )
     if diagnosis.sdk is not None:
         diagnostics.extend(
             [
@@ -534,6 +632,12 @@ def _codex_diagnostics(diagnosis: ProjectDiagnosis) -> list[str]:
             'CommonJS path with `require("@meshagent/meshagent")` or compile '
             'TypeScript with `module: "CommonJS"`.'
         )
+        if diagnosis.javascript_flavor == "Node.js/TypeScript":
+            diagnostics.append(
+                "If the project uses `type: module` or tsconfig `module: NodeNext`, "
+                "convert the RoomClient server to CommonJS before deploy so the "
+                "SDK resolves through its stable CommonJS entrypoint."
+            )
     if diagnosis.sdk == "meshagent-api":
         diagnostics.extend(
             [
@@ -604,6 +708,19 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
         click.echo("  [check] Ensure Next.js binds to 0.0.0.0:8080")
     else:
         click.echo("  [check] Ensure the service listens on 0.0.0.0:8080")
+    if diagnosis.language == "Python":
+        if diagnosis.python_runtime_findings:
+            click.echo(
+                f"  [check] Upgrade Python runtime metadata to "
+                f"{PYTHON_REQUIRED_VERSION} before deploying"
+            )
+            for finding in diagnosis.python_runtime_findings:
+                click.echo(f"    - {finding}")
+        else:
+            click.echo(
+                f"  [ok] Python Dockerfile guidance targets "
+                f"Python {PYTHON_REQUIRED_VERSION}"
+            )
     if _is_javascript_project(diagnosis.language):
         scripts = dict(diagnosis.package_scripts)
         if not _is_static_javascript_flavor(diagnosis.javascript_flavor):

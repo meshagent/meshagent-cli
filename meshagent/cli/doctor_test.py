@@ -37,11 +37,45 @@ def test_doctor_reports_python_roomclient_deploy_gaps(tmp_path) -> None:
     assert "--meshagent-token full" in result.output
     assert 'MESHAGENT_ROOM="$MESHAGENT_ROOM"' in result.output
     assert "Diagnostics for Codex" in result.output
+    assert "FROM python:3.13-slim" in result.output
+    assert "MeshAgent Python deployments must target Python 3.13" in result.output
     assert "python3 -m py_compile server.py" in result.output
     assert "WebSocketClientProtocol" in result.output
     assert "websocket_room_url" in result.output
     assert "MESHAGENT_ROOM_URL` is the in-room HTTP endpoint" in result.output
     assert "WSServerHandshakeError: 200" in result.output
+
+
+def test_doctor_reports_older_python_runtime_upgrade_guidance(tmp_path) -> None:
+    (tmp_path / ".python-version").write_text("3.11.9\n", encoding="utf-8")
+    (tmp_path / "runtime.txt").write_text("python-3.11.9\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nrequires-python = ">=3.10,<3.13"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "requirements.txt").write_text(
+        "meshagent-api==0.5.18\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "server.py").write_text(
+        "from http.server import ThreadingHTTPServer\n"
+        "ThreadingHTTPServer(('0.0.0.0', 8080), Handler)\n"
+        "if self.path == '/health': pass\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path)])
+    diagnosis = diagnose_project(tmp_path)
+
+    assert result.exit_code == 0
+    assert diagnosis.language == "Python"
+    assert diagnosis.python_runtime_findings
+    assert "Upgrade Python runtime metadata to 3.13 before deploying" in result.output
+    assert ".python-version declares `3.11.9`" in result.output
+    assert "runtime.txt declares `python-3.11.9`" in result.output
+    assert "`pyproject.toml` project.requires-python is `>=3.10,<3.13`" in result.output
+    assert "MeshAgent Python deployments must target Python 3.13" in result.output
+    assert "FROM python:3.13-slim" in result.output
 
 
 def test_doctor_reports_javascript_roomclient_deploy_gaps(tmp_path) -> None:
@@ -90,19 +124,20 @@ def test_doctor_reports_node_roomclient_commonjs_guidance(tmp_path) -> None:
     assert "Diagnostics for Codex" in result.output
     assert "ERR_MODULE_NOT_FOUND" in result.output
     assert 'module: "CommonJS"' in result.output
+    assert 'curl -fsS "$PUBLIC_URL/"' in result.output
 
 
 def test_doctor_reports_typescript_node_build_guidance(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(doctor_module.shutil, "which", lambda name: f"/usr/bin/{name}")
 
     (tmp_path / "package.json").write_text(
-        '{"scripts":{"build":"tsc","start":"node dist/server.js"},'
+        '{"type":"module","scripts":{"build":"tsc","start":"node dist/server.js"},'
         '"dependencies":{"@meshagent/meshagent":"0.38.4"},'
         '"devDependencies":{"typescript":"5.8.2"}}',
         encoding="utf-8",
     )
     (tmp_path / "tsconfig.json").write_text(
-        '{"compilerOptions":{"outDir":"dist","module":"CommonJS"}}',
+        '{"compilerOptions":{"outDir":"dist","module":"NodeNext"}}',
         encoding="utf-8",
     )
     (tmp_path / "src").mkdir()
@@ -124,6 +159,12 @@ def test_doctor_reports_typescript_node_build_guidance(tmp_path, monkeypatch) ->
     assert (
         "Fast local build/syntax check: `npm install && npm run build`" in result.output
     )
+    assert '`compilerOptions.module` to `"CommonJS"`' in result.output
+    assert '`moduleResolution` to `"Node"`' in result.output
+    assert '`"type": "module"`' in result.output
+    assert "`node dist/server.js`" in result.output
+    assert "tsconfig `module: NodeNext`" in result.output
+    assert 'curl -fsS "$PUBLIC_URL/"' in result.output
     assert "--meshagent-token full" in result.output
 
 
