@@ -229,8 +229,13 @@ def test_doctor_reports_react_vite_static_deploy_guidance(tmp_path) -> None:
     assert "JavaScript flavor: React/Vite" in result.output
     assert "nginx:1.27-alpine" in result.output
     assert "COPY --from=build /app/dist /usr/share/nginx/html" in result.output
+    assert "pid /data/nginx/nginx.pid" in result.output
+    assert "client_body_temp_path /data/nginx/client_temp" in result.output
+    assert "--room-mount /:/data:rw" in result.output
     assert "nginx /health route returning 200" in result.output
     assert "serve the generated `dist` or `build` directory with nginx" in result.output
+    assert "writable `/data` room mount" in result.output
+    assert "must not write pid, cache, or temp files under `/var`" in result.output
     assert 'curl -fsS "$PUBLIC_URL/"' in result.output
     assert "Add a package.json start script" not in result.output
     assert "--meshagent-token full" not in result.output

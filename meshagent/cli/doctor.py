@@ -486,9 +486,20 @@ def _dockerfile_for(language: str, javascript_flavor: str | None) -> str:
 
             FROM nginx:1.27-alpine
             COPY --from=build /app/dist /usr/share/nginx/html
-            RUN printf 'server { listen 8080; location = /health { return 200 "ok\\n"; } location / { try_files $uri $uri/ /index.html; } }\\n' > /etc/nginx/conf.d/default.conf
+            RUN rm -f /etc/nginx/conf.d/default.conf && printf '%s\\n' \\
+              'pid /data/nginx/nginx.pid;' \\
+              'events {}' \\
+              'http {' \\
+              '  include /etc/nginx/mime.types;' \\
+              '  client_body_temp_path /data/nginx/client_temp;' \\
+              '  proxy_temp_path /data/nginx/proxy_temp;' \\
+              '  fastcgi_temp_path /data/nginx/fastcgi_temp;' \\
+              '  uwsgi_temp_path /data/nginx/uwsgi_temp;' \\
+              '  scgi_temp_path /data/nginx/scgi_temp;' \\
+              '  server { listen 8080; location = /health { return 200 "ok\\n"; } location / { try_files $uri $uri/ /index.html; } }' \\
+              '}' > /etc/nginx/nginx.conf
             EXPOSE 8080
-            CMD ["nginx", "-g", "daemon off;"]
+            CMD ["sh", "-c", "mkdir -p /data/nginx/client_temp /data/nginx/proxy_temp /data/nginx/fastcgi_temp /data/nginx/uwsgi_temp /data/nginx/scgi_temp && nginx -c /etc/nginx/nginx.conf -g 'daemon off;'"]
             """
         ).strip()
 
@@ -504,9 +515,20 @@ def _dockerfile_for(language: str, javascript_flavor: str | None) -> str:
 
             FROM nginx:1.27-alpine
             COPY --from=build /app/build /usr/share/nginx/html
-            RUN printf 'server { listen 8080; location = /health { return 200 "ok\\n"; } location / { try_files $uri $uri/ /index.html; } }\\n' > /etc/nginx/conf.d/default.conf
+            RUN rm -f /etc/nginx/conf.d/default.conf && printf '%s\\n' \\
+              'pid /data/nginx/nginx.pid;' \\
+              'events {}' \\
+              'http {' \\
+              '  include /etc/nginx/mime.types;' \\
+              '  client_body_temp_path /data/nginx/client_temp;' \\
+              '  proxy_temp_path /data/nginx/proxy_temp;' \\
+              '  fastcgi_temp_path /data/nginx/fastcgi_temp;' \\
+              '  uwsgi_temp_path /data/nginx/uwsgi_temp;' \\
+              '  scgi_temp_path /data/nginx/scgi_temp;' \\
+              '  server { listen 8080; location = /health { return 200 "ok\\n"; } location / { try_files $uri $uri/ /index.html; } }' \\
+              '}' > /etc/nginx/nginx.conf
             EXPOSE 8080
-            CMD ["nginx", "-g", "daemon off;"]
+            CMD ["sh", "-c", "mkdir -p /data/nginx/client_temp /data/nginx/proxy_temp /data/nginx/fastcgi_temp /data/nginx/uwsgi_temp /data/nginx/scgi_temp && nginx -c /etc/nginx/nginx.conf -g 'daemon off;'"]
             """
         ).strip()
 
@@ -580,6 +602,8 @@ def _deploy_command(diagnosis: ProjectDiagnosis) -> str:
         "--no-optimize",
         "--wait",
     ]
+    if _is_static_javascript_flavor(diagnosis.javascript_flavor):
+        parts.insert(-2, "--room-mount /:/data:rw")
     if diagnosis.sdk is not None:
         parts.extend(
             [
@@ -721,7 +745,13 @@ def _codex_diagnostics(diagnosis: ProjectDiagnosis) -> list[str]:
             diagnostics.append(
                 "For static React/Vite apps, build assets with `npm run build`, "
                 "serve the generated `dist` or `build` directory with nginx on "
-                "port 8080, and include a `/health` location that returns 200."
+                "port 8080, include a `/health` location that returns 200, and "
+                "write nginx pid/temp files under a writable `/data` room mount."
+            )
+            diagnostics.append(
+                "Deploy static nginx apps with `--room-mount /:/data:rw`; "
+                "MeshAgent service filesystems can be read-only, so nginx must "
+                "not write pid, cache, or temp files under `/var`."
             )
             diagnostics.append(
                 "After deploy, verify the public app URL itself returns 200 with "
