@@ -7,9 +7,16 @@ import os
 from pathlib import Path
 
 import typer
+from pydantic import ValidationError
 from rich import print
 
-from meshagent.api.client import ConflictError, NotFoundError, ScheduledTask
+from meshagent.api.client import (
+    ConflictError,
+    NotFoundError,
+    ScheduledTask,
+    ScheduledTaskRun,
+)
+from meshagent.api.specs.service import ScheduledTaskSpec
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import OutputFormatOption, ProjectIdOption
 from meshagent.cli.helper import (
@@ -23,55 +30,16 @@ from meshagent.cli.helper import (
 app = async_typer.AsyncTyper(help="Manage scheduled tasks for your project")
 
 
-def _parse_annotations(annotations: Optional[str]) -> Optional[dict[str, str]]:
-    if annotations is None:
-        return None
-
-    if annotations.strip() == "":
-        return {}
-
+def _load_scheduled_task_spec(path: str) -> ScheduledTaskSpec:
     try:
-        parsed = json.loads(annotations)
-    except json.JSONDecodeError as exc:
-        raise typer.BadParameter("Invalid JSON for --annotations") from exc
-
-    if not isinstance(parsed, dict):
-        raise typer.BadParameter("--annotations must be a JSON object")
-
-    out: dict[str, str] = {}
-    for key, value in parsed.items():
-        if not isinstance(key, str) or not isinstance(value, str):
-            raise typer.BadParameter(
-                "--annotations must be a JSON object with string keys and values"
-            )
-        out[key] = value
-    return out
-
-
-def _load_payload(*, payload: Optional[str], payload_file: Optional[str]) -> Any:
-    if payload is not None and payload_file is not None:
-        raise typer.BadParameter("Provide only one of --payload or --payload-file")
-
-    if payload is None and payload_file is None:
-        raise typer.BadParameter("Provide --payload or --payload-file")
-
-    payload_text: str
-    if payload_file is not None:
-        try:
-            payload_text = (
-                Path(payload_file).expanduser().resolve().read_text(encoding="utf-8")
-            )
-        except Exception as exc:
-            raise typer.BadParameter(
-                f"Unable to read payload from --payload-file: {exc}"
-            ) from exc
-    else:
-        payload_text = payload or ""
-
-    try:
-        return json.loads(payload_text)
-    except json.JSONDecodeError as exc:
-        raise typer.BadParameter("--payload must be valid JSON") from exc
+        text = Path(path).expanduser().read_text(encoding="utf-8")
+        return ScheduledTaskSpec.from_yaml(text)
+    except OSError as exc:
+        raise typer.BadParameter(f"Unable to read scheduled task spec: {exc}") from exc
+    except ValidationError as exc:
+        raise typer.BadParameter(f"Invalid ScheduledTaskSpec: {exc}") from exc
+    except Exception as exc:
+        raise typer.BadParameter(f"Invalid scheduled task spec: {exc}") from exc
 
 
 def _parse_active_state(*, active: bool, inactive: bool) -> Optional[bool]:
@@ -92,13 +60,43 @@ def _require_room(room: Optional[str]) -> str:
     return resolved
 
 
+async def _resolve_room_id(client: Any, *, project_id: str, room: str) -> str:
+    from meshagent.api.client import RoomException
+
+    try:
+        resolved = await client.get_room(project_id=project_id, name=room)
+    except (NotFoundError, RoomException):
+        print(f"[red]Room not found:[/] {room}")
+        raise typer.Exit(code=1)
+    return resolved.id
+
+
 def _scheduled_task_records(tasks: list[ScheduledTask]) -> list[dict[str, Any]]:
-    return [task.model_dump(mode="json") for task in tasks]
+    return [task.model_dump(mode="json", exclude_none=True) for task in tasks]
 
 
 def _scheduled_task_table_rows(tasks: list[ScheduledTask]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for record in _scheduled_task_records(tasks):
+        container = record.get("container")
+        row = {key: ("" if value is None else value) for key, value in record.items()}
+        row["target"] = "container" if container else "queue"
+        row["container_image"] = (
+            container.get("image", "") if isinstance(container, dict) else ""
+        )
+        rows.append(row)
+    return rows
+
+
+def _scheduled_task_run_records(runs: list[ScheduledTaskRun]) -> list[dict[str, Any]]:
+    return [run.model_dump(mode="json", exclude_none=True) for run in runs]
+
+
+def _scheduled_task_run_table_rows(
+    runs: list[ScheduledTaskRun],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for record in _scheduled_task_run_records(runs):
         rows.append(
             {key: ("" if value is None else value) for key, value in record.items()}
         )
@@ -113,76 +111,27 @@ async def scheduled_task_add(
         Optional[str],
         typer.Option("--room", "-r", help="Room name"),
     ] = os.getenv("MESHAGENT_ROOM"),
-    queue: Annotated[
+    file: Annotated[
         str,
-        typer.Option("--queue", "-q", help="Queue name to dispatch the task to"),
+        typer.Option(
+            "--file",
+            "-f",
+            help="Path to a ScheduledTaskSpec YAML file",
+        ),
     ],
-    schedule: Annotated[
-        str,
-        typer.Option("--schedule", "-s", help="Cron schedule for task execution"),
-    ],
-    payload: Annotated[
-        Optional[str],
-        typer.Option(
-            "--payload",
-            help='JSON payload to enqueue (for example \'{"action":"sync"}\')',
-        ),
-    ] = None,
-    payload_file: Annotated[
-        Optional[str],
-        typer.Option(
-            "--payload-file",
-            help="Path to a file containing JSON payload",
-        ),
-    ] = None,
-    task_id: Annotated[
-        Optional[str],
-        typer.Option("--id", help="Optional task id"),
-    ] = None,
-    once: Annotated[
-        bool,
-        typer.Option("--once", help="Run once and then deactivate"),
-    ] = False,
-    active: Annotated[
-        bool,
-        typer.Option("--active/--inactive", help="Initial active state"),
-    ] = True,
-    annotations: Annotated[
-        Optional[str],
-        typer.Option(
-            "--annotations",
-            "-n",
-            help='annotations in json format {"name":"value"}',
-        ),
-    ] = None,
-    storage_write_path: Annotated[
-        Optional[str],
-        typer.Option(
-            "--storage-write-path",
-            help="Optional room storage folder to write scheduled payloads into",
-        ),
-    ] = None,
 ):
     """Add a scheduled task."""
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
         room_name = _require_room(room)
-        task_payload = _load_payload(payload=payload, payload_file=payload_file)
-        parsed_annotations = _parse_annotations(annotations) or {}
+        spec = _load_scheduled_task_spec(file)
 
         try:
             created_task_id = await client.create_scheduled_task(
                 project_id=project_id,
                 room_name=room_name,
-                queue_name=queue,
-                payload=task_payload,
-                schedule=schedule,
-                active=active,
-                task_id=task_id,
-                once=once,
-                annotations=parsed_annotations,
-                storage_write_path=storage_write_path,
+                spec=spec,
             )
         except ConflictError:
             print("[red]Scheduled task already exists[/red]")
@@ -234,9 +183,14 @@ async def scheduled_task_list(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         active_filter = _parse_active_state(active=active, inactive=inactive)
+        room_id = (
+            await _resolve_room_id(client, project_id=project_id, room=room)
+            if room is not None
+            else None
+        )
         list_kwargs = {
             "project_id": project_id,
-            "room_name": room,
+            "room_id": room_id,
             "task_id": task_id,
             "active": active_filter,
             "limit": count if count != 100 else limit,
@@ -262,7 +216,9 @@ async def scheduled_task_list(
             _scheduled_task_table_rows(tasks),
             "id",
             "room_name",
+            "target",
             "queue_name",
+            "container_image",
             "schedule",
             "active",
             "once",
@@ -280,113 +236,93 @@ async def scheduled_task_update(
         str,
         typer.Argument(help="Scheduled task id to update"),
     ],
-    room: Annotated[
-        Optional[str],
-        typer.Option("--room", "-r", help="Updated room name"),
-    ] = os.getenv("MESHAGENT_ROOM"),
-    queue: Annotated[
-        Optional[str],
-        typer.Option("--queue", "-q", help="Updated queue name"),
-    ] = None,
-    schedule: Annotated[
-        Optional[str],
-        typer.Option("--schedule", "-s", help="Updated cron schedule"),
-    ] = None,
-    payload: Annotated[
-        Optional[str],
+    file: Annotated[
+        str,
         typer.Option(
-            "--payload",
-            help='Updated JSON payload to enqueue (for example \'{"action":"sync"}\')',
+            "--file",
+            "-f",
+            help="Path to a replacement ScheduledTaskSpec YAML file",
         ),
-    ] = None,
-    payload_file: Annotated[
-        Optional[str],
-        typer.Option(
-            "--payload-file",
-            help="Path to a file containing updated JSON payload",
-        ),
-    ] = None,
-    active: Annotated[
-        bool,
-        typer.Option("--active", help="Mark the task active"),
-    ] = False,
-    inactive: Annotated[
-        bool,
-        typer.Option("--inactive", help="Mark the task inactive"),
-    ] = False,
-    annotations: Annotated[
-        Optional[str],
-        typer.Option(
-            "--annotations",
-            "-n",
-            help='annotations in json format {"name":"value"}',
-        ),
-    ] = None,
-    storage_write_path: Annotated[
-        Optional[str],
-        typer.Option(
-            "--storage-write-path",
-            help="Optional room storage folder to write scheduled payloads into",
-        ),
-    ] = None,
-    clear_storage_write_path: Annotated[
-        bool,
-        typer.Option(
-            "--clear-storage-write-path",
-            help="Clear the stored room storage folder for this task",
-        ),
-    ] = False,
+    ],
 ):
     """Update a scheduled task."""
-    if clear_storage_write_path and storage_write_path is not None:
-        raise typer.BadParameter(
-            "Provide only one of --storage-write-path or --clear-storage-write-path"
-        )
-
-    active_state = _parse_active_state(active=active, inactive=inactive)
-    parsed_annotations = (
-        _parse_annotations(annotations) if annotations is not None else None
-    )
-    task_payload = None
-    if payload is not None or payload_file is not None:
-        task_payload = _load_payload(payload=payload, payload_file=payload_file)
-
-    if all(
-        value is None
-        for value in (
-            room,
-            queue,
-            schedule,
-            task_payload,
-            active_state,
-            parsed_annotations,
-            storage_write_path,
-            clear_storage_write_path,
-        )
-    ):
-        raise typer.BadParameter("No changes specified")
-
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
+        spec = _load_scheduled_task_spec(file)
         try:
             await client.update_scheduled_task(
                 project_id=project_id,
                 task_id=task_id,
-                room_name=room,
-                queue_name=queue,
-                payload=task_payload,
-                schedule=schedule,
-                active=active_state,
-                annotations=parsed_annotations,
-                storage_write_path=storage_write_path,
-                clear_storage_write_path=clear_storage_write_path,
+                spec=spec,
             )
         except NotFoundError:
             print(f"[red]Scheduled task not found:[/] {task_id}")
             raise typer.Exit(code=1)
         else:
             print(f"[green]Updated scheduled task:[/] {task_id}")
+    finally:
+        await client.close()
+
+
+@app.async_command("runs")
+async def scheduled_task_runs(
+    *,
+    project_id: ProjectIdOption,
+    task_id: Annotated[
+        str,
+        typer.Argument(help="Scheduled task id"),
+    ],
+    count: Annotated[
+        int, typer.Option("--count", help="Maximum number of runs to return")
+    ] = 100,
+    limit: Annotated[
+        int,
+        typer.Option("--limit", help="Maximum number of runs to return", hidden=True),
+    ] = 100,
+    offset: Annotated[
+        int,
+        typer.Option("--offset", help="Row offset for pagination"),
+    ] = 0,
+    o: OutputFormatOption = "table",
+):
+    """List runs for a scheduled task."""
+    client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        try:
+            runs = await client.list_scheduled_task_runs(
+                project_id=project_id,
+                task_id=task_id,
+                limit=count if count != 100 else limit,
+                offset=offset,
+            )
+        except NotFoundError:
+            print(f"[red]Scheduled task not found:[/] {task_id}")
+            raise typer.Exit(code=1)
+
+        if o == "json":
+            print(json.dumps({"runs": _scheduled_task_run_records(runs)}, indent=2))
+            return
+
+        if len(runs) == 0:
+            print("There are not currently any runs for this scheduled task")
+            return
+
+        print_json_table(
+            _scheduled_task_run_table_rows(runs),
+            "id",
+            "target",
+            "status",
+            "attempt_count",
+            "scheduled_time",
+            "timeout_at",
+            "started_at",
+            "lease_expires_at",
+            "completed_at",
+            "container_id",
+            "error",
+        )
     finally:
         await client.close()
 

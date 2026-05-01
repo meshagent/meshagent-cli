@@ -304,6 +304,35 @@ async def test_room_connect_build_env_requires_identity_for_meshagent_token(
 
 
 @pytest.mark.asyncio
+async def test_room_connect_build_env_requires_identity_for_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-input"
+        return "project-1"
+
+    def _fake_resolve_room(room: str | None) -> str | None:
+        assert room == "room-input"
+        return room
+
+    monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
+
+    with pytest.raises(
+        click.BadParameter, match="--identity is required when using --role"
+    ):
+        await room_connect._build_connected_command_env(
+            project_id="project-input",
+            room="room-input",
+            env=(),
+            env_secret=(),
+            identity=None,
+            role="user",
+            meshagent_token=None,
+        )
+
+
+@pytest.mark.asyncio
 async def test_room_connect_build_env_with_identity_mints_local_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -368,6 +397,61 @@ async def test_room_connect_build_env_with_identity_mints_local_token(
     )
     assert child_env["OPENAI_API_KEY"] == child_env["MESHAGENT_TOKEN"]
     assert child_env["ANTHROPIC_API_KEY"] == child_env["MESHAGENT_TOKEN"]
+
+
+@pytest.mark.asyncio
+async def test_room_connect_build_env_with_identity_mints_requested_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _unexpected_get_client() -> _FakeAccountClient:
+        raise AssertionError("get_client should not be called without --env-secret")
+
+    async def _fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-input"
+        return "project-1"
+
+    async def _fake_resolve_key(*, project_id: str | None, key: str | None) -> None:
+        assert project_id == "project-1"
+        assert key is None
+        return None
+
+    def _fake_resolve_room(room: str | None) -> str | None:
+        assert room == "room-input"
+        return room
+
+    monkeypatch.setattr(room_connect, "get_client", _unexpected_get_client)
+    monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(room_connect, "resolve_key", _fake_resolve_key)
+    monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
+    monkeypatch.setattr(
+        room_connect,
+        "resolve_api_url",
+        lambda: "https://default.meshagent.test",
+    )
+    monkeypatch.setattr(
+        room_connect,
+        "websocket_room_url",
+        lambda *, room_name: f"wss://room-proxy.meshagent.test/rooms/{room_name}",
+    )
+    monkeypatch.setenv("MESHAGENT_SECRET", _LOCAL_SIGNING_SECRET)
+
+    child_env = await room_connect._build_connected_command_env(
+        project_id="project-input",
+        room="room-input",
+        env=(),
+        env_secret=(),
+        identity="user-name",
+        role="user",
+        meshagent_token=None,
+    )
+
+    minted_token = ParticipantToken.from_jwt(
+        child_env["MESHAGENT_TOKEN"],
+        token=_LOCAL_SIGNING_SECRET,
+    )
+    assert minted_token.name == "user-name"
+    assert minted_token.role == "user"
+    assert minted_token.grant_scope("room") == "room-input"
 
 
 @pytest.mark.asyncio

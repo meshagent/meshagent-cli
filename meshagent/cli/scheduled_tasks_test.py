@@ -1,52 +1,35 @@
 from datetime import datetime, timezone
-import json
 import os
 
 import pytest
 import typer
 
-from meshagent.api.client import NotFoundError, ScheduledTask
+from meshagent.api.client import NotFoundError, Room, ScheduledTask, ScheduledTaskRun
+from meshagent.api.specs.service import ScheduledTaskQueueSpec, ScheduledTaskSpec
 from meshagent.cli import scheduled_tasks
 
 
-def test_load_payload_from_inline_json() -> None:
-    payload = scheduled_tasks._load_payload(
-        payload='{"action":"sync","count":2}', payload_file=None
+def test_load_scheduled_task_spec_from_yaml(tmp_path) -> None:
+    spec_file = tmp_path / "task.yaml"
+    spec_file.write_text(
+        """
+version: v1
+kind: ScheduledTask
+schedule: 0 * * * *
+queue:
+  name: jobs
+  payload:
+    action: sync
+""",
+        encoding="utf-8",
     )
-    assert payload == {"action": "sync", "count": 2}
 
+    spec = scheduled_tasks._load_scheduled_task_spec(str(spec_file))
 
-def test_load_payload_from_file(tmp_path) -> None:
-    payload_file = tmp_path / "payload.json"
-    payload_file.write_text(json.dumps({"name": "task"}), encoding="utf-8")
-
-    payload = scheduled_tasks._load_payload(
-        payload=None, payload_file=str(payload_file)
-    )
-    assert payload == {"name": "task"}
-
-
-def test_load_payload_requires_exactly_one_source() -> None:
-    with pytest.raises(typer.BadParameter):
-        scheduled_tasks._load_payload(payload=None, payload_file=None)
-
-    with pytest.raises(typer.BadParameter):
-        scheduled_tasks._load_payload(payload="{}", payload_file="/tmp/payload.json")
-
-
-def test_parse_annotations_accepts_mapping() -> None:
-    parsed = scheduled_tasks._parse_annotations('{"env":"prod"}')
-    assert parsed == {"env": "prod"}
-
-
-def test_parse_annotations_rejects_non_mapping() -> None:
-    with pytest.raises(typer.BadParameter):
-        scheduled_tasks._parse_annotations('["a","b"]')
-
-
-def test_parse_annotations_rejects_non_string_values() -> None:
-    with pytest.raises(typer.BadParameter):
-        scheduled_tasks._parse_annotations('{"retries": 3}')
+    assert spec.schedule == "0 * * * *"
+    assert spec.queue is not None
+    assert spec.queue.name == "jobs"
+    assert spec.queue.payload == {"action": "sync"}
 
 
 def test_parse_active_state_rejects_conflicting_flags() -> None:
@@ -64,15 +47,18 @@ class _FakeScheduledTasksClient:
         self.tasks = tasks or []
         self.delete_error = delete_error
         self.closed = False
+        self.create_calls: list[dict[str, object]] = []
         self.list_calls: list[dict[str, object]] = []
         self.update_calls: list[dict[str, object]] = []
         self.delete_calls: list[dict[str, object]] = []
+        self.run_calls: list[dict[str, object]] = []
+        self.runs: list[ScheduledTaskRun] = []
 
     async def list_scheduled_tasks(
         self,
         *,
         project_id: str,
-        room_name: str | None = None,
+        room_id: str | None = None,
         task_id: str | None = None,
         active: bool | None = None,
         limit: int = 200,
@@ -81,7 +67,7 @@ class _FakeScheduledTasksClient:
         self.list_calls.append(
             {
                 "project_id": project_id,
-                "room_name": room_name,
+                "room_id": room_id,
                 "task_id": task_id,
                 "active": active,
                 "limit": limit,
@@ -90,34 +76,58 @@ class _FakeScheduledTasksClient:
         )
         return self.tasks
 
+    async def create_scheduled_task(
+        self,
+        *,
+        project_id: str,
+        room_name: str,
+        spec: ScheduledTaskSpec,
+    ) -> str:
+        self.create_calls.append(
+            {
+                "project_id": project_id,
+                "room_name": room_name,
+                "spec": spec,
+            }
+        )
+        return "created-task"
+
     async def update_scheduled_task(
         self,
         *,
         project_id: str,
         task_id: str,
-        room_name: str | None = None,
-        queue_name: str | None = None,
-        payload: object | None = None,
-        schedule: str | None = None,
-        active: bool | None = None,
-        annotations: dict[str, str] | None = None,
-        storage_write_path: str | None = None,
-        clear_storage_write_path: bool = False,
+        spec: ScheduledTaskSpec,
     ) -> None:
         self.update_calls.append(
             {
                 "project_id": project_id,
                 "task_id": task_id,
-                "room_name": room_name,
-                "queue_name": queue_name,
-                "payload": payload,
-                "schedule": schedule,
-                "active": active,
-                "annotations": annotations,
-                "storage_write_path": storage_write_path,
-                "clear_storage_write_path": clear_storage_write_path,
+                "spec": spec,
             }
         )
+
+    async def get_room(self, *, project_id: str, name: str) -> Room:
+        del project_id
+        return Room(id=f"{name}-id", name=name, metadata={})
+
+    async def list_scheduled_task_runs(
+        self,
+        *,
+        project_id: str,
+        task_id: str,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[ScheduledTaskRun]:
+        self.run_calls.append(
+            {
+                "project_id": project_id,
+                "task_id": task_id,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+        return self.runs
 
     async def delete_scheduled_task(self, *, project_id: str, task_id: str) -> None:
         self.delete_calls.append({"project_id": project_id, "task_id": task_id})
@@ -129,13 +139,73 @@ class _FakeScheduledTasksClient:
 
 
 @pytest.mark.asyncio
+async def test_scheduled_task_add_uses_room_name(monkeypatch, tmp_path) -> None:
+    fake_client = _FakeScheduledTasksClient()
+    spec_file = tmp_path / "task.yaml"
+    spec_file.write_text(
+        """
+version: v1
+kind: ScheduledTask
+schedule: 0 * * * *
+queue:
+  name: queue-1
+  payload:
+    action: sync
+""",
+        encoding="utf-8",
+    )
+    printed: list[str] = []
+
+    async def fake_get_client() -> _FakeScheduledTasksClient:
+        return fake_client
+
+    async def fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-1"
+        return "resolved-project"
+
+    monkeypatch.setattr(scheduled_tasks, "get_client", fake_get_client)
+    monkeypatch.setattr(scheduled_tasks, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(scheduled_tasks, "print", lambda value: printed.append(value))
+
+    await scheduled_tasks.scheduled_task_add(
+        project_id="project-1",
+        room="room-1",
+        file=str(spec_file),
+    )
+
+    assert len(fake_client.create_calls) == 1
+    call = fake_client.create_calls[0]
+    spec = call["spec"]
+    assert isinstance(spec, ScheduledTaskSpec)
+    assert spec.queue is not None
+    assert spec.queue.name == "queue-1"
+    assert fake_client.create_calls == [
+        {
+            "project_id": "resolved-project",
+            "room_name": "room-1",
+            "spec": spec,
+        }
+    ]
+    assert fake_client.closed is True
+    assert printed == ["[green]Created scheduled task:[/] created-task"]
+
+
+@pytest.mark.asyncio
 async def test_scheduled_task_list_prints_table_rows(monkeypatch) -> None:
     fake_client = _FakeScheduledTasksClient(
         tasks=[
             ScheduledTask(
                 id="task-1",
                 project_id="project-1",
+                room_id="room-1-id",
                 room_name="room-1",
+                spec=ScheduledTaskSpec(
+                    schedule="0 * * * *",
+                    queue=ScheduledTaskQueueSpec(
+                        name="queue-1",
+                        payload={"action": "sync"},
+                    ),
+                ),
                 queue_name="queue-1",
                 payload={"action": "sync"},
                 schedule="0 * * * *",
@@ -177,7 +247,7 @@ async def test_scheduled_task_list_prints_table_rows(monkeypatch) -> None:
     assert fake_client.list_calls == [
         {
             "project_id": "resolved-project",
-            "room_name": "room-1",
+            "room_id": "room-1-id",
             "task_id": "task-1",
             "active": True,
             "limit": 10,
@@ -185,39 +255,24 @@ async def test_scheduled_task_list_prints_table_rows(monkeypatch) -> None:
         }
     ]
     assert fake_client.closed is True
-    assert printed == [
-        (
-            [
-                {
-                    "id": "task-1",
-                    "project_id": "project-1",
-                    "room_name": "room-1",
-                    "queue_name": "queue-1",
-                    "payload": {"action": "sync"},
-                    "schedule": "0 * * * *",
-                    "active": True,
-                    "once": False,
-                    "annotations": {"env": "prod"},
-                    "storage_write_path": "",
-                    "room_id": "",
-                    "last_run_id": "",
-                    "last_start_time": "2026-03-16T00:00:00Z",
-                    "last_end_time": "",
-                    "last_status": "succeeded",
-                    "last_return_message": "",
-                }
-            ],
-            (
-                "id",
-                "room_name",
-                "queue_name",
-                "schedule",
-                "active",
-                "once",
-                "last_status",
-            ),
-        )
-    ]
+    assert len(printed) == 1
+    records, columns = printed[0]
+    assert columns == (
+        "id",
+        "room_name",
+        "target",
+        "queue_name",
+        "container_image",
+        "schedule",
+        "active",
+        "once",
+        "last_status",
+    )
+    assert records[0]["id"] == "task-1"
+    assert records[0]["room_name"] == "room-1"
+    assert records[0]["target"] == "queue"
+    assert records[0]["queue_name"] == "queue-1"
+    assert records[0]["schedule"] == "0 * * * *"
 
 
 @pytest.mark.asyncio
@@ -251,7 +306,7 @@ async def test_scheduled_task_list_defaults_room_from_env(
     assert fake_client.list_calls == [
         {
             "project_id": "resolved-project",
-            "room_name": "room-from-env",
+            "room_id": "room-from-env-id",
             "task_id": None,
             "active": None,
             "limit": 200,
@@ -262,9 +317,23 @@ async def test_scheduled_task_list_defaults_room_from_env(
 
 
 @pytest.mark.asyncio
-async def test_scheduled_task_update_sends_partial_patch(monkeypatch) -> None:
+async def test_scheduled_task_update_replaces_spec(monkeypatch, tmp_path) -> None:
     fake_client = _FakeScheduledTasksClient()
     printed: list[str] = []
+    spec_file = tmp_path / "task.yaml"
+    spec_file.write_text(
+        """
+version: v1
+kind: ScheduledTask
+schedule: 15 * * * *
+inactive: false
+queue:
+  name: queue-2
+  payload:
+    action: refresh
+""".replace("inactive: false", "active: false"),
+        encoding="utf-8",
+    )
 
     async def fake_get_client() -> _FakeScheduledTasksClient:
         return fake_client
@@ -286,29 +355,22 @@ async def test_scheduled_task_update_sends_partial_patch(monkeypatch) -> None:
     await scheduled_tasks.scheduled_task_update(
         project_id="project-1",
         task_id="task-1",
-        room=os.getenv("MESHAGENT_ROOM"),
-        queue="queue-2",
-        schedule="15 * * * *",
-        payload='{"action":"refresh"}',
-        payload_file=None,
-        active=False,
-        inactive=True,
-        annotations='{"env":"staging"}',
-        storage_write_path="scheduled/archive",
+        file=str(spec_file),
     )
 
+    assert len(fake_client.update_calls) == 1
+    call = fake_client.update_calls[0]
+    spec = call["spec"]
+    assert isinstance(spec, ScheduledTaskSpec)
+    assert spec.queue is not None
+    assert spec.queue.name == "queue-2"
+    assert spec.queue.payload == {"action": "refresh"}
+    assert spec.active is False
     assert fake_client.update_calls == [
         {
             "project_id": "resolved-project",
             "task_id": "task-1",
-            "room_name": "room-from-env",
-            "queue_name": "queue-2",
-            "payload": {"action": "refresh"},
-            "schedule": "15 * * * *",
-            "active": False,
-            "annotations": {"env": "staging"},
-            "storage_write_path": "scheduled/archive",
-            "clear_storage_write_path": False,
+            "spec": spec,
         }
     ]
     assert fake_client.closed is True
@@ -316,8 +378,25 @@ async def test_scheduled_task_update_sends_partial_patch(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_scheduled_task_update_can_clear_storage_write_path(monkeypatch) -> None:
+async def test_scheduled_task_runs_prints_rows(monkeypatch) -> None:
     fake_client = _FakeScheduledTasksClient()
+    fake_client.runs = [
+        ScheduledTaskRun(
+            id="run-1",
+            task_id="task-1",
+            project_id="project-1",
+            room_id="room-1-id",
+            room_name="room-1",
+            target="container",
+            status="failed",
+            error="boom",
+            container_id="container-1",
+            scheduled_time=datetime(2026, 3, 16, tzinfo=timezone.utc),
+            started_at=datetime(2026, 3, 16, 0, 0, 1, tzinfo=timezone.utc),
+            completed_at=datetime(2026, 3, 16, 0, 0, 2, tzinfo=timezone.utc),
+        )
+    ]
+    printed: list[tuple[list[dict[str, object]], tuple[str, ...]]] = []
 
     async def fake_get_client() -> _FakeScheduledTasksClient:
         return fake_client
@@ -329,33 +408,26 @@ async def test_scheduled_task_update_can_clear_storage_write_path(monkeypatch) -
     monkeypatch.setattr(scheduled_tasks, "get_client", fake_get_client)
     monkeypatch.setattr(scheduled_tasks, "resolve_project_id", fake_resolve_project_id)
 
-    await scheduled_tasks.scheduled_task_update(
+    def fake_print_json_table(records: list[dict[str, object]], *cols: str) -> None:
+        printed.append((records, cols))
+
+    monkeypatch.setattr(scheduled_tasks, "print_json_table", fake_print_json_table)
+
+    await scheduled_tasks.scheduled_task_runs(
         project_id="project-1",
         task_id="task-1",
-        room=None,
-        queue=None,
-        schedule=None,
-        payload=None,
-        payload_file=None,
-        active=False,
-        inactive=False,
-        annotations=None,
-        storage_write_path=None,
-        clear_storage_write_path=True,
+        count=10,
+        limit=100,
+        offset=5,
+        o="table",
     )
 
-    assert fake_client.update_calls == [
+    assert fake_client.run_calls == [
         {
             "project_id": "resolved-project",
             "task_id": "task-1",
-            "room_name": None,
-            "queue_name": None,
-            "payload": None,
-            "schedule": None,
-            "active": None,
-            "annotations": None,
-            "storage_write_path": None,
-            "clear_storage_write_path": True,
+            "limit": 10,
+            "offset": 5,
         }
     ]
     assert fake_client.closed is True

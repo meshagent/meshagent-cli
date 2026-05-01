@@ -20,7 +20,7 @@ dependencies = [
   "pyarrow~=21.0.0",
   "pathspec>=1.0.3,<2",
   "zstandard~=0.25.0",
-  "meshagent-llm-proxy==0.39.3",
+  "meshagent-llm-proxy==0.39.5",
   "rich~=14.3.0",
   "textual>=8.2.3,<9.0",
   "prompt-toolkit~=3.0.52",
@@ -31,26 +31,26 @@ dynamic = ["version", "readme"]
 [project.optional-dependencies]
 
 all = [
-  "meshagent-agents[all]==0.39.3",
-  "meshagent-api[all]==0.39.3",
-  "meshagent-commoncrawl==0.39.3",
-  "meshagent-scrapy==0.39.3",
-  "meshagent-computers==0.39.3",
-  "meshagent-openai==0.39.3",
-  "meshagent-anthropic==0.39.3",
-  "meshagent-codex==0.39.3",
-  "meshagent-otel==0.39.3",
-  "meshagent-mcp==0.39.3",
-  "meshagent-tools==0.39.3",
+  "meshagent-agents[all]==0.39.5",
+  "meshagent-api[all]==0.39.5",
+  "meshagent-commoncrawl==0.39.5",
+  "meshagent-scrapy==0.39.5",
+  "meshagent-computers==0.39.5",
+  "meshagent-openai==0.39.5",
+  "meshagent-anthropic==0.39.5",
+  "meshagent-codex==0.39.5",
+  "meshagent-otel==0.39.5",
+  "meshagent-mcp==0.39.5",
+  "meshagent-tools==0.39.5",
   "supabase-auth~=2.28.0",
   "prompt-toolkit~=3.0.52"
 ]
 
 mcp-service = [
-    "meshagent-agents[all]==0.39.3",
-    "meshagent-api==0.39.3",
-    "meshagent-mcp==0.39.3",
-    "meshagent-tools==0.39.3",
+    "meshagent-agents[all]==0.39.5",
+    "meshagent-api==0.39.5",
+    "meshagent-mcp==0.39.5",
+    "meshagent-tools==0.39.5",
     "supabase-auth~=2.28.0"
 ]
 

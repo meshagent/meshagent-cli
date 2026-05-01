@@ -1070,134 +1070,6 @@ async def sql(
         await account_client.close()
 
 
-@app.async_command(
-    "sql-exec",
-    help="Execute a SQL statement that does not return rows.",
-)
-async def sql_exec(
-    *,
-    project_id: ProjectIdOption,
-    room: RoomOption,
-    query: Annotated[
-        str,
-        typer.Option(
-            ...,
-            "--query",
-            "-q",
-            help="SQL statement to execute",
-        ),
-    ],
-    table: Annotated[
-        Optional[List[str]],
-        typer.Option(
-            "--table",
-            "-t",
-            help="Table name to register in SQL context (repeatable)",
-        ),
-    ] = None,
-    namespace: NamespaceOption = None,
-    tables_json: Annotated[
-        Optional[str],
-        typer.Option("--tables-json", help="JSON array of table refs"),
-    ] = None,
-    tables_file: Annotated[
-        Optional[str],
-        typer.Option("--tables-file", help="Path/URL to JSON array of table refs"),
-    ] = None,
-    params_json: Annotated[
-        Optional[str],
-        typer.Option(
-            "--params-json",
-            help="JSON object of SQL parameters, sent as one Arrow parameter row",
-        ),
-    ] = None,
-    params_file: Annotated[
-        Optional[str],
-        typer.Option("--params-file", help="Path/URL to JSON object of SQL parameters"),
-    ] = None,
-    branch: BranchOption = None,
-    version: VersionOption = None,
-    pretty: Annotated[
-        bool, typer.Option("--pretty/--no-pretty", help="Pretty-print JSON")
-    ] = True,
-):
-    """
-    Execute SQL that returns an affected-row count instead of result rows.
-    """
-    account_client = await get_client()
-    try:
-        if query.strip() == "":
-            raise typer.BadParameter("--query cannot be empty")
-        if tables_json is not None and tables_file is not None:
-            raise typer.BadParameter("Use --tables-json or --tables-file, not both")
-        if params_json is not None and params_file is not None:
-            raise typer.BadParameter("Use --params-json or --params-file, not both")
-
-        tables_obj = _parse_json_arg(tables_json, name="--tables-json")
-        tables_obj = (
-            tables_obj
-            if tables_obj is not None
-            else await _load_json_file(tables_file, name="--tables-file")
-        )
-        if tables_obj is not None and not isinstance(tables_obj, list):
-            raise typer.BadParameter(
-                "--tables-json/--tables-file must be a JSON array of table references"
-            )
-
-        params_obj = _parse_json_arg(params_json, name="--params-json")
-        params_obj = (
-            params_obj
-            if params_obj is not None
-            else await _load_json_file(params_file, name="--params-file")
-        )
-        if params_obj is not None and not isinstance(params_obj, dict):
-            raise typer.BadParameter(
-                "--params-json/--params-file must be a JSON object"
-            )
-
-        resolved_namespace = _ns(namespace)
-        table_refs = _build_sql_table_refs(
-            table=table,
-            tables_obj=tables_obj,
-            namespace=resolved_namespace,
-            branch=branch,
-            version=version,
-        )
-        params_table = _sql_params_table(params_obj)
-
-        project_id = await resolve_project_id(project_id=project_id)
-        room_name = resolve_room(room)
-        connection = await account_client.connect_room(
-            project_id=project_id, room=room_name
-        )
-
-        async with RoomClient(
-            protocol_factory=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room_name),
-                token=connection.jwt,
-            ).create_factory()
-        ) as client:
-            rows_affected = await client.datasets.execute_sql_statement(
-                query=query,
-                tables=table_refs or None,
-                params=params_table,
-                namespace=resolved_namespace,
-                branch=branch,
-            )
-            print(
-                _json.dumps(
-                    {"rows_affected": rows_affected},
-                    indent=2 if pretty else None,
-                )
-            )
-
-    except (RoomException, typer.BadParameter, ValidationError) as e:
-        print(e)
-        raise typer.Exit(1)
-    finally:
-        await account_client.close()
-
-
 @app.async_command("optimize", help="Optimize a room dataset table.")
 async def optimize(
     *,
@@ -1315,6 +1187,7 @@ async def optimize(
             add_config("compact_files", compact_files)
             add_config("optimize_indices", optimize_indices)
             add_config("cleanup_old_versions", cleanup_old_versions)
+            config_data.setdefault("cleanup_old_versions", False)
             add_config("target_rows_per_fragment", target_rows_per_fragment)
             add_config("max_rows_per_group", max_rows_per_group)
             add_config("max_bytes_per_file", max_bytes_per_file)

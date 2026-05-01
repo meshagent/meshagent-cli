@@ -100,3 +100,13 @@ def test_room_agents_call_help_lists_call_targets() -> None:
     assert "│ tool" in result.output
     assert "│ toolkit" in result.output
     assert "│ schema" in result.output
+
+
+def test_room_dataset_help_does_not_list_sql_exec() -> None:
+    result = CliRunner().invoke(
+        async_typer.get_command(cli.app), ["room", "dataset", "--help"]
+    )
+
+    assert result.exit_code == 0
+    assert "│ sql " in result.output
+    assert "sql-exec" not in result.output

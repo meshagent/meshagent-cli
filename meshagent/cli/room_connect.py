@@ -105,6 +105,16 @@ def _normalize_connect_identity(*, identity: str | None) -> str | None:
     return normalized_identity
 
 
+def _normalize_connect_role(*, role: str | None) -> str:
+    if role is None:
+        return "agent"
+
+    normalized_role = role.strip()
+    if normalized_role == "":
+        raise click.BadParameter("--role cannot be empty")
+    return normalized_role
+
+
 def _parse_meshagent_token_scope(*, value: str) -> ApiScope:
     cleaned = value.strip()
     if cleaned == "":
@@ -228,13 +238,14 @@ async def _mint_connected_room_env(
     project_id: str,
     room: str,
     identity: str,
+    role: str,
     api_scope: ApiScope,
 ) -> _ConnectedRoomEnv:
     token = await _mint_connected_meshagent_token(
         project_id=project_id,
         room_name=room,
         identity=identity,
-        role="agent",
+        role=role,
         api_scope=api_scope,
     )
     return _ConnectedRoomEnv(
@@ -282,11 +293,13 @@ async def _build_connected_command_env(
     env: Sequence[str],
     env_secret: Sequence[str],
     identity: str | None,
-    meshagent_token: str | None,
+    role: str | None = None,
+    meshagent_token: str | None = None,
 ) -> dict[str, str]:
     parsed_environment = _parse_environment_variables(values=env)
     parsed_secret_environment = _parse_environment_secret_variables(values=env_secret)
     normalized_identity = _normalize_connect_identity(identity=identity)
+    normalized_role = _normalize_connect_role(role=role)
     meshagent_token_scope = (
         _parse_meshagent_token_scope(value=meshagent_token)
         if meshagent_token is not None
@@ -302,12 +315,15 @@ async def _build_connected_command_env(
         resolved_secret_identity: str | None
         uses_local_token = (
             normalized_identity is not None
+            or role is not None
             or meshagent_token_scope is not None
             or len(parsed_secret_environment) > 0
         )
 
         if uses_local_token:
             if normalized_identity is None:
+                if role is not None:
+                    raise click.BadParameter("--identity is required when using --role")
                 if parsed_secret_environment and meshagent_token_scope is not None:
                     raise click.BadParameter(
                         "--identity is required when using --env-secret or "
@@ -324,6 +340,7 @@ async def _build_connected_command_env(
                 project_id=resolved_project_id,
                 room=resolved_room,
                 identity=normalized_identity,
+                role=normalized_role,
                 api_scope=meshagent_token_scope or ApiScope.agent_default(),
             )
             connected_token = room_env.token
@@ -415,8 +432,15 @@ async def _build_connected_command_env(
     "--identity",
     help=(
         "Identity name to use for the connected token, --meshagent-token, and "
-        "--env-secret. Required with --meshagent-token and --env-secret. When "
-        "set, room connect mints a participant token locally."
+        "--env-secret. Required with --role, --meshagent-token, and --env-secret. "
+        "When set, room connect mints a participant token locally."
+    ),
+)
+@click.option(
+    "--role",
+    help=(
+        "Participant role for locally minted tokens. Requires --identity and "
+        "defaults to agent."
     ),
 )
 @click.option(
@@ -433,6 +457,7 @@ def connect_command(
     env: tuple[str, ...],
     env_secret: tuple[str, ...],
     identity: str | None,
+    role: str | None,
     meshagent_token: str | None,
     command: tuple[str, ...],
 ) -> None:
@@ -449,6 +474,7 @@ def connect_command(
             env=env,
             env_secret=env_secret,
             identity=identity,
+            role=role,
             meshagent_token=meshagent_token,
         )
     )
