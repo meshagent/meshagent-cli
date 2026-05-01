@@ -1,12 +1,23 @@
-from collections.abc import AsyncIterable, AsyncIterator
+from collections.abc import AsyncIterable, AsyncIterator, Iterator
+from dataclasses import dataclass
+import os
 from pydantic import ValidationError
+import shutil
 import json as _json
+import sys
+import tempfile
 from typing import Annotated, Optional, List, Any
 from urllib.parse import urlparse
 
+import openpyxl
 import typer
 import pyarrow as pa
+import pyarrow.csv as pa_csv
+import pyarrow.parquet as pq
 from rich import print
+from rich.console import Console
+from rich.table import Table
+import xlsxwriter
 
 from meshagent.api import RequiredTable
 from meshagent.api.http import new_client_session
@@ -47,6 +58,18 @@ COLUMN_DEFINITIONS_HELP = (
     "List syntax: list(element_type). "
     "Struct syntax: struct(field_name type[, ...])."
 )
+
+SQL_OUTPUT_FORMATS = {"json", "table", "arrow", "csv", "tsv", "parquet", "excel"}
+DATASET_IMPORT_FORMATS = {"auto", "json", "arrow", "csv", "tsv", "parquet", "excel"}
+DATASET_IMPORT_MODES = {"create", "replace", "merge"}
+EXCEL_MAX_CELL_CHARS = 32767
+DATASET_IMPORT_BATCH_SIZE = 8192
+
+
+@dataclass(frozen=True, slots=True)
+class _DatasetImportSource:
+    schema: pa.Schema | None
+    batches: AsyncIterable[pa.Table | pa.RecordBatch]
 
 
 # ---------------------------
@@ -193,6 +216,539 @@ async def _print_row_batches(
     if pretty and not first:
         typer.echo("\n", nl=False)
     typer.echo("]")
+
+
+def _normalize_sql_output_format(value: str) -> str:
+    normalized = value.lower()
+    if normalized not in SQL_OUTPUT_FORMATS:
+        expected = "|".join(sorted(SQL_OUTPUT_FORMATS))
+        raise typer.BadParameter(f"--format must be one of: {expected}")
+    return normalized
+
+
+def _normalize_dataset_import_format(value: str) -> str:
+    normalized = value.lower()
+    if normalized not in DATASET_IMPORT_FORMATS:
+        expected = "|".join(sorted(DATASET_IMPORT_FORMATS))
+        raise typer.BadParameter(f"--format must be one of: {expected}")
+    return normalized
+
+
+def _normalize_dataset_import_mode(value: str) -> str:
+    normalized = value.lower()
+    if normalized not in DATASET_IMPORT_MODES:
+        expected = "|".join(sorted(DATASET_IMPORT_MODES))
+        raise typer.BadParameter(f"--mode must be one of: {expected}")
+    return normalized
+
+
+def _infer_dataset_import_format(path: str) -> str:
+    lower_path = path.lower()
+    if lower_path.endswith((".arrow", ".ipc", ".feather")):
+        return "arrow"
+    if lower_path.endswith(".csv"):
+        return "csv"
+    if lower_path.endswith(".tsv"):
+        return "tsv"
+    if lower_path.endswith(".parquet"):
+        return "parquet"
+    if lower_path.endswith((".xlsx", ".xlsm")):
+        return "excel"
+    if lower_path.endswith(".json"):
+        return "json"
+    raise typer.BadParameter(
+        "Could not infer --format from file extension; pass --format explicitly"
+    )
+
+
+def _open_output(path: str | None, *, binary: bool):
+    if path is None:
+        return sys.stdout.buffer if binary else sys.stdout
+    if binary:
+        return open(path, "wb")
+    return open(path, "w", encoding="utf-8")
+
+
+def _print_records_table(
+    records: list[dict[str, Any]], *, output_path: str | None = None
+) -> None:
+    if output_path is None:
+        print_json_table(records)
+        return
+    if not records:
+        raise SystemExit("No rows to print")
+
+    table = Table(show_header=True, header_style="bold magenta")
+    columns = list(records[0])
+    for column in columns:
+        table.add_column(column.title())
+    for row in records:
+        table.add_row(*(str(row.get(column, "")) for column in columns))
+
+    with open(output_path, "w", encoding="utf-8") as handle:
+        Console(file=handle).print(table)
+
+
+def _stringify_nested_columns(table: pa.Table) -> pa.Table:
+    arrays: list[pa.Array | pa.ChunkedArray] = []
+    fields: list[pa.Field] = []
+    for field in table.schema:
+        column = table[field.name]
+        if pa.types.is_nested(field.type):
+            values = [
+                None if value is None else _json.dumps(value, separators=(",", ":"))
+                for value in column.to_pylist()
+            ]
+            arrays.append(pa.array(values, type=pa.string()))
+            fields.append(pa.field(field.name, pa.string(), nullable=field.nullable))
+        else:
+            arrays.append(column)
+            fields.append(field)
+    return pa.table(arrays, schema=pa.schema(fields))
+
+
+async def _async_arrow_batches(
+    batches: Iterator[pa.Table | pa.RecordBatch],
+) -> AsyncIterator[pa.Table | pa.RecordBatch]:
+    for batch in batches:
+        yield batch
+
+
+def _arrow_import_source(path: str) -> _DatasetImportSource:
+    try:
+        reader = pa.ipc.open_file(path)
+        schema = reader.schema
+
+        def batches() -> Iterator[pa.RecordBatch]:
+            batch_reader = pa.ipc.open_file(path)
+            for index in range(batch_reader.num_record_batches):
+                yield batch_reader.get_batch(index)
+
+        return _DatasetImportSource(
+            schema=schema, batches=_async_arrow_batches(batches())
+        )
+    except (pa.ArrowInvalid, OSError):
+        reader = pa.ipc.open_stream(path)
+        schema = reader.schema
+
+        def batches() -> Iterator[pa.RecordBatch]:
+            yield from pa.ipc.open_stream(path)
+
+        return _DatasetImportSource(
+            schema=schema, batches=_async_arrow_batches(batches())
+        )
+
+
+def _csv_import_source(path: str, *, delimiter: str) -> _DatasetImportSource:
+    parse_options = pa_csv.ParseOptions(delimiter=delimiter)
+    reader = pa_csv.open_csv(path, parse_options=parse_options)
+    schema = reader.schema
+
+    def batches() -> Iterator[pa.RecordBatch]:
+        yield from pa_csv.open_csv(path, parse_options=parse_options)
+
+    return _DatasetImportSource(schema=schema, batches=_async_arrow_batches(batches()))
+
+
+def _parquet_import_source(path: str, *, batch_size: int) -> _DatasetImportSource:
+    parquet_file = pq.ParquetFile(path)
+    schema = parquet_file.schema_arrow
+
+    def batches() -> Iterator[pa.RecordBatch]:
+        yield from pq.ParquetFile(path).iter_batches(batch_size=batch_size)
+
+    return _DatasetImportSource(schema=schema, batches=_async_arrow_batches(batches()))
+
+
+def _iter_json_records(path: str) -> Iterator[dict[str, Any]]:
+    decoder = _json.JSONDecoder()
+
+    def parse_line(line: str) -> dict[str, Any] | None:
+        if line.strip() == "":
+            return None
+        value = _json.loads(line)
+        if not isinstance(value, dict):
+            raise typer.BadParameter("JSON import rows must be objects")
+        return value
+
+    with open(path, encoding="utf-8") as handle:
+        buffer = ""
+        eof = False
+
+        def read_more() -> None:
+            nonlocal buffer, eof
+            chunk = handle.read(1024 * 1024)
+            if chunk == "":
+                eof = True
+            else:
+                buffer += chunk
+
+        while not eof and buffer.strip() == "":
+            read_more()
+        stripped = buffer.lstrip()
+        if stripped.startswith("["):
+            buffer = stripped[1:]
+            while True:
+                buffer = buffer.lstrip()
+                while buffer == "" and not eof:
+                    read_more()
+                    buffer = buffer.lstrip()
+                if buffer.startswith("]"):
+                    return
+                try:
+                    value, index = decoder.raw_decode(buffer)
+                except _json.JSONDecodeError:
+                    if eof:
+                        raise
+                    read_more()
+                    continue
+                if not isinstance(value, dict):
+                    raise typer.BadParameter("JSON import rows must be objects")
+                yield value
+                buffer = buffer[index:].lstrip()
+                while buffer == "" and not eof:
+                    read_more()
+                    buffer = buffer.lstrip()
+                if buffer.startswith(","):
+                    buffer = buffer[1:]
+                    continue
+                if buffer.startswith("]"):
+                    return
+                if eof and buffer.strip() == "":
+                    raise typer.BadParameter("JSON array import ended before ']'")
+                raise typer.BadParameter("JSON array import expected ',' or ']'")
+        else:
+            pending = buffer
+            while pending != "":
+                line, separator, rest = pending.partition("\n")
+                if separator == "":
+                    continuation = handle.readline()
+                    if continuation == "":
+                        value = parse_line(line)
+                        if value is not None:
+                            yield value
+                        return
+                    pending = line + continuation
+                    continue
+                value = parse_line(line)
+                if value is not None:
+                    yield value
+                pending = rest
+            for line in handle:
+                value = parse_line(line)
+                if value is not None:
+                    yield value
+
+
+def _json_import_source(path: str, *, batch_size: int) -> _DatasetImportSource:
+    def batches() -> Iterator[pa.Table]:
+        records: list[dict[str, Any]] = []
+        for record in _iter_json_records(path):
+            records.append(record)
+            if len(records) >= batch_size:
+                yield pa.Table.from_pylist(records)
+                records = []
+        if records:
+            yield pa.Table.from_pylist(records)
+
+    return _DatasetImportSource(schema=None, batches=_async_arrow_batches(batches()))
+
+
+async def _excel_import_batches(
+    path: str,
+    *,
+    sheet: str | None = None,
+    batch_size: int,
+) -> AsyncIterator[pa.Table]:
+    workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        if sheet is None:
+            worksheet = workbook[workbook.sheetnames[0]]
+        else:
+            worksheet = workbook[sheet]
+        rows = worksheet.iter_rows(values_only=True)
+        try:
+            header_row = next(rows)
+        except StopIteration:
+            return
+        columns = [
+            str(value).strip()
+            if value is not None and str(value).strip() != ""
+            else None
+            for value in header_row
+        ]
+        if all(column is None for column in columns):
+            return
+        records: list[dict[str, Any]] = []
+        for row in rows:
+            record = dict[str, Any]()
+            for column, value in zip(columns, row):
+                if column is not None:
+                    record[column] = value
+            if any(value is not None for value in record.values()):
+                records.append(record)
+            if len(records) >= batch_size:
+                yield pa.Table.from_pylist(records)
+                records = []
+        if records:
+            yield pa.Table.from_pylist(records)
+    finally:
+        workbook.close()
+
+
+def _import_source(
+    *,
+    path: str,
+    import_format: str,
+    sheet: str | None = None,
+    batch_size: int = DATASET_IMPORT_BATCH_SIZE,
+) -> _DatasetImportSource:
+    import_format = _normalize_dataset_import_format(import_format)
+    if import_format == "auto":
+        import_format = _infer_dataset_import_format(path)
+    if import_format == "arrow":
+        return _arrow_import_source(path)
+    if import_format == "csv":
+        return _csv_import_source(path, delimiter=",")
+    if import_format == "tsv":
+        return _csv_import_source(path, delimiter="\t")
+    if import_format == "parquet":
+        return _parquet_import_source(path, batch_size=batch_size)
+    if import_format == "json":
+        return _json_import_source(path, batch_size=batch_size)
+    if import_format == "excel":
+        return _DatasetImportSource(
+            schema=None,
+            batches=_excel_import_batches(path, sheet=sheet, batch_size=batch_size),
+        )
+    raise AssertionError(f"unhandled dataset import format: {import_format}")
+
+
+def _excel_cell_value(value: Any) -> Any:
+    if isinstance(value, dict | list):
+        value = _json.dumps(value, separators=(",", ":"))
+    elif isinstance(value, bytes):
+        value = value.hex()
+    if isinstance(value, str) and len(value) > EXCEL_MAX_CELL_CHARS:
+        return value[:EXCEL_MAX_CELL_CHARS]
+    return value
+
+
+def _create_excel_workbook(path: str) -> xlsxwriter.Workbook:
+    return xlsxwriter.Workbook(path, {"constant_memory": True})
+
+
+def _write_or_stream_excel_workbook(
+    output_path: str | None, write_workbook: Any
+) -> None:
+    if output_path is not None:
+        workbook = _create_excel_workbook(output_path)
+        try:
+            write_workbook(workbook)
+        finally:
+            workbook.close()
+        return
+
+    temporary = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+    temporary_path = temporary.name
+    temporary.close()
+    try:
+        workbook = _create_excel_workbook(temporary_path)
+        try:
+            write_workbook(workbook)
+        finally:
+            workbook.close()
+        with open(temporary_path, "rb") as handle:
+            shutil.copyfileobj(handle, sys.stdout.buffer)
+    finally:
+        os.unlink(temporary_path)
+
+
+def _write_excel_rows(
+    *,
+    workbook: xlsxwriter.Workbook,
+    worksheet_name: str,
+    schema: pa.Schema,
+    tables: list[pa.Table],
+) -> None:
+    worksheet = workbook.add_worksheet(worksheet_name)
+    header_format = workbook.add_format({"bold": True})
+    for column_index, field in enumerate(schema):
+        worksheet.write(0, column_index, field.name, header_format)
+
+    row_index = 1
+    for table in tables:
+        for row in table.to_pylist():
+            for column_index, field in enumerate(schema):
+                worksheet.write(
+                    row_index, column_index, _excel_cell_value(row[field.name])
+                )
+            row_index += 1
+
+    if len(schema) > 0:
+        worksheet.autofilter(0, 0, max(row_index - 1, 0), len(schema) - 1)
+        worksheet.freeze_panes(1, 0)
+
+
+async def _write_sql_json_output(
+    *,
+    batches: AsyncIterable[Any],
+    output_path: str | None,
+    pretty: bool,
+) -> None:
+    if output_path is None:
+        await _print_row_batches(batches=batches, pretty=pretty)
+        return
+
+    with open(output_path, "w", encoding="utf-8") as handle:
+        handle.write("[")
+        first = True
+        async for batch in batches:
+            rows = batch.to_pylist() if isinstance(batch, pa.Table) else batch
+            for row in rows:
+                if first:
+                    if pretty:
+                        handle.write("\n")
+                else:
+                    handle.write(",\n" if pretty else ",")
+                payload = _json.dumps(row, indent=2 if pretty else None)
+                handle.write(_indent_block(payload, "  ") if pretty else payload)
+                first = False
+        if pretty and not first:
+            handle.write("\n")
+        handle.write("]\n")
+
+
+async def _write_sql_query_output(
+    *,
+    batches: AsyncIterable[pa.Table],
+    schema: pa.Schema,
+    output_format: str,
+    output_path: str | None,
+    pretty: bool,
+) -> None:
+    output_format = _normalize_sql_output_format(output_format)
+    if output_format == "json":
+        await _write_sql_json_output(
+            batches=batches,
+            output_path=output_path,
+            pretty=pretty,
+        )
+        return
+    if output_format == "table":
+        tables = [batch async for batch in batches]
+        table = (
+            pa.concat_tables(tables) if tables else pa.Table.from_batches([], schema)
+        )
+        _print_records_table(table.to_pylist(), output_path=output_path)
+        return
+    if output_format == "excel":
+        tables = [batch async for batch in batches]
+
+        def write_workbook(workbook: xlsxwriter.Workbook) -> None:
+            _write_excel_rows(
+                workbook=workbook,
+                worksheet_name="Query",
+                schema=schema,
+                tables=tables,
+            )
+
+        _write_or_stream_excel_workbook(output_path, write_workbook)
+        return
+
+    binary = output_format in {"arrow", "csv", "tsv", "parquet"}
+    sink = _open_output(output_path, binary=binary)
+    close_sink = output_path is not None
+    try:
+        if output_format == "arrow":
+            with pa.ipc.new_file(sink, schema) as writer:
+                async for batch in batches:
+                    writer.write_table(batch)
+        elif output_format == "parquet":
+            writer = pq.ParquetWriter(sink, schema)
+            try:
+                async for batch in batches:
+                    writer.write_table(batch)
+            finally:
+                writer.close()
+        elif output_format in {"csv", "tsv"}:
+            write_options = pa_csv.WriteOptions(
+                delimiter="\t" if output_format == "tsv" else ","
+            )
+            csv_schema = _stringify_nested_columns(
+                pa.Table.from_batches([], schema=schema)
+            ).schema
+            with pa_csv.CSVWriter(
+                sink, csv_schema, write_options=write_options
+            ) as writer:
+                async for batch in batches:
+                    writer.write_table(_stringify_nested_columns(batch))
+        else:
+            raise AssertionError(f"unhandled SQL output format: {output_format}")
+    finally:
+        if close_sink:
+            sink.close()
+
+
+def _write_sql_statement_output(
+    *,
+    rows_affected: int,
+    output_format: str,
+    output_path: str | None,
+    pretty: bool,
+) -> None:
+    output_format = _normalize_sql_output_format(output_format)
+    table = pa.table({"rows_affected": [rows_affected]})
+    if output_format == "json":
+        payload = _json.dumps(
+            {"rows_affected": rows_affected},
+            indent=2 if pretty else None,
+        )
+        if output_path is None:
+            typer.echo(payload)
+        else:
+            with open(output_path, "w", encoding="utf-8") as handle:
+                handle.write(f"{payload}\n")
+    elif output_format == "table":
+        _print_records_table(table.to_pylist(), output_path=output_path)
+    elif output_format == "excel":
+        _write_or_stream_excel_workbook(
+            output_path,
+            lambda workbook: _write_excel_rows(
+                workbook=workbook,
+                worksheet_name="Statement",
+                schema=table.schema,
+                tables=[table],
+            ),
+        )
+    elif output_format == "arrow":
+        sink = _open_output(output_path, binary=True)
+        try:
+            with pa.ipc.new_file(sink, table.schema) as writer:
+                writer.write_table(table)
+        finally:
+            if output_path is not None:
+                sink.close()
+    elif output_format == "parquet":
+        sink = _open_output(output_path, binary=True)
+        try:
+            pq.write_table(table, sink)
+        finally:
+            if output_path is not None:
+                sink.close()
+    elif output_format in {"csv", "tsv"}:
+        sink = _open_output(output_path, binary=True)
+        try:
+            pa_csv.write_csv(
+                table,
+                sink,
+                write_options=pa_csv.WriteOptions(
+                    delimiter="\t" if output_format == "tsv" else ","
+                ),
+            )
+        finally:
+            if output_path is not None:
+                sink.close()
 
 
 NamespaceOption = Annotated[
@@ -457,6 +1013,114 @@ async def create_table(
             print(f"[bold green]Created table:[/bold green] {table}")
 
     except (RoomException, ValidationError) as e:
+        print(e)
+        raise typer.Exit(1)
+    finally:
+        await account_client.close()
+
+
+@app.async_command(
+    "import",
+    help="Import a local Arrow, CSV, TSV, Parquet, JSON, or Excel file into a table.",
+)
+async def import_table(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    table: Annotated[str, typer.Option(..., "--table", "-t", help="Table name")],
+    file: Annotated[
+        str,
+        typer.Option(
+            ...,
+            "--file",
+            "-f",
+            help="Local file to import",
+        ),
+    ],
+    mode: Annotated[
+        str,
+        typer.Option("--mode", help="Import mode: create, replace, merge"),
+    ] = "create",
+    import_format: Annotated[
+        str,
+        typer.Option(
+            "--format",
+            help="Input format: auto, json, arrow, csv, tsv, parquet, excel",
+        ),
+    ] = "auto",
+    on: Annotated[
+        Optional[str],
+        typer.Option("--on", help="Column to match when --mode merge"),
+    ] = None,
+    sheet: Annotated[
+        Optional[str],
+        typer.Option("--sheet", help="Excel worksheet name for --format excel"),
+    ] = None,
+    batch_size: Annotated[
+        int,
+        typer.Option(
+            "--batch-size",
+            help="Rows per imported batch for Parquet, JSON, and Excel",
+        ),
+    ] = DATASET_IMPORT_BATCH_SIZE,
+    namespace: NamespaceOption = None,
+    branch: BranchOption = None,
+):
+    account_client = await get_client()
+    try:
+        mode = _normalize_dataset_import_mode(mode)
+        import_format = _normalize_dataset_import_format(import_format)
+        if batch_size <= 0:
+            raise typer.BadParameter("--batch-size must be greater than zero")
+        if mode == "merge":
+            if on is None or on.strip() == "":
+                raise typer.BadParameter("--mode merge requires --on")
+        elif on is not None:
+            raise typer.BadParameter("--on can only be used with --mode merge")
+
+        source = _import_source(
+            path=file,
+            import_format=import_format,
+            sheet=sheet,
+            batch_size=batch_size,
+        )
+
+        project_id = await resolve_project_id(project_id=project_id)
+        room_name = resolve_room(room)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
+
+        async with RoomClient(
+            protocol_factory=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room_name),
+                token=connection.jwt,
+            ).create_factory()
+        ) as client:
+            if mode == "merge":
+                await client.datasets.merge_stream(
+                    table=table,
+                    on=on.strip() if on is not None else "",
+                    chunks=source.batches,
+                    namespace=_ns(namespace),
+                    branch=branch,
+                )
+                print(
+                    f"[bold green]Merged import[/bold green] from {file} into {table} on {on}"
+                )
+            else:
+                await client.datasets.create_table_from_data_stream(
+                    name=table,
+                    chunks=source.batches,
+                    schema=source.schema,
+                    mode="overwrite" if mode == "replace" else "create",
+                    namespace=_ns(namespace),
+                    branch=branch,
+                )
+                action = "Replaced" if mode == "replace" else "Created"
+                print(f"[bold green]{action} table[/bold green] {table} from {file}")
+
+    except (RoomException, typer.BadParameter, ValidationError, OSError, KeyError) as e:
         print(e)
         raise typer.Exit(1)
     finally:
@@ -977,6 +1641,21 @@ async def sql(
     pretty: Annotated[
         bool, typer.Option("--pretty/--no-pretty", help="Pretty-print JSON")
     ] = True,
+    output_format: Annotated[
+        str,
+        typer.Option(
+            "--format",
+            help="Output format: table, json, arrow, csv, tsv, parquet, excel",
+        ),
+    ] = "table",
+    output: Annotated[
+        Optional[str],
+        typer.Option(
+            "--output",
+            "-o",
+            help="Write output to this file path instead of stdout",
+        ),
+    ] = None,
 ):
     """
     Execute SQL against one or more room dataset tables.
@@ -988,6 +1667,7 @@ async def sql(
     try:
         if query.strip() == "":
             raise typer.BadParameter("--query cannot be empty")
+        output_format = _normalize_sql_output_format(output_format)
 
         if tables_json is not None and tables_file is not None:
             raise typer.BadParameter("Use --tables-json or --tables-file, not both")
@@ -1046,18 +1726,21 @@ async def sql(
                 branch=branch,
             )
             if isinstance(result, DatasetSqlStatement):
-                print(
-                    _json.dumps(
-                        {"rows_affected": result.rows_affected},
-                        indent=2 if pretty else None,
-                    )
+                _write_sql_statement_output(
+                    rows_affected=result.rows_affected,
+                    output_format=output_format,
+                    output_path=output,
+                    pretty=pretty,
                 )
             else:
                 try:
-                    await _print_row_batches(
+                    await _write_sql_query_output(
                         batches=client.datasets.read_sql_query(
                             query_id=result.query_id,
                         ),
+                        schema=result.schema,
+                        output_format=output_format,
+                        output_path=output,
                         pretty=pretty,
                     )
                 finally:
