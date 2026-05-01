@@ -1187,6 +1187,7 @@ async def optimize(
             add_config("compact_files", compact_files)
             add_config("optimize_indices", optimize_indices)
             add_config("cleanup_old_versions", cleanup_old_versions)
+            config_data.setdefault("cleanup_old_versions", False)
             add_config("target_rows_per_fragment", target_rows_per_fragment)
             add_config("max_rows_per_group", max_rows_per_group)
             add_config("max_bytes_per_file", max_bytes_per_file)

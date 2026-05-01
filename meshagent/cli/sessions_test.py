@@ -12,12 +12,15 @@ class _FakeClient:
         *,
         recent_sessions: list[RoomSession] | None = None,
         session_events: list[dict] | None = None,
+        session_spans: list[dict] | None = None,
     ) -> None:
         self.recent_sessions = recent_sessions or []
         self.session_events = session_events or []
+        self.session_spans = session_spans or []
         self.closed = False
         self.list_recent_sessions_calls: list[tuple[str, int, str | None]] = []
         self.list_session_events_calls: list[tuple[str, str]] = []
+        self.list_session_spans_calls: list[tuple[str, str]] = []
         self.get_room_calls: list[tuple[str, str]] = []
 
     async def list_recent_sessions(
@@ -35,6 +38,12 @@ class _FakeClient:
     ) -> list[dict]:
         self.list_session_events_calls.append((project_id, session_id))
         return self.session_events
+
+    async def list_session_spans(
+        self, *, project_id: str, session_id: str
+    ) -> list[dict]:
+        self.list_session_spans_calls.append((project_id, session_id))
+        return self.session_spans
 
     async def get_room(self, *, project_id: str, name: str) -> Room:
         self.get_room_calls.append((project_id, name))
@@ -211,3 +220,162 @@ async def test_list_closes_client_when_no_rows_are_found(monkeypatch) -> None:
 
     assert fake_client.closed is True
     assert printed == ["No recent sessions found for room demo-room"]
+
+
+def test_span_tree_lines_indent_child_spans() -> None:
+    lines = sessions._span_tree_lines(
+        [
+            {
+                "trace_id": "trace-1",
+                "span_id": "child",
+                "parent_span_id": "root",
+                "span_name": "child span",
+                "created_at": "2026-03-12T00:00:00Z",
+                "duration": 1_500_000,
+            },
+            {
+                "trace_id": "trace-1",
+                "span_id": "root",
+                "span_name": "root span",
+                "created_at": "2026-03-12T00:00:00Z",
+                "duration": 2_000_000_000,
+            },
+        ]
+    )
+
+    assert lines == [
+        "name          time                 duration",
+        "root span     2026-03-12 00:00:00  2.00s",
+        "  child span  2026-03-12 00:00:00  1.5ms",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_traces_prints_session_spans_as_tree(monkeypatch) -> None:
+    fake_client = _FakeClient(
+        session_spans=[
+            {
+                "trace_id": "trace-1",
+                "span_id": "root",
+                "span_name": "root span",
+                "created_at": "2026-03-12T00:00:00",
+                "duration": 1_000_000,
+            }
+        ]
+    )
+    printed: list[str] = []
+
+    async def fake_get_client() -> _FakeClient:
+        return fake_client
+
+    async def fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-1"
+        return "resolved-project"
+
+    def fake_print(message: str) -> None:
+        printed.append(message)
+
+    monkeypatch.setattr(sessions, "get_client", fake_get_client)
+    monkeypatch.setattr(sessions, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(sessions, "_print_tree_line", fake_print)
+
+    await sessions.traces(project_id="project-1", session_id="session-1")
+
+    assert fake_client.list_session_spans_calls == [("resolved-project", "session-1")]
+    assert fake_client.closed is True
+    assert printed == [
+        "name       time                 duration",
+        "root span  2026-03-12 00:00:00  1.0ms",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_traces_can_filter_and_print_attrs(monkeypatch) -> None:
+    fake_client = _FakeClient(
+        session_spans=[
+            {
+                "trace_id": "trace-1",
+                "span_id": "root",
+                "span_name": "root span",
+                "created_at": "2026-03-12T00:00:00",
+                "duration": 1_000_000,
+                "span_attributes": {"cache_hit": True},
+            },
+            {
+                "trace_id": "trace-1",
+                "span_id": "fast",
+                "span_name": "fast span",
+                "created_at": "2026-03-12T00:00:01",
+                "duration": 1_000,
+                "span_attributes": {"cache_hit": False},
+            },
+        ]
+    )
+    printed: list[str] = []
+
+    async def fake_get_client() -> _FakeClient:
+        return fake_client
+
+    async def fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-1"
+        return "resolved-project"
+
+    monkeypatch.setattr(sessions, "get_client", fake_get_client)
+    monkeypatch.setattr(sessions, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(sessions, "_print_tree_line", printed.append)
+
+    await sessions.traces(
+        project_id="project-1",
+        session_id="session-1",
+        min_duration="1ms",
+        include_attrs=True,
+    )
+
+    assert printed == [
+        "name       time                 duration  attrs",
+        "root span  2026-03-12 00:00:00  1.0ms     cache_hit=True",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_traces_uses_most_recent_room_session(monkeypatch) -> None:
+    fake_client = _FakeClient(
+        recent_sessions=[
+            RoomSession(
+                id="session-1",
+                room_id="room-1",
+                room_name="demo-room",
+                created_at=datetime(2026, 3, 12, tzinfo=timezone.utc),
+                is_active=False,
+            )
+        ],
+        session_spans=[
+            {
+                "trace_id": "trace-1",
+                "span_id": "root",
+                "span_name": "root span",
+                "created_at": "2026-03-12T00:00:00",
+                "duration": 1_000_000,
+            }
+        ],
+    )
+
+    async def fake_get_client() -> _FakeClient:
+        return fake_client
+
+    async def fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-1"
+        return "resolved-project"
+
+    monkeypatch.setattr(sessions, "get_client", fake_get_client)
+    monkeypatch.setattr(sessions, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(sessions, "_print_tree_line", lambda message: None)
+
+    await sessions.traces(project_id="project-1", room_name="demo-room")
+
+    assert fake_client.get_room_calls == [("resolved-project", "demo-room")]
+    assert fake_client.list_recent_sessions_calls == [
+        ("resolved-project", 1000, "room-1")
+    ]
+    assert fake_client.list_session_spans_calls == [("resolved-project", "session-1")]
+    assert fake_client.closed is True
