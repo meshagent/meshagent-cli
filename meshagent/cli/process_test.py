@@ -1,4 +1,5 @@
 import asyncio
+import ast
 import inspect
 from pathlib import Path
 
@@ -212,6 +213,32 @@ def test_chatbot_use_help_hides_removed_tool_request_options() -> None:
         for param in use_command.params
         if isinstance(param, click.Option)
     )
+
+
+def _chat_with_keyword_arguments(module) -> dict[int, set[str]]:
+    tree = ast.parse(inspect.getsource(module))
+    calls: dict[int, set[str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Name) or node.func.id != "chat_with":
+            continue
+        calls[node.lineno] = {
+            keyword.arg for keyword in node.keywords if keyword.arg is not None
+        }
+    return calls
+
+
+@pytest.mark.parametrize("module", [chatbot, codex])
+def test_chat_with_call_sites_match_chat_with_signature(module) -> None:
+    allowed_kwargs = set(inspect.signature(chatbot.chat_with).parameters)
+    unexpected_by_line = {
+        line: sorted(kwargs - allowed_kwargs)
+        for line, kwargs in _chat_with_keyword_arguments(module).items()
+        if len(kwargs - allowed_kwargs) > 0
+    }
+
+    assert unexpected_by_line == {}
 
 
 def test_resolved_channels_accept_mail_channel() -> None:
@@ -785,6 +812,259 @@ def test_process_join_passes_supported_builder_kwargs(monkeypatch) -> None:
     assert "mcp" not in build_calls[0]
     assert build_calls[0]["require_mcp"] is False
     assert build_calls[0]["api_key"] == "test-token"
+
+
+def test_process_join_requires_at_least_one_channel(monkeypatch) -> None:
+    printed: list[str] = []
+    monkeypatch.setattr(
+        chatbot,
+        "print",
+        lambda *args, **kwargs: printed.append(" ".join(str(arg) for arg in args)),
+    )
+
+    async def invoke_join() -> None:
+        await chatbot.join(
+            project_id=None,
+            room="quickstart",
+            agent_name="helper",
+            channel=[],
+        )
+
+    root_command = click.Command("meshagent")
+    process_command = click.Command("process")
+    join_command = click.Command("join")
+    with click.Context(root_command, info_name="meshagent") as root_context:
+        with click.Context(
+            process_command,
+            info_name="process",
+            parent=root_context,
+        ) as process_context:
+            with click.Context(
+                join_command,
+                info_name="join",
+                parent=process_context,
+            ):
+                with pytest.raises(click.exceptions.Exit) as exc_info:
+                    asyncio.run(invoke_join())
+
+    assert exc_info.value.exit_code == 1
+    assert printed == [
+        "[bold red]at least one channel is required for process agents[/bold red]"
+    ]
+
+
+def test_process_service_requires_at_least_one_channel(monkeypatch) -> None:
+    printed: list[str] = []
+    monkeypatch.setattr(
+        chatbot,
+        "print",
+        lambda *args, **kwargs: printed.append(" ".join(str(arg) for arg in args)),
+    )
+
+    async def invoke_service() -> None:
+        await chatbot.service(agent_name="helper", channel=[])
+
+    root_command = click.Command("meshagent")
+    process_command = click.Command("process")
+    service_command = click.Command("service")
+    with click.Context(root_command, info_name="meshagent") as root_context:
+        with click.Context(
+            process_command,
+            info_name="process",
+            parent=root_context,
+        ) as process_context:
+            with click.Context(
+                service_command,
+                info_name="service",
+                parent=process_context,
+            ):
+                with pytest.raises(click.exceptions.Exit) as exc_info:
+                    asyncio.run(invoke_service())
+
+    assert exc_info.value.exit_code == 1
+    assert printed == [
+        "[bold red]at least one channel is required for process agents[/bold red]"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_process_run_starts_room_agent_and_uses_ask_tui(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _DummyAccountClient:
+        async def close(self) -> None:
+            captured["account_closed"] = True
+
+    class _DummyParticipant:
+        def get_attribute(self, name: str) -> str:
+            return f"agent-{name}"
+
+    class _DummyProtocol:
+        async def wait_for_close(self) -> None:
+            await asyncio.Future()
+
+    class _DummyRoomClient:
+        def __init__(self) -> None:
+            self.local_participant = _DummyParticipant()
+            self.protocol = _DummyProtocol()
+            self.enter_calls = 0
+            self.exit_calls = 0
+
+        async def __aenter__(self):
+            self.enter_calls += 1
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type
+            del exc
+            del tb
+            self.exit_calls += 1
+
+    class _DummyProcessAgent:
+        def __init__(self) -> None:
+            self.start_calls = 0
+            self.stop_calls = 0
+            self.started_room = None
+
+        async def start(self, *, room) -> None:
+            self.start_calls += 1
+            self.started_room = room
+
+        async def stop(self) -> None:
+            self.stop_calls += 1
+
+    class _DummyWebSocketClientProtocol:
+        def __init__(self, *, url: str, token: str) -> None:
+            captured["websocket_url"] = url
+            captured["websocket_token"] = token
+
+        def create_factory(self):
+            return object()
+
+    room_client = _DummyRoomClient()
+    process_agent = _DummyProcessAgent()
+
+    async def fake_get_client():
+        return _DummyAccountClient()
+
+    async def fake_resolve_project_id(*, project_id=None):
+        del project_id
+        return "project-123"
+
+    async def fake_resolve_key(*, project_id=None, key=None):
+        del project_id
+        del key
+        return "signing-key"
+
+    def fake_room_client(*, protocol_factory):
+        captured["protocol_factory"] = protocol_factory
+        return room_client
+
+    def fake_build_runtime_agent(**kwargs):
+        captured["runtime"] = kwargs["runtime"]
+        captured["channels"] = kwargs["channels"]
+        return lambda: process_agent
+
+    async def fake_run_process_run_tui(**kwargs):
+        captured["process_tui_kwargs"] = kwargs
+
+    async def fail_chat_with(**kwargs):
+        del kwargs
+        raise AssertionError("process run should use ask TUI, not chat_with")
+
+    monkeypatch.setenv("MESHAGENT_TOKEN", "test-token")
+    monkeypatch.setattr(chatbot, "get_client", fake_get_client)
+    monkeypatch.setattr(chatbot, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(chatbot, "resolve_key", fake_resolve_key)
+    monkeypatch.setattr(chatbot, "resolve_room", lambda room_name=None: room_name)
+    monkeypatch.setattr(chatbot, "RoomClient", fake_room_client)
+    monkeypatch.setattr(
+        chatbot, "WebSocketClientProtocol", _DummyWebSocketClientProtocol
+    )
+    monkeypatch.setattr(chatbot, "_build_runtime_agent", fake_build_runtime_agent)
+    monkeypatch.setattr(chatbot, "_run_process_run_tui", fake_run_process_run_tui)
+    monkeypatch.setattr(chatbot, "chat_with", fail_chat_with)
+
+    root_command = click.Command("meshagent")
+    process_command = click.Command("process")
+    run_command = click.Command("run")
+    with click.Context(root_command, info_name="meshagent") as root_context:
+        with click.Context(
+            process_command,
+            info_name="process",
+            parent=root_context,
+        ) as process_context:
+            with click.Context(
+                run_command,
+                info_name="run",
+                parent=process_context,
+            ):
+                await chatbot.run(
+                    project_id=None,
+                    room="quickstart",
+                    agent_name="helper",
+                    channel=["chat"],
+                )
+
+    assert captured["runtime"] == "process"
+    assert captured["channels"] == ["chat"]
+    assert room_client.enter_calls == 1
+    assert room_client.exit_calls == 1
+    assert process_agent.start_calls == 1
+    assert process_agent.stop_calls == 1
+    assert process_agent.started_room is room_client
+    assert captured["process_tui_kwargs"] == {
+        "bot": process_agent,
+        "model": "gpt-5.5",
+        "thread_path": None,
+        "message": None,
+        "working_dir": None,
+    }
+    assert captured["account_closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -> None:
+    from meshagent.cli import ask as ask_module
+
+    captured: dict[str, object] = {}
+
+    class _DummySupervisor:
+        def __init__(self) -> None:
+            self.subscribed_queue = None
+            self.unsubscribed_queue = None
+
+        def subscribe_local_events(self):
+            self.subscribed_queue = asyncio.Queue()
+            return self.subscribed_queue
+
+        def unsubscribe_local_events(self, queue) -> None:
+            self.unsubscribed_queue = queue
+
+    class _DummyBot:
+        def __init__(self) -> None:
+            self._supervisor = _DummySupervisor()
+
+    async def fake_run_ask_tui(**kwargs):
+        captured.update(kwargs)
+
+    bot = _DummyBot()
+    monkeypatch.setattr(ask_module, "_run_ask_tui", fake_run_ask_tui)
+
+    await chatbot._run_process_run_tui(
+        bot=bot,
+        model="gpt-5.5",
+        thread_path="/threads/process-run.thread",
+        message=None,
+        working_dir="/tmp",
+    )
+
+    assert captured["model"] == "gpt-5.5"
+    assert captured["title"] == "meshagent process run"
+    assert captured["session"].current_working_directory == "/tmp"
+    assert bot._supervisor.unsubscribed_queue is bot._supervisor.subscribed_queue
 
 
 class _FakeRoomClient:

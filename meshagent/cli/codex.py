@@ -3192,9 +3192,6 @@ async def chatbot_run(
                             project_id=project_id,
                             thread_path=thread_path,
                             message=message,
-                            use_web_search=bool(use_web_search),
-                            use_image_gen=bool(use_image_gen),
-                            use_storage=bool(use_storage),
                         )
                     ),
                 ],
@@ -3250,9 +3247,6 @@ async def chatbot_use(
         room=room_name,
         thread_path=thread_path,
         message=message,
-        use_web_search=bool(use_web_search),
-        use_image_gen=bool(use_image_gen),
-        use_storage=bool(use_storage),
     )
 
 
