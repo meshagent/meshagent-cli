@@ -323,6 +323,8 @@ def test_doctor_reports_dotnet_roomclient_namespace_guidance(
     assert "using Meshagent.Api.Room;" in result.output
     assert "Diagnostics for Codex" in result.output
     assert "dotnet publish -c Release" in result.output
+    assert "--disable-build-servers" in result.output
+    assert "/p:UseSharedCompilation=false" in result.output
 
 
 def test_doctor_reports_unavailable_local_tool_without_recommending_check(

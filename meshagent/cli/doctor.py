@@ -442,9 +442,11 @@ def _dockerfile_for(language: str, javascript_flavor: str | None) -> str:
         """,
         ".NET": """
             FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+            ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
+            ENV DOTNET_NOLOGO=1
             WORKDIR /src
             COPY . .
-            RUN dotnet publish -c Release -o /app/publish
+            RUN dotnet publish -c Release -o /app/publish --disable-build-servers /p:UseSharedCompilation=false
 
             FROM mcr.microsoft.com/dotnet/aspnet:9.0
             WORKDIR /app
@@ -663,7 +665,7 @@ def _local_build_check(diagnosis: ProjectDiagnosis) -> tuple[str, str] | None:
         "JavaScript": ("npm", "npm install --omit=dev"),
         ".NET": (
             "dotnet",
-            "dotnet publish -c Release -o /tmp/meshagent-doctor-publish",
+            "dotnet publish -c Release -o /tmp/meshagent-doctor-publish --disable-build-servers /p:UseSharedCompilation=false",
         ),
         "Dart": (
             "dart",
@@ -840,9 +842,15 @@ def _codex_diagnostics(diagnosis: ProjectDiagnosis) -> list[str]:
             ]
         )
     if diagnosis.language == ".NET" and diagnosis.sdk == "Meshagent.Api":
-        diagnostics.append(
-            "If .NET publish cannot find `RoomClient`, add "
-            "`using Meshagent.Api.Room;` and rebuild before deploying."
+        diagnostics.extend(
+            [
+                "If .NET publish cannot find `RoomClient`, add "
+                "`using Meshagent.Api.Room;` and rebuild before deploying.",
+                "For .NET Docker builds, run publish with "
+                "`--disable-build-servers /p:UseSharedCompilation=false` so "
+                "compiler/build-server processes do not survive the RUN step "
+                "and trigger BuildKit cgroup cleanup failures.",
+            ]
         )
     if diagnosis.language == "Dart" and diagnosis.sdk == "meshagent":
         diagnostics.append(
