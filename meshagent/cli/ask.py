@@ -647,6 +647,7 @@ async def _run_ask_tui(
     llm_adapter: LLMAdapter | None = None,
     session: Any | None = None,
     title: str = "meshagent ask",
+    assistant_name: str = "assistant",
 ) -> None:
     try:
         from rich.console import Group
@@ -816,10 +817,11 @@ async def _run_ask_tui(
             Binding("enter", "submit_prompt", "Send", priority=True),
         ]
 
-        def __init__(self, *, session: Any, title: str) -> None:
+        def __init__(self, *, session: Any, title: str, assistant_name: str) -> None:
             super().__init__()
             self._session = session
             self._title = title
+            self._assistant_name = assistant_name
             self._entries: list[_AskFeedEntry] = []
             self._feed_view: Vertical | None = None
             self._feed_scroll: VerticalScroll | None = None
@@ -1012,7 +1014,10 @@ async def _run_ask_tui(
                 self._active_assistant_body.update("")
             if self._active_assistant_text.strip() != "":
                 self._entries.append(
-                    _AskFeedEntry(role="assistant", text=self._active_assistant_text)
+                    _AskFeedEntry(
+                        role=self._assistant_name,
+                        text=self._active_assistant_text,
+                    )
                 )
             self._active_assistant_text = ""
 
@@ -1189,7 +1194,7 @@ async def _run_ask_tui(
             self._active_assistant_header.styles.display = "block"
             self._active_assistant_header.update(
                 Text(
-                    "assistant",
+                    self._assistant_name,
                     style="bold cyan",
                 )
             )
@@ -1287,7 +1292,11 @@ async def _run_ask_tui(
             )
 
     async def _run_app(session_arg: Any) -> None:
-        app = _AskTextualApp(session=session_arg, title=title)
+        app = _AskTextualApp(
+            session=session_arg,
+            title=title,
+            assistant_name=assistant_name,
+        )
         token = active_app.set(app)
         try:
             await app.run_async()

@@ -8,10 +8,16 @@ import pytest
 
 from meshagent.agents.context import AgentSessionContext
 from meshagent.agents.messages import (
+    AGENT_EVENT_TEXT_CONTENT_DELTA,
+    AGENT_EVENT_TURN_ENDED,
+    AGENT_EVENT_TURN_STARTED,
     AGENT_MESSAGE_TURN_START,
     AGENT_MESSAGE_TURN_STEER,
+    AgentTextContentDelta,
     AgentTextContent,
+    TurnEnded,
     TurnStart,
+    TurnStarted,
     TurnSteer,
 )
 from meshagent.agents.process import Message
@@ -1065,6 +1071,249 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
     assert captured["title"] == "meshagent process run"
     assert captured["session"].current_working_directory == "/tmp"
     assert bot._supervisor.unsubscribed_queue is bot._supervisor.subscribed_queue
+
+
+@pytest.mark.asyncio
+async def test_process_use_routes_to_chat_channel_ask_tui(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _DummyAccountClient:
+        async def close(self) -> None:
+            captured["account_closed"] = True
+
+    async def fake_get_client():
+        return _DummyAccountClient()
+
+    async def fake_resolve_project_id(*, project_id=None):
+        del project_id
+        return "project-123"
+
+    async def fake_run_process_use_tui(**kwargs):
+        captured["process_use_kwargs"] = kwargs
+
+    async def fail_chat_with(**kwargs):
+        del kwargs
+        raise AssertionError("process use should not use chatbot chat_with")
+
+    monkeypatch.setattr(chatbot, "get_client", fake_get_client)
+    monkeypatch.setattr(chatbot, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(chatbot, "resolve_room", lambda room_name=None: room_name)
+    monkeypatch.setattr(chatbot, "_run_process_use_tui", fake_run_process_use_tui)
+    monkeypatch.setattr(chatbot, "chat_with", fail_chat_with)
+
+    root_command = click.Command("meshagent")
+    process_command = click.Command("process")
+    use_command = click.Command("use")
+    with click.Context(root_command, info_name="meshagent") as root_context:
+        with click.Context(
+            process_command,
+            info_name="process",
+            parent=root_context,
+        ) as process_context:
+            with click.Context(
+                use_command,
+                info_name="use",
+                parent=process_context,
+            ):
+                await chatbot.use(
+                    project_id=None,
+                    room="quickstart",
+                    agent_name="remote-helper",
+                    thread_path="/threads/remote.thread",
+                    message=None,
+                )
+
+    assert captured["process_use_kwargs"] == {
+        "account_client": captured["process_use_kwargs"]["account_client"],
+        "project_id": "project-123",
+        "room": "quickstart",
+        "agent_name": "remote-helper",
+        "thread_path": "/threads/remote.thread",
+        "message": None,
+    }
+    assert captured["account_closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_chatbot_use_keeps_legacy_chat_with_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _DummyAccountClient:
+        async def close(self) -> None:
+            captured["account_closed"] = True
+
+    async def fake_get_client():
+        return _DummyAccountClient()
+
+    async def fake_resolve_project_id(*, project_id=None):
+        del project_id
+        return "project-123"
+
+    async def fake_chat_with(**kwargs):
+        captured["chat_with_kwargs"] = kwargs
+
+    async def fail_process_use_tui(**kwargs):
+        del kwargs
+        raise AssertionError("chatbot use should not use process use TUI")
+
+    monkeypatch.setattr(chatbot, "get_client", fake_get_client)
+    monkeypatch.setattr(chatbot, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(chatbot, "resolve_room", lambda room_name=None: room_name)
+    monkeypatch.setattr(chatbot, "chat_with", fake_chat_with)
+    monkeypatch.setattr(chatbot, "_run_process_use_tui", fail_process_use_tui)
+
+    root_command = click.Command("meshagent")
+    chatbot_command = click.Command("chatbot")
+    use_command = click.Command("use")
+    with click.Context(root_command, info_name="meshagent") as root_context:
+        with click.Context(
+            chatbot_command,
+            info_name="chatbot",
+            parent=root_context,
+        ) as chatbot_context:
+            with click.Context(
+                use_command,
+                info_name="use",
+                parent=chatbot_context,
+            ):
+                await chatbot.use(
+                    project_id=None,
+                    room="quickstart",
+                    agent_name="legacy-helper",
+                    thread_path="/threads/legacy.thread",
+                    message="hello legacy",
+                )
+
+    assert captured["chat_with_kwargs"] == {
+        "participant_name": "legacy-helper",
+        "room": "quickstart",
+        "project_id": "project-123",
+        "thread_path": "/threads/legacy.thread",
+        "message": "hello legacy",
+    }
+    assert captured["account_closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_process_use_tui_uses_chat_channel_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from meshagent.cli import ask as ask_module
+
+    captured: dict[str, object] = {}
+
+    class _DummyRoomClient:
+        def __init__(self) -> None:
+            self.exit_calls = 0
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type
+            del exc
+            del tb
+            self.exit_calls += 1
+
+    class _DummyChatClient:
+        def __init__(self) -> None:
+            self.thread_path = "/threads/remote.thread"
+            self.sent_payloads: list[object] = []
+            self.events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+            self.exit_calls = 0
+
+        async def send(self, payload) -> None:
+            self.sent_payloads.append(payload)
+            if isinstance(payload, TurnStart):
+                self.events.put_nowait(
+                    TurnStarted(
+                        type=AGENT_EVENT_TURN_STARTED,
+                        thread_id=payload.thread_id,
+                        turn_id="turn-1",
+                        source_message_id=payload.message_id,
+                    ).model_dump(mode="json")
+                )
+                self.events.put_nowait(
+                    AgentTextContentDelta(
+                        type=AGENT_EVENT_TEXT_CONTENT_DELTA,
+                        thread_id=payload.thread_id,
+                        turn_id="turn-1",
+                        item_id="text-1",
+                        text="remote response",
+                    ).model_dump(mode="json")
+                )
+                self.events.put_nowait(
+                    TurnEnded(
+                        type=AGENT_EVENT_TURN_ENDED,
+                        thread_id=payload.thread_id,
+                        turn_id="turn-1",
+                        error=None,
+                    ).model_dump(mode="json")
+                )
+
+        async def receive(self) -> dict[str, object]:
+            return await self.events.get()
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type
+            del exc
+            del tb
+            self.exit_calls += 1
+
+    room_client = _DummyRoomClient()
+    chat_client = _DummyChatClient()
+
+    async def fake_open_process_use_chat_session(**kwargs):
+        captured["open_kwargs"] = kwargs
+        return room_client, chat_client
+
+    async def fake_run_ask_tui(**kwargs):
+        captured["tui_model"] = kwargs["model"]
+        captured["tui_title"] = kwargs["title"]
+        captured["assistant_name"] = kwargs["assistant_name"]
+        session = kwargs["session"]
+        captured["session_cwd"] = session.current_working_directory
+        deltas: list[str] = []
+        captured["ask_result"] = await session.ask(
+            prompt="hello remote",
+            on_delta=deltas.append,
+        )
+        captured["deltas"] = deltas
+
+    monkeypatch.setattr(
+        chatbot,
+        "_open_process_use_chat_session",
+        fake_open_process_use_chat_session,
+    )
+    monkeypatch.setattr(ask_module, "_run_ask_tui", fake_run_ask_tui)
+
+    await chatbot._run_process_use_tui(
+        account_client=object(),
+        project_id="project-123",
+        room="quickstart",
+        agent_name="remote-helper",
+        thread_path="/threads/remote.thread",
+        message=None,
+    )
+
+    assert captured["open_kwargs"]["project_id"] == "project-123"
+    assert captured["open_kwargs"]["room"] == "quickstart"
+    assert captured["open_kwargs"]["participant_name"] == "remote-helper"
+    assert captured["open_kwargs"]["thread_path"] == "/threads/remote.thread"
+    assert captured["tui_model"] == "remote"
+    assert captured["tui_title"] == "meshagent process use: remote-helper"
+    assert captured["assistant_name"] == "remote-helper"
+    assert captured["ask_result"] == "remote response"
+    assert captured["deltas"] == ["remote response"]
+    assert len(chat_client.sent_payloads) == 1
+    sent_payload = chat_client.sent_payloads[0]
+    assert isinstance(sent_payload, TurnStart)
+    assert sent_payload.type == AGENT_MESSAGE_TURN_START
+    assert sent_payload.thread_id == "/threads/remote.thread"
+    assert sent_payload.content == [AgentTextContent(type="text", text="hello remote")]
+    assert chat_client.exit_calls == 1
+    assert room_client.exit_calls == 1
 
 
 class _FakeRoomClient:
