@@ -18,6 +18,8 @@ dependencies = [
   "pyyaml~=6.0.2",
   "pydantic-yaml~=1.5",
   "pyarrow~=21.0.0",
+  "openpyxl~=3.1",
+  "xlsxwriter~=3.2",
   "pathspec>=1.0.3,<2",
   "zstandard~=0.25.0",
   "meshagent-llm-proxy==0.39.5",
