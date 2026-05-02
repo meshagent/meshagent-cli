@@ -15,6 +15,19 @@ def test_root_help_lists_doctor_command() -> None:
     assert 'module="meshagent.cli.doctor"' in cli_source
 
 
+def test_doctor_recommends_init_for_empty_project(tmp_path) -> None:
+    (tmp_path / ".gitkeep").write_text("", encoding="utf-8")
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Detected project: Unknown" in result.output
+    assert "No identifiable deployable project was detected" in result.output
+    assert "meshagent init" in result.output
+    assert "Diagnostics for Codex" in result.output
+    assert "meshagent deploy ." not in result.output
+
+
 def test_doctor_reports_python_roomclient_deploy_gaps(tmp_path) -> None:
     (tmp_path / "requirements.txt").write_text(
         "meshagent-api==0.5.18\n",

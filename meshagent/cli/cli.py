@@ -98,6 +98,12 @@ app.add_lazy_command(
     help="Inspect a project for MeshAgent deployment gaps",
 )
 app.add_lazy_command(
+    name="init",
+    module="meshagent.cli.init",
+    attribute="init_command",
+    help="Create a minimal deployable Python hello world project",
+)
+app.add_lazy_command(
     name="session",
     module="meshagent.cli.sessions",
     help="Inspect recent sessions and events",

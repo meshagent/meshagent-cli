@@ -873,6 +873,21 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
         click.echo(f"Official RoomClient SDK: detected ({diagnosis.sdk})")
     click.echo("")
 
+    if diagnosis.language == "Unknown" and not diagnosis.has_deployment_artifact:
+        click.echo("Findings:")
+        click.echo("  [missing] No identifiable deployable project was detected")
+        click.echo("")
+        click.echo("Recommended next steps:")
+        click.echo("1. Create a minimal deployable Python hello world project:")
+        click.echo("   meshagent init")
+        click.echo("2. Diagnostics for Codex:")
+        click.echo(
+            "   - No recognizable application code or deployment metadata was "
+            "found in this directory. Run `meshagent init` to create a minimal "
+            "Python hello world project, then deploy the generated project."
+        )
+        return
+
     click.echo("Findings:")
     if diagnosis.has_deployment_artifact:
         click.echo(
