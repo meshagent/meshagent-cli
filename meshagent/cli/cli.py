@@ -96,12 +96,14 @@ app.add_lazy_command(
     module="meshagent.cli.doctor",
     attribute="doctor_command",
     help="Inspect a project for MeshAgent deployment gaps",
+    hidden=True,
 )
 app.add_lazy_command(
     name="init",
     module="meshagent.cli.init",
     attribute="init_command",
     help="Create a minimal deployable Python hello world project",
+    hidden=True,
 )
 app.add_lazy_command(
     name="session",

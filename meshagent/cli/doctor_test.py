@@ -6,15 +6,6 @@ from meshagent.cli import doctor as doctor_module
 from meshagent.cli.doctor import diagnose_project, doctor_command
 
 
-def test_root_help_lists_doctor_command() -> None:
-    from pathlib import Path
-
-    cli_source = Path(__file__).with_name("cli.py").read_text(encoding="utf-8")
-
-    assert 'name="doctor"' in cli_source
-    assert 'module="meshagent.cli.doctor"' in cli_source
-
-
 def test_doctor_recommends_init_for_empty_project(tmp_path) -> None:
     (tmp_path / ".gitkeep").write_text("", encoding="utf-8")
 
