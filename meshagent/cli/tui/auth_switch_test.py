@@ -36,7 +36,7 @@ def test_first_enabled_option_index_returns_first_enabled() -> None:
     assert AuthSwitchApp._first_enabled_option_index(options) == 1
 
 
-def test_highlighted_profile_user_id_prefers_first_non_active() -> None:
+def test_highlighted_profile_user_id_prefers_active_profile() -> None:
     saved_profiles = [
         _saved_profile(
             user_id="user-123",
@@ -56,7 +56,30 @@ def test_highlighted_profile_user_id_prefers_first_non_active() -> None:
         ),
     ]
 
-    assert AuthSwitchApp._highlighted_profile_user_id(saved_profiles) == "user-456"
+    assert AuthSwitchApp._highlighted_profile_user_id(saved_profiles) == "user-123"
+
+
+def test_highlighted_profile_user_id_falls_back_to_first_saved_profile() -> None:
+    saved_profiles = [
+        _saved_profile(
+            user_id="user-123",
+            first_name="Jesse",
+            last_name="Ezell",
+            email="jesse@example.com",
+            api_url="https://api.meshagent.test",
+            is_active=False,
+        ),
+        _saved_profile(
+            user_id="user-456",
+            first_name="Taylor",
+            last_name="Swift",
+            email="taylor@example.com",
+            api_url="https://api.meshagent.test",
+            is_active=False,
+        ),
+    ]
+
+    assert AuthSwitchApp._highlighted_profile_user_id(saved_profiles) == "user-123"
 
 
 def test_show_profile_selection_renders_saved_profiles(monkeypatch) -> None:
@@ -121,5 +144,5 @@ def test_show_profile_selection_renders_saved_profiles(monkeypatch) -> None:
             ),
             ("Exit without switching", "__auth_switch_exit__"),
         ],
-        "highlighted_id": "__auth_switch_profile__:user-456",
+        "highlighted_id": "__auth_switch_profile__:user-123",
     }

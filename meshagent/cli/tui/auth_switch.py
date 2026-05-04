@@ -182,7 +182,7 @@ class AuthSwitchApp(App[None]):
         saved_profiles: Sequence[SavedProfileRecord],
     ) -> str | None:
         for profile in saved_profiles:
-            if not profile.is_active:
+            if profile.is_active:
                 return profile.user_id
 
         if len(saved_profiles) == 0:
