@@ -2,6 +2,8 @@ import typer
 import click
 from rich import print
 from typing import Annotated, Any, Optional, List, Literal, Awaitable, Callable
+import inspect
+import uuid
 from meshagent.tools import (
     BaseTool,
     Toolkit,
@@ -96,7 +98,26 @@ from meshagent.openai.tools.responses_adapter import (
 
 from meshagent.tools.dataset import make_dataset_toolkit
 from meshagent.agents.adapter import LLMAdapter, MessageStreamLLMAdapter
-from meshagent.agents.process import ContentScheme
+from meshagent.agents.messages import (
+    AGENT_EVENT_TEXT_CONTENT_DELTA,
+    AGENT_EVENT_TURN_ENDED,
+    AGENT_EVENT_TURN_STARTED,
+    AGENT_EVENT_TURN_STEER_ACCEPTED,
+    AGENT_EVENT_TURN_STEER_REJECTED,
+    AGENT_MESSAGE_TURN_INTERRUPT,
+    AGENT_MESSAGE_TURN_START,
+    AGENT_MESSAGE_TURN_STEER,
+    AgentTextContentDelta,
+    AgentTextContent,
+    TurnEnded,
+    TurnInterrupt,
+    TurnStart,
+    TurnStarted,
+    TurnSteer,
+    TurnSteerAccepted,
+    TurnSteerRejected,
+)
+from meshagent.agents.process import ContentScheme, Message
 
 from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.api.messaging import FileContent
@@ -158,6 +179,621 @@ async def _run_agent_room_session(
             await _await_cleanup(bot.stop())
         if client_entered:
             await _await_cleanup(client.__aexit__(None, None, None))
+
+
+async def _maybe_await(callback_result: Any) -> None:
+    if inspect.isawaitable(callback_result):
+        await callback_result
+
+
+def _consume_task_exception(task: asyncio.Task[Any]) -> None:
+    if task.cancelled():
+        return
+    try:
+        task.exception()
+    except asyncio.CancelledError:
+        return
+
+
+class _ProcessRunSession:
+    def __init__(
+        self,
+        *,
+        bot: Any,
+        model: str,
+        thread_path: str | None,
+        current_working_directory: str | None,
+    ) -> None:
+        self._model = model
+        self._thread_id = thread_path or f"/process-run/{uuid.uuid4()}"
+        self._current_working_directory = os.path.abspath(
+            current_working_directory or os.getcwd()
+        )
+        self._supervisor = bot._supervisor
+        self._events = self._supervisor.subscribe_local_events()
+        self._active_turn_id: str | None = None
+        self._pending_steer_callbacks: dict[
+            str,
+            tuple[
+                Callable[[], Awaitable[None] | None] | None,
+                Callable[[RoomException], Awaitable[None] | None] | None,
+            ],
+        ] = {}
+
+    @property
+    def current_working_directory(self) -> str:
+        return self._current_working_directory
+
+    async def close(self) -> None:
+        self._supervisor.unsubscribe_local_events(self._events)
+
+    async def ask(
+        self,
+        *,
+        prompt: str,
+        on_delta: Callable[[str], Awaitable[None] | None] | None = None,
+        on_status: Callable[[str | None], None] | None = None,
+        on_turn_started: Callable[[], Awaitable[None] | None] | None = None,
+    ) -> str:
+        turn_start = TurnStart(
+            type=AGENT_MESSAGE_TURN_START,
+            thread_id=self._thread_id,
+            content=[
+                AgentTextContent(
+                    type="text",
+                    text=prompt,
+                )
+            ],
+            model=self._model,
+        )
+        if on_status is not None:
+            on_status("Working")
+        self._supervisor.send(Message(data=turn_start))
+
+        output_parts: list[str] = []
+        active_turn_id: str | None = None
+        while True:
+            event = await self._events.get()
+
+            if event.data.type == AGENT_EVENT_TURN_STARTED:
+                turn_started = TurnStarted.model_validate(
+                    event.data.model_dump(mode="python")
+                )
+                if turn_started.thread_id != self._thread_id:
+                    continue
+                if turn_started.source_message_id == turn_start.message_id:
+                    active_turn_id = turn_started.turn_id
+                    self._active_turn_id = active_turn_id
+                    if on_turn_started is not None:
+                        await _maybe_await(on_turn_started())
+                continue
+
+            if event.data.type == AGENT_EVENT_TURN_STEER_ACCEPTED:
+                steer_accepted = TurnSteerAccepted.model_validate(
+                    event.data.model_dump(mode="python")
+                )
+                if steer_accepted.thread_id != self._thread_id:
+                    continue
+                pending_callbacks = self._pending_steer_callbacks.pop(
+                    steer_accepted.source_message_id, None
+                )
+                if pending_callbacks is None:
+                    continue
+                accepted_callback, _ = pending_callbacks
+                if accepted_callback is not None:
+                    await _maybe_await(accepted_callback())
+                continue
+
+            if event.data.type == AGENT_EVENT_TURN_STEER_REJECTED:
+                steer_rejected = TurnSteerRejected.model_validate(
+                    event.data.model_dump(mode="python")
+                )
+                if steer_rejected.thread_id != self._thread_id:
+                    continue
+                pending_callbacks = self._pending_steer_callbacks.pop(
+                    steer_rejected.source_message_id, None
+                )
+                if pending_callbacks is None:
+                    continue
+                _, rejected_callback = pending_callbacks
+                if rejected_callback is not None:
+                    await _maybe_await(
+                        rejected_callback(
+                            RoomException(
+                                steer_rejected.error.message,
+                                code=steer_rejected.error.code,
+                            )
+                        )
+                    )
+                continue
+
+            if event.data.type == AGENT_EVENT_TEXT_CONTENT_DELTA:
+                text_delta = event.data.model_copy(deep=False)
+                if text_delta.thread_id != self._thread_id:
+                    continue
+                if active_turn_id is not None and text_delta.turn_id != active_turn_id:
+                    continue
+                output_parts.append(text_delta.text)
+                if on_delta is not None:
+                    await _maybe_await(on_delta(text_delta.text))
+                continue
+
+            if event.data.type == AGENT_EVENT_TURN_ENDED:
+                turn_ended = TurnEnded.model_validate(
+                    event.data.model_dump(mode="python")
+                )
+                if turn_ended.thread_id != self._thread_id:
+                    continue
+                if active_turn_id is not None and turn_ended.turn_id != active_turn_id:
+                    continue
+                self._active_turn_id = None
+                self._pending_steer_callbacks.clear()
+                if on_status is not None:
+                    on_status(None)
+                if turn_ended.error is not None:
+                    raise RoomException(
+                        turn_ended.error.message,
+                        code=turn_ended.error.code,
+                    )
+                return "".join(output_parts)
+
+    def steer(
+        self,
+        *,
+        prompt: str,
+        on_accepted: Callable[[], Awaitable[None] | None] | None = None,
+        on_rejected: Callable[[RoomException], Awaitable[None] | None] | None = None,
+    ) -> str | None:
+        if self._active_turn_id is None:
+            return None
+
+        turn_steer = TurnSteer(
+            type=AGENT_MESSAGE_TURN_STEER,
+            thread_id=self._thread_id,
+            turn_id=self._active_turn_id,
+            content=[
+                AgentTextContent(
+                    type="text",
+                    text=prompt,
+                )
+            ],
+        )
+        self._pending_steer_callbacks[turn_steer.message_id] = (
+            on_accepted,
+            on_rejected,
+        )
+        self._supervisor.send(Message(data=turn_steer))
+        return turn_steer.message_id
+
+    def interrupt(self) -> bool:
+        if self._active_turn_id is None:
+            return False
+
+        self._supervisor.send(
+            Message(
+                data=TurnInterrupt(
+                    type=AGENT_MESSAGE_TURN_INTERRUPT,
+                    thread_id=self._thread_id,
+                    turn_id=self._active_turn_id,
+                )
+            )
+        )
+        return True
+
+
+async def _run_process_run_tui(
+    *,
+    bot: Any,
+    model: str,
+    thread_path: str | None,
+    message: str | None,
+    working_dir: str | None,
+) -> None:
+    from meshagent.cli import ask as ask_module
+
+    session = _ProcessRunSession(
+        bot=bot,
+        model=model,
+        thread_path=thread_path,
+        current_working_directory=working_dir,
+    )
+    try:
+        if message is not None:
+            await session.ask(
+                prompt=message,
+                on_delta=lambda text: click.echo(text, nl=False),
+            )
+            click.echo()
+            return
+
+        await ask_module._run_ask_tui(
+            model=model,
+            session=session,
+            title="meshagent process run",
+        )
+    finally:
+        await session.close()
+
+
+class _ProcessUseChatChannelClient:
+    def __init__(
+        self,
+        *,
+        room: RoomClient,
+        participant_name: str,
+        thread_path: str,
+        timeout: float = 30,
+    ) -> None:
+        self._room = room
+        self._participant_name = participant_name
+        self._thread_path = thread_path
+        self._timeout = timeout
+        self._participant: RemoteParticipant | None = None
+        self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    @property
+    def thread_path(self) -> str:
+        return self._thread_path
+
+    async def __aenter__(self) -> "_ProcessUseChatChannelClient":
+        await self.start()
+        return self
+
+    async def __aexit__(self, exc_type, exc, exc_tb) -> None:
+        del exc_type, exc, exc_tb
+        await self.stop()
+
+    async def start(self) -> None:
+        self._room.messaging.on("message", self._on_message)
+        if not self._room.messaging.is_enabled:
+            await self._room.messaging.enable()
+        try:
+            await self._wait_for_participant()
+        except Exception:
+            self._room.messaging.off("message", self._on_message)
+            raise
+
+    async def close(self) -> None:
+        await self.stop()
+
+    async def stop(self) -> None:
+        self._room.messaging.off("message", self._on_message)
+
+    async def _wait_for_participant(self) -> None:
+        try:
+            async with asyncio.timeout(self._timeout):
+                while self._participant is None:
+                    for participant in self._room.messaging.get_participants():
+                        if participant.get_attribute("name") != self._participant_name:
+                            continue
+                        self._participant = participant
+                        return
+                    await asyncio.sleep(1)
+        except asyncio.TimeoutError as exc:
+            raise RoomException(
+                f"timed out waiting for {self._participant_name}"
+            ) from exc
+
+    def _on_message(self, message) -> None:
+        if self._participant is None:
+            return
+        if message.from_participant_id != self._participant.id:
+            return
+        if message.type != "agent-message":
+            return
+        raw_message = message.message
+        if not isinstance(raw_message, dict):
+            return
+        raw_payload = raw_message.get("payload")
+        if not isinstance(raw_payload, dict):
+            return
+        if raw_payload.get("thread_id") != self._thread_path:
+            return
+        self._events.put_nowait(raw_payload)
+
+    async def send(self, payload) -> None:
+        if self._participant is None:
+            raise RoomException("process use chat channel client not started")
+        await self._room.messaging.send_message(
+            to=self._participant,
+            type="agent-message",
+            message={"payload": payload.model_dump(mode="json")},
+            attachment=None,
+        )
+
+    async def receive(self) -> dict[str, Any]:
+        return await self._events.get()
+
+
+class _ChatChannelUseSession:
+    def __init__(
+        self,
+        *,
+        chat_client: _ProcessUseChatChannelClient,
+        current_working_directory: str | None = None,
+    ) -> None:
+        self._chat_client = chat_client
+        self._current_working_directory = os.path.abspath(
+            current_working_directory or os.getcwd()
+        )
+        self._active_turn_id: str | None = None
+        self._pending_steer_callbacks: dict[
+            str,
+            tuple[
+                Callable[[], Awaitable[None] | None] | None,
+                Callable[[RoomException], Awaitable[None] | None] | None,
+            ],
+        ] = {}
+
+    @property
+    def current_working_directory(self) -> str:
+        return self._current_working_directory
+
+    async def close(self) -> None:
+        self._pending_steer_callbacks.clear()
+
+    async def ask(
+        self,
+        *,
+        prompt: str,
+        on_delta: Callable[[str], Awaitable[None] | None] | None = None,
+        on_status: Callable[[str | None], None] | None = None,
+        on_turn_started: Callable[[], Awaitable[None] | None] | None = None,
+    ) -> str:
+        turn_start = TurnStart(
+            type=AGENT_MESSAGE_TURN_START,
+            thread_id=self._chat_client.thread_path,
+            content=[
+                AgentTextContent(
+                    type="text",
+                    text=prompt,
+                )
+            ],
+        )
+        if on_status is not None:
+            on_status("Working")
+        await self._chat_client.send(turn_start)
+
+        output_parts: list[str] = []
+        active_turn_id: str | None = None
+        try:
+            while True:
+                payload = await self._chat_client.receive()
+                event_type = payload.get("type")
+
+                if event_type == AGENT_EVENT_TURN_STARTED:
+                    turn_started = TurnStarted.model_validate(payload)
+                    if turn_started.source_message_id == turn_start.message_id:
+                        active_turn_id = turn_started.turn_id
+                        self._active_turn_id = active_turn_id
+                        if on_turn_started is not None:
+                            await _maybe_await(on_turn_started())
+                    continue
+
+                if event_type == AGENT_EVENT_TURN_STEER_ACCEPTED:
+                    steer_accepted = TurnSteerAccepted.model_validate(payload)
+                    pending_callbacks = self._pending_steer_callbacks.pop(
+                        steer_accepted.source_message_id, None
+                    )
+                    if pending_callbacks is None:
+                        continue
+                    accepted_callback, _ = pending_callbacks
+                    if accepted_callback is not None:
+                        await _maybe_await(accepted_callback())
+                    continue
+
+                if event_type == AGENT_EVENT_TURN_STEER_REJECTED:
+                    steer_rejected = TurnSteerRejected.model_validate(payload)
+                    pending_callbacks = self._pending_steer_callbacks.pop(
+                        steer_rejected.source_message_id, None
+                    )
+                    if pending_callbacks is None:
+                        continue
+                    _, rejected_callback = pending_callbacks
+                    if rejected_callback is not None:
+                        await _maybe_await(
+                            rejected_callback(
+                                RoomException(
+                                    steer_rejected.error.message,
+                                    code=steer_rejected.error.code,
+                                )
+                            )
+                        )
+                    continue
+
+                if event_type == AGENT_EVENT_TEXT_CONTENT_DELTA:
+                    text_delta = AgentTextContentDelta.model_validate(payload)
+                    if (
+                        active_turn_id is not None
+                        and text_delta.turn_id != active_turn_id
+                    ):
+                        continue
+                    output_parts.append(text_delta.text)
+                    if on_delta is not None:
+                        await _maybe_await(on_delta(text_delta.text))
+                    continue
+
+                if event_type == AGENT_EVENT_TURN_ENDED:
+                    turn_ended = TurnEnded.model_validate(payload)
+                    if (
+                        active_turn_id is not None
+                        and turn_ended.turn_id != active_turn_id
+                    ):
+                        continue
+                    self._active_turn_id = None
+                    self._pending_steer_callbacks.clear()
+                    if turn_ended.error is not None:
+                        raise RoomException(
+                            turn_ended.error.message,
+                            code=turn_ended.error.code,
+                        )
+                    return "".join(output_parts)
+        finally:
+            self._active_turn_id = None
+            if on_status is not None:
+                on_status(None)
+
+    def steer(
+        self,
+        *,
+        prompt: str,
+        on_accepted: Callable[[], Awaitable[None] | None] | None = None,
+        on_rejected: Callable[[RoomException], Awaitable[None] | None] | None = None,
+    ) -> str | None:
+        if self._active_turn_id is None:
+            return None
+
+        turn_steer = TurnSteer(
+            type=AGENT_MESSAGE_TURN_STEER,
+            thread_id=self._chat_client.thread_path,
+            turn_id=self._active_turn_id,
+            content=[
+                AgentTextContent(
+                    type="text",
+                    text=prompt,
+                )
+            ],
+        )
+        self._pending_steer_callbacks[turn_steer.message_id] = (
+            on_accepted,
+            on_rejected,
+        )
+
+        async def _send_steer() -> None:
+            try:
+                await self._chat_client.send(turn_steer)
+            except RoomException as exc:
+                self._pending_steer_callbacks.pop(turn_steer.message_id, None)
+                if on_rejected is not None:
+                    await _maybe_await(on_rejected(exc))
+            except Exception as exc:
+                self._pending_steer_callbacks.pop(turn_steer.message_id, None)
+                if on_rejected is not None:
+                    await _maybe_await(on_rejected(RoomException(str(exc))))
+
+        task = asyncio.create_task(_send_steer())
+        task.add_done_callback(_consume_task_exception)
+        return turn_steer.message_id
+
+    def interrupt(self) -> bool:
+        if self._active_turn_id is None:
+            return False
+
+        turn_interrupt = TurnInterrupt(
+            type=AGENT_MESSAGE_TURN_INTERRUPT,
+            thread_id=self._chat_client.thread_path,
+            turn_id=self._active_turn_id,
+        )
+
+        async def _send_cancel() -> None:
+            await self._chat_client.send(turn_interrupt)
+
+        task = asyncio.create_task(_send_cancel())
+        task.add_done_callback(_consume_task_exception)
+        return True
+
+
+async def _close_process_use_chat_client(
+    client: _ProcessUseChatChannelClient | None,
+) -> None:
+    if client is None:
+        return
+    try:
+        await client.__aexit__(None, None, None)
+    except Exception:
+        pass
+
+
+async def _close_process_use_room_client(client: RoomClient | None) -> None:
+    if client is None:
+        return
+    try:
+        await client.__aexit__(None, None, None)
+    except Exception:
+        pass
+
+
+async def _open_process_use_chat_session(
+    *,
+    account_client: Any,
+    project_id: str,
+    room: str,
+    participant_name: str,
+    thread_path: str | None,
+) -> tuple[RoomClient, _ProcessUseChatChannelClient]:
+    connection = await account_client.connect_room(project_id=project_id, room=room)
+    user_client = RoomClient(
+        protocol_factory=WebSocketClientProtocol(
+            url=websocket_room_url(room_name=room),
+            token=connection.jwt,
+        ).create_factory(),
+    )
+    chat_client: _ProcessUseChatChannelClient | None = None
+    try:
+        await user_client.__aenter__()
+        local_user_name = user_client.local_participant.get_attribute("name")
+        resolved_thread_path = thread_path
+        if resolved_thread_path is None:
+            resolved_thread_path = (
+                f".threads/{participant_name}/{local_user_name}.thread"
+            )
+
+        chat_client = _ProcessUseChatChannelClient(
+            room=user_client,
+            participant_name=participant_name,
+            thread_path=resolved_thread_path,
+        )
+        await chat_client.__aenter__()
+        return user_client, chat_client
+    except Exception:
+        await _close_process_use_chat_client(chat_client)
+        await _close_process_use_room_client(user_client)
+        raise
+
+
+async def _run_process_use_tui(
+    *,
+    account_client: Any,
+    project_id: str,
+    room: str,
+    agent_name: str,
+    thread_path: str | None,
+    message: str | None,
+) -> None:
+    from meshagent.cli import ask as ask_module
+
+    user_client: RoomClient | None = None
+    chat_client: _ProcessUseChatChannelClient | None = None
+    session: _ChatChannelUseSession | None = None
+    try:
+        user_client, chat_client = await _open_process_use_chat_session(
+            account_client=account_client,
+            project_id=project_id,
+            room=room,
+            participant_name=agent_name,
+            thread_path=thread_path,
+        )
+        session = _ChatChannelUseSession(chat_client=chat_client)
+
+        if message is not None:
+            await session.ask(
+                prompt=message,
+                on_delta=lambda text: click.echo(text, nl=False),
+            )
+            click.echo()
+            return
+
+        await ask_module._run_ask_tui(
+            model="remote",
+            session=session,
+            title=f"meshagent process use: {agent_name}",
+            assistant_name=agent_name,
+        )
+    finally:
+        if session is not None:
+            await session.close()
+        await _close_process_use_chat_client(chat_client)
+        await _close_process_use_room_client(user_client)
 
 
 app = async_typer.AsyncTyper(help="Join a chatbot to a room")
@@ -363,6 +999,16 @@ def _resolved_channels(
         raise typer.BadParameter("--channel=chat is required for this command")
 
     return normalized_channels
+
+
+def _require_process_channels(
+    *, runtime: Literal["chatbot", "process"], channels: list[str]
+) -> None:
+    if runtime != "process" or len(channels) > 0:
+        return
+
+    print("[bold red]at least one channel is required for process agents[/bold red]")
+    raise typer.Exit(1)
 
 
 def _parse_mail_channel(*, channel: str) -> _MailChannelConfig:
@@ -1992,6 +2638,22 @@ def build_process_agent(
         def __init__(self, *, agent: CustomProcessAgent) -> None:
             super().__init__()
             self._agent = agent
+            self._local_event_queues: list[asyncio.Queue[Message]] = []
+
+        def subscribe_local_events(self) -> asyncio.Queue[Message]:
+            queue: asyncio.Queue[Message] = asyncio.Queue()
+            self._local_event_queues.append(queue)
+            return queue
+
+        def unsubscribe_local_events(self, queue: asyncio.Queue[Message]) -> None:
+            if queue in self._local_event_queues:
+                self._local_event_queues.remove(queue)
+
+        def send(self, message: Message) -> None:
+            if message.source is not None:
+                for queue in [*self._local_event_queues]:
+                    queue.put_nowait(message)
+            super().send(message)
 
         def create_thread_process(self, thread_id: str) -> LLMAgentProcess:
             async def _turn_instructions_provider(
@@ -2284,6 +2946,7 @@ async def join(
 ):
     runtime = _current_command_runtime()
     resolved_channels = _resolved_channels(runtime=runtime, channel=channel)
+    _require_process_channels(runtime=runtime, channels=resolved_channels)
     working_dir = _resolve_working_dir_option(
         working_dir=working_dir,
         working_directory=working_directory,
@@ -2689,6 +3352,7 @@ async def service(
 ):
     runtime = _current_command_runtime()
     resolved_channels = _resolved_channels(runtime=runtime, channel=channel)
+    _require_process_channels(runtime=runtime, channels=resolved_channels)
     working_dir = _resolve_working_dir_option(
         working_dir=working_dir,
         working_directory=working_directory,
@@ -3043,6 +3707,7 @@ async def spec(
 ):
     runtime = _current_command_runtime()
     resolved_channels = _resolved_channels(runtime=runtime, channel=channel)
+    _require_process_channels(runtime=runtime, channels=resolved_channels)
     resolved_service_name = service_name if service_name is not None else agent_name
     working_dir = _resolve_working_dir_option(
         working_dir=working_dir,
@@ -3421,6 +4086,7 @@ async def deploy(
 ):
     runtime = _current_command_runtime()
     resolved_channels = _resolved_channels(runtime=runtime, channel=channel)
+    _require_process_channels(runtime=runtime, channels=resolved_channels)
     resolved_service_name = service_name if service_name is not None else agent_name
     working_dir = _resolve_working_dir_option(
         working_dir=working_dir,
@@ -4068,7 +4734,6 @@ async def chat_with(
                     Option("[A]pprove", id="approve"),
                     Option("[D]eny", id="deny"),
                     id="approval-actions",
-                    wrap=False,
                 )
             with Horizontal(id="input-row"):
                 yield Static(caret, id="input-prompt")
@@ -5448,23 +6113,31 @@ async def run(
         bot = CustomChatbot()
 
         async def run_interactive_session(client: RoomClient) -> None:
+            if runtime == "process":
+                interaction_task = asyncio.create_task(
+                    _run_process_run_tui(
+                        bot=bot,
+                        model=model,
+                        thread_path=thread_path,
+                        message=message,
+                        working_dir=working_dir,
+                    )
+                )
+            else:
+                interaction_task = asyncio.create_task(
+                    chat_with(
+                        participant_name=client.local_participant.get_attribute("name"),
+                        room=room,
+                        project_id=project_id,
+                        thread_path=thread_path,
+                        message=message,
+                    )
+                )
+
             done, pending = await asyncio.wait(
                 [
                     asyncio.create_task(client.protocol.wait_for_close()),
-                    asyncio.create_task(
-                        chat_with(
-                            participant_name=client.local_participant.get_attribute(
-                                "name"
-                            ),
-                            room=room,
-                            project_id=project_id,
-                            thread_path=thread_path,
-                            message=message,
-                            use_web_search=use_web_search,
-                            use_image_gen=use_image_gen,
-                            use_storage=use_storage,
-                        )
-                    ),
+                    interaction_task,
                 ],
                 return_when="FIRST_COMPLETED",
             )
@@ -5510,6 +6183,7 @@ async def use(
         typer.Option(..., help="the input message to use"),
     ] = None,
 ):
+    runtime = _current_command_runtime()
     root = logging.getLogger()
     root.setLevel(logging.ERROR)
 
@@ -5517,6 +6191,23 @@ async def use(
     try:
         project_id = await resolve_project_id(project_id=project_id)
         room = resolve_room(room)
+
+        if runtime == "process":
+            if agent_name is None or agent_name.strip() == "":
+                print(
+                    "[bold red]--agent-name must be specified for process use[/bold red]"
+                )
+                raise typer.Exit(1)
+
+            await _run_process_use_tui(
+                account_client=account_client,
+                project_id=project_id,
+                room=room,
+                agent_name=agent_name,
+                thread_path=thread_path,
+                message=message,
+            )
+            return
 
         await chat_with(
             participant_name=agent_name,

@@ -644,7 +644,10 @@ def _suppress_textual_debug_features() -> None:
 async def _run_ask_tui(
     *,
     model: str,
-    llm_adapter: LLMAdapter,
+    llm_adapter: LLMAdapter | None = None,
+    session: Any | None = None,
+    title: str = "meshagent ask",
+    assistant_name: str = "assistant",
 ) -> None:
     try:
         from rich.console import Group
@@ -814,9 +817,11 @@ async def _run_ask_tui(
             Binding("enter", "submit_prompt", "Send", priority=True),
         ]
 
-        def __init__(self, *, session: _AskSession) -> None:
+        def __init__(self, *, session: Any, title: str, assistant_name: str) -> None:
             super().__init__()
             self._session = session
+            self._title = title
+            self._assistant_name = assistant_name
             self._entries: list[_AskFeedEntry] = []
             self._feed_view: Vertical | None = None
             self._feed_scroll: VerticalScroll | None = None
@@ -843,7 +848,7 @@ async def _run_ask_tui(
         def compose(self) -> ComposeResult:
             yield Static(
                 Text(
-                    "meshagent ask\nEnter to send. Shift+Enter inserts a newline. Ctrl+C quits.",
+                    f"{self._title}\nEnter to send. Shift+Enter inserts a newline. Ctrl+C quits.",
                     style="bold",
                 ),
                 id="header",
@@ -1009,7 +1014,10 @@ async def _run_ask_tui(
                 self._active_assistant_body.update("")
             if self._active_assistant_text.strip() != "":
                 self._entries.append(
-                    _AskFeedEntry(role="assistant", text=self._active_assistant_text)
+                    _AskFeedEntry(
+                        role=self._assistant_name,
+                        text=self._active_assistant_text,
+                    )
                 )
             self._active_assistant_text = ""
 
@@ -1186,7 +1194,7 @@ async def _run_ask_tui(
             self._active_assistant_header.styles.display = "block"
             self._active_assistant_header.update(
                 Text(
-                    "assistant",
+                    self._assistant_name,
                     style="bold cyan",
                 )
             )
@@ -1283,20 +1291,34 @@ async def _run_ask_tui(
                 classes=entry_classes,
             )
 
+    async def _run_app(session_arg: Any) -> None:
+        app = _AskTextualApp(
+            session=session_arg,
+            title=title,
+            assistant_name=assistant_name,
+        )
+        token = active_app.set(app)
+        try:
+            await app.run_async()
+        except KeyboardInterrupt:
+            return
+        finally:
+            active_app.reset(token)
+
     with _suppress_ask_process_logs():
+        if session is not None:
+            await _run_app(session)
+            return
+
+        if llm_adapter is None:
+            raise TypeError("llm_adapter is required when session is not supplied")
+
         async with _AskSession(
             model=model,
             llm_adapter=llm_adapter,
             interactive=True,
-        ) as session:
-            app = _AskTextualApp(session=session)
-            token = active_app.set(app)
-            try:
-                await app.run_async()
-            except KeyboardInterrupt:
-                return
-            finally:
-                active_app.reset(token)
+        ) as created_session:
+            await _run_app(created_session)
 
 
 @app.async_command("ask", help="Send a one-shot LLM prompt.")
