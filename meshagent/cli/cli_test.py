@@ -45,6 +45,8 @@ def test_root_help_hides_legacy_command_namespaces() -> None:
     assert result.exit_code == 0
     assert "│ build" in result.output
     assert "│ deploy" in result.output
+    assert "│ doctor" in result.output
+    assert "│ init" in result.output
     assert "│ launch" in result.output
     assert "│ room" in result.output
     assert "│ call" not in result.output
