@@ -48,7 +48,7 @@ IGNORED_FILE_NAMES = {
 }
 
 
-SERVER_PY = '''\
+SERVER_PY = """\
 from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -84,7 +84,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-'''
+"""
 
 DOCKERFILE = """\
 FROM python:3.13-slim
