@@ -1372,25 +1372,12 @@ def _upsert_environment_variable(
 
 def _resolve_meshagent_token_value(
     *,
-    existing_environment: list[EnvironmentVariable] | None,
     default_identity: str,
     api_scope: ApiScope,
     identity_override: str | None,
 ) -> TokenValue:
     identity = identity_override if identity_override is not None else default_identity
-    role = "agent"
-
-    for env_name in _TOKEN_ENVIRONMENT_NAMES:
-        for env_var in existing_environment or []:
-            if env_var.name != env_name or env_var.token is None:
-                continue
-            if identity_override is None and env_var.token.identity.strip() != "":
-                identity = env_var.token.identity.strip()
-            if env_var.token.role is not None and env_var.token.role.strip() != "":
-                role = env_var.token.role.strip()
-            return TokenValue(identity=identity, api=api_scope, role=role)
-
-    return TokenValue(identity=identity, api=api_scope, role=role)
+    return TokenValue(identity=identity, api=api_scope, role="agent")
 
 
 def _resolve_deploy_identity(
@@ -1477,10 +1464,9 @@ def _validate_deploy_environment_tokens(
         )
 
 
-def _merge_deploy_environment(
+def _build_deploy_environment(
     *,
     default_environment: list[EnvironmentVariable] | None,
-    existing_environment: list[EnvironmentVariable] | None,
     parsed_environment: list[EnvironmentVariable],
     parsed_secret_environment: list[_ParsedEnvironmentSecretVariable],
     meshagent_token_scope: ApiScope | None,
@@ -1490,12 +1476,6 @@ def _merge_deploy_environment(
     environment = [
         env_var.model_copy(deep=True) for env_var in (default_environment or [])
     ]
-
-    for env_var in existing_environment or []:
-        _upsert_environment_variable(
-            environment=environment,
-            env_var=env_var.model_copy(deep=True),
-        )
 
     resolved_identity = _resolve_deploy_identity(
         existing_environment=environment,
@@ -1527,7 +1507,6 @@ def _merge_deploy_environment(
         _upsert_environment_token_variables(
             environment=environment,
             token_value=_resolve_meshagent_token_value(
-                existing_environment=environment,
                 default_identity=token_identity,
                 api_scope=meshagent_token_scope,
                 identity_override=identity_override,
@@ -1550,14 +1529,9 @@ def _resolve_deploy_environment(
     token_identity: str,
     identity_override: str | None,
 ) -> _ResolvedDeployEnvironment:
-    existing_container = (
-        existing_service.container if existing_service is not None else None
-    )
-    return _merge_deploy_environment(
+    del existing_service
+    return _build_deploy_environment(
         default_environment=default_environment,
-        existing_environment=(
-            existing_container.environment if existing_container is not None else None
-        ),
         parsed_environment=parsed_environment,
         parsed_secret_environment=parsed_secret_environment,
         meshagent_token_scope=meshagent_token_scope,
