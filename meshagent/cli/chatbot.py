@@ -1338,57 +1338,58 @@ def _build_runtime_agent(
     room_rules_path: Optional[list[str]],
 ):
     builder = _builder_for_runtime(runtime)
-    return builder(
-        computer_use=False,
-        require_computer_use=normalized_tool_options["require_computer_use"],
-        api_key=api_key,
-        starting_url=starting_url,
-        allow_goto_url=allow_goto_url,
-        model=model,
-        rule=rule,
-        toolkit=normalized_tool_options["toolkit"],
-        schema=normalized_tool_options["schema"],
-        rules_file=rules_file,
-        instructions=instructions,
-        discover_script_tools=discover_script_tools,
-        client=client,
-        storage_tool_local_paths=storage_tool_local_paths,
-        storage_tool_room_paths=storage_tool_room_paths,
-        default_room_storage_mount=default_room_storage_mount,
-        shell_tool_mounts=shell_tool_mounts,
-        require_apply_patch=normalized_tool_options["require_apply_patch"],
-        require_web_search=normalized_tool_options["require_web_search"],
-        require_web_fetch=normalized_tool_options["require_web_fetch"],
-        require_shell=normalized_tool_options["require_shell"],
-        require_advanced_shell=require_advanced_shell,
-        require_image_generation=normalized_tool_options["require_image_generation"],
-        require_mcp=normalized_tool_options["mcp"],
-        require_storage=normalized_tool_options["require_storage"],
-        require_table_read=require_table_read,
-        require_table_write=require_table_write,
-        require_read_only_storage=require_read_only_storage,
-        require_time=require_time,
-        require_uuid=require_uuid,
-        use_memory=use_memory,
-        memory_model=memory_model,
-        room_rules_path=room_rules_path,
-        require_document_authoring=require_document_authoring,
-        require_discovery=require_discovery,
-        working_dir=working_dir,
-        llm_participant=llm_participant,
-        decision_model=decision_model,
-        always_reply=always_reply,
-        threading_mode=threading_mode,
-        thread_dir=thread_dir,
-        dataset_namespace=dataset_namespace,
-        skill_dirs=skill_dirs,
-        shell_image=shell_image,
-        delegate_shell_token=delegate_shell_token,
-        shell_copy_env=shell_copy_env,
-        shell_set_env=shell_set_env,
-        log_llm_requests=log_llm_requests,
-        channels=channels,
-    )
+    builder_kwargs: dict[str, Any] = {
+        "computer_use": False,
+        "require_computer_use": normalized_tool_options["require_computer_use"],
+        "api_key": api_key,
+        "starting_url": starting_url,
+        "allow_goto_url": allow_goto_url,
+        "model": model,
+        "rule": rule,
+        "toolkit": normalized_tool_options["toolkit"],
+        "schema": normalized_tool_options["schema"],
+        "rules_file": rules_file,
+        "instructions": instructions,
+        "discover_script_tools": discover_script_tools,
+        "client": client,
+        "storage_tool_local_paths": storage_tool_local_paths,
+        "storage_tool_room_paths": storage_tool_room_paths,
+        "default_room_storage_mount": default_room_storage_mount,
+        "shell_tool_mounts": shell_tool_mounts,
+        "require_apply_patch": normalized_tool_options["require_apply_patch"],
+        "require_web_search": normalized_tool_options["require_web_search"],
+        "require_web_fetch": normalized_tool_options["require_web_fetch"],
+        "require_shell": normalized_tool_options["require_shell"],
+        "require_advanced_shell": require_advanced_shell,
+        "require_image_generation": normalized_tool_options["require_image_generation"],
+        "require_mcp": normalized_tool_options["mcp"],
+        "require_storage": normalized_tool_options["require_storage"],
+        "require_table_read": require_table_read,
+        "require_table_write": require_table_write,
+        "require_read_only_storage": require_read_only_storage,
+        "require_time": require_time,
+        "require_uuid": require_uuid,
+        "use_memory": use_memory,
+        "memory_model": memory_model,
+        "room_rules_path": room_rules_path,
+        "require_document_authoring": require_document_authoring,
+        "require_discovery": require_discovery,
+        "working_dir": working_dir,
+        "llm_participant": llm_participant,
+        "decision_model": decision_model,
+        "always_reply": always_reply,
+        "threading_mode": threading_mode,
+        "thread_dir": thread_dir,
+        "dataset_namespace": dataset_namespace,
+        "skill_dirs": skill_dirs,
+        "shell_image": shell_image,
+        "delegate_shell_token": delegate_shell_token,
+        "shell_copy_env": shell_copy_env,
+        "shell_set_env": shell_set_env,
+        "log_llm_requests": log_llm_requests,
+        "channels": channels,
+    }
+    return builder(**builder_kwargs)
 
 
 def _copy_shell_env_vars(*, copy_env: Optional[list[str]]) -> dict[str, str]:
@@ -1570,17 +1571,16 @@ def build_chatbot(
     base_shell_env = _copy_shell_env_vars(copy_env=shell_copy_env)
     base_shell_env.update(_set_shell_env_vars(set_env=shell_set_env))
     resolved_shell_image = resolve_shell_image(shell_image)
+    if computer_use or require_computer_use:
+        print("[red]computer use is not supported by chatbot runtime[/red]")
+        raise typer.Exit(1)
+
     if not supports_openai_tools:
         if require_image_generation:
             print("[red]image generation tool is only supported by openai models[/red]")
             raise typer.Exit(1)
         if require_apply_patch:
             print("[red]apply patch tool is only supported by openai models[/red]")
-            raise typer.Exit(1)
-        if computer_use or require_computer_use:
-            print(
-                "[red]computer use tool is currently only supported by openai models[/red]"
-            )
             raise typer.Exit(1)
 
     memory_selection: Optional[tuple[str, Optional[list[str]]]] = None
@@ -1594,30 +1594,20 @@ def build_chatbot(
             participant_name=llm_participant,
         )
     else:
-        if computer_use or require_computer_use:
+        if is_claude_model:
+            llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
+                model=model,
+                api_key=api_key,
+                log_requests=log_llm_requests,
+            )
+            if resolved_decision_model is None:
+                resolved_decision_model = model
+        else:
             llm_adapter = OpenAIResponsesAdapter(
                 model=model,
                 api_key=api_key,
-                response_options={
-                    "reasoning": {"summary": "concise"},
-                },
                 log_requests=log_llm_requests,
             )
-        else:
-            if is_claude_model:
-                llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
-                    model=model,
-                    api_key=api_key,
-                    log_requests=log_llm_requests,
-                )
-                if resolved_decision_model is None:
-                    resolved_decision_model = model
-            else:
-                llm_adapter = OpenAIResponsesAdapter(
-                    model=model,
-                    api_key=api_key,
-                    log_requests=log_llm_requests,
-                )
 
     class CustomChatbot(BaseClass):
         def __init__(self):
@@ -1940,24 +1930,6 @@ def build_chatbot(
                 thread_context=thread_context, participant=participant
             )
 
-            if require_computer_use:
-                from meshagent.agents.thread_adapter import ThreadAdapter
-                from meshagent.computers.agent import ComputerToolkit
-
-                thread_adapter = self._open_threads.get(thread_context.path)
-                if not isinstance(thread_adapter, ThreadAdapter):
-                    thread_adapter = None
-
-                computer_toolkit = ComputerToolkit(
-                    room=self.room,
-                    thread_path=thread_context.path,
-                    thread_adapter=thread_adapter,
-                    starting_url=starting_url,
-                    include_goto_tool=allow_goto_url,
-                )
-
-                tk.append(computer_toolkit)
-
             return [*required_toolkits, *tk]
 
     return CustomChatbot
@@ -2016,14 +1988,19 @@ def build_process_agent(
     channels: Optional[list[str]] = None,
 ):
     from meshagent.agents import (
-        AgentProcessThreadAdapter,
+        MeshDocumentThreadStorage,
         ChatChannel,
         MailChannel,
         QueueChannel,
         SingleRoomAgent,
         ToolkitChannel,
     )
-    from meshagent.agents.messages import TurnStart, TurnSteer
+    from meshagent.agents.messages import (
+        AGENT_EVENT_THREAD_EVENT,
+        AgentThreadEvent,
+        TurnStart,
+        TurnSteer,
+    )
     from meshagent.agents.process import AgentSupervisor, LLMAgentProcess
     from meshagent.tools import Toolkit, ToolContext
     from meshagent.tools.hosting import _RemoteToolkitWrapper, _start_hosted_toolkit
@@ -2593,21 +2570,81 @@ def build_process_agent(
                 add_toolkit(DiscoveryToolkit(room=self.room))
 
             if require_computer_use:
+                from meshagent.agents.images_dataset import ImagesDataset
+                from meshagent.agents.messages import (
+                    AGENT_EVENT_THREAD_IMAGE,
+                    AgentThreadImage,
+                )
                 from meshagent.computers.agent import ComputerToolkit
+
+                images_dataset = ImagesDataset(room=self.room)
+                computer_toolkit: ComputerToolkit | None = None
+
+                async def render_screen(image_bytes: bytes) -> None:
+                    thread_storage = process.thread_storage
+                    thread_id = process.thread_id
+                    if thread_storage is None or thread_id is None:
+                        return
+
+                    created_by = self.room.local_participant.get_attribute("name")
+                    if not isinstance(created_by, str):
+                        created_by = ""
+
+                    try:
+                        saved_image = await images_dataset.save(
+                            data=image_bytes,
+                            mime_type="image/png",
+                            created_by=created_by,
+                            annotations={
+                                "source": "computer_toolkit",
+                                "thread_path": thread_id,
+                            },
+                        )
+                    except Exception as ex:
+                        logger.error(
+                            "failed to persist computer screenshot", exc_info=ex
+                        )
+                        return
+
+                    width: int | float | None = None
+                    height: int | float | None = None
+                    if computer_toolkit is not None:
+                        width, height = computer_toolkit.computer.dimensions
+
+                    thread_storage.push_message(
+                        message=AgentThreadImage(
+                            type=AGENT_EVENT_THREAD_IMAGE,
+                            thread_id=thread_id,
+                            item_id=str(uuid.uuid4()),
+                            image_id=saved_image.id,
+                            mime_type=saved_image.mime_type,
+                            created_at=saved_image.created_at,
+                            created_by=saved_image.created_by,
+                            width=width,
+                            height=height,
+                            status="completed",
+                            status_detail="Screenshot saved",
+                        )
+                    )
 
                 computer_toolkit = ComputerToolkit(
                     room=self.room,
-                    thread_path=process.thread_id,
-                    thread_adapter=process.thread_adapter,
+                    render_screen=render_screen,
                     starting_url=starting_url,
                     include_goto_tool=allow_goto_url,
                 )
                 extra_toolkits.append(computer_toolkit)
 
             def handle_tool_event(event: dict) -> None:
-                thread_adapter = process.thread_adapter
-                if thread_adapter is not None:
-                    thread_adapter.push(event=event)
+                thread_storage = process.thread_storage
+                if thread_storage is not None and process.thread_id is not None:
+                    thread_storage.push_message(
+                        message=AgentThreadEvent(
+                            type=AGENT_EVENT_THREAD_EVENT,
+                            thread_id=process.thread_id,
+                            event=event,
+                        )
+                    )
 
             caller_context: dict[str, Any] | None = {
                 "thread_id": process.thread_id,
@@ -2630,8 +2667,8 @@ def build_process_agent(
                     if channel.state != "started":
                         continue
                     combined_toolkits.extend(channel.get_agent_toolkits())
-            if process.thread_adapter is not None:
-                combined_toolkits.append(process.thread_adapter.make_toolkit())
+            if process.thread_storage is not None:
+                combined_toolkits.append(process.thread_storage.make_toolkit())
             return combined_toolkits
 
     class _ProcessSupervisor(AgentSupervisor):
@@ -2670,7 +2707,7 @@ def build_process_agent(
                 participant=self._agent.room.local_participant,
                 llm_adapter=llm_adapter,
                 toolkits=[*toolkits],
-                thread_adapter=AgentProcessThreadAdapter(
+                thread_storage=MeshDocumentThreadStorage(
                     room=self._agent.room,
                     path=thread_id,
                 ),
