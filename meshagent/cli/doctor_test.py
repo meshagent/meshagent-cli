@@ -3,7 +3,11 @@ from __future__ import annotations
 from click.testing import CliRunner
 
 from meshagent.cli import doctor as doctor_module
-from meshagent.cli.doctor import diagnose_project, doctor_command
+from meshagent.cli.doctor import (
+    _format_finding_label,
+    diagnose_project,
+    doctor_command,
+)
 
 
 def test_doctor_recommends_init_for_empty_project(tmp_path) -> None:
@@ -38,7 +42,7 @@ def test_doctor_reports_python_roomclient_deploy_gaps(tmp_path) -> None:
     assert "Detected project: Python" in result.output
     assert "Official RoomClient SDK: detected (meshagent-api)" in result.output
     assert "Python project metadata: add pyproject.toml" in result.output
-    assert "[missing] Deployment artifact" in result.output
+    assert "[error] Deployment artifact" in result.output
     assert "--wait" in result.output
     assert "env -u MESHAGENT_TOKEN" in result.output
     assert "--tag <repository>:<tag>" in result.output
@@ -408,3 +412,9 @@ def test_doctor_reports_existing_dockerfile(tmp_path) -> None:
     assert result.exit_code == 0
     assert "Detected project: Ruby" in result.output
     assert "[ok] Deployment artifact found: Dockerfile" in result.output
+
+
+def test_doctor_finding_labels_use_rich_status_colors() -> None:
+    assert _format_finding_label("ok") == "[green]\\[ok][/]"
+    assert _format_finding_label("warning") == "[yellow]\\[warning][/]"
+    assert _format_finding_label("error") == "[red]\\[error][/]"

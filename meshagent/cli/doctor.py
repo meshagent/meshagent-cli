@@ -10,6 +10,8 @@ import tomllib
 from typing import Iterable
 
 import click
+from rich.console import Console
+from rich.markup import escape
 
 
 SOURCE_SUFFIXES = {
@@ -954,6 +956,22 @@ def _codex_diagnostics(diagnosis: ProjectDiagnosis) -> list[str]:
     return diagnostics
 
 
+FINDING_COLORS = {
+    "ok": "green",
+    "warning": "yellow",
+    "error": "red",
+}
+_DOCTOR_CONSOLE = Console(soft_wrap=True)
+
+
+def _format_finding_label(severity: str) -> str:
+    return f"[{FINDING_COLORS[severity]}]{escape(f'[{severity}]')}[/]"
+
+
+def _echo_finding(severity: str, message: str) -> None:
+    _DOCTOR_CONSOLE.print(f"  {_format_finding_label(severity)} {escape(message)}")
+
+
 def _print_report(diagnosis: ProjectDiagnosis) -> None:
     click.echo("MeshAgent doctor")
     click.echo(f"Project: {diagnosis.root}")
@@ -968,7 +986,7 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
 
     if diagnosis.language == "Unknown" and not diagnosis.has_deployment_artifact:
         click.echo("Findings:")
-        click.echo("  [missing] No identifiable deployable project was detected")
+        _echo_finding("error", "No identifiable deployable project was detected")
         click.echo("")
         click.echo("Recommended next steps:")
         click.echo("1. Create a minimal deployable Python backend agent project:")
@@ -983,95 +1001,105 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
 
     click.echo("Findings:")
     if diagnosis.has_deployment_artifact:
-        click.echo(
-            "  [ok] Deployment artifact found: "
-            + ", ".join(diagnosis.deployment_artifacts)
+        _echo_finding(
+            "ok",
+            "Deployment artifact found: " + ", ".join(diagnosis.deployment_artifacts),
         )
     else:
-        click.echo("  [missing] Deployment artifact: add Dockerfile or meshagent.yaml")
+        _echo_finding("error", "Deployment artifact: add Dockerfile or meshagent.yaml")
     if diagnosis.has_health_route:
-        click.echo("  [ok] HTTP liveness route appears to exist: /health")
+        _echo_finding("ok", "HTTP liveness route appears to exist: /health")
     elif _is_static_javascript_flavor(diagnosis.javascript_flavor):
-        click.echo(
-            "  [ok] Static web app Dockerfile guidance includes an nginx /health "
-            "route returning 200"
+        _echo_finding(
+            "ok",
+            "Static web app Dockerfile guidance includes an nginx /health "
+            "route returning 200",
         )
     elif diagnosis.javascript_flavor == "Next.js":
-        click.echo(
-            "  [check] Add a /health route or deploy Next.js with --liveness / "
-            "and verify / returns 200"
+        _echo_finding(
+            "warning",
+            "Add a /health route or deploy Next.js with --liveness / "
+            "and verify / returns 200",
         )
     else:
-        click.echo("  [check] Add an HTTP /health route that returns 200 ok")
+        _echo_finding("warning", "Add an HTTP /health route that returns 200 ok")
     if diagnosis.has_port_8080_hint:
-        click.echo("  [ok] App appears to listen on port 8080")
+        _echo_finding("ok", "App appears to listen on port 8080")
     elif _is_static_javascript_flavor(diagnosis.javascript_flavor):
-        click.echo("  [ok] Static web Dockerfile guidance serves nginx on port 8080")
+        _echo_finding("ok", "Static web Dockerfile guidance serves nginx on port 8080")
     elif diagnosis.javascript_flavor == "Next.js":
-        click.echo("  [check] Ensure Next.js binds to 0.0.0.0:8080")
+        _echo_finding("warning", "Ensure Next.js binds to 0.0.0.0:8080")
     else:
-        click.echo("  [check] Ensure the service listens on 0.0.0.0:8080")
+        _echo_finding("warning", "Ensure the service listens on 0.0.0.0:8080")
     if diagnosis.language == "Python":
         if diagnosis.python_has_pyproject:
-            click.echo("  [ok] Python project metadata found: pyproject.toml")
+            _echo_finding("ok", "Python project metadata found: pyproject.toml")
         else:
-            click.echo(
-                "  [missing] Python project metadata: add pyproject.toml with "
-                "requires-python and dependencies"
+            _echo_finding(
+                "error",
+                "Python project metadata: add pyproject.toml with "
+                "requires-python and dependencies",
             )
         if diagnosis.python_source_uses_sdk and diagnosis.sdk is None:
-            click.echo(
-                "  [missing] Python RoomClient SDK dependency: add meshagent-api "
-                "to project metadata"
+            _echo_finding(
+                "error",
+                "Python RoomClient SDK dependency: add meshagent-api "
+                "to project metadata",
             )
         if diagnosis.python_runtime_findings:
-            click.echo(
-                f"  [check] Upgrade Python runtime metadata to "
-                f"{PYTHON_REQUIRED_VERSION} before deploying"
+            _echo_finding(
+                "warning",
+                f"Upgrade Python runtime metadata to "
+                f"{PYTHON_REQUIRED_VERSION} before deploying",
             )
             for finding in diagnosis.python_runtime_findings:
                 click.echo(f"    - {finding}")
         else:
-            click.echo(
-                f"  [ok] Python Dockerfile guidance targets "
-                f"Python {PYTHON_REQUIRED_VERSION}"
+            _echo_finding(
+                "ok",
+                f"Python Dockerfile guidance targets Python {PYTHON_REQUIRED_VERSION}",
             )
         if diagnosis.python_virtualenv_versions:
             if any(
                 _python_version_is_required(version)
                 for _, version in diagnosis.python_virtualenv_versions
             ):
-                click.echo(
-                    f"  [ok] Local Python {PYTHON_REQUIRED_VERSION} virtual "
-                    "environment detected"
+                _echo_finding(
+                    "ok",
+                    f"Local Python {PYTHON_REQUIRED_VERSION} virtual "
+                    "environment detected",
                 )
             else:
-                click.echo(
-                    f"  [check] No local Python {PYTHON_REQUIRED_VERSION} "
-                    "virtual environment detected"
+                _echo_finding(
+                    "warning",
+                    f"No local Python {PYTHON_REQUIRED_VERSION} "
+                    "virtual environment detected",
                 )
             for path, version in diagnosis.python_virtualenv_versions:
                 click.echo(
                     f"    - Local virtual environment `{path}` uses Python `{version}`"
                 )
         else:
-            click.echo("  [check] No local Python virtual environment detected")
+            _echo_finding("warning", "No local Python virtual environment detected")
     if _is_javascript_project(diagnosis.language):
         scripts = dict(diagnosis.package_scripts)
         if not _is_static_javascript_flavor(diagnosis.javascript_flavor):
             if "start" in scripts:
-                click.echo(f"  [ok] package.json start script: {scripts['start']}")
+                _echo_finding("ok", f"package.json start script: {scripts['start']}")
             else:
-                click.echo("  [check] Add a package.json start script for production")
+                _echo_finding(
+                    "warning", "Add a package.json start script for production"
+                )
         if diagnosis.javascript_flavor in {"React", "React/Vite", "Vite", "Next.js"}:
             if "build" in scripts:
-                click.echo(f"  [ok] package.json build script: {scripts['build']}")
+                _echo_finding("ok", f"package.json build script: {scripts['build']}")
             else:
-                click.echo("  [check] Add a package.json build script")
+                _echo_finding("warning", "Add a package.json build script")
     if _needs_roomclient_runtime(diagnosis):
-        click.echo(
-            "  [required] RoomClient deployment needs --meshagent-token full "
-            "and MESHAGENT_API_URL/MESHAGENT_ROOM/MESHAGENT_ROOM_URL env passthrough"
+        _echo_finding(
+            "error",
+            "RoomClient deployment needs --meshagent-token full "
+            "and MESHAGENT_API_URL/MESHAGENT_ROOM/MESHAGENT_ROOM_URL env passthrough",
         )
     click.echo("")
 
