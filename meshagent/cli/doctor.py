@@ -61,6 +61,8 @@ class ProjectDiagnosis:
     has_health_route: bool
     has_port_8080_hint: bool
     package_scripts: tuple[tuple[str, str], ...]
+    python_has_pyproject: bool
+    python_source_uses_sdk: bool
     python_runtime_findings: tuple[str, ...]
     python_virtualenv_versions: tuple[tuple[str, str], ...]
     liveness_path: str
@@ -271,6 +273,76 @@ def _contains_any(paths: Iterable[Path], needles: tuple[str, ...]) -> bool:
     return False
 
 
+def _python_dependency_entry_matches(value: object, package_name: str) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = value.strip().lower()
+    if normalized == "" or normalized.startswith("#"):
+        return False
+    return (
+        re.match(rf"{re.escape(package_name.lower())}(?:\s|$|[<>=!~;\[])", normalized)
+        is not None
+    )
+
+
+def _python_pyproject_dependency_entries(pyproject: dict[str, object]) -> list[str]:
+    entries: list[str] = []
+
+    project = pyproject.get("project")
+    if isinstance(project, dict):
+        dependencies = project.get("dependencies")
+        if isinstance(dependencies, list):
+            entries.extend(value for value in dependencies if isinstance(value, str))
+        optional_dependencies = project.get("optional-dependencies")
+        if isinstance(optional_dependencies, dict):
+            for values in optional_dependencies.values():
+                if isinstance(values, list):
+                    entries.extend(value for value in values if isinstance(value, str))
+
+    dependency_groups = pyproject.get("dependency-groups")
+    if isinstance(dependency_groups, dict):
+        for values in dependency_groups.values():
+            if isinstance(values, list):
+                entries.extend(value for value in values if isinstance(value, str))
+
+    tool = pyproject.get("tool")
+    poetry = tool.get("poetry") if isinstance(tool, dict) else None
+    dependencies = poetry.get("dependencies") if isinstance(poetry, dict) else None
+    if isinstance(dependencies, dict):
+        entries.extend(str(name) for name in dependencies if str(name) != "python")
+
+    return entries
+
+
+def _python_project_declares_dependency(root: Path, package_name: str) -> bool:
+    requirements = _read_text(root / "requirements.txt").splitlines()
+    if any(
+        _python_dependency_entry_matches(line, package_name) for line in requirements
+    ):
+        return True
+
+    pyproject = _read_toml(root / "pyproject.toml")
+    return any(
+        _python_dependency_entry_matches(entry, package_name)
+        for entry in _python_pyproject_dependency_entries(pyproject)
+    )
+
+
+def _python_source_uses_sdk(source_files: list[Path]) -> bool:
+    for path in source_files:
+        for line in _read_text(path).splitlines():
+            normalized = line.strip().lower()
+            if normalized.startswith("from meshagent"):
+                return True
+            if normalized.startswith("import meshagent"):
+                return True
+            if re.search(r"\broomclient\b", normalized) is not None:
+                return True
+            if re.search(r"\bwebsocketclientprotocol\b", normalized) is not None:
+                return True
+    return False
+
+
 def _source_files(root: Path) -> list[Path]:
     return [
         path for path in _iter_files(root) if path.suffix.lower() in SOURCE_SUFFIXES
@@ -368,12 +440,7 @@ def _detect_sdk(root: Path, language: str, source_files: list[Path]) -> str | No
         if "@meshagent/meshagent" in _package_json_dependencies(root):
             return "@meshagent/meshagent"
     if language == "Python":
-        requirements = _read_text(root / "requirements.txt").lower()
-        pyproject = _read_toml(root / "pyproject.toml")
-        pyproject_text = str(pyproject).lower()
-        if "meshagent-api" in requirements or "meshagent-api" in pyproject_text:
-            return "meshagent-api"
-        if _contains_any(source_files, ("from meshagent", "import meshagent")):
+        if _python_project_declares_dependency(root, "meshagent-api"):
             return "meshagent-api"
     if language == ".NET":
         if _contains_any(_iter_files(root), ("meshagent.api", "meshagent.api")):
@@ -415,9 +482,8 @@ def _dockerfile_for(language: str, javascript_flavor: str | None) -> str:
         "Python": """
             FROM python:3.13-slim
             WORKDIR /app
-            COPY requirements.txt .
-            RUN pip install --no-cache-dir -r requirements.txt
-            COPY server.py .
+            COPY pyproject.toml server.py ./
+            RUN pip install --no-cache-dir .
             EXPOSE 8080
             CMD ["python", "server.py"]
         """,
@@ -580,6 +646,12 @@ def diagnose_project(root: Path) -> ProjectDiagnosis:
         source_files, ('"/health"', "'/health'", "/health")
     )
     liveness_path = _liveness_path_for(language, javascript_flavor, has_health_route)
+    python_has_pyproject = (
+        language == "Python" and (resolved_root / "pyproject.toml").is_file()
+    )
+    python_source_uses_sdk = language == "Python" and _python_source_uses_sdk(
+        source_files
+    )
     return ProjectDiagnosis(
         root=resolved_root,
         language=language,
@@ -590,6 +662,8 @@ def diagnose_project(root: Path) -> ProjectDiagnosis:
         has_health_route=has_health_route,
         has_port_8080_hint=_contains_any(source_files, ("8080",)),
         package_scripts=tuple(sorted(_package_json_scripts(resolved_root).items())),
+        python_has_pyproject=python_has_pyproject,
+        python_source_uses_sdk=python_source_uses_sdk,
         python_runtime_findings=python_runtime_findings,
         python_virtualenv_versions=python_virtualenv_versions,
         liveness_path=liveness_path,
@@ -611,7 +685,7 @@ def _deploy_command(diagnosis: ProjectDiagnosis) -> str:
     ]
     if _is_static_javascript_flavor(diagnosis.javascript_flavor):
         parts.insert(-2, "--room-mount /:/data:rw")
-    if diagnosis.sdk is not None:
+    if _needs_roomclient_runtime(diagnosis):
         parts.extend(
             [
                 "--meshagent-token full",
@@ -621,6 +695,12 @@ def _deploy_command(diagnosis: ProjectDiagnosis) -> str:
             ]
         )
     return " ".join(parts)
+
+
+def _needs_roomclient_runtime(diagnosis: ProjectDiagnosis) -> bool:
+    return diagnosis.sdk is not None or (
+        diagnosis.language == "Python" and diagnosis.python_source_uses_sdk
+    )
 
 
 def _sdk_guidance(diagnosis: ProjectDiagnosis) -> list[str]:
@@ -709,6 +789,17 @@ def _codex_diagnostics(diagnosis: ProjectDiagnosis) -> list[str]:
             "MeshAgent Python deployments must target Python 3.13; use a "
             "`python:3.13-slim` base image."
         )
+        if not diagnosis.python_has_pyproject:
+            diagnostics.append(
+                'Add a `pyproject.toml` with `requires-python = ">=3.13"` and '
+                "the runtime dependencies needed by the app before deploying."
+            )
+        if diagnosis.python_source_uses_sdk and diagnosis.sdk is None:
+            diagnostics.append(
+                "Python source imports MeshAgent SDK symbols, but this project "
+                "does not declare `meshagent-api`; add it to `pyproject.toml` "
+                "or `requirements.txt` so the deployed container installs the SDK."
+            )
         if diagnosis.python_virtualenv_versions:
             virtualenv_list = ", ".join(
                 f"`{path}`={version}"
@@ -803,7 +894,7 @@ def _codex_diagnostics(diagnosis: ProjectDiagnosis) -> list[str]:
                 '`curl -fsS "$PUBLIC_URL/"`; the JavaScript-family evals require '
                 "the app URL itself to be reachable, not just `/health`."
             )
-    if diagnosis.sdk is not None:
+    if _needs_roomclient_runtime(diagnosis):
         diagnostics.extend(
             [
                 "Before testing a RoomClient route, confirm the runtime has "
@@ -830,15 +921,17 @@ def _codex_diagnostics(diagnosis: ProjectDiagnosis) -> list[str]:
     if diagnosis.sdk == "meshagent-api":
         diagnostics.extend(
             [
-                "For Python `meshagent-api`, build the RoomClient explicitly with "
-                "`RoomClient(protocol=WebSocketClientProtocol(url=websocket_room_url("
-                'room_name=os.environ["MESHAGENT_ROOM"]), token=os.environ["MESHAGENT_TOKEN"]))`.',
+                "For Python `meshagent-api`, build the RoomClient with "
+                "`RoomClient(protocol_factory=WebSocketClientProtocol("
+                'url=websocket_room_url(room_name=os.environ["MESHAGENT_ROOM"]), '
+                'token=os.environ["MESHAGENT_TOKEN"]).create_factory())`.',
                 "`MESHAGENT_ROOM_URL` is the in-room HTTP endpoint; do not pass it "
                 "directly to `WebSocketClientProtocol` or the SDK may fail with "
                 "`WSServerHandshakeError: 200`.",
                 "If Python reports `RoomClient.__init__()` got an unexpected keyword, "
                 "inspect the installed SDK signature and use the explicit "
-                "`protocol=WebSocketClientProtocol(...)` constructor above.",
+                "`protocol_factory=WebSocketClientProtocol(...).create_factory()` "
+                "constructor above.",
             ]
         )
     if diagnosis.language == ".NET" and diagnosis.sdk == "Meshagent.Api":
@@ -878,13 +971,13 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
         click.echo("  [missing] No identifiable deployable project was detected")
         click.echo("")
         click.echo("Recommended next steps:")
-        click.echo("1. Create a minimal deployable Python hello world project:")
+        click.echo("1. Create a minimal deployable Python backend agent project:")
         click.echo("   meshagent init")
         click.echo("2. Diagnostics for Codex:")
         click.echo(
             "   - No recognizable application code or deployment metadata was "
             "found in this directory. Run `meshagent init` to create a minimal "
-            "Python hello world project, then deploy the generated project."
+            "Python backend agent project, then deploy the generated project."
         )
         return
 
@@ -919,6 +1012,18 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
     else:
         click.echo("  [check] Ensure the service listens on 0.0.0.0:8080")
     if diagnosis.language == "Python":
+        if diagnosis.python_has_pyproject:
+            click.echo("  [ok] Python project metadata found: pyproject.toml")
+        else:
+            click.echo(
+                "  [missing] Python project metadata: add pyproject.toml with "
+                "requires-python and dependencies"
+            )
+        if diagnosis.python_source_uses_sdk and diagnosis.sdk is None:
+            click.echo(
+                "  [missing] Python RoomClient SDK dependency: add meshagent-api "
+                "to project metadata"
+            )
         if diagnosis.python_runtime_findings:
             click.echo(
                 f"  [check] Upgrade Python runtime metadata to "
@@ -963,7 +1068,7 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
                 click.echo(f"  [ok] package.json build script: {scripts['build']}")
             else:
                 click.echo("  [check] Add a package.json build script")
-    if diagnosis.sdk is not None:
+    if _needs_roomclient_runtime(diagnosis):
         click.echo(
             "  [required] RoomClient deployment needs --meshagent-token full "
             "and MESHAGENT_API_URL/MESHAGENT_ROOM/MESHAGENT_ROOM_URL env passthrough"

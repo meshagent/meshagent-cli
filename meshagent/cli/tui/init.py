@@ -1,0 +1,301 @@
+# ruff: noqa: E402
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from typing import Literal, Sequence
+
+
+def _suppress_textual_debug_features() -> None:
+    raw_features = os.environ.get("TEXTUAL")
+    if raw_features is None:
+        return
+
+    parsed_features = [
+        value.strip() for value in raw_features.split(",") if value.strip() != ""
+    ]
+    if len(parsed_features) == 0:
+        return
+
+    filtered_features = [
+        value for value in parsed_features if value.lower() not in ("debug", "devtools")
+    ]
+    if len(filtered_features) == len(parsed_features):
+        return
+
+    if len(filtered_features) == 0:
+        os.environ.pop("TEXTUAL", None)
+        return
+
+    os.environ["TEXTUAL"] = ",".join(filtered_features)
+
+
+_suppress_textual_debug_features()
+
+from textual._context import active_app
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.widgets import OptionList, Static
+from textual.widgets.option_list import Option
+
+INIT_BACK_OPTION_ID = "__init_back__"
+INIT_CANCEL_OPTION_ID = "__init_cancel__"
+INIT_LANGUAGE_OPTION_ID_PREFIX = "__init_language__:"
+INIT_FOCUS_OPTION_ID_PREFIX = "__init_focus__:"
+
+
+def _language_option_id(language_id: str) -> str:
+    return f"{INIT_LANGUAGE_OPTION_ID_PREFIX}{language_id}"
+
+
+def _language_id_from_option_id(option_id: str) -> str | None:
+    if not option_id.startswith(INIT_LANGUAGE_OPTION_ID_PREFIX):
+        return None
+    return option_id.removeprefix(INIT_LANGUAGE_OPTION_ID_PREFIX)
+
+
+def _focus_option_id(focus_id: str) -> str:
+    return f"{INIT_FOCUS_OPTION_ID_PREFIX}{focus_id}"
+
+
+def _focus_id_from_option_id(option_id: str) -> str | None:
+    if not option_id.startswith(INIT_FOCUS_OPTION_ID_PREFIX):
+        return None
+    return option_id.removeprefix(INIT_FOCUS_OPTION_ID_PREFIX)
+
+
+@dataclass(frozen=True, slots=True)
+class InitLanguageChoice:
+    id: str
+    label: str
+    description: str
+
+
+@dataclass(frozen=True, slots=True)
+class InitFocusChoice:
+    id: str
+    label: str
+    description: str
+
+
+@dataclass(frozen=True, slots=True)
+class InitWizardResult:
+    status: Literal["completed", "canceled"]
+    message: str | None = None
+    selected_language_id: str | None = None
+    selected_focus_id: str | None = None
+
+
+class InitWizardApp(App[None]):
+    CSS = """
+    Screen {
+        layout: vertical;
+        align: left top;
+        padding: 1 2;
+        background: #050911;
+    }
+    #init-title {
+        width: 100%;
+        content-align: left middle;
+        color: #f4f7ff;
+        text-style: bold;
+        margin: 0 0 1 0;
+    }
+    #init-message {
+        width: 100%;
+        content-align: left middle;
+        color: #cad6f4;
+        margin: 0 0 1 0;
+    }
+    #init-options {
+        width: 100%;
+        height: 1fr;
+        border: round #7ca9ff;
+        background: #0a1120;
+    }
+    #init-help {
+        width: 100%;
+        content-align: left middle;
+        color: #95a7ce;
+        margin: 1 0 0 0;
+    }
+    """
+
+    BINDINGS = [
+        Binding("ctrl+c", "cancel_init", "Cancel", priority=True),
+        Binding("escape", "cancel_or_back", "Cancel", priority=True),
+    ]
+
+    def __init__(
+        self,
+        *,
+        languages: Sequence[InitLanguageChoice],
+        focuses: Sequence[InitFocusChoice],
+    ) -> None:
+        super().__init__()
+        self._languages = list(languages)
+        self._focuses = list(focuses)
+        self._mode: Literal["language", "focus"] = "language"
+        self._selected_language_id: str | None = None
+        self._selected_language_label: str | None = None
+        self._title_view: Static | None = None
+        self._message_view: Static | None = None
+        self._options_view: OptionList | None = None
+        self._help_view: Static | None = None
+        self.result = InitWizardResult(
+            status="canceled",
+            message="Init canceled.",
+        )
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="init-title")
+        yield Static("", id="init-message")
+        yield OptionList(id="init-options")
+        yield Static("", id="init-help")
+
+    async def on_mount(self) -> None:
+        self._title_view = self.query_one("#init-title", Static)
+        self._message_view = self.query_one("#init-message", Static)
+        self._options_view = self.query_one("#init-options", OptionList)
+        self._help_view = self.query_one("#init-help", Static)
+        self._show_language_selection()
+
+    async def action_cancel_init(self) -> None:
+        self.result = InitWizardResult(status="canceled", message="Init canceled.")
+        self.exit()
+
+    async def action_cancel_or_back(self) -> None:
+        if self._mode == "focus":
+            self._show_language_selection()
+            return
+        await self.action_cancel_init()
+
+    async def on_option_list_option_selected(
+        self,
+        event: OptionList.OptionSelected,
+    ) -> None:
+        selected_id = event.option.id
+        if not isinstance(selected_id, str):
+            return
+
+        if selected_id == INIT_CANCEL_OPTION_ID:
+            self.result = InitWizardResult(status="canceled", message="Init canceled.")
+            self.exit()
+            return
+
+        if selected_id == INIT_BACK_OPTION_ID:
+            self._show_language_selection()
+            return
+
+        language_id = _language_id_from_option_id(selected_id)
+        if language_id is not None:
+            self._selected_language_id = language_id
+            self._selected_language_label = self._language_label(language_id)
+            self._show_focus_selection()
+            return
+
+        focus_id = _focus_id_from_option_id(selected_id)
+        if focus_id is None or self._selected_language_id is None:
+            return
+
+        self.result = InitWizardResult(
+            status="completed",
+            selected_language_id=self._selected_language_id,
+            selected_focus_id=focus_id,
+        )
+        self.exit()
+
+    @staticmethod
+    def _first_enabled_option_index(options: Sequence[Option]) -> int | None:
+        for index, option in enumerate(options):
+            if not option.disabled:
+                return index
+        return None
+
+    def _language_label(self, language_id: str) -> str:
+        for language in self._languages:
+            if language.id == language_id:
+                return language.label
+        return language_id
+
+    def _set_text(self, *, title: str, message: str, help_text: str) -> None:
+        if self._title_view is not None:
+            self._title_view.update(title)
+        if self._message_view is not None:
+            self._message_view.update(message)
+        if self._help_view is not None:
+            self._help_view.update(help_text)
+
+    def _set_options(self, options: Sequence[Option]) -> None:
+        if self._options_view is None:
+            return
+        option_list = list(options)
+        self._options_view.clear_options()
+        self._options_view.add_options(option_list)
+        self._options_view.highlighted = self._first_enabled_option_index(option_list)
+        self._options_view.focus()
+
+    def _show_language_selection(self) -> None:
+        self._mode = "language"
+        self._selected_language_id = None
+        self._selected_language_label = None
+        self._set_text(
+            title="MeshAgent Init",
+            message="Choose the language for the project.",
+            help_text="Use Up/Down and Enter. Esc or Ctrl+C cancels.",
+        )
+        options = [
+            Option(
+                f"{language.label} - {language.description}",
+                id=_language_option_id(language.id),
+            )
+            for language in self._languages
+        ]
+        options.append(Option("Cancel", id=INIT_CANCEL_OPTION_ID))
+        self._set_options(options)
+
+    def _show_focus_selection(self) -> None:
+        self._mode = "focus"
+        language_label = self._selected_language_label or "the selected language"
+        self._set_text(
+            title="MeshAgent Init",
+            message=f"Choose the project focus for {language_label}.",
+            help_text=(
+                "Web server creates an HTTP app. Backend agent creates a "
+                "RoomClient SDK service. Esc goes back."
+            ),
+        )
+        options = [
+            Option(
+                f"{focus.label} - {focus.description}",
+                id=_focus_option_id(focus.id),
+            )
+            for focus in self._focuses
+        ]
+        options.append(Option("Back", id=INIT_BACK_OPTION_ID))
+        options.append(Option("Cancel", id=INIT_CANCEL_OPTION_ID))
+        self._set_options(options)
+
+
+async def _run_app(app: App[None]) -> None:
+    app_token = active_app.set(app)
+    try:
+        await app.run_async()
+    finally:
+        active_app.reset(app_token)
+
+
+async def run_init_wizard_tui(
+    *,
+    languages: Sequence[InitLanguageChoice],
+    focuses: Sequence[InitFocusChoice],
+) -> InitWizardResult:
+    app = InitWizardApp(languages=languages, focuses=focuses)
+
+    try:
+        await _run_app(app)
+    except KeyboardInterrupt:
+        return InitWizardResult(status="canceled", message="Init canceled.")
+
+    return app.result

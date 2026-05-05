@@ -15,6 +15,7 @@ def test_doctor_recommends_init_for_empty_project(tmp_path) -> None:
     assert "Detected project: Unknown" in result.output
     assert "No identifiable deployable project was detected" in result.output
     assert "meshagent init" in result.output
+    assert "Python backend agent project" in result.output
     assert "Diagnostics for Codex" in result.output
     assert "meshagent deploy ." not in result.output
 
@@ -36,6 +37,7 @@ def test_doctor_reports_python_roomclient_deploy_gaps(tmp_path) -> None:
     assert result.exit_code == 0
     assert "Detected project: Python" in result.output
     assert "Official RoomClient SDK: detected (meshagent-api)" in result.output
+    assert "Python project metadata: add pyproject.toml" in result.output
     assert "[missing] Deployment artifact" in result.output
     assert "--wait" in result.output
     assert "env -u MESHAGENT_TOKEN" in result.output
@@ -52,6 +54,33 @@ def test_doctor_reports_python_roomclient_deploy_gaps(tmp_path) -> None:
     assert "websocket_room_url" in result.output
     assert "MESHAGENT_ROOM_URL` is the in-room HTTP endpoint" in result.output
     assert "WSServerHandshakeError: 200" in result.output
+
+
+def test_doctor_reports_python_source_sdk_import_without_project_dependency(
+    tmp_path,
+) -> None:
+    (tmp_path / "server.py").write_text(
+        "from meshagent.api import RoomClient\n"
+        "from aiohttp import web\n"
+        "app = web.Application()\n"
+        "app.router.add_get('/health', lambda request: web.Response(text='ok'))\n"
+        "web.run_app(app, host='0.0.0.0', port=8080)\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path)])
+    diagnosis = diagnose_project(tmp_path)
+
+    assert result.exit_code == 0
+    assert diagnosis.language == "Python"
+    assert diagnosis.sdk is None
+    assert diagnosis.python_has_pyproject is False
+    assert diagnosis.python_source_uses_sdk is True
+    assert "Official RoomClient SDK: not detected" in result.output
+    assert "Python project metadata: add pyproject.toml" in result.output
+    assert "Python RoomClient SDK dependency: add meshagent-api" in result.output
+    assert "does not declare `meshagent-api`" in result.output
+    assert "--meshagent-token full" in result.output
 
 
 def test_doctor_reports_older_python_runtime_upgrade_guidance(tmp_path) -> None:
