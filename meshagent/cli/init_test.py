@@ -18,7 +18,11 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     assert "Created a minimal deployable Python backend agent" in result.output
     assert "meshagent doctor" in result.output
     assert "meshagent deploy ." in result.output
-    assert "--meshagent-token full" in result.output
+    assert "--meshagent-token agentDefault" in result.output
+    assert "--meshagent-token full" not in result.output
+    assert " -e " not in result.output
+    assert "--liveness" not in result.output
+    assert "--public" not in result.output
 
     pyproject = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
     server_py = (tmp_path / "server.py").read_text(encoding="utf-8")
@@ -26,16 +30,18 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
 
     assert 'requires-python = ">=3.13"' in pyproject
     assert '"meshagent-api==' in pyproject
-    assert '"aiohttp[speedups]~=3.13.0"' in pyproject
-    assert "from aiohttp import web" in server_py
+    assert "aiohttp" not in pyproject
+    assert "from aiohttp import web" not in server_py
     assert "RoomClient(protocol_factory=protocol.create_factory())" in server_py
     assert "WebSocketClientProtocol" in server_py
     assert "ThreadingHTTPServer" not in server_py
     assert "COPY pyproject.toml server.py ./" in dockerfile
     assert "RUN pip install --no-cache-dir ." in dockerfile
+    assert "EXPOSE" not in dockerfile
 
     assert diagnosis.language == "Python"
     assert diagnosis.sdk == "meshagent-api"
+    assert diagnosis.is_headless_backend_agent is True
     assert diagnosis.python_has_pyproject is True
     assert diagnosis.python_source_uses_sdk is True
 
@@ -56,15 +62,17 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "Created a minimal deployable Python web server" in result.output
-    assert "--meshagent-token full" not in result.output
+    assert "--meshagent-token" not in result.output
 
     pyproject = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
     server_py = (tmp_path / "server.py").read_text(encoding="utf-8")
+    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
 
     assert '"aiohttp[speedups]~=3.13.0"' in pyproject
     assert "meshagent-api" not in pyproject
     assert "from aiohttp import web" in server_py
     assert "RoomClient" not in server_py
+    assert "EXPOSE 8000" in dockerfile
     assert diagnosis.sdk is None
     assert diagnosis.python_has_pyproject is True
     assert diagnosis.python_source_uses_sdk is False
@@ -96,6 +104,7 @@ def test_init_creates_javascript_webserver_non_interactively(tmp_path) -> None:
     assert "@meshagent/meshagent" not in package_json.read_text(encoding="utf-8")
     assert "hello from meshagent init" in server_js.read_text(encoding="utf-8")
     assert "FROM node:22-alpine" in dockerfile.read_text(encoding="utf-8")
+    assert "EXPOSE 3000" in dockerfile.read_text(encoding="utf-8")
 
 
 def test_init_creates_javascript_backend_agent_non_interactively(tmp_path) -> None:
@@ -113,14 +122,140 @@ def test_init_creates_javascript_backend_agent_non_interactively(tmp_path) -> No
 
     assert result.exit_code == 0
     assert "Created a minimal deployable JavaScript backend agent" in result.output
-    assert "--meshagent-token full" in result.output
+    assert "--meshagent-token agentDefault" in result.output
+    assert "--meshagent-token full" not in result.output
+    assert " -e " not in result.output
+    assert "--liveness" not in result.output
     assert "@meshagent/meshagent" in (tmp_path / "package.json").read_text(
         encoding="utf-8"
     )
-    assert "RoomClient" in (tmp_path / "server.js").read_text(encoding="utf-8")
+    server_js = (tmp_path / "server.js").read_text(encoding="utf-8")
+    assert "RoomClient" in server_js
+    assert "server.listen" not in server_js
     assert "npm install --omit=dev" in (tmp_path / "Dockerfile").read_text(
         encoding="utf-8"
     )
+    assert "EXPOSE" not in (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+
+
+def test_init_creates_typescript_webserver_non_interactively(tmp_path) -> None:
+    result = CliRunner().invoke(
+        init_command,
+        [
+            "--language",
+            "typescript",
+            "--focus",
+            "webserver",
+            "--no-interactive",
+            str(tmp_path),
+        ],
+    )
+    diagnosis = diagnose_project(tmp_path)
+
+    assert result.exit_code == 0
+    assert "Created a minimal deployable TypeScript web server" in result.output
+    assert "meshagent deploy ." in result.output
+    assert (tmp_path / "package.json").is_file()
+    assert (tmp_path / "tsconfig.json").is_file()
+    assert (tmp_path / "src" / "server.ts").is_file()
+    assert (tmp_path / "Dockerfile").is_file()
+    assert '"build": "tsc"' in (tmp_path / "package.json").read_text(encoding="utf-8")
+    assert "createServer" in (tmp_path / "src" / "server.ts").read_text(
+        encoding="utf-8"
+    )
+    assert "RoomClient" not in (tmp_path / "src" / "server.ts").read_text(
+        encoding="utf-8"
+    )
+    assert "EXPOSE 3000" in (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    assert diagnosis.language == "TypeScript"
+    assert diagnosis.javascript_flavor == "Node.js/TypeScript"
+    assert diagnosis.sdk is None
+
+
+def test_init_creates_typescript_backend_agent_non_interactively(tmp_path) -> None:
+    result = CliRunner().invoke(
+        init_command,
+        [
+            "--language",
+            "ts",
+            "--focus",
+            "backend-agent",
+            "--no-interactive",
+            str(tmp_path),
+        ],
+    )
+    diagnosis = diagnose_project(tmp_path)
+
+    assert result.exit_code == 0
+    assert "Created a minimal deployable TypeScript backend agent" in result.output
+    assert "--meshagent-token agentDefault" in result.output
+    assert "--meshagent-token full" not in result.output
+    assert " -e " not in result.output
+    assert "@meshagent/meshagent" in (tmp_path / "package.json").read_text(
+        encoding="utf-8"
+    )
+    server_ts = (tmp_path / "src" / "server.ts").read_text(encoding="utf-8")
+    assert "RoomClient" in server_ts
+    assert "server.listen" not in server_ts
+    assert "EXPOSE" not in (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    assert diagnosis.language == "TypeScript"
+    assert diagnosis.javascript_flavor == "Node.js/TypeScript"
+    assert diagnosis.sdk == "@meshagent/meshagent"
+    assert diagnosis.is_headless_backend_agent is True
+
+
+def test_init_creates_react_webserver_non_interactively(tmp_path) -> None:
+    result = CliRunner().invoke(
+        init_command,
+        [
+            "--language",
+            "react",
+            "--focus",
+            "webserver",
+            "--no-interactive",
+            str(tmp_path),
+        ],
+    )
+    diagnosis = diagnose_project(tmp_path)
+
+    assert result.exit_code == 0
+    assert "Created a minimal deployable React web server" in result.output
+    assert "--room-mount /:/data:rw" in result.output
+    assert (tmp_path / "package.json").is_file()
+    assert (tmp_path / "tsconfig.json").is_file()
+    assert (tmp_path / "vite.config.ts").is_file()
+    assert (tmp_path / "index.html").is_file()
+    assert (tmp_path / "src" / "main.tsx").is_file()
+    package_json = (tmp_path / "package.json").read_text(encoding="utf-8")
+    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    assert '"react"' in package_json
+    assert '"vite"' in package_json
+    assert "nginx:1.27-alpine" in dockerfile
+    assert "listen 80" in dockerfile
+    assert "EXPOSE 80" in dockerfile
+    assert diagnosis.language == "TypeScript"
+    assert diagnosis.javascript_flavor == "React/Vite"
+    assert diagnosis.sdk is None
+
+
+def test_init_rejects_react_backend_agent(tmp_path) -> None:
+    result = CliRunner().invoke(
+        init_command,
+        [
+            "--language",
+            "react",
+            "--focus",
+            "backend-agent",
+            "--no-interactive",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Unsupported template combination" in result.output
+    assert "React does not support backend-agent" in result.output
+    assert "Supported focus: webserver" in result.output
+    assert not (tmp_path / "Dockerfile").exists()
 
 
 def test_init_creates_dotnet_backend_agent_non_interactively(tmp_path) -> None:
@@ -138,11 +273,19 @@ def test_init_creates_dotnet_backend_agent_non_interactively(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "Created a minimal deployable .NET backend agent" in result.output
-    assert "--meshagent-token full" in result.output
+    assert "--meshagent-token agentDefault" in result.output
+    assert "--meshagent-token full" not in result.output
     assert 'PackageReference Include="Meshagent.Api"' in (
         tmp_path / "MeshAgentHello.csproj"
     ).read_text(encoding="utf-8")
-    assert "RoomClient" in (tmp_path / "Program.cs").read_text(encoding="utf-8")
+    csproj = (tmp_path / "MeshAgentHello.csproj").read_text(encoding="utf-8")
+    program_cs = (tmp_path / "Program.cs").read_text(encoding="utf-8")
+    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    assert '<Project Sdk="Microsoft.NET.Sdk">' in csproj
+    assert "RoomClient" in program_cs
+    assert "MapGet" not in program_cs
+    assert "mcr.microsoft.com/dotnet/runtime:9.0" in dockerfile
+    assert "EXPOSE" not in dockerfile
 
 
 def test_init_creates_flutter_webserver_non_interactively(tmp_path) -> None:
@@ -167,6 +310,8 @@ def test_init_creates_flutter_webserver_non_interactively(tmp_path) -> None:
     assert "flutter build web --release" in (tmp_path / "Dockerfile").read_text(
         encoding="utf-8"
     )
+    assert "listen 80" in (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    assert "EXPOSE 80" in (tmp_path / "Dockerfile").read_text(encoding="utf-8")
 
 
 def test_init_creates_dart_backend_agent_non_interactively(tmp_path) -> None:
@@ -184,12 +329,17 @@ def test_init_creates_dart_backend_agent_non_interactively(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "Created a minimal deployable Dart backend agent" in result.output
-    assert "--meshagent-token full" in result.output
+    assert "--meshagent-token agentDefault" in result.output
+    assert "--meshagent-token full" not in result.output
     assert "meshagent:" in (tmp_path / "pubspec.yaml").read_text(encoding="utf-8")
     assert "RoomClient" in (tmp_path / "bin" / "server.dart").read_text(
         encoding="utf-8"
     )
+    assert "HttpServer" not in (tmp_path / "bin" / "server.dart").read_text(
+        encoding="utf-8"
+    )
     assert "FROM dart:stable" in (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    assert "EXPOSE" not in (tmp_path / "Dockerfile").read_text(encoding="utf-8")
 
 
 def test_init_rejects_unknown_language(tmp_path) -> None:
@@ -200,7 +350,9 @@ def test_init_rejects_unknown_language(tmp_path) -> None:
 
     assert result.exit_code == 1
     assert "Unsupported language: rust" in result.output
-    assert "python, javascript, dotnet, dart-flutter" in result.output
+    assert (
+        "python, javascript, typescript, react, dotnet, dart-flutter" in result.output
+    )
     assert not (tmp_path / "Dockerfile").exists()
 
 
@@ -221,7 +373,7 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
 ) -> None:
     monkeypatch.setattr(init_module, "_stdio_is_interactive", lambda: True)
 
-    captured_languages: list[tuple[str, str, str]] = []
+    captured_languages: list[tuple[str, str, str, tuple[str, ...]]] = []
     captured_focuses: list[tuple[str, str, str]] = []
 
     def fake_run_init_tui(*, language_choices, focus_choices):
@@ -237,6 +389,8 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
     assert [choice[0] for choice in captured_languages] == [
         "python",
         "javascript",
+        "typescript",
+        "react",
         "dotnet",
         "dart-flutter",
     ]
@@ -244,6 +398,13 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
         "webserver",
         "backend-agent",
     ]
+    assert {choice[0]: choice[3] for choice in captured_languages}["react"] == (
+        "webserver",
+    )
+    assert {choice[0]: choice[3] for choice in captured_languages}["typescript"] == (
+        "webserver",
+        "backend-agent",
+    )
     assert (tmp_path / "server.js").is_file()
     assert "@meshagent/meshagent" in (tmp_path / "package.json").read_text(
         encoding="utf-8"

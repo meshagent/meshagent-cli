@@ -104,7 +104,7 @@ async def index(request: web.Request) -> web.Response:
 
 
 async def main() -> None:
-    port = int(os.environ.get("PORT", "8080"))
+    port = int(os.environ.get("PORT", "8000"))
     app = web.Application()
     app.router.add_get("/health", health)
     app.router.add_get("/", index)
@@ -126,29 +126,17 @@ PYTHON_AGENT = """\
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import os
 
-from aiohttp import web
 from meshagent.api import RoomClient, WebSocketClientProtocol, websocket_room_url
 
 
-async def health(request: web.Request) -> web.Response:
-    return web.Response(text="ok\\n", content_type="text/plain")
-
-
-async def index(request: web.Request) -> web.Response:
-    return web.Response(
-        text="hello from meshagent init backend agent\\n",
-        content_type="text/plain",
-    )
-
-
-async def start_room_agent() -> None:
+async def main() -> None:
     room_name = os.environ.get("MESHAGENT_ROOM")
     token = os.environ.get("MESHAGENT_TOKEN")
     if not room_name or not token:
-        print("MeshAgent room environment is not set; serving /health only.")
+        print("MeshAgent room environment is not set; waiting for deployment env.")
+        await asyncio.Event().wait()
         return
 
     protocol = WebSocketClientProtocol(
@@ -158,28 +146,6 @@ async def start_room_agent() -> None:
     async with RoomClient(protocol_factory=protocol.create_factory()) as room:
         print(f"Connected to MeshAgent room: {room.room_name}")
         await room.wait_for_close()
-
-
-async def main() -> None:
-    port = int(os.environ.get("PORT", "8080"))
-    app = web.Application()
-    app.router.add_get("/health", health)
-    app.router.add_get("/", index)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    print(f"Serving on 0.0.0.0:{port}")
-
-    agent_task = asyncio.create_task(start_room_agent())
-    try:
-        await asyncio.Event().wait()
-    finally:
-        agent_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await agent_task
-        await runner.cleanup()
 
 
 if __name__ == "__main__":
@@ -213,7 +179,6 @@ name = "meshagent-init-python-agent"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
-  "aiohttp[speedups]~=3.13.0",
   "meshagent-api=={__version__}",
 ]
 
@@ -226,7 +191,7 @@ FROM python:3.13-slim
 WORKDIR /app
 COPY pyproject.toml server.py ./
 RUN pip install --no-cache-dir .
-EXPOSE 8080
+EXPOSE 8000
 CMD ["python", "server.py"]
 """
 
@@ -235,7 +200,6 @@ FROM python:3.13-slim
 WORKDIR /app
 COPY pyproject.toml server.py ./
 RUN pip install --no-cache-dir .
-EXPOSE 8080
 CMD ["python", "server.py"]
 """
 
@@ -279,7 +243,7 @@ JAVASCRIPT_AGENT_PACKAGE_JSON = f"""\
 JAVASCRIPT_WEBSERVER = """\
 const http = require("node:http");
 
-const port = Number(process.env.PORT || 8080);
+const port = Number(process.env.PORT || 3000);
 
 const server = http.createServer((request, response) => {
   if (request.url === "/health") {
@@ -302,53 +266,32 @@ server.listen(port, "0.0.0.0");
 """
 
 JAVASCRIPT_AGENT = """\
-const http = require("node:http");
 const { RoomClient } = require("@meshagent/meshagent");
 
-const port = Number(process.env.PORT || 8080);
-
-const server = http.createServer((request, response) => {
-  if (request.url === "/health") {
-    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-    response.end("ok\\n");
-    return;
-  }
-
-  if (request.url === "/") {
-    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-    response.end("hello from meshagent init backend agent\\n");
-    return;
-  }
-
-  response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-  response.end("not found\\n");
-});
-
-server.listen(port, "0.0.0.0");
-
-async function startRoomAgent() {
+async function main() {
   if (!process.env.MESHAGENT_ROOM || !process.env.MESHAGENT_TOKEN) {
-    console.log("MeshAgent room environment is not set; serving /health only.");
+    console.log("MeshAgent room environment is not set; waiting for deployment env.");
+    await new Promise(() => {});
     return;
   }
 
   const room = new RoomClient();
-  try {
-    await room.start();
-    console.log(`Connected to MeshAgent room: ${room.roomName}`);
-  } catch (error) {
-    console.error("Unable to start MeshAgent RoomClient:", error);
-  }
+  await room.start();
+  console.log(`Connected to MeshAgent room: ${room.roomName}`);
+  await new Promise(() => {});
 }
 
-void startRoomAgent();
+main().catch((error) => {
+  console.error("Unable to start MeshAgent RoomClient:", error);
+  process.exitCode = 1;
+});
 """
 
 JAVASCRIPT_DOCKERFILE = """\
 FROM node:22-alpine
 WORKDIR /app
 COPY package.json server.js ./
-EXPOSE 8080
+EXPOSE 3000
 CMD ["npm", "start"]
 """
 
@@ -358,12 +301,252 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev
 COPY server.js ./
-EXPOSE 8080
 CMD ["npm", "start"]
 """
 
 JAVASCRIPT_DOCKERIGNORE = """\
 node_modules/
+npm-debug.log*
+.git/
+.DS_Store
+"""
+
+TYPESCRIPT_PACKAGE_JSON = """\
+{
+  "name": "meshagent-init-typescript",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.8.0"
+  }
+}
+"""
+
+TYPESCRIPT_AGENT_PACKAGE_JSON = f"""\
+{{
+  "name": "meshagent-init-typescript-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {{
+    "build": "tsc",
+    "start": "node dist/server.js"
+  }},
+  "dependencies": {{
+    "@meshagent/meshagent": "^{__version__}"
+  }},
+  "devDependencies": {{
+    "@types/node": "^22.10.0",
+    "typescript": "^5.8.0"
+  }}
+}}
+"""
+
+TYPESCRIPT_TSCONFIG = """\
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"]
+}
+"""
+
+TYPESCRIPT_WEBSERVER = """\
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+
+const port = Number(process.env.PORT || 3000);
+
+const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+  if (request.url === "/health") {
+    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+    response.end("ok\\n");
+    return;
+  }
+
+  if (request.url === "/") {
+    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+    response.end("hello from meshagent init\\n");
+    return;
+  }
+
+  response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+  response.end("not found\\n");
+});
+
+server.listen(port, "0.0.0.0");
+"""
+
+TYPESCRIPT_AGENT = """\
+import { RoomClient } from "@meshagent/meshagent";
+
+async function main(): Promise<void> {
+  if (!process.env.MESHAGENT_ROOM || !process.env.MESHAGENT_TOKEN) {
+    console.log("MeshAgent room environment is not set; waiting for deployment env.");
+    await new Promise<never>(() => {});
+    return;
+  }
+
+  const room = new RoomClient();
+  await room.start();
+  console.log(`Connected to MeshAgent room: ${room.roomName}`);
+  await new Promise<never>(() => {});
+}
+
+main().catch((error: unknown) => {
+  console.error("Unable to start MeshAgent RoomClient:", error);
+  process.exitCode = 1;
+});
+"""
+
+TYPESCRIPT_DOCKERFILE = """\
+FROM node:22-alpine
+WORKDIR /app
+COPY package.json tsconfig.json ./
+RUN npm install
+COPY src ./src
+RUN npm run build && npm prune --omit=dev
+EXPOSE 3000
+CMD ["npm", "start"]
+"""
+
+TYPESCRIPT_AGENT_DOCKERFILE = """\
+FROM node:22-alpine
+WORKDIR /app
+COPY package.json tsconfig.json ./
+RUN npm install
+COPY src ./src
+RUN npm run build && npm prune --omit=dev
+CMD ["npm", "start"]
+"""
+
+REACT_PACKAGE_JSON = """\
+{
+  "name": "meshagent-init-react",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^6.0.0",
+    "typescript": "^5.8.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {}
+}
+"""
+
+REACT_TSCONFIG = """\
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "module": "ESNext",
+    "moduleResolution": "Node",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx"
+  },
+  "include": ["src"]
+}
+"""
+
+REACT_VITE_CONFIG = """\
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+
+export default defineConfig({
+  plugins: [react()],
+});
+"""
+
+REACT_INDEX_HTML = """\
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MeshAgent Init</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+"""
+
+REACT_MAIN = """\
+import React from "react";
+import { createRoot } from "react-dom/client";
+
+function App() {
+  return <main>hello from meshagent init</main>;
+}
+
+const root = document.getElementById("root");
+if (root === null) {
+  throw new Error("Root element was not found");
+}
+
+createRoot(root).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
+);
+"""
+
+REACT_DOCKERFILE = """\
+FROM node:22-alpine AS build
+WORKDIR /app
+COPY package.json tsconfig.json vite.config.ts index.html ./
+RUN npm install
+COPY src ./src
+RUN npm run build
+
+FROM nginx:1.27-alpine
+COPY --from=build /app/dist /usr/share/nginx/html
+RUN rm -f /etc/nginx/conf.d/default.conf && printf '%s\\n' \\
+  'pid /data/nginx/nginx.pid;' \\
+  'events {}' \\
+  'http {' \\
+  '  include /etc/nginx/mime.types;' \\
+  '  client_body_temp_path /data/nginx/client_temp;' \\
+  '  proxy_temp_path /data/nginx/proxy_temp;' \\
+  '  fastcgi_temp_path /data/nginx/fastcgi_temp;' \\
+  '  uwsgi_temp_path /data/nginx/uwsgi_temp;' \\
+  '  scgi_temp_path /data/nginx/scgi_temp;' \\
+  '  server { listen 80; location = /health { return 200 "ok\\n"; } location / { try_files $uri $uri/ /index.html; } }' \\
+  '}' > /etc/nginx/nginx.conf
+EXPOSE 80
+CMD ["sh", "-c", "mkdir -p /data/nginx/client_temp /data/nginx/proxy_temp /data/nginx/fastcgi_temp /data/nginx/uwsgi_temp /data/nginx/scgi_temp && nginx -c /etc/nginx/nginx.conf -g 'daemon off;'"]
+"""
+
+REACT_DOCKERIGNORE = """\
+node_modules/
+dist/
 npm-debug.log*
 .git/
 .DS_Store
@@ -380,7 +563,7 @@ DOTNET_CSPROJ = """\
 """
 
 DOTNET_AGENT_CSPROJ = f"""\
-<Project Sdk="Microsoft.NET.Sdk.Web">
+<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
@@ -396,7 +579,7 @@ DOTNET_PROGRAM = """\
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
 
-var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
+var port = Environment.GetEnvironmentVariable("PORT") ?? "5000";
 app.Urls.Clear();
 app.Urls.Add($"http://0.0.0.0:{port}");
 
@@ -409,45 +592,20 @@ await app.RunAsync();
 DOTNET_AGENT_PROGRAM = """\
 using Meshagent.Api.Room;
 
-var builder = WebApplication.CreateBuilder(args);
-var app = builder.Build();
-
-var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
-app.Urls.Clear();
-app.Urls.Add($"http://0.0.0.0:{port}");
-
-app.MapGet("/health", () => Results.Text("ok\\n", "text/plain"));
-app.MapGet(
-    "/",
-    () => Results.Text("hello from meshagent init backend agent\\n", "text/plain")
-);
-
 if (
-    !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("MESHAGENT_ROOM"))
-    && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("MESHAGENT_TOKEN"))
+    string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("MESHAGENT_ROOM"))
+    || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("MESHAGENT_TOKEN"))
 )
 {
-    _ = Task.Run(async () =>
-    {
-        try
-        {
-            await using var room = new RoomClient();
-            await room.ConnectAsync();
-            Console.WriteLine($"Connected to MeshAgent room: {room.RoomName}");
-            await Task.Delay(Timeout.InfiniteTimeSpan);
-        }
-        catch (Exception error)
-        {
-            Console.Error.WriteLine($"Unable to start MeshAgent RoomClient: {error}");
-        }
-    });
-}
-else
-{
-    Console.WriteLine("MeshAgent room environment is not set; serving /health only.");
+    Console.WriteLine("MeshAgent room environment is not set; waiting for deployment env.");
+    await Task.Delay(Timeout.InfiniteTimeSpan);
+    return;
 }
 
-await app.RunAsync();
+await using var room = new RoomClient();
+await room.ConnectAsync();
+Console.WriteLine($"Connected to MeshAgent room: {room.RoomName}");
+await Task.Delay(Timeout.InfiniteTimeSpan);
 """
 
 DOTNET_DOCKERFILE = """\
@@ -463,7 +621,23 @@ RUN dotnet publish -c Release -o /app/publish --no-restore --disable-build-serve
 FROM mcr.microsoft.com/dotnet/aspnet:9.0
 WORKDIR /app
 COPY --from=build /app/publish .
-EXPOSE 8080
+EXPOSE 5000
+ENTRYPOINT ["dotnet", "MeshAgentHello.dll"]
+"""
+
+DOTNET_AGENT_DOCKERFILE = """\
+FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
+ENV DOTNET_NOLOGO=1
+WORKDIR /src
+COPY MeshAgentHello.csproj ./
+RUN dotnet restore
+COPY Program.cs ./
+RUN dotnet publish -c Release -o /app/publish --no-restore --disable-build-servers /p:UseSharedCompilation=false
+
+FROM mcr.microsoft.com/dotnet/runtime:9.0
+WORKDIR /app
+COPY --from=build /app/publish .
 ENTRYPOINT ["dotnet", "MeshAgentHello.dll"]
 """
 
@@ -485,37 +659,16 @@ dependencies:
 
 DART_AGENT = """\
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:meshagent/meshagent.dart';
 
 Future<void> main() async {
-  final port = int.tryParse(Platform.environment['PORT'] ?? '') ?? 8080;
-  final server = await HttpServer.bind(InternetAddress.anyIPv4, port);
-
-  unawaited(_startRoomAgent());
-
-  await for (final request in server) {
-    if (request.uri.path == '/health') {
-      _sendText(request, HttpStatus.ok, 'ok\\n');
-      continue;
-    }
-
-    if (request.uri.path == '/') {
-      _sendText(request, HttpStatus.ok, 'hello from meshagent init backend agent\\n');
-      continue;
-    }
-
-    _sendText(request, HttpStatus.notFound, 'not found\\n');
-  }
-}
-
-Future<void> _startRoomAgent() async {
   final roomName = Platform.environment['MESHAGENT_ROOM'];
   final token = Platform.environment['MESHAGENT_TOKEN'];
   if (roomName == null || roomName.isEmpty || token == null || token.isEmpty) {
-    print('MeshAgent room environment is not set; serving /health only.');
+    print('MeshAgent room environment is not set; waiting for deployment env.');
+    await Completer<void>().future;
     return;
   }
 
@@ -527,6 +680,7 @@ Future<void> _startRoomAgent() async {
   );
   await room.start();
   print('Connected to MeshAgent room: ${room.roomName}');
+  await Completer<void>().future;
 }
 
 Uri _websocketRoomUrl(String roomName) {
@@ -541,15 +695,6 @@ Uri _websocketRoomUrl(String roomName) {
   return Uri.parse('$baseUrl/rooms/$roomName');
 }
 
-void _sendText(HttpRequest request, int statusCode, String body) {
-  final encoded = utf8.encode(body);
-  request.response
-    ..statusCode = statusCode
-    ..headers.contentType = ContentType.text
-    ..headers.contentLength = encoded.length
-    ..add(encoded)
-    ..close();
-}
 """
 
 DART_AGENT_DOCKERFILE = """\
@@ -558,7 +703,6 @@ WORKDIR /app
 COPY pubspec.yaml ./
 RUN dart pub get
 COPY bin ./bin
-EXPOSE 8080
 CMD ["dart", "run", "bin/server.dart"]
 """
 
@@ -644,9 +788,9 @@ RUN rm -f /etc/nginx/conf.d/default.conf && printf '%s\\n' \\
   '  fastcgi_temp_path /data/nginx/fastcgi_temp;' \\
   '  uwsgi_temp_path /data/nginx/uwsgi_temp;' \\
   '  scgi_temp_path /data/nginx/scgi_temp;' \\
-  '  server { listen 8080; location = /health { return 200 "ok\\n"; } location / { try_files $uri $uri/ /index.html; } }' \\
+  '  server { listen 80; location = /health { return 200 "ok\\n"; } location / { try_files $uri $uri/ /index.html; } }' \\
   '}' > /etc/nginx/nginx.conf
-EXPOSE 8080
+EXPOSE 80
 CMD ["sh", "-c", "mkdir -p /data/nginx/client_temp /data/nginx/proxy_temp /data/nginx/fastcgi_temp /data/nginx/uwsgi_temp /data/nginx/scgi_temp && nginx -c /etc/nginx/nginx.conf -g 'daemon off;'"]
 """
 
@@ -670,10 +814,8 @@ STATIC_WEBSERVER_NEXT_STEPS = (
 AGENT_NEXT_STEPS = (
     "meshagent doctor",
     (
-        "meshagent deploy . --tag <repository>:<tag> --public --liveness /health "
-        '--meshagent-token full -e MESHAGENT_API_URL="$MESHAGENT_API_URL" '
-        '-e MESHAGENT_ROOM="$MESHAGENT_ROOM" '
-        '-e MESHAGENT_ROOM_URL="$MESHAGENT_ROOM_URL" --wait'
+        "meshagent deploy . --tag <repository>:<tag> "
+        "--meshagent-token agentDefault --wait"
     ),
 )
 
@@ -687,6 +829,16 @@ LANGUAGES: Mapping[str, InitLanguage] = {
         id="javascript",
         label="JavaScript",
         description="Node.js service using CommonJS.",
+    ),
+    "typescript": InitLanguage(
+        id="typescript",
+        label="TypeScript",
+        description="Node.js service or RoomClient backend in TypeScript.",
+    ),
+    "react": InitLanguage(
+        id="react",
+        label="React",
+        description="React/Vite web app.",
     ),
     "dotnet": InitLanguage(
         id="dotnet",
@@ -704,7 +856,7 @@ FOCUSES: Mapping[str, InitFocus] = {
     WEB_FOCUS: InitFocus(
         id=WEB_FOCUS,
         label="Web server",
-        description="HTTP app with /health on port 8080.",
+        description="HTTP app with /health on a declared container port.",
     ),
     AGENT_FOCUS: InitFocus(
         id=AGENT_FOCUS,
@@ -718,7 +870,7 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         language_id="python",
         focus_id=WEB_FOCUS,
         label="Python web server",
-        description="Async Python HTTP service on port 8080.",
+        description="Async Python HTTP service on a declared container port.",
         files={
             "pyproject.toml": PYTHON_WEBSERVER_PYPROJECT,
             "server.py": PYTHON_WEBSERVER,
@@ -731,7 +883,7 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         language_id="python",
         focus_id=AGENT_FOCUS,
         label="Python backend agent",
-        description="Python RoomClient service with a /health endpoint.",
+        description="Headless Python RoomClient service.",
         files={
             "pyproject.toml": PYTHON_AGENT_PYPROJECT,
             "server.py": PYTHON_AGENT,
@@ -744,7 +896,7 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         language_id="javascript",
         focus_id=WEB_FOCUS,
         label="JavaScript web server",
-        description="Node.js HTTP service on port 8080.",
+        description="Node.js HTTP service on a declared container port.",
         files={
             "package.json": JAVASCRIPT_PACKAGE_JSON,
             "server.js": JAVASCRIPT_WEBSERVER,
@@ -757,7 +909,7 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         language_id="javascript",
         focus_id=AGENT_FOCUS,
         label="JavaScript backend agent",
-        description="Node.js RoomClient service with a /health endpoint.",
+        description="Headless Node.js RoomClient service.",
         files={
             "package.json": JAVASCRIPT_AGENT_PACKAGE_JSON,
             "server.js": JAVASCRIPT_AGENT,
@@ -766,11 +918,55 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         },
         next_steps=AGENT_NEXT_STEPS,
     ),
+    ("typescript", WEB_FOCUS): InitTemplate(
+        language_id="typescript",
+        focus_id=WEB_FOCUS,
+        label="TypeScript web server",
+        description="Node.js TypeScript HTTP service on a declared container port.",
+        files={
+            "package.json": TYPESCRIPT_PACKAGE_JSON,
+            "tsconfig.json": TYPESCRIPT_TSCONFIG,
+            "src/server.ts": TYPESCRIPT_WEBSERVER,
+            "Dockerfile": TYPESCRIPT_DOCKERFILE,
+            ".dockerignore": JAVASCRIPT_DOCKERIGNORE,
+        },
+        next_steps=WEBSERVER_NEXT_STEPS,
+    ),
+    ("typescript", AGENT_FOCUS): InitTemplate(
+        language_id="typescript",
+        focus_id=AGENT_FOCUS,
+        label="TypeScript backend agent",
+        description="Headless TypeScript RoomClient service.",
+        files={
+            "package.json": TYPESCRIPT_AGENT_PACKAGE_JSON,
+            "tsconfig.json": TYPESCRIPT_TSCONFIG,
+            "src/server.ts": TYPESCRIPT_AGENT,
+            "Dockerfile": TYPESCRIPT_AGENT_DOCKERFILE,
+            ".dockerignore": JAVASCRIPT_DOCKERIGNORE,
+        },
+        next_steps=AGENT_NEXT_STEPS,
+    ),
+    ("react", WEB_FOCUS): InitTemplate(
+        language_id="react",
+        focus_id=WEB_FOCUS,
+        label="React web server",
+        description="React/Vite web app served by nginx on a declared container port.",
+        files={
+            "package.json": REACT_PACKAGE_JSON,
+            "tsconfig.json": REACT_TSCONFIG,
+            "vite.config.ts": REACT_VITE_CONFIG,
+            "index.html": REACT_INDEX_HTML,
+            "src/main.tsx": REACT_MAIN,
+            "Dockerfile": REACT_DOCKERFILE,
+            ".dockerignore": REACT_DOCKERIGNORE,
+        },
+        next_steps=STATIC_WEBSERVER_NEXT_STEPS,
+    ),
     ("dotnet", WEB_FOCUS): InitTemplate(
         language_id="dotnet",
         focus_id=WEB_FOCUS,
         label=".NET web server",
-        description="ASP.NET Core HTTP service on port 8080.",
+        description="ASP.NET Core HTTP service on a declared container port.",
         files={
             "MeshAgentHello.csproj": DOTNET_CSPROJ,
             "Program.cs": DOTNET_PROGRAM,
@@ -783,11 +979,11 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         language_id="dotnet",
         focus_id=AGENT_FOCUS,
         label=".NET backend agent",
-        description="ASP.NET Core RoomClient service with a /health endpoint.",
+        description="Headless .NET RoomClient service.",
         files={
             "MeshAgentHello.csproj": DOTNET_AGENT_CSPROJ,
             "Program.cs": DOTNET_AGENT_PROGRAM,
-            "Dockerfile": DOTNET_DOCKERFILE,
+            "Dockerfile": DOTNET_AGENT_DOCKERFILE,
             ".dockerignore": DOTNET_DOCKERIGNORE,
         },
         next_steps=AGENT_NEXT_STEPS,
@@ -796,7 +992,7 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         language_id="dart-flutter",
         focus_id=WEB_FOCUS,
         label="Flutter web server",
-        description="Flutter web app served by nginx on port 8080.",
+        description="Flutter web app served by nginx on a declared container port.",
         files={
             "pubspec.yaml": FLUTTER_PUBSPEC,
             "lib/main.dart": FLUTTER_MAIN,
@@ -810,7 +1006,7 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         language_id="dart-flutter",
         focus_id=AGENT_FOCUS,
         label="Dart backend agent",
-        description="Dart RoomClient service with a /health endpoint.",
+        description="Headless Dart RoomClient service.",
         files={
             "pubspec.yaml": DART_AGENT_PUBSPEC,
             "bin/server.dart": DART_AGENT,
@@ -837,6 +1033,15 @@ LANGUAGE_ALIASES = {
     "nodejs": "javascript",
     "python": "python",
     "py": "python",
+    "react": "react",
+    "react.js": "react",
+    "reactjs": "react",
+    "react-vite": "react",
+    "ts": "typescript",
+    "typescript": "typescript",
+    "node-ts": "typescript",
+    "node.ts": "typescript",
+    "vite-react": "react",
 }
 FOCUS_ALIASES = {
     "agent": AGENT_FOCUS,
@@ -914,6 +1119,24 @@ def _resolve_focus_id(focus: str | None) -> str:
     return focus_id
 
 
+def _resolve_template(language_id: str, focus_id: str) -> InitTemplate:
+    template = TEMPLATES.get((language_id, focus_id))
+    if template is not None:
+        return template
+
+    language = LANGUAGES[language_id]
+    supported = [
+        focus
+        for template_language_id, focus in TEMPLATES
+        if template_language_id == language_id
+    ]
+    supported_text = ", ".join(supported) if supported else "none"
+    raise click.ClickException(
+        f"Unsupported template combination: {language.label} does not support "
+        f"{focus_id}. Supported focus: {supported_text}."
+    )
+
+
 def _stdio_is_interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
@@ -933,9 +1156,22 @@ def _should_launch_tui(
     return (language is None or focus is None) and stdin_is_tty and stdout_is_tty
 
 
-def _language_choices() -> Sequence[tuple[str, str, str]]:
+def _supported_focus_ids_for_language(language_id: str) -> tuple[str, ...]:
     return tuple(
-        (language.id, language.label, language.description)
+        focus_id
+        for template_language_id, focus_id in TEMPLATES
+        if template_language_id == language_id
+    )
+
+
+def _language_choices() -> Sequence[tuple[str, str, str, tuple[str, ...]]]:
+    return tuple(
+        (
+            language.id,
+            language.label,
+            language.description,
+            _supported_focus_ids_for_language(language.id),
+        )
         for language in LANGUAGES.values()
     )
 
@@ -948,7 +1184,7 @@ def _focus_choices() -> Sequence[tuple[str, str, str]]:
 
 def _run_init_tui(
     *,
-    language_choices: Sequence[tuple[str, str, str]],
+    language_choices: Sequence[tuple[str, str, str, tuple[str, ...]]],
     focus_choices: Sequence[tuple[str, str, str]],
 ) -> tuple[str, str] | None:
     from meshagent.cli.tui.init import (
@@ -958,8 +1194,13 @@ def _run_init_tui(
     )
 
     languages = [
-        InitLanguageChoice(id=language_id, label=label, description=description)
-        for language_id, label, description in language_choices
+        InitLanguageChoice(
+            id=language_id,
+            label=label,
+            description=description,
+            focus_ids=focus_ids,
+        )
+        for language_id, label, description, focus_ids in language_choices
     ]
     focuses = [
         InitFocusChoice(id=focus_id, label=label, description=description)
@@ -1000,7 +1241,7 @@ def _print_created_report(*, template: InitTemplate) -> None:
     default=None,
     help=(
         "Template language for non-interactive use. "
-        "Supported: python, javascript, dotnet, dart/flutter."
+        "Supported: python, javascript, typescript, react, dotnet, dart/flutter."
     ),
 )
 @click.option(
@@ -1073,6 +1314,6 @@ def init_command(
         language_id = _resolve_language_id(language)
         focus_id = _resolve_focus_id(focus)
 
-    template = TEMPLATES[(language_id, focus_id)]
+    template = _resolve_template(language_id, focus_id)
     _write_template(root, template)
     _print_created_report(template=template)

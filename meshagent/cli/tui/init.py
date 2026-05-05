@@ -70,6 +70,7 @@ class InitLanguageChoice:
     id: str
     label: str
     description: str
+    focus_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +220,23 @@ class InitWizardApp(App[None]):
                 return language.label
         return language_id
 
+    def _language_choice(self, language_id: str) -> InitLanguageChoice | None:
+        for language in self._languages:
+            if language.id == language_id:
+                return language
+        return None
+
+    def _focuses_for_selected_language(self) -> list[InitFocusChoice]:
+        if self._selected_language_id is None:
+            return list(self._focuses)
+
+        language = self._language_choice(self._selected_language_id)
+        if language is None or not language.focus_ids:
+            return list(self._focuses)
+
+        allowed_focus_ids = set(language.focus_ids)
+        return [focus for focus in self._focuses if focus.id in allowed_focus_ids]
+
     def _set_text(self, *, title: str, message: str, help_text: str) -> None:
         if self._title_view is not None:
             self._title_view.update(title)
@@ -271,7 +289,7 @@ class InitWizardApp(App[None]):
                 f"{focus.label} - {focus.description}",
                 id=_focus_option_id(focus.id),
             )
-            for focus in self._focuses
+            for focus in self._focuses_for_selected_language()
         ]
         options.append(Option("Back", id=INIT_BACK_OPTION_ID))
         options.append(Option("Cancel", id=INIT_CANCEL_OPTION_ID))

@@ -8,6 +8,7 @@ import shutil
 import textwrap
 import tomllib
 from typing import Iterable
+import xml.etree.ElementTree as ET
 
 import click
 from rich.console import Console
@@ -48,11 +49,6 @@ PYTHON_VIRTUAL_ENV_SCAN_IGNORES = {
     "obj",
     "target",
 }
-DEPLOY_ENV_SANITIZER = (
-    "env -u MESHAGENT_TOKEN -u MESHAGENT_PARTICIPANT_ID "
-    "-u MESHAGENT_PARTICIPANT_NAME -u MESHAGENT_ROOM_URL "
-    "-u MESHAGENT_SESSION_ID"
-)
 
 
 @dataclass(frozen=True)
@@ -64,8 +60,10 @@ class ProjectDiagnosis:
     has_deployment_artifact: bool
     deployment_artifacts: tuple[str, ...]
     has_health_route: bool
-    has_port_8080_hint: bool
+    has_http_port_hint: bool
+    is_headless_backend_agent: bool
     package_scripts: tuple[tuple[str, str], ...]
+    sdk_versions: tuple[tuple[str, str], ...]
     python_has_pyproject: bool
     python_source_uses_sdk: bool
     python_sdk_versions: tuple[tuple[str, str], ...]
@@ -476,6 +474,114 @@ def _python_sdk_versions(root: Path, language: str) -> tuple[tuple[str, str], ..
     return tuple(deduped)
 
 
+def _declared_dependency_version(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    match = re.search(
+        r"(?<!\d)(\d+\.\d+(?:\.\d+)?(?:[-+][A-Za-z0-9.]+)?)",
+        value.strip(),
+    )
+    if match is None:
+        return None
+    return match.group(1)
+
+
+def _version_key(value: str) -> tuple[int, int, int] | None:
+    match = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?", value)
+    if match is None:
+        return None
+    return (
+        int(match.group(1)),
+        int(match.group(2)),
+        int(match.group(3) or "0"),
+    )
+
+
+def _version_is_behind(value: str, reference: str) -> bool:
+    value_key = _version_key(value)
+    reference_key = _version_key(reference)
+    return (
+        value_key is not None
+        and reference_key is not None
+        and value_key < reference_key
+    )
+
+
+def _javascript_sdk_versions(
+    root: Path, package_name: str
+) -> tuple[tuple[str, str], ...]:
+    version = _declared_dependency_version(
+        _package_json_dependencies(root).get(package_name)
+    )
+    if version is None:
+        return ()
+    return (("package.json", version),)
+
+
+def _xml_local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _dotnet_sdk_versions(root: Path, package_name: str) -> tuple[tuple[str, str], ...]:
+    versions: list[tuple[str, str]] = []
+    for csproj_path in sorted(root.glob("*.csproj")):
+        try:
+            project = ET.fromstring(_read_text(csproj_path))
+        except ET.ParseError:
+            continue
+        for element in project.iter():
+            if _xml_local_name(element.tag) != "PackageReference":
+                continue
+            include = element.attrib.get("Include") or element.attrib.get("Update")
+            if include is None or include.lower() != package_name.lower():
+                continue
+            version = _declared_dependency_version(element.attrib.get("Version"))
+            if version is None:
+                for child in element:
+                    if _xml_local_name(child.tag) == "Version":
+                        version = _declared_dependency_version(child.text)
+                        break
+            if version is not None:
+                versions.append((csproj_path.name, version))
+    return tuple(versions)
+
+
+def _dart_sdk_versions(root: Path, package_name: str) -> tuple[tuple[str, str], ...]:
+    dependency_indent: int | None = None
+    for raw_line in _read_text(root / "pubspec.yaml").splitlines():
+        stripped = raw_line.split("#", 1)[0].rstrip()
+        if stripped.strip() == "":
+            continue
+        indent = len(stripped) - len(stripped.lstrip())
+        if stripped.strip() == "dependencies:":
+            dependency_indent = indent
+            continue
+        if dependency_indent is None:
+            continue
+        if indent <= dependency_indent:
+            break
+        match = re.match(rf"\s*{re.escape(package_name)}:\s*(\S+)?", stripped)
+        if match is None:
+            continue
+        version = _declared_dependency_version(match.group(1))
+        if version is None:
+            return ()
+        return (("pubspec.yaml", version),)
+    return ()
+
+
+def _sdk_versions(root: Path, language: str) -> tuple[tuple[str, str], ...]:
+    if language == "Python":
+        return _python_sdk_versions(root, language)
+    if language in {"JavaScript", "TypeScript"}:
+        return _javascript_sdk_versions(root, "@meshagent/meshagent")
+    if language == ".NET":
+        return _dotnet_sdk_versions(root, "Meshagent.Api")
+    if language == "Dart":
+        return _dart_sdk_versions(root, "meshagent")
+    return ()
+
+
 def _python_source_uses_sdk(source_files: list[Path]) -> bool:
     for path in source_files:
         for line in _read_text(path).splitlines():
@@ -609,11 +715,88 @@ def _deployment_artifacts(root: Path) -> tuple[str, ...]:
     return tuple(artifacts)
 
 
+def _has_http_port_hint(root: Path, source_files: list[Path]) -> bool:
+    dockerfile_text = "\n".join(
+        _read_text(root / name) for name in ("Dockerfile", "Containerfile")
+    ).lower()
+    if re.search(r"(?m)^\s*expose\s+\d+", dockerfile_text) is not None:
+        return True
+
+    return _contains_any(
+        source_files,
+        (
+            "process.env.port",
+            'os.environ.get("port"',
+            "os.environ.get('port'",
+            'environment.getenvironmentvariable("port")',
+            "platform.environment['port']",
+            'platform.environment["port"]',
+            "0.0.0.0",
+            "internetaddress.anyipv4",
+            "listenandserve",
+            ".listen(",
+            "tcplistener",
+            "tcpserver.new",
+        ),
+    )
+
+
+def _has_web_service_hint(
+    root: Path,
+    *,
+    language: str,
+    javascript_flavor: str | None,
+    source_files: list[Path],
+    has_health_route: bool,
+    has_http_port_hint: bool,
+) -> bool:
+    if has_health_route or has_http_port_hint:
+        return True
+    if javascript_flavor in {"React", "React/Vite", "Vite", "Next.js"}:
+        return True
+    if language == "Python":
+        return _contains_any(
+            source_files,
+            (
+                "aiohttp",
+                "fastapi",
+                "flask",
+                "http.server",
+                "threadinghttpserver",
+                "uvicorn",
+            ),
+        )
+    if language in {"JavaScript", "TypeScript"}:
+        return _contains_any(
+            source_files,
+            (
+                "createserver",
+                "express",
+                "fastify",
+                "hono",
+                "listen(",
+            ),
+        )
+    if language == ".NET":
+        csproj_text = "\n".join(_read_text(path) for path in root.glob("*.csproj"))
+        return "microsoft.net.sdk.web" in csproj_text.lower() or _contains_any(
+            source_files,
+            (
+                "webapplication",
+                "mapget",
+                "app.run",
+            ),
+        )
+    if language == "Dart":
+        return _contains_any(source_files, ("httpserver", "shelf", "shelf_router"))
+    return False
+
+
 def _start_command(language: str, javascript_flavor: str | None) -> str:
     if javascript_flavor in {"React", "React/Vite", "Vite"}:
         return "nginx -g 'daemon off;'"
     if javascript_flavor == "Next.js":
-        return "npm start -- -H 0.0.0.0 -p 8080"
+        return "npm start -- -H 0.0.0.0 -p $PORT"
     return {
         "Python": "python server.py",
         "TypeScript": "npm start",
@@ -625,14 +808,70 @@ def _start_command(language: str, javascript_flavor: str | None) -> str:
     }.get(language, "<start command>")
 
 
-def _dockerfile_for(language: str, javascript_flavor: str | None) -> str:
+def _dockerfile_for(
+    language: str,
+    javascript_flavor: str | None,
+    *,
+    headless_backend_agent: bool = False,
+) -> str:
+    if headless_backend_agent:
+        snippets = {
+            "Python": """
+                FROM python:3.13-slim
+                WORKDIR /app
+                COPY pyproject.toml server.py ./
+                RUN pip install --no-cache-dir .
+                CMD ["python", "server.py"]
+            """,
+            "TypeScript": """
+                FROM node:22-alpine
+                WORKDIR /app
+                COPY package*.json tsconfig.json ./
+                RUN npm install
+                COPY . .
+                RUN npm run build && npm prune --omit=dev
+                CMD ["npm", "start"]
+            """,
+            "JavaScript": """
+                FROM node:22-alpine
+                WORKDIR /app
+                COPY package*.json ./
+                RUN npm install --omit=dev
+                COPY . .
+                CMD ["npm", "start"]
+            """,
+            ".NET": """
+                FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+                ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
+                ENV DOTNET_NOLOGO=1
+                WORKDIR /src
+                COPY . .
+                RUN dotnet publish -c Release -o /app/publish --disable-build-servers /p:UseSharedCompilation=false
+
+                FROM mcr.microsoft.com/dotnet/runtime:9.0
+                WORKDIR /app
+                COPY --from=build /app/publish .
+                ENTRYPOINT ["dotnet", "DoctorDotnetRoomClient.dll"]
+            """,
+            "Dart": """
+                FROM dart:stable
+                WORKDIR /app
+                COPY pubspec.yaml ./
+                RUN dart pub get
+                COPY bin ./bin
+                RUN dart compile exe bin/server.dart -o /app/server
+                CMD ["/app/server"]
+            """,
+        }
+        return textwrap.dedent(snippets.get(language, "")).strip()
+
     snippets = {
         "Python": """
             FROM python:3.13-slim
             WORKDIR /app
             COPY pyproject.toml server.py ./
             RUN pip install --no-cache-dir .
-            EXPOSE 8080
+            EXPOSE 8000
             CMD ["python", "server.py"]
         """,
         "TypeScript": """
@@ -642,7 +881,7 @@ def _dockerfile_for(language: str, javascript_flavor: str | None) -> str:
             RUN npm install
             COPY . .
             RUN npm run build && npm prune --omit=dev
-            EXPOSE 8080
+            EXPOSE 3000
             CMD ["npm", "start"]
         """,
         "JavaScript": """
@@ -651,7 +890,7 @@ def _dockerfile_for(language: str, javascript_flavor: str | None) -> str:
             COPY package*.json ./
             RUN npm install --omit=dev
             COPY . .
-            EXPOSE 8080
+            EXPOSE 3000
             CMD ["npm", "start"]
         """,
         ".NET": """
@@ -665,7 +904,7 @@ def _dockerfile_for(language: str, javascript_flavor: str | None) -> str:
             FROM mcr.microsoft.com/dotnet/aspnet:9.0
             WORKDIR /app
             COPY --from=build /app/publish .
-            EXPOSE 8080
+            EXPOSE 5000
             ENTRYPOINT ["dotnet", "DoctorDotnetRoomClient.dll"]
         """,
         "Dart": """
@@ -675,7 +914,7 @@ def _dockerfile_for(language: str, javascript_flavor: str | None) -> str:
             RUN dart pub get
             COPY bin ./bin
             RUN dart compile exe bin/server.dart -o /app/server
-            EXPOSE 8080
+            EXPOSE 8081
             CMD ["/app/server"]
         """,
         "Go": """
@@ -683,14 +922,14 @@ def _dockerfile_for(language: str, javascript_flavor: str | None) -> str:
             WORKDIR /app
             COPY server.go .
             RUN go build -o server server.go
-            EXPOSE 8080
+            EXPOSE 8001
             CMD ["./server"]
         """,
         "Ruby": """
             FROM ruby:3.4-alpine
             WORKDIR /app
             COPY server.rb .
-            EXPOSE 8080
+            EXPOSE 4567
             CMD ["ruby", "server.rb"]
         """,
     }
@@ -717,9 +956,9 @@ def _dockerfile_for(language: str, javascript_flavor: str | None) -> str:
               '  fastcgi_temp_path /data/nginx/fastcgi_temp;' \\
               '  uwsgi_temp_path /data/nginx/uwsgi_temp;' \\
               '  scgi_temp_path /data/nginx/scgi_temp;' \\
-              '  server { listen 8080; location = /health { return 200 "ok\\n"; } location / { try_files $uri $uri/ /index.html; } }' \\
+              '  server { listen 80; location = /health { return 200 "ok\\n"; } location / { try_files $uri $uri/ /index.html; } }' \\
               '}' > /etc/nginx/nginx.conf
-            EXPOSE 8080
+            EXPOSE 80
             CMD ["sh", "-c", "mkdir -p /data/nginx/client_temp /data/nginx/proxy_temp /data/nginx/fastcgi_temp /data/nginx/uwsgi_temp /data/nginx/scgi_temp && nginx -c /etc/nginx/nginx.conf -g 'daemon off;'"]
             """
         ).strip()
@@ -746,9 +985,9 @@ def _dockerfile_for(language: str, javascript_flavor: str | None) -> str:
               '  fastcgi_temp_path /data/nginx/fastcgi_temp;' \\
               '  uwsgi_temp_path /data/nginx/uwsgi_temp;' \\
               '  scgi_temp_path /data/nginx/scgi_temp;' \\
-              '  server { listen 8080; location = /health { return 200 "ok\\n"; } location / { try_files $uri $uri/ /index.html; } }' \\
+              '  server { listen 80; location = /health { return 200 "ok\\n"; } location / { try_files $uri $uri/ /index.html; } }' \\
               '}' > /etc/nginx/nginx.conf
-            EXPOSE 8080
+            EXPOSE 80
             CMD ["sh", "-c", "mkdir -p /data/nginx/client_temp /data/nginx/proxy_temp /data/nginx/fastcgi_temp /data/nginx/uwsgi_temp /data/nginx/scgi_temp && nginx -c /etc/nginx/nginx.conf -g 'daemon off;'"]
             """
         ).strip()
@@ -759,13 +998,13 @@ def _dockerfile_for(language: str, javascript_flavor: str | None) -> str:
             FROM node:22-alpine
             WORKDIR /app
             ENV HOSTNAME=0.0.0.0
-            ENV PORT=8080
+            ENV PORT=3000
             COPY package*.json ./
             RUN npm install
             COPY . .
             RUN npm run build
-            EXPOSE 8080
-            CMD ["npm", "start", "--", "-H", "0.0.0.0", "-p", "8080"]
+            EXPOSE 3000
+            CMD ["sh", "-c", "npm start -- -H 0.0.0.0 -p ${PORT:-3000}"]
             """
         ).strip()
 
@@ -793,56 +1032,74 @@ def diagnose_project(root: Path) -> ProjectDiagnosis:
     has_health_route = _contains_any(
         source_files, ('"/health"', "'/health'", "/health")
     )
-    liveness_path = _liveness_path_for(language, javascript_flavor, has_health_route)
+    has_http_port_hint = _has_http_port_hint(resolved_root, source_files)
+    sdk = _detect_sdk(resolved_root, language, source_files)
     python_has_pyproject = (
         language == "Python" and (resolved_root / "pyproject.toml").is_file()
     )
     python_source_uses_sdk = language == "Python" and _python_source_uses_sdk(
         source_files
     )
+    sdk_versions = _sdk_versions(resolved_root, language)
+    is_roomclient_project = sdk is not None or (
+        language == "Python" and python_source_uses_sdk
+    )
+    has_web_service_hint = _has_web_service_hint(
+        resolved_root,
+        language=language,
+        javascript_flavor=javascript_flavor,
+        source_files=source_files,
+        has_health_route=has_health_route,
+        has_http_port_hint=has_http_port_hint,
+    )
+    is_headless_backend_agent = is_roomclient_project and not has_web_service_hint
+    liveness_path = _liveness_path_for(language, javascript_flavor, has_health_route)
     return ProjectDiagnosis(
         root=resolved_root,
         language=language,
         javascript_flavor=javascript_flavor,
-        sdk=_detect_sdk(resolved_root, language, source_files),
+        sdk=sdk,
         has_deployment_artifact=bool(artifacts),
         deployment_artifacts=artifacts,
         has_health_route=has_health_route,
-        has_port_8080_hint=_contains_any(source_files, ("8080",)),
+        has_http_port_hint=has_http_port_hint,
+        is_headless_backend_agent=is_headless_backend_agent,
         package_scripts=tuple(sorted(_package_json_scripts(resolved_root).items())),
+        sdk_versions=sdk_versions,
         python_has_pyproject=python_has_pyproject,
         python_source_uses_sdk=python_source_uses_sdk,
-        python_sdk_versions=_python_sdk_versions(resolved_root, language),
+        python_sdk_versions=sdk_versions if language == "Python" else (),
         python_runtime_findings=python_runtime_findings,
         python_virtualenv_versions=python_virtualenv_versions,
         liveness_path=liveness_path,
         start_command=_start_command(language, javascript_flavor),
-        dockerfile=_dockerfile_for(language, javascript_flavor),
+        dockerfile=_dockerfile_for(
+            language,
+            javascript_flavor,
+            headless_backend_agent=is_headless_backend_agent,
+        ),
     )
 
 
 def _deploy_command(diagnosis: ProjectDiagnosis) -> str:
     parts = [
-        f"{DEPLOY_ENV_SANITIZER} meshagent deploy .",
+        "meshagent deploy .",
         '--room "$MESHAGENT_ROOM"',
         "--tag <repository>:<tag>",
-        "--public",
-        "--domain <domain>",
-        f"--liveness {diagnosis.liveness_path}",
-        "--no-optimize",
-        "--wait",
     ]
-    if _is_static_javascript_flavor(diagnosis.javascript_flavor):
-        parts.insert(-2, "--room-mount /:/data:rw")
-    if _needs_roomclient_runtime(diagnosis):
+    if not diagnosis.is_headless_backend_agent:
         parts.extend(
             [
-                "--meshagent-token full",
-                '-e MESHAGENT_API_URL="$MESHAGENT_API_URL"',
-                '-e MESHAGENT_ROOM="$MESHAGENT_ROOM"',
-                '-e MESHAGENT_ROOM_URL="$MESHAGENT_ROOM_URL"',
+                "--public",
+                "--domain <domain>",
+                f"--liveness {diagnosis.liveness_path}",
             ]
         )
+    parts.append("--wait")
+    if _is_static_javascript_flavor(diagnosis.javascript_flavor):
+        parts.insert(-1, "--room-mount /:/data:rw")
+    if _needs_roomclient_runtime(diagnosis):
+        parts.append("--meshagent-token agentDefault")
     return " ".join(parts)
 
 
@@ -852,15 +1109,15 @@ def _needs_roomclient_runtime(diagnosis: ProjectDiagnosis) -> bool:
     )
 
 
-def _sdk_guidance(diagnosis: ProjectDiagnosis) -> list[str]:
+def _sdk_checks(diagnosis: ProjectDiagnosis) -> list[str]:
     if diagnosis.sdk == "@meshagent/meshagent":
-        guidance = [
+        checks = [
             "The Node RoomClient SDK currently resolves reliably through its "
             'CommonJS entrypoint; use `require("@meshagent/meshagent")` or '
             "compile TypeScript to CommonJS before deploying RoomClient routes."
         ]
         if diagnosis.javascript_flavor == "Node.js/TypeScript":
-            guidance.append(
+            checks.append(
                 "For TypeScript RoomClient servers, set `compilerOptions.module` "
                 'to `"CommonJS"` and `moduleResolution` to `"Node"`, remove '
                 '`"type": "module"` from `package.json` or set it to `"commonjs"`, '
@@ -868,12 +1125,12 @@ def _sdk_guidance(diagnosis: ProjectDiagnosis) -> list[str]:
                 "example `node dist/server.js`."
             )
         if _is_static_javascript_flavor(diagnosis.javascript_flavor):
-            guidance.append(
+            checks.append(
                 "Static React/Vite browser bundles cannot hold a room token safely; "
                 "keep RoomClient calls in a Node server or API route and have the "
                 "frontend call that route."
             )
-        return guidance
+        return checks
     if diagnosis.language == ".NET" and diagnosis.sdk == "Meshagent.Api":
         return [
             "RoomClient lives in the Meshagent.Api.Room namespace; add "
@@ -905,65 +1162,67 @@ def _local_build_check(diagnosis: ProjectDiagnosis) -> tuple[str, str] | None:
     }.get(diagnosis.language)
 
 
-def _codex_diagnostics(diagnosis: ProjectDiagnosis) -> list[str]:
-    diagnostics = [
-        "If deployment fails, fix the first compiler, build, or container-start "
-        "error in the deploy output before retrying with a fresh tag/domain.",
-        "Use an image tag in `<repository>:<tag>` form, for example "
-        "`doctor-app:$(date +%s)`; a bare timestamp or label can build but fail "
-        "during service creation.",
-        "Run `meshagent deploy` with the sanitized environment prefix shown "
-        "below so room runtime variables do not leak into the deploy CLI "
-        "process.",
-        "If deploy fails after image export with `service ids are generated by "
-        "the server`, retry once with the same sanitized environment prefix and "
-        "a fresh `<repository>:<tag>` plus domain before changing app code.",
-        "Keep `/health` returning 200 ok on port 8080; add task-specific routes "
-        "such as `/status`, `/api/ping`, or `/room` before deploying.",
-    ]
+def _deployment_checks(diagnosis: ProjectDiagnosis) -> list[str]:
+    checks: list[str] = []
+    if diagnosis.is_headless_backend_agent:
+        checks.append(
+            "Headless backend-agent rule: RoomClient-only services can omit "
+            "`EXPOSE`, `--public`, `--domain`, and `--liveness`; add HTTP ports "
+            "only when the process serves HTTP."
+        )
+    else:
+        checks.append(
+            "HTTP service rule: keep `/health` returning 200 ok on the published "
+            "HTTP container port; add task-specific routes such as `/status`, "
+            "`/api/ping`, or `/room` before deploying."
+        )
     build_check = _local_build_check(diagnosis)
     if build_check is not None:
         executable, command = build_check
         if shutil.which(executable) is None:
-            diagnostics.append(
-                "Local build/syntax check unavailable here because "
+            checks.append(
+                "Local build check: unavailable here because "
                 f"`{executable}` is not on PATH; use the first Docker or "
                 "MeshAgent deploy build error instead of installing a local "
                 "toolchain."
             )
         else:
-            diagnostics.append(f"Fast local build/syntax check: `{command}`.")
+            checks.append(f"Local build check: `{command}`.")
     if diagnosis.language == "Python":
-        diagnostics.append(
-            "MeshAgent Python deployments must target Python 3.13; use a "
+        checks.append(
+            "Python runtime rule: MeshAgent Python deployments must target "
+            "Python 3.13; use a "
             "`python:3.13-slim` base image."
         )
         if not diagnosis.python_has_pyproject:
-            diagnostics.append(
-                'Add a `pyproject.toml` with `requires-python = ">=3.13"` and '
-                "the runtime dependencies needed by the app before deploying."
+            checks.append(
+                "Python project metadata check: add a `pyproject.toml` with "
+                '`requires-python = ">=3.13"` and the runtime dependencies '
+                "needed by the app before deploying."
             )
         if diagnosis.python_source_uses_sdk and diagnosis.sdk is None:
-            diagnostics.append(
-                "Python source imports MeshAgent SDK symbols, but this project "
-                "does not declare `meshagent-api`; add it to `pyproject.toml` "
-                "or `requirements.txt` so the deployed container installs the SDK."
+            checks.append(
+                "Python SDK dependency check: source imports MeshAgent SDK "
+                "symbols, but this project does not declare `meshagent-api`; "
+                "add it to `pyproject.toml` or `requirements.txt` so the "
+                "deployed container installs the SDK."
             )
         if diagnosis.python_sdk_versions:
             for source, version in diagnosis.python_sdk_versions:
                 if version == MESHAGENT_CLIENT_VERSION:
                     continue
-                diagnostics.append(
+                checks.append(
+                    "Python SDK version check: "
                     f"`{source}` uses `meshagent-api=={version}`, but this "
-                    f"`meshagent` client is `{MESHAGENT_CLIENT_VERSION}`; update "
-                    "the project dependency or reinstall the local virtualenv so "
-                    "the SDK and CLI versions match."
+                    f"`meshagent` client is `{MESHAGENT_CLIENT_VERSION}`; "
+                    "update the project dependency or reinstall the local "
+                    "virtualenv so the SDK and CLI versions match."
                 )
         elif diagnosis.sdk == PYTHON_SDK_PACKAGE_NAME:
-            diagnostics.append(
-                f"Pin `meshagent-api=={MESHAGENT_CLIENT_VERSION}` in project "
-                "metadata so the deployed SDK version matches this `meshagent` "
-                "client."
+            checks.append(
+                "Python SDK version check: "
+                f"pin `meshagent-api=={MESHAGENT_CLIENT_VERSION}` in project "
+                "metadata so the deployed SDK version matches this `meshagent` client."
             )
         if diagnosis.python_virtualenv_versions:
             virtualenv_list = ", ".join(
@@ -974,149 +1233,171 @@ def _codex_diagnostics(diagnosis: ProjectDiagnosis) -> list[str]:
                 _python_version_is_required(version)
                 for _, version in diagnosis.python_virtualenv_versions
             ):
-                diagnostics.append(
-                    "A local Python 3.13 virtual environment was detected "
+                checks.append(
+                    "Python virtualenv check: a local Python 3.13 virtual "
+                    "environment was detected "
                     f"({virtualenv_list}); still deploy with a Python 3.13 "
                     "Docker base image."
                 )
             else:
-                diagnostics.append(
-                    "Local virtual environments were found but none report "
+                checks.append(
+                    "Python virtualenv check: local virtual environments were "
+                    "found but none report "
                     f"Python {PYTHON_REQUIRED_VERSION} ({virtualenv_list}); "
                     "recreate the local venv with `python3.13 -m venv .venv` "
                     "before relying on local build checks."
                 )
         else:
-            diagnostics.append(
-                "No local Python virtual environment metadata was detected; if "
-                "you create one for troubleshooting, use "
+            checks.append(
+                "Python virtualenv check: no local Python virtual environment "
+                "metadata was detected; if you create one for troubleshooting, use "
                 "`python3.13 -m venv .venv`."
             )
         if diagnosis.python_runtime_findings:
-            diagnostics.append(
-                "Upgrade older Python runtime metadata before deploying: update "
-                "`.python-version`, `runtime.txt`, `pyproject.toml` "
-                "`requires-python`, and any Dockerfile base image to allow Python "
-                f"{PYTHON_REQUIRED_VERSION}."
+            checks.append(
+                "Python runtime metadata check: update `.python-version`, "
+                "`runtime.txt`, `pyproject.toml` `requires-python`, and any "
+                f"Dockerfile base image to allow Python {PYTHON_REQUIRED_VERSION}."
             )
     if _is_javascript_project(diagnosis.language):
         scripts = dict(diagnosis.package_scripts)
         if "start" not in scripts and not _is_static_javascript_flavor(
             diagnosis.javascript_flavor
         ):
-            diagnostics.append(
-                "Add a `package.json` start script that binds the production server "
-                "to `0.0.0.0:8080` before deploying."
-            )
+            if diagnosis.is_headless_backend_agent:
+                checks.append(
+                    "Node start-script check: add a `package.json` start script "
+                    "for the long-running RoomClient backend agent process."
+                )
+            else:
+                checks.append(
+                    "Node start-script check: add a `package.json` start script "
+                    "that binds the production server to `0.0.0.0` on the "
+                    "service's declared HTTP container port."
+                )
         if diagnosis.javascript_flavor in {"React", "React/Vite", "Vite"}:
             if "build" not in scripts:
-                diagnostics.append(
-                    "Add a `package.json` build script, usually `vite build` or "
-                    "`react-scripts build`, before deploying a static frontend."
+                checks.append(
+                    "Static frontend build check: add a `package.json` build "
+                    "script, usually `vite build` or `react-scripts build`, "
+                    "before deploying."
                 )
-            diagnostics.append(
-                "For static React/Vite apps, build assets with `npm run build`, "
-                "serve the generated `dist` or `build` directory with nginx on "
-                "port 8080, include a `/health` location that returns 200, and "
-                "write nginx pid/temp files under a writable `/data` room mount."
+            checks.append(
+                "Static frontend serving check: build assets with `npm run build`, "
+                "serve the generated `dist` or `build` directory with nginx on a "
+                "declared HTTP container port, include a `/health` location that "
+                "returns 200, and write nginx pid/temp files under a writable "
+                "`/data` room mount."
             )
-            diagnostics.append(
-                "Deploy static nginx apps with `--room-mount /:/data:rw`; "
-                "MeshAgent service filesystems can be read-only, so nginx must "
-                "not write pid, cache, or temp files under `/var`."
+            checks.append(
+                "Static nginx storage check: deploy with `--room-mount /:/data:rw`; "
+                "MeshAgent service filesystems can be read-only, so nginx must not "
+                "write pid, cache, or temp files under `/var`."
             )
-            diagnostics.append(
-                "After deploy, verify the public app URL itself returns 200 with "
+            checks.append(
+                "Static app liveness check: after deploy, verify the public app "
+                "URL itself returns 200 with "
                 '`curl -fsS "$PUBLIC_URL/"`.'
             )
         elif diagnosis.javascript_flavor == "Next.js":
-            diagnostics.append(
-                "For Next.js, ensure the production server binds to "
-                "`0.0.0.0:8080`; `next start -H 0.0.0.0 -p 8080` is the expected "
-                "shape when using npm scripts."
+            checks.append(
+                "Next.js binding check: ensure the production server binds to "
+                "`0.0.0.0` and reads `PORT` or uses the same fallback port "
+                "declared in Dockerfile `EXPOSE`."
             )
-            diagnostics.append(
-                "Add a `.dockerignore` before deploying Next.js/Node projects so "
-                "`node_modules`, `.next`, `dist`, `build`, and npm debug logs are "
-                "not streamed to MeshAgent after local build checks."
+            checks.append(
+                "Next.js Docker context check: add a `.dockerignore` so "
+                "`node_modules`, `.next`, `dist`, `build`, and npm debug logs "
+                "are not streamed to MeshAgent after local build checks."
             )
-            diagnostics.append(
-                "If the app has no dedicated `/health` route, deploy with "
-                "`--liveness /` and verify the public root URL returns HTTP 200."
+            checks.append(
+                "Next.js liveness check: if the app has no dedicated `/health` "
+                "route, deploy with `--liveness /` and verify the public root URL "
+                "returns HTTP 200."
+            )
+        elif diagnosis.is_headless_backend_agent:
+            checks.append(
+                "Node backend-agent check: keep a `package.json` start script for "
+                "the long-running worker process; do not add a public HTTP port "
+                "unless the agent also serves HTTP."
             )
         else:
-            diagnostics.append(
-                "For Node.js servers, read `process.env.PORT || 8080`, bind to "
+            checks.append(
+                "Node HTTP binding check: read `process.env.PORT` with an "
+                "app-specific fallback matching Dockerfile `EXPOSE`, bind to "
                 "`0.0.0.0`, and make `/health` return 200 before deploying."
             )
-            diagnostics.append(
-                "Add a `.dockerignore` before deploying Node.js projects so "
+            checks.append(
+                "Node Docker context check: add a `.dockerignore` so "
                 "`node_modules`, `dist`, `build`, and npm debug logs are not "
                 "streamed to MeshAgent after local build checks."
             )
-            diagnostics.append(
-                "After deploy, verify the public root URL returns HTTP 200 with "
+            checks.append(
+                "Node app liveness check: after deploy, verify the public root "
+                "URL returns HTTP 200 with "
                 '`curl -fsS "$PUBLIC_URL/"`; the JavaScript-family evals require '
                 "the app URL itself to be reachable, not just `/health`."
             )
     if _needs_roomclient_runtime(diagnosis):
-        diagnostics.extend(
+        checks.extend(
             [
-                "Before testing a RoomClient route, confirm the runtime has "
-                "`MESHAGENT_ROOM`, `MESHAGENT_TOKEN`, `MESHAGENT_API_URL`, and "
-                "`MESHAGENT_ROOM_URL`.",
-                "For RoomClient deploys, use `--meshagent-token full` plus the "
-                "`MESHAGENT_API_URL`, `MESHAGENT_ROOM`, and `MESHAGENT_ROOM_URL` "
-                "env passthrough shown below.",
+                "RoomClient room check: pass `--room` or set `MESHAGENT_ROOM` "
+                "for the target room.",
+                "RoomClient deploy-token check: use `--meshagent-token agentDefault` "
+                "to inject a scoped service token.",
             ]
         )
     if diagnosis.sdk == "@meshagent/meshagent":
-        diagnostics.append(
-            "If Node reports `ERR_MODULE_NOT_FOUND` under "
-            "`@meshagent/meshagent/dist/esm`, switch the app to the SDK's "
+        checks.append(
+            "Node RoomClient module check: if Node reports `ERR_MODULE_NOT_FOUND` "
+            "under `@meshagent/meshagent/dist/esm`, switch the app to the SDK's "
             'CommonJS path with `require("@meshagent/meshagent")` or compile '
             'TypeScript with `module: "CommonJS"`.'
         )
         if diagnosis.javascript_flavor == "Node.js/TypeScript":
-            diagnostics.append(
-                "If the project uses `type: module` or tsconfig `module: NodeNext`, "
-                "convert the RoomClient server to CommonJS before deploy so the "
-                "SDK resolves through its stable CommonJS entrypoint."
+            checks.append(
+                "TypeScript RoomClient module check: if the project uses "
+                "`type: module` or tsconfig `module: NodeNext`, convert the "
+                "RoomClient server to CommonJS before deploy so the SDK resolves "
+                "through its stable CommonJS entrypoint."
             )
     if diagnosis.sdk == "meshagent-api":
-        diagnostics.extend(
+        checks.extend(
             [
-                "For Python `meshagent-api`, build the RoomClient with "
+                "Python RoomClient constructor check: build the RoomClient with "
                 "`RoomClient(protocol_factory=WebSocketClientProtocol("
                 'url=websocket_room_url(room_name=os.environ["MESHAGENT_ROOM"]), '
                 'token=os.environ["MESHAGENT_TOKEN"]).create_factory())`.',
-                "`MESHAGENT_ROOM_URL` is the in-room HTTP endpoint; do not pass it "
-                "directly to `WebSocketClientProtocol` or the SDK may fail with "
+                "Python RoomClient URL check: `MESHAGENT_ROOM_URL` is the in-room "
+                "HTTP endpoint; do not pass it directly to "
+                "`WebSocketClientProtocol` or the SDK may fail with "
                 "`WSServerHandshakeError: 200`.",
-                "If Python reports `RoomClient.__init__()` got an unexpected keyword, "
-                "inspect the installed SDK signature and use the explicit "
+                "Python RoomClient signature check: if Python reports "
+                "`RoomClient.__init__()` got an unexpected keyword, inspect the "
+                "installed SDK signature and use the explicit "
                 "`protocol_factory=WebSocketClientProtocol(...).create_factory()` "
                 "constructor above.",
             ]
         )
     if diagnosis.language == ".NET" and diagnosis.sdk == "Meshagent.Api":
-        diagnostics.extend(
+        checks.extend(
             [
-                "If .NET publish cannot find `RoomClient`, add "
-                "`using Meshagent.Api.Room;` and rebuild before deploying.",
-                "For .NET Docker builds, run publish with "
+                ".NET RoomClient namespace check: if publish cannot find "
+                "`RoomClient`, add `using Meshagent.Api.Room;` and rebuild before "
+                "deploying.",
+                ".NET Docker publish check: run publish with "
                 "`--disable-build-servers /p:UseSharedCompilation=false` so "
                 "compiler/build-server processes do not survive the RUN step "
                 "and trigger BuildKit cgroup cleanup failures.",
             ]
         )
     if diagnosis.language == "Dart" and diagnosis.sdk == "meshagent":
-        diagnostics.append(
-            "If Dart deploy times out during `dart compile`, run "
+        checks.append(
+            "Dart compile check: if deploy times out during `dart compile`, run "
             "`dart run bin/server.dart` to isolate SDK/runtime errors from "
             "ahead-of-time compilation."
         )
-    return diagnostics
+    return checks
 
 
 FINDING_COLORS = {
@@ -1154,11 +1435,12 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
         click.echo("Recommended next steps:")
         click.echo("1. Create a minimal deployable Python backend agent project:")
         click.echo("   meshagent init")
-        click.echo("2. Diagnostics for Codex:")
+        click.echo("2. Deployment checks:")
         click.echo(
-            "   - No recognizable application code or deployment metadata was "
-            "found in this directory. Run `meshagent init` to create a minimal "
-            "Python backend agent project, then deploy the generated project."
+            "   - Project detection check: no recognizable application code or "
+            "deployment metadata was found in this directory. Run `meshagent init` "
+            "to create a minimal Python backend agent project, then deploy the "
+            "generated project."
         )
         return
 
@@ -1170,12 +1452,17 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
         )
     else:
         _echo_finding("error", "Deployment artifact: add Dockerfile or meshagent.yaml")
-    if diagnosis.has_health_route:
+    if diagnosis.is_headless_backend_agent:
+        _echo_finding(
+            "ok",
+            "Backend agent does not require an HTTP /health route unless it serves HTTP",
+        )
+    elif diagnosis.has_health_route:
         _echo_finding("ok", "HTTP liveness route appears to exist: /health")
     elif _is_static_javascript_flavor(diagnosis.javascript_flavor):
         _echo_finding(
             "ok",
-            "Static web app Dockerfile guidance includes an nginx /health "
+            "Static web app Dockerfile check includes an nginx /health "
             "route returning 200",
         )
     elif diagnosis.javascript_flavor == "Next.js":
@@ -1186,14 +1473,28 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
         )
     else:
         _echo_finding("warning", "Add an HTTP /health route that returns 200 ok")
-    if diagnosis.has_port_8080_hint:
-        _echo_finding("ok", "App appears to listen on port 8080")
+    if diagnosis.is_headless_backend_agent:
+        _echo_finding(
+            "ok",
+            "Backend agent does not require exposed or published HTTP ports",
+        )
+    elif diagnosis.has_http_port_hint:
+        _echo_finding("ok", "App declares or binds an HTTP container port")
     elif _is_static_javascript_flavor(diagnosis.javascript_flavor):
-        _echo_finding("ok", "Static web Dockerfile guidance serves nginx on port 8080")
+        _echo_finding(
+            "ok",
+            "Static web Dockerfile check serves nginx on a declared container port",
+        )
     elif diagnosis.javascript_flavor == "Next.js":
-        _echo_finding("warning", "Ensure Next.js binds to 0.0.0.0:8080")
+        _echo_finding(
+            "warning",
+            "Ensure Next.js binds to 0.0.0.0 on the declared container port",
+        )
     else:
-        _echo_finding("warning", "Ensure the service listens on 0.0.0.0:8080")
+        _echo_finding(
+            "warning",
+            "Ensure the service listens on 0.0.0.0 and declares an HTTP container port",
+        )
     if diagnosis.language == "Python":
         if diagnosis.python_has_pyproject:
             _echo_finding("ok", "Python project metadata found: pyproject.toml")
@@ -1241,7 +1542,7 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
         else:
             _echo_finding(
                 "ok",
-                f"Python Dockerfile guidance targets Python {PYTHON_REQUIRED_VERSION}",
+                f"Python Dockerfile check targets Python {PYTHON_REQUIRED_VERSION}",
             )
         if diagnosis.python_virtualenv_versions:
             if any(
@@ -1265,6 +1566,21 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
                 )
         else:
             _echo_finding("warning", "No local Python virtual environment detected")
+    if diagnosis.language != "Python" and diagnosis.sdk_versions:
+        for source, version in diagnosis.sdk_versions:
+            if _version_is_behind(version, MESHAGENT_CLIENT_VERSION):
+                _echo_finding(
+                    "warning",
+                    f"{diagnosis.sdk} version is behind meshagent client: "
+                    f"{source} has {version}, meshagent client is "
+                    f"{MESHAGENT_CLIENT_VERSION}",
+                )
+            else:
+                _echo_finding(
+                    "ok",
+                    f"{diagnosis.sdk} version is not behind meshagent client: "
+                    f"{version} ({source})",
+                )
     if _is_javascript_project(diagnosis.language):
         scripts = dict(diagnosis.package_scripts)
         if not _is_static_javascript_flavor(diagnosis.javascript_flavor):
@@ -1281,9 +1597,9 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
                 _echo_finding("warning", "Add a package.json build script")
     if _needs_roomclient_runtime(diagnosis):
         _echo_finding(
-            "error",
-            "RoomClient deployment needs --meshagent-token full "
-            "and MESHAGENT_API_URL/MESHAGENT_ROOM/MESHAGENT_ROOM_URL env passthrough",
+            "warning",
+            "RoomClient deploy-token check: use --meshagent-token agentDefault "
+            "for a scoped service token",
         )
     click.echo("")
 
@@ -1296,16 +1612,16 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
         next_step_number = 2
     else:
         next_step_number = 1
-    guidance = _sdk_guidance(diagnosis)
-    if guidance:
-        click.echo(f"{next_step_number}. SDK runtime guidance:")
-        for item in guidance:
+    sdk_checks = _sdk_checks(diagnosis)
+    if sdk_checks:
+        click.echo(f"{next_step_number}. SDK checks:")
+        for item in sdk_checks:
             click.echo(f"   - {item}")
         next_step_number += 1
-    diagnostics = _codex_diagnostics(diagnosis)
-    if diagnostics:
-        click.echo(f"{next_step_number}. Diagnostics for Codex:")
-        for item in diagnostics:
+    checks = _deployment_checks(diagnosis)
+    if checks:
+        click.echo(f"{next_step_number}. Deployment checks:")
+        for item in checks:
             click.echo(f"   - {item}")
         next_step_number += 1
     click.echo(f"{next_step_number}. Deploy from this directory:")
@@ -1321,6 +1637,6 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
 )
 def doctor_command(path: Path | None = None) -> None:
-    """Inspect a project directory and print deploy readiness guidance."""
+    """Inspect a project directory and print deploy readiness checks."""
 
     _print_report(diagnose_project(path or Path.cwd()))
