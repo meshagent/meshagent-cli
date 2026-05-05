@@ -8,6 +8,7 @@ from meshagent.cli.doctor import (
     diagnose_project,
     doctor_command,
 )
+from meshagent.cli.version import __version__ as MESHAGENT_CLIENT_VERSION
 
 
 def test_doctor_recommends_init_for_empty_project(tmp_path) -> None:
@@ -42,6 +43,11 @@ def test_doctor_reports_python_roomclient_deploy_gaps(tmp_path) -> None:
     assert "Detected project: Python" in result.output
     assert "Official RoomClient SDK: detected (meshagent-api)" in result.output
     assert "Python project metadata: add pyproject.toml" in result.output
+    assert (
+        "Python meshagent-api version mismatch: requirements.txt has 0.5.18"
+        in result.output
+    )
+    assert f"meshagent client is {MESHAGENT_CLIENT_VERSION}" in result.output
     assert "[error] Deployment artifact" in result.output
     assert "--wait" in result.output
     assert "env -u MESHAGENT_TOKEN" in result.output
@@ -85,6 +91,76 @@ def test_doctor_reports_python_source_sdk_import_without_project_dependency(
     assert "Python RoomClient SDK dependency: add meshagent-api" in result.output
     assert "does not declare `meshagent-api`" in result.output
     assert "--meshagent-token full" in result.output
+
+
+def test_doctor_reports_matching_python_sdk_pin(tmp_path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\n"
+        'requires-python = ">=3.13"\n'
+        "dependencies = [\n"
+        f'  "meshagent-api=={MESHAGENT_CLIENT_VERSION}",\n'
+        "]\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "server.py").write_text(
+        "from meshagent.api import RoomClient\n"
+        "print(RoomClient)\n"
+        "if '/health': pass\n"
+        "PORT = 8080\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path)])
+    diagnosis = diagnose_project(tmp_path)
+
+    assert result.exit_code == 0
+    assert diagnosis.sdk == "meshagent-api"
+    assert diagnosis.python_sdk_versions == (
+        ("pyproject.toml", MESHAGENT_CLIENT_VERSION),
+    )
+    assert (
+        "Python meshagent-api version matches meshagent client: "
+        f"{MESHAGENT_CLIENT_VERSION} (pyproject.toml)"
+    ) in result.output
+    assert "Python meshagent-api version mismatch" not in result.output
+
+
+def test_doctor_warns_when_project_virtualenv_meshagent_api_version_mismatches(
+    tmp_path,
+) -> None:
+    site_packages = (
+        tmp_path
+        / ".venv"
+        / "lib"
+        / "python3.13"
+        / "site-packages"
+        / "meshagent_api-0.1.0.dist-info"
+    )
+    site_packages.mkdir(parents=True)
+    (tmp_path / ".venv" / "pyvenv.cfg").write_text(
+        "home = /opt/python3.13\nversion = 3.13.5\n",
+        encoding="utf-8",
+    )
+    (site_packages / "METADATA").write_text(
+        "Name: meshagent-api\nVersion: 0.1.0\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "server.py").write_text(
+        "print('python app')\nif '/health': pass\nPORT = 8080\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path)])
+    diagnosis = diagnose_project(tmp_path)
+
+    assert result.exit_code == 0
+    assert diagnosis.language == "Python"
+    assert diagnosis.python_sdk_versions == ((".venv installed package", "0.1.0"),)
+    assert (
+        "Python meshagent-api version mismatch: .venv installed package has 0.1.0"
+        in result.output
+    )
+    assert f"meshagent client is {MESHAGENT_CLIENT_VERSION}" in result.output
 
 
 def test_doctor_reports_older_python_runtime_upgrade_guidance(tmp_path) -> None:

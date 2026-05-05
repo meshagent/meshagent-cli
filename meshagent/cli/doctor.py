@@ -13,6 +13,8 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
+from meshagent.cli.version import __version__ as MESHAGENT_CLIENT_VERSION
+
 
 SOURCE_SUFFIXES = {
     ".cs",
@@ -27,6 +29,7 @@ SOURCE_SUFFIXES = {
 }
 PYTHON_REQUIRED_VERSION = "3.13"
 PYTHON_REQUIRED_MAJOR_MINOR = (3, 13)
+PYTHON_SDK_PACKAGE_NAME = "meshagent-api"
 PYTHON_VIRTUAL_ENV_DIR_NAMES = {
     ".env",
     ".venv",
@@ -65,6 +68,7 @@ class ProjectDiagnosis:
     package_scripts: tuple[tuple[str, str], ...]
     python_has_pyproject: bool
     python_source_uses_sdk: bool
+    python_sdk_versions: tuple[tuple[str, str], ...]
     python_runtime_findings: tuple[str, ...]
     python_virtualenv_versions: tuple[tuple[str, str], ...]
     liveness_path: str
@@ -316,6 +320,71 @@ def _python_pyproject_dependency_entries(pyproject: dict[str, object]) -> list[s
     return entries
 
 
+def _python_dependency_exact_version(value: object, package_name: str) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if normalized == "" or normalized.startswith("#"):
+        return None
+    normalized = normalized.split("#", 1)[0].strip()
+    match = re.match(
+        rf"{re.escape(package_name)}(?:\[[^\]]+\])?\s*==\s*"
+        r"([A-Za-z0-9][A-Za-z0-9.!+_-]*)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    return match.group(1)
+
+
+def _python_poetry_dependency_exact_version(value: object) -> str | None:
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized == "" or normalized[0] in "<>=!~^":
+            return None
+        if re.match(r"^[A-Za-z0-9][A-Za-z0-9.!+_-]*$", normalized):
+            return normalized
+        return None
+
+    if isinstance(value, dict):
+        version = value.get("version")
+        return _python_poetry_dependency_exact_version(version)
+
+    return None
+
+
+def _python_declared_dependency_versions(
+    root: Path,
+    package_name: str,
+) -> list[tuple[str, str]]:
+    versions: list[tuple[str, str]] = []
+
+    for line in _read_text(root / "requirements.txt").splitlines():
+        version = _python_dependency_exact_version(line, package_name)
+        if version is not None:
+            versions.append(("requirements.txt", version))
+
+    pyproject = _read_toml(root / "pyproject.toml")
+    for entry in _python_pyproject_dependency_entries(pyproject):
+        version = _python_dependency_exact_version(entry, package_name)
+        if version is not None:
+            versions.append(("pyproject.toml", version))
+
+    tool = pyproject.get("tool")
+    poetry = tool.get("poetry") if isinstance(tool, dict) else None
+    dependencies = poetry.get("dependencies") if isinstance(poetry, dict) else None
+    if isinstance(dependencies, dict):
+        for name, value in dependencies.items():
+            if str(name).lower() != package_name:
+                continue
+            version = _python_poetry_dependency_exact_version(value)
+            if version is not None:
+                versions.append(("pyproject.toml", version))
+
+    return versions
+
+
 def _python_project_declares_dependency(root: Path, package_name: str) -> bool:
     requirements = _read_text(root / "requirements.txt").splitlines()
     if any(
@@ -328,6 +397,83 @@ def _python_project_declares_dependency(root: Path, package_name: str) -> bool:
         _python_dependency_entry_matches(entry, package_name)
         for entry in _python_pyproject_dependency_entries(pyproject)
     )
+
+
+def _python_site_package_dirs(env_dir: Path) -> list[Path]:
+    candidates: list[Path] = []
+    lib_dir = env_dir / "lib"
+    try:
+        python_dirs = sorted(lib_dir.glob("python*/site-packages"))
+    except OSError:
+        python_dirs = []
+    candidates.extend(path for path in python_dirs if path.is_dir())
+
+    windows_site_packages = env_dir / "Lib" / "site-packages"
+    if windows_site_packages.is_dir():
+        candidates.append(windows_site_packages)
+    return candidates
+
+
+def _python_installed_distribution_versions(
+    root: Path,
+    package_name: str,
+) -> list[tuple[str, str]]:
+    versions: list[tuple[str, str]] = []
+    normalized_package_name = package_name.replace("-", "_").lower()
+
+    for env_dir in _python_virtualenv_dirs(root):
+        try:
+            relative_env_dir = str(env_dir.relative_to(root))
+        except ValueError:
+            relative_env_dir = str(env_dir)
+
+        for site_packages in _python_site_package_dirs(env_dir):
+            try:
+                metadata_paths = sorted(site_packages.glob("*.dist-info/METADATA"))
+            except OSError:
+                continue
+            for metadata_path in metadata_paths:
+                dist_info_name = metadata_path.parent.name.lower()
+                if not dist_info_name.startswith(f"{normalized_package_name}-"):
+                    continue
+
+                metadata = _read_text(metadata_path)
+                name: str | None = None
+                version: str | None = None
+                for line in metadata.splitlines():
+                    key, separator, value = line.partition(":")
+                    if not separator:
+                        continue
+                    if key.lower() == "name":
+                        name = value.strip()
+                    elif key.lower() == "version":
+                        version = value.strip()
+                if name is None or version is None:
+                    continue
+                if name.lower() != package_name:
+                    continue
+                versions.append((f"{relative_env_dir} installed package", version))
+
+    return versions
+
+
+def _python_sdk_versions(root: Path, language: str) -> tuple[tuple[str, str], ...]:
+    if language != "Python":
+        return ()
+
+    versions = [
+        *_python_declared_dependency_versions(root, PYTHON_SDK_PACKAGE_NAME),
+        *_python_installed_distribution_versions(root, PYTHON_SDK_PACKAGE_NAME),
+    ]
+    deduped: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for source, version in versions:
+        item = (source, version)
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return tuple(deduped)
 
 
 def _python_source_uses_sdk(source_files: list[Path]) -> bool:
@@ -666,6 +812,7 @@ def diagnose_project(root: Path) -> ProjectDiagnosis:
         package_scripts=tuple(sorted(_package_json_scripts(resolved_root).items())),
         python_has_pyproject=python_has_pyproject,
         python_source_uses_sdk=python_source_uses_sdk,
+        python_sdk_versions=_python_sdk_versions(resolved_root, language),
         python_runtime_findings=python_runtime_findings,
         python_virtualenv_versions=python_virtualenv_versions,
         liveness_path=liveness_path,
@@ -801,6 +948,22 @@ def _codex_diagnostics(diagnosis: ProjectDiagnosis) -> list[str]:
                 "Python source imports MeshAgent SDK symbols, but this project "
                 "does not declare `meshagent-api`; add it to `pyproject.toml` "
                 "or `requirements.txt` so the deployed container installs the SDK."
+            )
+        if diagnosis.python_sdk_versions:
+            for source, version in diagnosis.python_sdk_versions:
+                if version == MESHAGENT_CLIENT_VERSION:
+                    continue
+                diagnostics.append(
+                    f"`{source}` uses `meshagent-api=={version}`, but this "
+                    f"`meshagent` client is `{MESHAGENT_CLIENT_VERSION}`; update "
+                    "the project dependency or reinstall the local virtualenv so "
+                    "the SDK and CLI versions match."
+                )
+        elif diagnosis.sdk == PYTHON_SDK_PACKAGE_NAME:
+            diagnostics.append(
+                f"Pin `meshagent-api=={MESHAGENT_CLIENT_VERSION}` in project "
+                "metadata so the deployed SDK version matches this `meshagent` "
+                "client."
             )
         if diagnosis.python_virtualenv_versions:
             virtualenv_list = ", ".join(
@@ -1045,6 +1208,27 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
                 "error",
                 "Python RoomClient SDK dependency: add meshagent-api "
                 "to project metadata",
+            )
+        if diagnosis.python_sdk_versions:
+            for source, version in diagnosis.python_sdk_versions:
+                if version == MESHAGENT_CLIENT_VERSION:
+                    _echo_finding(
+                        "ok",
+                        "Python meshagent-api version matches meshagent "
+                        f"client: {version} ({source})",
+                    )
+                    continue
+                _echo_finding(
+                    "warning",
+                    f"Python meshagent-api version mismatch: {source} has "
+                    f"{version}, meshagent client is {MESHAGENT_CLIENT_VERSION}",
+                )
+        elif diagnosis.sdk == PYTHON_SDK_PACKAGE_NAME:
+            _echo_finding(
+                "warning",
+                "Python meshagent-api dependency is not pinned; pin "
+                f"meshagent-api=={MESHAGENT_CLIENT_VERSION} to match this "
+                "meshagent client",
             )
         if diagnosis.python_runtime_findings:
             _echo_finding(
