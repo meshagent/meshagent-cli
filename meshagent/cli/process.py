@@ -118,6 +118,7 @@ from meshagent.agents.messages import (
     TurnSteerRejected,
 )
 from meshagent.agents.process import ContentScheme, Message
+from meshagent.agents.images_dataset import ImagesDataset
 
 from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.api.messaging import FileContent
@@ -2073,12 +2074,7 @@ def build_process_agent(
         SingleRoomAgent,
         ToolkitChannel,
     )
-    from meshagent.agents.messages import (
-        AGENT_EVENT_THREAD_EVENT,
-        AgentThreadEvent,
-        TurnStart,
-        TurnSteer,
-    )
+    from meshagent.agents.messages import TurnStart, TurnSteer
     from meshagent.agents.process import AgentSupervisor, LLMAgentProcess
     from meshagent.tools import Toolkit, ToolContext
     from meshagent.tools.hosting import _RemoteToolkitWrapper, _start_hosted_toolkit
@@ -2282,6 +2278,10 @@ def build_process_agent(
                 raise RoomException("agent is already started")
 
             self._room = room
+            if require_image_generation and isinstance(
+                llm_adapter, OpenAIResponsesAdapter
+            ):
+                llm_adapter.set_images_dataset(ImagesDataset(room=room))
             if require_mcp:
                 await room.local_participant.set_attribute("supports_mcp", True)
             if _has_chat_channel(channels=resolved_channels):
@@ -2687,8 +2687,8 @@ def build_process_agent(
             if require_computer_use:
                 from meshagent.agents.images_dataset import ImagesDataset
                 from meshagent.agents.messages import (
-                    AGENT_EVENT_THREAD_IMAGE,
-                    AgentThreadImage,
+                    AGENT_EVENT_THREAD_EVENT,
+                    AgentThreadEvent,
                 )
                 from meshagent.computers.agent import ComputerToolkit
 
@@ -2727,18 +2727,20 @@ def build_process_agent(
                         width, height = computer_toolkit.computer.dimensions
 
                     thread_storage.push_message(
-                        message=AgentThreadImage(
-                            type=AGENT_EVENT_THREAD_IMAGE,
+                        message=AgentThreadEvent(
+                            type=AGENT_EVENT_THREAD_EVENT,
                             thread_id=thread_id,
-                            item_id=str(uuid.uuid4()),
-                            image_id=saved_image.id,
-                            mime_type=saved_image.mime_type,
-                            created_at=saved_image.created_at,
-                            created_by=saved_image.created_by,
-                            width=width,
-                            height=height,
-                            status="completed",
-                            status_detail="Screenshot saved",
+                            event={
+                                "type": "computer.screenshot",
+                                "uri": f"dataset://{ImagesDataset.TABLE_NAME}?id={saved_image.id}",
+                                "mime_type": saved_image.mime_type,
+                                "created_at": saved_image.created_at,
+                                "created_by": saved_image.created_by,
+                                "width": width,
+                                "height": height,
+                                "status": "completed",
+                                "status_detail": "Screenshot saved",
+                            },
                         )
                     )
 

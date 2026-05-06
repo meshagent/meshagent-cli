@@ -1524,8 +1524,9 @@ class _FakeProcessThreadAdapter:
         del message
         del sender
 
-    def restore_session_context(self, *, context) -> None:
+    def restore_session_context(self, *, context, llm_adapter=None) -> None:
         del context
+        del llm_adapter
 
     def make_toolkit(self):
         return Toolkit(name="thread", tools=[])
