@@ -128,6 +128,41 @@ def test_root_deploy_help_mentions_existing_room_flow() -> None:
     assert "--dockerfile-path" in result.output
 
 
+def test_resolve_deploy_environment_replaces_existing_service_environment() -> None:
+    existing_service = ServiceSpec(
+        version="v1",
+        kind="Service",
+        metadata=ServiceMetadata(name="repo-web"),
+        container=ContainerSpec(
+            image="repo/web:old",
+            environment=[
+                EnvironmentVariable(name="KEEP", value="1"),
+                EnvironmentVariable(
+                    name="MESHAGENT_TOKEN",
+                    token=TokenValue(
+                        identity="existing-id",
+                        api=ApiScope.agent_default(),
+                        role="tool",
+                    ),
+                ),
+            ],
+        ),
+    )
+
+    resolved = image._resolve_deploy_environment(
+        existing_service=existing_service,
+        default_environment=None,
+        parsed_environment=[],
+        parsed_secret_environment=[],
+        meshagent_token_scope=None,
+        token_identity="repo-web",
+        identity_override=None,
+    )
+
+    assert resolved.identity == "repo-web"
+    assert resolved.environment is None
+
+
 @pytest.mark.asyncio
 async def test_deploy_image_missing_room_prints_create_room_guidance(
     monkeypatch: pytest.MonkeyPatch,
@@ -3065,7 +3100,7 @@ async def test_deploy_image_sets_cookie_validation_when_private(
 
 
 @pytest.mark.asyncio
-async def test_deploy_image_updates_existing_service_route_and_preserves_token_identity(
+async def test_deploy_image_updates_existing_service_route_and_replaces_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
@@ -3214,11 +3249,11 @@ async def test_deploy_image_updates_existing_service_route_and_preserves_token_i
     env_by_name = {
         env_var.name: env_var for env_var in (updated_spec.container.environment or [])
     }
-    assert env_by_name["KEEP"].value == "1"
+    assert "KEEP" not in env_by_name
     assert env_by_name["FOO"].value == "bar"
     assert env_by_name["MESHAGENT_TOKEN"].token is not None
-    assert env_by_name["MESHAGENT_TOKEN"].token.identity == "existing-id"
-    assert env_by_name["MESHAGENT_TOKEN"].token.role == "tool"
+    assert env_by_name["MESHAGENT_TOKEN"].token.identity == "repo-web"
+    assert env_by_name["MESHAGENT_TOKEN"].token.role == "agent"
     assert env_by_name["MESHAGENT_TOKEN"].token.api is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.api.admin is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.api.secrets is not None

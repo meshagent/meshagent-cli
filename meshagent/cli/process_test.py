@@ -21,6 +21,9 @@ from meshagent.agents.messages import (
     TurnSteer,
 )
 from meshagent.agents.process import Message
+from meshagent.agents.thread_status_publisher import (
+    thread_status_attribute_path_suffix,
+)
 from meshagent.api import RoomClient
 from meshagent.api.specs.service import ContainerSpec, ServiceMetadata, ServiceSpec
 from meshagent.cli.async_typer import get_command
@@ -95,6 +98,7 @@ def test_root_cli_registers_process_group() -> None:
                 "--document-authoring",
                 "--discovery",
                 "--computer-use",
+                "--thread-storage",
             },
             {
                 "--toolkit",
@@ -297,7 +301,7 @@ async def test_process_agent_passes_threading_mode_to_queue_channel(
 
     monkeypatch.setattr(meshagent.agents, "QueueChannel", _RecordingQueueChannel)
 
-    agent_cls = chatbot.build_process_agent(
+    agent_cls = process.build_process_agent(
         model="gpt-5.5",
         rule=[],
         toolkit=[],
@@ -364,7 +368,7 @@ async def test_process_agent_passes_threading_mode_to_mail_channel(
 
     monkeypatch.setattr(meshagent.agents, "MailChannel", _RecordingMailChannel)
 
-    agent_cls = chatbot.build_process_agent(
+    agent_cls = process.build_process_agent(
         model="gpt-5.5",
         rule=[],
         toolkit=[],
@@ -573,6 +577,57 @@ def test_codex_chatbot_agent_annotations_include_thread_dir() -> None:
     }
 
 
+def test_process_agent_annotations_use_canonical_dataset_thread_dir() -> None:
+    assert process._process_agent_annotations(
+        threading_mode="default-new",
+        thread_dir="/agents/helper/threads",
+        thread_storage="dataset",
+        channel=["chat"],
+    ) == {
+        "meshagent.agent.type": "ChatBot",
+        "meshagent.chatbot.threading": "default-new",
+        "meshagent.chatbot.thread-dir": "dataset://agents/helper/threads",
+        "meshagent.chatbot.thread-list": "/agents/helper/threads/index.threadl",
+    }
+
+
+def test_process_agent_annotations_use_dataset_thread_path_without_threading() -> None:
+    assert process._process_agent_annotations(
+        threading_mode="none",
+        thread_dir="/agents/helper/threads",
+        thread_storage="dataset",
+        channel=["chat"],
+    ) == {
+        "meshagent.agent.type": "ChatBot",
+        "meshagent.chatbot.thread-path": "dataset://agents/helper/threads/main",
+    }
+
+
+def test_process_threading_options_default_dataset_thread_dir_without_threading() -> (
+    None
+):
+    assert process._resolve_process_threading_options(
+        agent_name="helper",
+        threading_mode="none",
+        thread_dir=None,
+        thread_storage="dataset",
+    ) == ("none", "/agents/helper/threads")
+
+
+def test_process_agent_annotations_use_tmp_thread_dir_without_storage() -> None:
+    assert process._process_agent_annotations(
+        threading_mode="default-new",
+        thread_dir="/agents/helper/threads",
+        thread_storage="none",
+        channel=["chat"],
+    ) == {
+        "meshagent.agent.type": "ChatBot",
+        "meshagent.chatbot.threading": "default-new",
+        "meshagent.chatbot.thread-dir": "tmp://agents/helper/threads",
+        "meshagent.chatbot.thread-list": "/agents/helper/threads/index.threadl",
+    }
+
+
 def test_process_spec_uses_process_runtime_and_chat_channel(monkeypatch) -> None:
     fake_service = _FakeService()
     build_calls: list[dict[str, object]] = []
@@ -618,6 +673,8 @@ def test_process_spec_uses_process_runtime_and_chat_channel(monkeypatch) -> None
             "gpt-5.4-nano",
             "--channel",
             "chat",
+            "--thread-storage",
+            "dataset",
         ],
     )
 
@@ -731,7 +788,7 @@ def test_chatbot_spec_defaults_dataset_namespace(monkeypatch) -> None:
 def test_process_join_passes_supported_builder_kwargs(monkeypatch) -> None:
     build_calls: list[dict[str, object]] = []
     allowed_build_kwargs = set(
-        inspect.signature(chatbot.build_process_agent).parameters
+        inspect.signature(process.build_process_agent).parameters
     )
 
     class _DummyAccountClient:
@@ -759,15 +816,15 @@ def test_process_join_passes_supported_builder_kwargs(monkeypatch) -> None:
         raise AssertionError("process join should not use chatbot builder")
 
     monkeypatch.setenv("MESHAGENT_TOKEN", "test-token")
-    monkeypatch.setattr(chatbot, "get_client", fake_get_client)
-    monkeypatch.setattr(chatbot, "resolve_project_id", fake_resolve_project_id)
-    monkeypatch.setattr(chatbot, "resolve_key", fake_resolve_key)
-    monkeypatch.setattr(chatbot, "resolve_room", lambda room_name=None: room_name)
-    monkeypatch.setattr(chatbot, "build_process_agent", fake_build_process_agent)
-    monkeypatch.setattr(chatbot, "build_chatbot", fail_build_chatbot)
-    monkeypatch.setattr(chatbot, "get_deferred", lambda: True)
+    monkeypatch.setattr(process, "get_client", fake_get_client)
+    monkeypatch.setattr(process, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(process, "resolve_key", fake_resolve_key)
+    monkeypatch.setattr(process, "resolve_room", lambda room_name=None: room_name)
+    monkeypatch.setattr(process, "build_process_agent", fake_build_process_agent)
+    monkeypatch.setattr(process, "build_chatbot", fail_build_chatbot)
+    monkeypatch.setattr(process, "get_deferred", lambda: True)
     monkeypatch.setattr(
-        chatbot.sys,
+        process.sys,
         "argv",
         [
             "meshagent",
@@ -783,11 +840,12 @@ def test_process_join_passes_supported_builder_kwargs(monkeypatch) -> None:
     )
 
     async def invoke_join() -> None:
-        await chatbot.join(
+        await process.join(
             project_id=None,
             room="quickstart",
             agent_name="helper",
             channel=["chat"],
+            thread_storage="dataset",
         )
 
     root_command = click.Command("meshagent")
@@ -818,6 +876,7 @@ def test_process_join_passes_supported_builder_kwargs(monkeypatch) -> None:
     assert "mcp" not in build_calls[0]
     assert build_calls[0]["require_mcp"] is False
     assert build_calls[0]["api_key"] == "test-token"
+    assert build_calls[0]["thread_storage"] == "dataset"
 
 
 def test_process_join_requires_at_least_one_channel(monkeypatch) -> None:
@@ -1392,6 +1451,16 @@ async def test_run_agent_room_session_cleans_up_on_cancellation() -> None:
 class _FakeParticipant:
     def __init__(self) -> None:
         self.id = "participant-1"
+        self.attributes: dict[str, object] = {}
+
+    def get_attribute(self, name: str):
+        return self.attributes.get(name)
+
+    async def set_attribute(self, name: str, value) -> None:
+        if value is None:
+            self.attributes.pop(name, None)
+            return
+        self.attributes[name] = value
 
 
 class _FakeProcessRoom(RoomClient):
@@ -1411,7 +1480,7 @@ class _FakeProcessRoom(RoomClient):
 class _FakeProcessState:
     def __init__(self) -> None:
         self.thread_id = "threads/example"
-        self.thread_adapter = None
+        self.thread_storage = None
         self.supervisor = None
         self.session_context = None
 
@@ -1455,11 +1524,16 @@ class _FakeProcessThreadAdapter:
         del message
         del sender
 
-    def restore_session_context(self, *, context) -> None:
+    def restore_session_context(self, *, context, llm_adapter=None) -> None:
         del context
+        del llm_adapter
 
     def make_toolkit(self):
         return Toolkit(name="thread", tools=[])
+
+
+class _FakeDatasetThreadStorage(_FakeProcessThreadAdapter):
+    pass
 
 
 class _SteeringRecordingAdapter:
@@ -1542,7 +1616,7 @@ async def _wait_for(predicate, *, timeout: float = 1) -> None:
 async def test_process_turn_toolkits_keep_computer_toolkit_top_level(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    agent_cls = chatbot.build_process_agent(
+    agent_cls = process.build_process_agent(
         model="gpt-5.5",
         rule=[],
         toolkit=[],
@@ -1673,11 +1747,147 @@ async def test_process_turn_toolkits_include_thread_id_in_caller_context(
 
 
 @pytest.mark.asyncio
+async def test_build_process_agent_uses_selected_dataset_thread_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import meshagent.agents as agents_module
+
+    monkeypatch.setattr(
+        agents_module,
+        "MeshDocumentThreadStorage",
+        _FakeProcessThreadAdapter,
+    )
+    monkeypatch.setattr(
+        agents_module,
+        "DatasetThreadStorage",
+        _FakeDatasetThreadStorage,
+    )
+    agent_cls = process.build_process_agent(
+        model="gpt-5.5",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+        thread_storage="dataset",
+    )
+    agent = agent_cls()
+    monkeypatch.setattr(agent, "install_requirements", lambda: asyncio.sleep(0))
+    monkeypatch.setattr(agent, "get_exposed_toolkits", lambda: asyncio.sleep(0, []))
+
+    room = _FakeProcessRoomClient()
+    await agent.start(room=room)  # type: ignore[arg-type]
+    try:
+        supervisor = agent._supervisor
+        assert supervisor is not None
+
+        process_state = supervisor.create_thread_process("dataset://threads/example")
+        assert isinstance(process_state.thread_storage, _FakeDatasetThreadStorage)
+        assert process_state.thread_storage.path == "dataset://threads/example"
+        assert process_state.thread_id == "dataset://threads/example"
+        status_publisher = process_state.thread_status_publisher
+        assert isinstance(
+            status_publisher,
+            agents_module.ParticipantAttributeThreadStatusPublisher,
+        )
+        await status_publisher.set_thread_status(
+            status="Generating image",
+            pending_item_id="image-1",
+        )
+        status_suffix = thread_status_attribute_path_suffix(
+            path="dataset://threads/example"
+        )
+        assert (
+            room.local_participant.attributes[f"thread.status.{status_suffix}"]
+            == "Generating image"
+        )
+        assert (
+            room.local_participant.attributes[
+                f"thread.status.pending_item_id.{status_suffix}"
+            ]
+            == "image-1"
+        )
+        assert "thread.status.threads/example" not in room.local_participant.attributes
+        assert (
+            "thread.status.pending_item_id.threads/example"
+            not in room.local_participant.attributes
+        )
+        await status_publisher.set_thread_status(
+            status="Generating image",
+            pending_item_id="image-2",
+        )
+        assert (
+            room.local_participant.attributes[
+                f"thread.status.pending_item_id.{status_suffix}"
+            ]
+            == "image-2"
+        )
+    finally:
+        await agent.stop()
+
+
+@pytest.mark.asyncio
+async def test_build_process_agent_can_disable_thread_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import meshagent.agents as agents_module
+
+    monkeypatch.setattr(
+        agents_module,
+        "MeshDocumentThreadStorage",
+        _FakeProcessThreadAdapter,
+    )
+    monkeypatch.setattr(
+        agents_module,
+        "DatasetThreadStorage",
+        _FakeDatasetThreadStorage,
+    )
+    agent_cls = process.build_process_agent(
+        model="gpt-5.5",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+        thread_storage="none",
+    )
+    agent = agent_cls()
+    monkeypatch.setattr(agent, "install_requirements", lambda: asyncio.sleep(0))
+    monkeypatch.setattr(agent, "get_exposed_toolkits", lambda: asyncio.sleep(0, []))
+
+    room = _FakeProcessRoomClient()
+    await agent.start(room=room)  # type: ignore[arg-type]
+    try:
+        supervisor = agent._supervisor
+        assert supervisor is not None
+
+        process_state = supervisor.create_thread_process("tmp://threads/example")
+        assert process_state.thread_storage is None
+        assert process_state.thread_id == "tmp://threads/example"
+        status_publisher = process_state.thread_status_publisher
+        assert isinstance(
+            status_publisher,
+            agents_module.ParticipantAttributeThreadStatusPublisher,
+        )
+        await status_publisher.set_thread_status(status="Thinking")
+        status_suffix = thread_status_attribute_path_suffix(
+            path="tmp://threads/example"
+        )
+        assert (
+            room.local_participant.attributes[f"thread.status.{status_suffix}"]
+            == "Thinking"
+        )
+    finally:
+        await agent.stop()
+
+
+@pytest.mark.asyncio
 async def test_build_process_agent_forwards_tool_boundary_steering_callback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import meshagent.agents as agents_module
-    import meshagent.agents.process as process_module
 
     fake_adapter = _SteeringRecordingAdapter()
     monkeypatch.setattr(
@@ -1687,15 +1897,9 @@ async def test_build_process_agent_forwards_tool_boundary_steering_callback(
     )
     monkeypatch.setattr(
         agents_module,
-        "AgentProcessThreadAdapter",
+        "MeshDocumentThreadStorage",
         _FakeProcessThreadAdapter,
     )
-    monkeypatch.setattr(
-        process_module,
-        "AgentProcessThreadAdapter",
-        _FakeProcessThreadAdapter,
-    )
-
     agent_cls = chatbot.build_process_agent(
         model="gpt-5.5",
         rule=[],
@@ -1993,6 +2197,19 @@ async def test_chatbot_require_shell_uses_container_shell_for_non_gpt_model(
 
     assert isinstance(agent.shell_tool, ContainerShellTool)
     assert agent.shell_tool.working_dir == "/workspace"
+
+
+def test_chatbot_rejects_computer_use() -> None:
+    with pytest.raises(click.exceptions.Exit) as exc_info:
+        chatbot.build_chatbot(
+            model="gpt-5",
+            rule=[],
+            toolkit=[],
+            schema=[],
+            require_computer_use=True,
+        )
+
+    assert exc_info.value.exit_code == 1
 
 
 @pytest.mark.asyncio
