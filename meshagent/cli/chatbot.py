@@ -104,11 +104,13 @@ from meshagent.agents.messages import (
     AGENT_EVENT_TURN_STARTED,
     AGENT_EVENT_TURN_STEER_ACCEPTED,
     AGENT_EVENT_TURN_STEER_REJECTED,
+    AGENT_EVENT_USAGE_UPDATED,
     AGENT_MESSAGE_TURN_INTERRUPT,
     AGENT_MESSAGE_TURN_START,
     AGENT_MESSAGE_TURN_STEER,
     AgentTextContentDelta,
     AgentTextContent,
+    AgentUsageUpdated,
     TurnEnded,
     TurnInterrupt,
     TurnStart,
@@ -233,6 +235,7 @@ class _ProcessRunSession:
         prompt: str,
         on_delta: Callable[[str], Awaitable[None] | None] | None = None,
         on_status: Callable[[str | None], None] | None = None,
+        on_usage: Callable[[AgentUsageUpdated], Awaitable[None] | None] | None = None,
         on_turn_started: Callable[[], Awaitable[None] | None] | None = None,
     ) -> str:
         turn_start = TurnStart(
@@ -316,6 +319,19 @@ class _ProcessRunSession:
                 output_parts.append(text_delta.text)
                 if on_delta is not None:
                     await _maybe_await(on_delta(text_delta.text))
+                continue
+
+            if isinstance(event.data, AgentUsageUpdated):
+                usage_update = event.data
+                if usage_update.thread_id != self._thread_id:
+                    continue
+                if active_turn_id is not None and usage_update.turn_id not in (
+                    None,
+                    active_turn_id,
+                ):
+                    continue
+                if on_usage is not None:
+                    await _maybe_await(on_usage(usage_update))
                 continue
 
             if event.data.type == AGENT_EVENT_TURN_ENDED:
@@ -538,6 +554,7 @@ class _ChatChannelUseSession:
         prompt: str,
         on_delta: Callable[[str], Awaitable[None] | None] | None = None,
         on_status: Callable[[str | None], None] | None = None,
+        on_usage: Callable[[AgentUsageUpdated], Awaitable[None] | None] | None = None,
         on_turn_started: Callable[[], Awaitable[None] | None] | None = None,
     ) -> str:
         turn_start = TurnStart(
@@ -611,6 +628,17 @@ class _ChatChannelUseSession:
                     output_parts.append(text_delta.text)
                     if on_delta is not None:
                         await _maybe_await(on_delta(text_delta.text))
+                    continue
+
+                if event_type == AGENT_EVENT_USAGE_UPDATED:
+                    usage_update = AgentUsageUpdated.model_validate(payload)
+                    if active_turn_id is not None and usage_update.turn_id not in (
+                        None,
+                        active_turn_id,
+                    ):
+                        continue
+                    if on_usage is not None:
+                        await _maybe_await(on_usage(usage_update))
                     continue
 
                 if event_type == AGENT_EVENT_TURN_ENDED:
@@ -802,6 +830,7 @@ app.add_deprecated_option_aliases(
 )
 
 ThreadingMode = Literal["none", "default-new"]
+ContextManagementMode = Literal["auto", "standalone", "none"]
 
 ShellCopyEnvOption = Annotated[
     list[str],
@@ -879,6 +908,33 @@ ThreadDirOption = Annotated[
             "Thread directory for agent thread files. "
             "Defaults to .threads/<agent-name> when not provided."
         ),
+    ),
+]
+
+ContextManagementOption = Annotated[
+    ContextManagementMode,
+    typer.Option(
+        "--context-management",
+        help=(
+            "Context compaction mode for OpenAI Responses process agents: "
+            "auto, standalone, or none."
+        ),
+    ),
+]
+
+CompactionThresholdOption = Annotated[
+    Optional[int],
+    typer.Option(
+        "--compaction-threshold",
+        help="Token threshold for OpenAI Responses context compaction.",
+    ),
+]
+
+MaxOutputTokensOption = Annotated[
+    Optional[int],
+    typer.Option(
+        "--max-output-tokens",
+        help="Maximum output tokens to request from OpenAI Responses models.",
     ),
 ]
 
@@ -1324,6 +1380,9 @@ def _build_runtime_agent(
     always_reply: Optional[bool],
     threading_mode: ThreadingMode,
     thread_dir: Optional[str],
+    context_management: ContextManagementMode,
+    compaction_threshold: Optional[int],
+    max_output_tokens: Optional[int],
     working_dir: Optional[str],
     dataset_namespace: Optional[list[str]],
     skill_dirs: Optional[list[str]],
@@ -1389,6 +1448,10 @@ def _build_runtime_agent(
         "log_llm_requests": log_llm_requests,
         "channels": channels,
     }
+    if runtime == "process":
+        builder_kwargs["context_management"] = context_management
+        builder_kwargs["compaction_threshold"] = compaction_threshold
+        builder_kwargs["max_output_tokens"] = max_output_tokens
     return builder(**builder_kwargs)
 
 
@@ -1978,6 +2041,9 @@ def build_process_agent(
     dataset_namespace: Optional[list[str]] = None,
     always_reply: Optional[bool] = None,
     thread_dir: Optional[str] = None,
+    context_management: ContextManagementMode = "auto",
+    compaction_threshold: Optional[int] = None,
+    max_output_tokens: Optional[int] = 32000,
     skill_dirs: Optional[list[str]] = None,
     threading_mode: ThreadingMode = "none",
     shell_image: Optional[str] = None,
@@ -2074,6 +2140,9 @@ def build_process_agent(
                     "reasoning": {"summary": "concise"},
                 },
                 log_requests=log_llm_requests,
+                context_management=context_management,
+                compaction_threshold=compaction_threshold,
+                max_output_tokens=max_output_tokens,
             )
         else:
             if is_claude_model:
@@ -2087,6 +2156,9 @@ def build_process_agent(
                     model=model,
                     api_key=api_key,
                     log_requests=log_llm_requests,
+                    context_management=context_management,
+                    compaction_threshold=compaction_threshold,
+                    max_output_tokens=max_output_tokens,
                 )
 
     resolved_channels = _resolved_channels(
@@ -2958,6 +3030,9 @@ async def join(
     ] = None,
     threading_mode: ThreadingModeOption = "none",
     thread_dir: ThreadDirOption = None,
+    context_management: ContextManagementOption = "auto",
+    compaction_threshold: CompactionThresholdOption = None,
+    max_output_tokens: MaxOutputTokensOption = 32000,
     channel: ChannelOption = [],
     skill_dir: Annotated[
         list[str],
@@ -3100,6 +3175,9 @@ async def join(
             always_reply=always_reply,
             threading_mode=threading_mode,
             thread_dir=thread_dir,
+            context_management=context_management,
+            compaction_threshold=compaction_threshold,
+            max_output_tokens=max_output_tokens,
             working_dir=working_dir,
             dataset_namespace=resolved_dataset_namespace,
             skill_dirs=skill_dir,
@@ -3364,6 +3442,9 @@ async def service(
     ] = None,
     threading_mode: ThreadingModeOption = "none",
     thread_dir: ThreadDirOption = None,
+    context_management: ContextManagementOption = "auto",
+    compaction_threshold: CompactionThresholdOption = None,
+    max_output_tokens: MaxOutputTokensOption = 32000,
     channel: ChannelOption = [],
     skill_dir: Annotated[
         list[str],
@@ -3490,6 +3571,9 @@ async def service(
             always_reply=always_reply,
             threading_mode=threading_mode,
             thread_dir=thread_dir,
+            context_management=context_management,
+            compaction_threshold=compaction_threshold,
+            max_output_tokens=max_output_tokens,
             working_dir=working_dir,
             dataset_namespace=resolved_dataset_namespace,
             skill_dirs=skill_dir,
@@ -3719,6 +3803,9 @@ async def spec(
     ] = None,
     threading_mode: ThreadingModeOption = "none",
     thread_dir: ThreadDirOption = None,
+    context_management: ContextManagementOption = "auto",
+    compaction_threshold: CompactionThresholdOption = None,
+    max_output_tokens: MaxOutputTokensOption = 32000,
     channel: ChannelOption = [],
     skill_dir: Annotated[
         list[str],
@@ -3844,6 +3931,9 @@ async def spec(
             always_reply=always_reply,
             threading_mode=threading_mode,
             thread_dir=thread_dir,
+            context_management=context_management,
+            compaction_threshold=compaction_threshold,
+            max_output_tokens=max_output_tokens,
             working_dir=working_dir,
             dataset_namespace=resolved_dataset_namespace,
             skill_dirs=skill_dir,
@@ -4093,6 +4183,9 @@ async def deploy(
     ] = None,
     threading_mode: ThreadingModeOption = "none",
     thread_dir: ThreadDirOption = None,
+    context_management: ContextManagementOption = "auto",
+    compaction_threshold: CompactionThresholdOption = None,
+    max_output_tokens: MaxOutputTokensOption = 32000,
     channel: ChannelOption = [],
     skill_dir: Annotated[
         list[str],
@@ -4225,6 +4318,9 @@ async def deploy(
             always_reply=always_reply,
             threading_mode=threading_mode,
             thread_dir=thread_dir,
+            context_management=context_management,
+            compaction_threshold=compaction_threshold,
+            max_output_tokens=max_output_tokens,
             working_dir=working_dir,
             dataset_namespace=resolved_dataset_namespace,
             skill_dirs=skill_dir,
@@ -5962,6 +6058,9 @@ async def run(
     ] = None,
     threading_mode: ThreadingModeOption = "none",
     thread_dir: ThreadDirOption = None,
+    context_management: ContextManagementOption = "auto",
+    compaction_threshold: CompactionThresholdOption = None,
+    max_output_tokens: MaxOutputTokensOption = 32000,
     channel: ChannelOption = [],
     skill_dir: Annotated[
         list[str],
@@ -6130,6 +6229,9 @@ async def run(
             always_reply=always_reply,
             threading_mode=threading_mode,
             thread_dir=thread_dir,
+            context_management=context_management,
+            compaction_threshold=compaction_threshold,
+            max_output_tokens=max_output_tokens,
             working_dir=working_dir,
             dataset_namespace=resolved_dataset_namespace,
             skill_dirs=skill_dir,

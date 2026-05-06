@@ -5,10 +5,14 @@ from dataclasses import dataclass
 from pathlib import Path
 import sys
 import textwrap
-from typing import Mapping, Sequence
+from typing import Literal, Mapping, Sequence
 
 import click
 
+from meshagent.cli.meshagent_images import (
+    MESHAGENT_IMAGE_PREFIX_TEMPLATE,
+    render_meshagent_image_prefix_template,
+)
 from meshagent.cli.version import __version__
 
 
@@ -81,6 +85,12 @@ class InitFocus:
     id: str
     label: str
     description: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExistingProjectSelection:
+    action: Literal["run-doctor", "create-subfolder"]
+    subfolder_name: str | None = None
 
 
 PYTHON_WEBSERVER = """\
@@ -186,21 +196,33 @@ dependencies = [
 py-modules = ["server"]
 """
 
-PYTHON_DOCKERFILE = """\
-FROM python:3.13-slim
+PYTHON_DOCKERFILE = f"""\
+ARG MESHAGENT_IMAGE_PREFIX={MESHAGENT_IMAGE_PREFIX_TEMPLATE}
+FROM ${{MESHAGENT_IMAGE_PREFIX}}python-sdk-slim:{__version__} AS build
 WORKDIR /app
-COPY pyproject.toml server.py ./
-RUN pip install --no-cache-dir .
+COPY . .
+RUN python -m pip install --no-cache-dir --target /out .
+
+FROM scratch
+LABEL meshagent.runtime=python
+WORKDIR /app
+COPY --from=build /out /app
 EXPOSE 8000
-CMD ["python", "server.py"]
+CMD ["-m", "server"]
 """
 
-PYTHON_AGENT_DOCKERFILE = """\
-FROM python:3.13-slim
+PYTHON_AGENT_DOCKERFILE = f"""\
+ARG MESHAGENT_IMAGE_PREFIX={MESHAGENT_IMAGE_PREFIX_TEMPLATE}
+FROM ${{MESHAGENT_IMAGE_PREFIX}}python-sdk-slim:{__version__} AS build
 WORKDIR /app
-COPY pyproject.toml server.py ./
-RUN pip install --no-cache-dir .
-CMD ["python", "server.py"]
+COPY . .
+RUN python -m pip install --no-cache-dir --target /out .
+
+FROM scratch
+LABEL meshagent.runtime=python
+WORKDIR /app
+COPY --from=build /out /app
+CMD ["-m", "server"]
 """
 
 PYTHON_DOCKERIGNORE = """\
@@ -220,7 +242,11 @@ JAVASCRIPT_PACKAGE_JSON = """\
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "start": "node server.js"
+    "build": "ncc build server.js -o dist",
+    "start": "node dist/index.js"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "^0.38.3"
   }
 }
 """
@@ -232,10 +258,14 @@ JAVASCRIPT_AGENT_PACKAGE_JSON = f"""\
   "private": true,
   "type": "commonjs",
   "scripts": {{
-    "start": "node server.js"
+    "build": "ncc build server.js -o dist",
+    "start": "node dist/index.js"
   }},
   "dependencies": {{
     "@meshagent/meshagent": "^{__version__}"
+  }},
+  "devDependencies": {{
+    "@vercel/ncc": "^0.38.3"
   }}
 }}
 """
@@ -287,25 +317,42 @@ main().catch((error) => {
 });
 """
 
-JAVASCRIPT_DOCKERFILE = """\
-FROM node:22-alpine
+JAVASCRIPT_DOCKERFILE = f"""\
+ARG MESHAGENT_IMAGE_PREFIX={MESHAGENT_IMAGE_PREFIX_TEMPLATE}
+FROM ${{MESHAGENT_IMAGE_PREFIX}}node-sdk:{__version__} AS build
 WORKDIR /app
-COPY package.json server.js ./
+COPY package*.json ./
+RUN npm install
+COPY server.js ./
+RUN npm run build
+
+FROM scratch
+LABEL meshagent.runtime=node
+WORKDIR /app
+COPY --from=build /app/dist/index.js /app/index.js
 EXPOSE 3000
-CMD ["npm", "start"]
+CMD ["index.js"]
 """
 
-JAVASCRIPT_AGENT_DOCKERFILE = """\
-FROM node:22-alpine
+JAVASCRIPT_AGENT_DOCKERFILE = f"""\
+ARG MESHAGENT_IMAGE_PREFIX={MESHAGENT_IMAGE_PREFIX_TEMPLATE}
+FROM ${{MESHAGENT_IMAGE_PREFIX}}node-sdk:{__version__} AS build
 WORKDIR /app
-COPY package.json ./
-RUN npm install --omit=dev
+COPY package*.json ./
+RUN npm install
 COPY server.js ./
-CMD ["npm", "start"]
+RUN npm run build
+
+FROM scratch
+LABEL meshagent.runtime=node
+WORKDIR /app
+COPY --from=build /app/dist/index.js /app/index.js
+CMD ["index.js"]
 """
 
 JAVASCRIPT_DOCKERIGNORE = """\
 node_modules/
+dist/
 npm-debug.log*
 .git/
 .DS_Store
@@ -318,11 +365,12 @@ TYPESCRIPT_PACKAGE_JSON = """\
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/server.js"
+    "build": "ncc build src/server.ts -o dist",
+    "start": "node dist/index.js"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "@vercel/ncc": "^0.38.3",
     "typescript": "^5.8.0"
   }
 }
@@ -335,14 +383,15 @@ TYPESCRIPT_AGENT_PACKAGE_JSON = f"""\
   "private": true,
   "type": "commonjs",
   "scripts": {{
-    "build": "tsc",
-    "start": "node dist/server.js"
+    "build": "ncc build src/server.ts -o dist",
+    "start": "node dist/index.js"
   }},
   "dependencies": {{
     "@meshagent/meshagent": "^{__version__}"
   }},
   "devDependencies": {{
     "@types/node": "^22.10.0",
+    "@vercel/ncc": "^0.38.3",
     "typescript": "^5.8.0"
   }}
 }}
@@ -410,25 +459,37 @@ main().catch((error: unknown) => {
 });
 """
 
-TYPESCRIPT_DOCKERFILE = """\
-FROM node:22-alpine
+TYPESCRIPT_DOCKERFILE = f"""\
+ARG MESHAGENT_IMAGE_PREFIX={MESHAGENT_IMAGE_PREFIX_TEMPLATE}
+FROM ${{MESHAGENT_IMAGE_PREFIX}}node-sdk:{__version__} AS build
 WORKDIR /app
-COPY package.json tsconfig.json ./
+COPY package*.json tsconfig.json ./
 RUN npm install
 COPY src ./src
-RUN npm run build && npm prune --omit=dev
+RUN npm run build
+
+FROM scratch
+LABEL meshagent.runtime=node
+WORKDIR /app
+COPY --from=build /app/dist/index.js /app/index.js
 EXPOSE 3000
-CMD ["npm", "start"]
+CMD ["index.js"]
 """
 
-TYPESCRIPT_AGENT_DOCKERFILE = """\
-FROM node:22-alpine
+TYPESCRIPT_AGENT_DOCKERFILE = f"""\
+ARG MESHAGENT_IMAGE_PREFIX={MESHAGENT_IMAGE_PREFIX_TEMPLATE}
+FROM ${{MESHAGENT_IMAGE_PREFIX}}node-sdk:{__version__} AS build
 WORKDIR /app
-COPY package.json tsconfig.json ./
+COPY package*.json tsconfig.json ./
 RUN npm install
 COPY src ./src
-RUN npm run build && npm prune --omit=dev
-CMD ["npm", "start"]
+RUN npm run build
+
+FROM scratch
+LABEL meshagent.runtime=node
+WORKDIR /app
+COPY --from=build /app/dist/index.js /app/index.js
+CMD ["index.js"]
 """
 
 REACT_PACKAGE_JSON = """\
@@ -823,32 +884,32 @@ LANGUAGES: Mapping[str, InitLanguage] = {
     "python": InitLanguage(
         id="python",
         label="Python",
-        description="Python 3.13 service or RoomClient backend.",
+        description="Python 3.13.",
     ),
     "javascript": InitLanguage(
         id="javascript",
         label="JavaScript",
-        description="Node.js service using CommonJS.",
+        description="Node.js/CommonJS.",
     ),
     "typescript": InitLanguage(
         id="typescript",
         label="TypeScript",
-        description="Node.js service or RoomClient backend in TypeScript.",
+        description="Node.js/TypeScript.",
     ),
     "react": InitLanguage(
         id="react",
         label="React",
-        description="React/Vite web app.",
+        description="React/Vite.",
     ),
     "dotnet": InitLanguage(
         id="dotnet",
         label=".NET",
-        description="ASP.NET Core service.",
+        description=".NET.",
     ),
     "dart-flutter": InitLanguage(
         id="dart-flutter",
         label="Dart/Flutter",
-        description="Flutter web app or Dart RoomClient backend.",
+        description="Dart or Flutter.",
     ),
 }
 
@@ -856,12 +917,12 @@ FOCUSES: Mapping[str, InitFocus] = {
     WEB_FOCUS: InitFocus(
         id=WEB_FOCUS,
         label="Web server",
-        description="HTTP app with /health on a declared container port.",
+        description="HTTP app with a health endpoint and public route.",
     ),
     AGENT_FOCUS: InitFocus(
         id=AGENT_FOCUS,
         label="Backend agent",
-        description="RoomClient SDK backend with deploy env passthrough.",
+        description="Headless RoomClient SDK service without a public port.",
     ),
 }
 
@@ -1080,7 +1141,10 @@ def _has_existing_project_content(root: Path) -> bool:
 
 def _write_file(path: Path, contents: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(textwrap.dedent(contents).lstrip(), encoding="utf-8")
+    rendered_contents = render_meshagent_image_prefix_template(
+        textwrap.dedent(contents).lstrip()
+    )
+    path.write_text(rendered_contents, encoding="utf-8")
 
 
 def _supported_language_text() -> str:
@@ -1214,6 +1278,48 @@ def _run_init_tui(
     return result.selected_language_id, result.selected_focus_id
 
 
+def _run_existing_project_tui() -> ExistingProjectSelection | None:
+    from meshagent.cli.tui.init import run_existing_project_init_tui
+
+    result = asyncio.run(run_existing_project_init_tui())
+    if result.status != "completed" or result.action is None:
+        return None
+    return ExistingProjectSelection(
+        action=result.action,
+        subfolder_name=result.subfolder_name,
+    )
+
+
+def _validate_subfolder_name(folder_name: str | None) -> str:
+    if folder_name is None:
+        raise click.ClickException("Folder name cannot be empty.")
+
+    resolved_folder_name = folder_name.strip()
+    if resolved_folder_name == "":
+        raise click.ClickException("Folder name cannot be empty.")
+    if (
+        resolved_folder_name in {".", ".."}
+        or "/" in resolved_folder_name
+        or "\\" in resolved_folder_name
+    ):
+        raise click.ClickException("Folder name must be a single new subfolder name.")
+    return resolved_folder_name
+
+
+def _new_project_subfolder(root: Path, folder_name: str | None) -> Path:
+    resolved_folder_name = _validate_subfolder_name(folder_name)
+    target = root / resolved_folder_name
+    if target.exists():
+        raise click.ClickException(f"Subfolder already exists: {target}")
+    return target
+
+
+def _run_doctor(root: Path) -> None:
+    from meshagent.cli.doctor import _print_report, diagnose_project
+
+    _print_report(diagnose_project(root))
+
+
 def _write_template(root: Path, template: InitTemplate) -> None:
     for name, contents in template.files.items():
         _write_file(root / name, contents)
@@ -1279,21 +1385,38 @@ def init_command(
     click.echo("meshagent init")
     click.echo(f"Project: {root}")
 
-    if _has_existing_project_content(root):
-        click.echo("")
-        click.echo("Existing application code or deployment metadata was detected.")
-        click.echo("No files were written.")
-        click.echo("")
-        click.echo("Recommended next step for existing projects:")
-        click.echo("  meshagent doctor")
-        return
-
     is_interactive_stdio = _stdio_is_interactive()
     if interactive is True and not is_interactive_stdio:
         raise click.ClickException(
             "Interactive mode requires a TTY. Pass --language, --focus, and "
             "--no-interactive when running from a script."
         )
+
+    if _has_existing_project_content(root):
+        if interactive is not False and is_interactive_stdio:
+            existing_project_selection = _run_existing_project_tui()
+            if existing_project_selection is None:
+                click.echo("Init canceled.")
+                return
+            if existing_project_selection.action == "run-doctor":
+                click.echo("")
+                _run_doctor(root)
+                return
+
+            root = _new_project_subfolder(
+                root,
+                existing_project_selection.subfolder_name,
+            )
+            root.mkdir(parents=True, exist_ok=False)
+            click.echo(f"New project: {root}")
+        else:
+            click.echo("")
+            click.echo("Existing application code or deployment metadata was detected.")
+            click.echo("No files were written.")
+            click.echo("")
+            click.echo("Recommended next step for existing projects:")
+            click.echo("  meshagent doctor")
+            return
 
     if _should_launch_tui(
         language=language,

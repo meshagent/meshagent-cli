@@ -59,7 +59,13 @@ def test_doctor_reports_python_roomclient_deploy_gaps(tmp_path) -> None:
     assert " -e MESHAGENT_" not in result.output
     assert "--no-optimize" not in result.output
     assert "Deployment checks" in result.output
-    assert "FROM python:3.13-slim" in result.output
+    assert "Auto-fix missing files" in result.output
+    assert "meshagent doctor --fix" in result.output
+    assert "Create Dockerfile" in result.output
+    assert "Create pyproject.toml" in result.output
+    assert "python-sdk-slim" in result.output
+    assert "FROM scratch" in result.output
+    assert "LABEL meshagent.runtime=python" in result.output
     assert "EXPOSE 8000" in result.output
     assert "MeshAgent Python deployments must target Python 3.13" in result.output
     assert (
@@ -96,8 +102,155 @@ def test_doctor_reports_python_source_sdk_import_without_project_dependency(
     assert "Python project metadata: add pyproject.toml" in result.output
     assert "Python RoomClient SDK dependency: add meshagent-api" in result.output
     assert "does not declare `meshagent-api`" in result.output
+    assert "meshagent doctor --fix" in result.output
+    assert "Create Dockerfile" in result.output
+    assert "Create pyproject.toml" in result.output
     assert "--meshagent-token agentDefault" in result.output
     assert "--meshagent-token full" not in result.output
+
+
+def test_doctor_fix_writes_missing_python_dockerfile_and_pyproject(tmp_path) -> None:
+    (tmp_path / "requirements.txt").write_text(
+        "requests==2.32.3\nmeshagent-api==0.5.18\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "server.py").write_text(
+        "from meshagent.api import RoomClient\n"
+        "async def main():\n"
+        "    async with RoomClient() as room:\n"
+        "        await room.wait_for_close()\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, ["--fix", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Applied fixes" in result.output
+    assert "Wrote Dockerfile" in result.output
+    assert "Wrote pyproject.toml" in result.output
+    assert "Run `meshagent doctor` and address remaining findings" in result.output
+
+    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    pyproject = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert "python-sdk-slim" in dockerfile
+    assert "FROM scratch" in dockerfile
+    assert "LABEL meshagent.runtime=python" in dockerfile
+    assert 'CMD ["-m", "server"]' in dockerfile
+    assert 'requires-python = ">=3.13"' in pyproject
+    assert '"requests==2.32.3"' in pyproject
+    assert f'"meshagent-api=={MESHAGENT_CLIENT_VERSION}"' in pyproject
+    assert '"meshagent-api==0.5.18"' not in pyproject
+
+
+def test_doctor_fix_skips_multi_file_python_project(tmp_path) -> None:
+    (tmp_path / "server.py").write_text(
+        "from app import create_app\napp = create_app()\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text(
+        "def create_app():\n    return object()\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path)])
+    fix_result = CliRunner().invoke(doctor_command, ["--fix", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "meshagent doctor --fix" not in result.output
+    assert fix_result.exit_code == 0
+    assert "No auto-fixable missing files were found" in fix_result.output
+    assert not (tmp_path / "Dockerfile").exists()
+    assert not (tmp_path / "pyproject.toml").exists()
+
+
+def test_doctor_fix_skips_node_project_without_ncc_metadata(tmp_path) -> None:
+    (tmp_path / "package.json").write_text(
+        '{"scripts":{"start":"node server.js"},'
+        '"dependencies":{"@meshagent/meshagent":"0.38.4"}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "server.js").write_text(
+        "const { RoomClient } = require('@meshagent/meshagent');\n"
+        "console.log(RoomClient);\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path)])
+    fix_result = CliRunner().invoke(doctor_command, ["--fix", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "meshagent doctor --fix" not in result.output
+    assert "Node ncc optimization check" in result.output
+    assert '"build": "ncc build server.js -o dist"' in result.output
+    assert fix_result.exit_code == 0
+    assert "No auto-fixable missing files were found" in fix_result.output
+    assert not (tmp_path / "Dockerfile").exists()
+
+
+def test_doctor_fix_writes_node_dockerfile_when_ncc_metadata_matches(
+    tmp_path,
+) -> None:
+    (tmp_path / "package.json").write_text(
+        '{"scripts":{"build":"ncc build server.js -o dist",'
+        '"start":"node dist/index.js"},'
+        '"devDependencies":{"@vercel/ncc":"^0.38.3"}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "server.js").write_text(
+        "console.log('hello');\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, ["--fix", str(tmp_path)])
+
+    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+
+    assert result.exit_code == 0
+    assert "Applied fixes" in result.output
+    assert "Wrote Dockerfile" in result.output
+    assert "node-sdk" in dockerfile
+    assert "RUN npm run build" in dockerfile
+    assert "COPY --from=build /app/dist/index.js /app/index.js" in dockerfile
+    assert "LABEL meshagent.runtime=node" in dockerfile
+
+
+def test_doctor_fix_reports_no_autofix_for_empty_project(tmp_path) -> None:
+    (tmp_path / ".gitkeep").write_text("", encoding="utf-8")
+
+    result = CliRunner().invoke(doctor_command, ["--fix", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "No auto-fixable missing files were found" in result.output
+    assert "Run `meshagent doctor` and address remaining findings" in result.output
+    assert not (tmp_path / "Dockerfile").exists()
+    assert not (tmp_path / "pyproject.toml").exists()
+
+
+def test_doctor_fix_does_not_overwrite_existing_files(tmp_path) -> None:
+    (tmp_path / "Dockerfile").write_text(
+        "FROM python:3.13-slim\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "existing"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "server.py").write_text(
+        "from meshagent.api import RoomClient\nprint(RoomClient)\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, ["--fix", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "No auto-fixable missing files were found" in result.output
+    assert (tmp_path / "Dockerfile").read_text(encoding="utf-8") == (
+        "FROM python:3.13-slim\n"
+    )
+    assert (tmp_path / "pyproject.toml").read_text(encoding="utf-8") == (
+        '[project]\nname = "existing"\n'
+    )
 
 
 def test_doctor_reports_matching_python_sdk_pin(tmp_path) -> None:
@@ -257,7 +410,9 @@ def test_doctor_reports_older_python_runtime_upgrade_guidance(tmp_path) -> None:
     assert "runtime.txt declares `python-3.11.9`" in result.output
     assert "`pyproject.toml` project.requires-python is `>=3.10,<3.13`" in result.output
     assert "MeshAgent Python deployments must target Python 3.13" in result.output
-    assert "FROM python:3.13-slim" in result.output
+    assert "python-sdk-slim" in result.output
+    assert "FROM scratch" in result.output
+    assert "LABEL meshagent.runtime=python" in result.output
 
 
 def test_doctor_detects_nested_python_313_virtualenv(tmp_path) -> None:
@@ -307,7 +462,12 @@ def test_doctor_reports_javascript_roomclient_deploy_gaps(tmp_path) -> None:
     assert diagnosis.sdk == "@meshagent/meshagent"
     assert diagnosis.sdk_versions == (("package.json", "0.38.4"),)
     assert diagnosis.has_deployment_artifact is False
-    assert "npm install --omit=dev" in diagnosis.dockerfile
+    assert "node-sdk" in diagnosis.dockerfile
+    assert "RUN npm install" in diagnosis.dockerfile
+    assert "RUN npm run build" in diagnosis.dockerfile
+    assert "COPY --from=build /app/dist/index.js /app/index.js" in diagnosis.dockerfile
+    assert "FROM scratch" in diagnosis.dockerfile
+    assert "LABEL meshagent.runtime=node" in diagnosis.dockerfile
     assert "EXPOSE 3000" in diagnosis.dockerfile
     assert diagnosis.liveness_path == "/health"
 
@@ -378,7 +538,10 @@ def test_doctor_reports_typescript_node_build_guidance(tmp_path, monkeypatch) ->
         "@meshagent/meshagent version is behind meshagent client: "
         "package.json has 0.38.4"
     ) in result.output
-    assert "RUN npm run build && npm prune --omit=dev" in result.output
+    assert "node-sdk" in result.output
+    assert "RUN npm run build" in result.output
+    assert "COPY --from=build /app/dist/index.js /app/index.js" in result.output
+    assert "LABEL meshagent.runtime=node" in result.output
     assert "Local build check: `npm install && npm run build`" in result.output
     assert '`compilerOptions.module` to `"CommonJS"`' in result.output
     assert '`moduleResolution` to `"Node"`' in result.output
@@ -595,6 +758,29 @@ def test_doctor_reports_existing_dockerfile(tmp_path) -> None:
     assert result.exit_code == 0
     assert "Detected project: Ruby" in result.output
     assert "[ok] Deployment artifact found: Dockerfile" in result.output
+
+
+def test_doctor_warns_for_non_optimized_python_dockerfile(tmp_path) -> None:
+    (tmp_path / "Dockerfile").write_text(
+        'FROM python:3.13-slim\nWORKDIR /app\nCOPY . .\nCMD ["python", "server.py"]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nrequires-python = ">=3.13"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "server.py").write_text(
+        "print('python app')\nif '/health': pass\nPORT = 8000\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "[ok] Deployment artifact found: Dockerfile" in result.output
+    assert "[warning] Dockerfile is not MeshAgent-optimized" in result.output
+    assert "LABEL meshagent.runtime=python or node" in result.output
+    assert "Auto-fix missing files" not in result.output
 
 
 def test_doctor_finding_labels_use_rich_status_colors() -> None:

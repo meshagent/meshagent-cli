@@ -35,8 +35,12 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     assert "RoomClient(protocol_factory=protocol.create_factory())" in server_py
     assert "WebSocketClientProtocol" in server_py
     assert "ThreadingHTTPServer" not in server_py
-    assert "COPY pyproject.toml server.py ./" in dockerfile
-    assert "RUN pip install --no-cache-dir ." in dockerfile
+    assert "COPY . ." in dockerfile
+    assert "RUN python -m pip install --no-cache-dir --target /out ." in dockerfile
+    assert "python-sdk-slim" in dockerfile
+    assert "FROM scratch" in dockerfile
+    assert "LABEL meshagent.runtime=python" in dockerfile
+    assert 'CMD ["-m", "server"]' in dockerfile
     assert "EXPOSE" not in dockerfile
 
     assert diagnosis.language == "Python"
@@ -44,6 +48,30 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     assert diagnosis.is_headless_backend_agent is True
     assert diagnosis.python_has_pyproject is True
     assert diagnosis.python_source_uses_sdk is True
+
+
+def test_init_renders_meshagent_image_prefix_from_environment(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("MESHAGENT_IMAGE_PREFIX", "registry.example.com/custom")
+
+    result = CliRunner().invoke(
+        init_command,
+        [
+            "--language",
+            "python",
+            "--focus",
+            "backend-agent",
+            "--no-interactive",
+            str(tmp_path),
+        ],
+    )
+
+    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+
+    assert result.exit_code == 0
+    assert "ARG MESHAGENT_IMAGE_PREFIX=registry.example.com/custom/" in dockerfile
 
 
 def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
@@ -72,6 +100,9 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     assert "meshagent-api" not in pyproject
     assert "from aiohttp import web" in server_py
     assert "RoomClient" not in server_py
+    assert "python-sdk-slim" in dockerfile
+    assert "FROM scratch" in dockerfile
+    assert "LABEL meshagent.runtime=python" in dockerfile
     assert "EXPOSE 8000" in dockerfile
     assert diagnosis.sdk is None
     assert diagnosis.python_has_pyproject is True
@@ -100,11 +131,19 @@ def test_init_creates_javascript_webserver_non_interactively(tmp_path) -> None:
     assert package_json.is_file()
     assert server_js.is_file()
     assert dockerfile.is_file()
-    assert '"start": "node server.js"' in package_json.read_text(encoding="utf-8")
-    assert "@meshagent/meshagent" not in package_json.read_text(encoding="utf-8")
+    package_text = package_json.read_text(encoding="utf-8")
+    dockerfile_text = dockerfile.read_text(encoding="utf-8")
+    assert '"build": "ncc build server.js -o dist"' in package_text
+    assert '"start": "node dist/index.js"' in package_text
+    assert '"@vercel/ncc"' in package_text
+    assert "@meshagent/meshagent" not in package_text
     assert "hello from meshagent init" in server_js.read_text(encoding="utf-8")
-    assert "FROM node:22-alpine" in dockerfile.read_text(encoding="utf-8")
-    assert "EXPOSE 3000" in dockerfile.read_text(encoding="utf-8")
+    assert "node-sdk" in dockerfile_text
+    assert "RUN npm run build" in dockerfile_text
+    assert "COPY --from=build /app/dist/index.js /app/index.js" in dockerfile_text
+    assert "FROM scratch" in dockerfile_text
+    assert "LABEL meshagent.runtime=node" in dockerfile_text
+    assert "EXPOSE 3000" in dockerfile_text
 
 
 def test_init_creates_javascript_backend_agent_non_interactively(tmp_path) -> None:
@@ -132,10 +171,14 @@ def test_init_creates_javascript_backend_agent_non_interactively(tmp_path) -> No
     server_js = (tmp_path / "server.js").read_text(encoding="utf-8")
     assert "RoomClient" in server_js
     assert "server.listen" not in server_js
-    assert "npm install --omit=dev" in (tmp_path / "Dockerfile").read_text(
-        encoding="utf-8"
-    )
-    assert "EXPOSE" not in (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    assert "node-sdk" in dockerfile
+    assert "RUN npm install" in dockerfile
+    assert "RUN npm run build" in dockerfile
+    assert "COPY --from=build /app/dist/index.js /app/index.js" in dockerfile
+    assert "FROM scratch" in dockerfile
+    assert "LABEL meshagent.runtime=node" in dockerfile
+    assert "EXPOSE" not in dockerfile
 
 
 def test_init_creates_typescript_webserver_non_interactively(tmp_path) -> None:
@@ -159,14 +202,23 @@ def test_init_creates_typescript_webserver_non_interactively(tmp_path) -> None:
     assert (tmp_path / "tsconfig.json").is_file()
     assert (tmp_path / "src" / "server.ts").is_file()
     assert (tmp_path / "Dockerfile").is_file()
-    assert '"build": "tsc"' in (tmp_path / "package.json").read_text(encoding="utf-8")
+    package_text = (tmp_path / "package.json").read_text(encoding="utf-8")
+    dockerfile_text = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    assert '"build": "ncc build src/server.ts -o dist"' in package_text
+    assert '"start": "node dist/index.js"' in package_text
+    assert '"@vercel/ncc"' in package_text
     assert "createServer" in (tmp_path / "src" / "server.ts").read_text(
         encoding="utf-8"
     )
     assert "RoomClient" not in (tmp_path / "src" / "server.ts").read_text(
         encoding="utf-8"
     )
-    assert "EXPOSE 3000" in (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    assert "node-sdk" in dockerfile_text
+    assert "RUN npm run build" in dockerfile_text
+    assert "COPY --from=build /app/dist/index.js /app/index.js" in dockerfile_text
+    assert "FROM scratch" in dockerfile_text
+    assert "LABEL meshagent.runtime=node" in dockerfile_text
+    assert "EXPOSE 3000" in dockerfile_text
     assert diagnosis.language == "TypeScript"
     assert diagnosis.javascript_flavor == "Node.js/TypeScript"
     assert diagnosis.sdk is None
@@ -197,7 +249,13 @@ def test_init_creates_typescript_backend_agent_non_interactively(tmp_path) -> No
     server_ts = (tmp_path / "src" / "server.ts").read_text(encoding="utf-8")
     assert "RoomClient" in server_ts
     assert "server.listen" not in server_ts
-    assert "EXPOSE" not in (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    assert "node-sdk" in dockerfile
+    assert "RUN npm run build" in dockerfile
+    assert "COPY --from=build /app/dist/index.js /app/index.js" in dockerfile
+    assert "FROM scratch" in dockerfile
+    assert "LABEL meshagent.runtime=node" in dockerfile
+    assert "EXPOSE" not in dockerfile
     assert diagnosis.language == "TypeScript"
     assert diagnosis.javascript_flavor == "Node.js/TypeScript"
     assert diagnosis.sdk == "@meshagent/meshagent"
@@ -410,6 +468,309 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
         encoding="utf-8"
     )
     assert not (tmp_path / "server.py").exists()
+
+
+def test_init_tui_language_screen_lists_languages_only(monkeypatch) -> None:
+    from meshagent.cli.tui.init import (
+        InitFocusChoice,
+        InitLanguageChoice,
+        InitWizardApp,
+    )
+
+    app = InitWizardApp(
+        languages=[
+            InitLanguageChoice(
+                id="python",
+                label="Python",
+                description="Python 3.13 service or RoomClient backend.",
+                focus_ids=("webserver", "backend-agent"),
+            ),
+            InitLanguageChoice(
+                id="typescript",
+                label="TypeScript",
+                description="Node.js service or RoomClient backend in TypeScript.",
+                focus_ids=("webserver", "backend-agent"),
+            ),
+        ],
+        focuses=[
+            InitFocusChoice(
+                id="webserver",
+                label="Web server",
+                description="HTTP app with a health endpoint.",
+            ),
+            InitFocusChoice(
+                id="backend-agent",
+                label="Backend agent",
+                description="RoomClient SDK service.",
+            ),
+        ],
+    )
+    captured_text: dict[str, str] = {}
+    captured_options = []
+
+    def fake_set_text(*, title: str, message: str, help_text: str) -> None:
+        captured_text["title"] = title
+        captured_text["message"] = message
+        captured_text["help_text"] = help_text
+
+    def fake_set_options(options) -> None:
+        captured_options[:] = list(options)
+
+    monkeypatch.setattr(app, "_set_text", fake_set_text)
+    monkeypatch.setattr(app, "_set_options", fake_set_options)
+
+    app._show_language_selection()
+
+    assert captured_text["message"] == "Choose the language for the project."
+    assert [str(option.prompt) for option in captured_options] == [
+        "Python",
+        "TypeScript",
+        "Cancel",
+    ]
+    assert all(" - " not in str(option.prompt) for option in captured_options)
+    assert all("RoomClient" not in str(option.prompt) for option in captured_options)
+
+
+def test_init_tui_focus_screen_asks_for_webserver_or_backend_agent(
+    monkeypatch,
+) -> None:
+    from meshagent.cli.tui.init import (
+        InitFocusChoice,
+        InitLanguageChoice,
+        InitWizardApp,
+    )
+
+    app = InitWizardApp(
+        languages=[
+            InitLanguageChoice(
+                id="python",
+                label="Python",
+                description="Python 3.13.",
+                focus_ids=("webserver", "backend-agent"),
+            )
+        ],
+        focuses=[
+            InitFocusChoice(
+                id="webserver",
+                label="Web server",
+                description="HTTP app with a health endpoint and public route.",
+            ),
+            InitFocusChoice(
+                id="backend-agent",
+                label="Backend agent",
+                description="Headless RoomClient SDK service without a public port.",
+            ),
+        ],
+    )
+    app._selected_language_id = "python"
+    app._selected_language_label = "Python"
+    captured_text: dict[str, str] = {}
+    captured_options = []
+
+    def fake_set_text(*, title: str, message: str, help_text: str) -> None:
+        captured_text["title"] = title
+        captured_text["message"] = message
+        captured_text["help_text"] = help_text
+
+    def fake_set_options(options) -> None:
+        captured_options[:] = list(options)
+
+    monkeypatch.setattr(app, "_set_text", fake_set_text)
+    monkeypatch.setattr(app, "_set_options", fake_set_options)
+
+    app._show_focus_selection()
+
+    assert captured_text["message"] == "Choose what you want to build for Python."
+    assert "Web server creates an HTTP app" in captured_text["help_text"]
+    assert (
+        "Backend agent creates a RoomClient SDK service" in captured_text["help_text"]
+    )
+    assert [str(option.prompt) for option in captured_options] == [
+        "Web server - HTTP app with a health endpoint and public route.",
+        "Backend agent - Headless RoomClient SDK service without a public port.",
+        "Back",
+        "Cancel",
+    ]
+
+
+def test_init_tui_existing_project_screen_offers_doctor_or_subfolder(
+    monkeypatch,
+) -> None:
+    from meshagent.cli.tui.init import (
+        INIT_EXISTING_DOCTOR_OPTION_ID,
+        INIT_EXISTING_SUBFOLDER_OPTION_ID,
+        InitExistingProjectApp,
+    )
+
+    app = InitExistingProjectApp()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        app,
+        "_set_text",
+        lambda *, title, message, help_text: captured.update(
+            {
+                "title": title,
+                "message": message,
+                "help_text": help_text,
+            }
+        ),
+    )
+    monkeypatch.setattr(app, "_clear_error", lambda: None)
+    monkeypatch.setattr(app, "_hide_input", lambda: None)
+    monkeypatch.setattr(
+        app,
+        "_set_options",
+        lambda options: captured.update(
+            {"options": [(str(option.prompt), option.id) for option in options]}
+        ),
+    )
+
+    app._show_existing_project_choice()
+
+    assert captured == {
+        "title": "MeshAgent Init",
+        "message": "This directory already contains project files.",
+        "help_text": "Choose an option. Esc or Ctrl+C cancels.",
+        "options": [
+            ("Run meshagent doctor here.", INIT_EXISTING_DOCTOR_OPTION_ID),
+            (
+                "Create a new project in a new subfolder.",
+                INIT_EXISTING_SUBFOLDER_OPTION_ID,
+            ),
+            ("Cancel", "__init_cancel__"),
+        ],
+    }
+
+
+def test_init_tui_existing_project_subfolder_prompt_accepts_folder_name(
+    monkeypatch,
+) -> None:
+    from meshagent.cli.tui.init import (
+        EXISTING_ACTION_SUBFOLDER,
+        InitExistingProjectApp,
+    )
+
+    app = InitExistingProjectApp()
+    exited = False
+
+    def fake_exit() -> None:
+        nonlocal exited
+        exited = True
+
+    monkeypatch.setattr(app, "exit", fake_exit)
+
+    submitted = app._submit_subfolder_name("  hello-agent  ")
+
+    assert submitted is True
+    assert exited is True
+    assert app.result.status == "completed"
+    assert app.result.action == EXISTING_ACTION_SUBFOLDER
+    assert app.result.subfolder_name == "hello-agent"
+
+
+def test_init_tui_existing_project_subfolder_prompt_rejects_paths(
+    monkeypatch,
+) -> None:
+    from meshagent.cli.tui.init import InitExistingProjectApp
+
+    app = InitExistingProjectApp()
+    errors: list[str] = []
+    monkeypatch.setattr(app, "_set_error_text", errors.append)
+
+    submitted = app._submit_subfolder_name("../hello-agent")
+
+    assert submitted is False
+    assert errors == ["Enter a folder name, not a path."]
+    assert app.result.status == "canceled"
+
+
+def test_init_existing_code_interactive_can_run_doctor_here(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "server.py").write_text("print('already here')\n", encoding="utf-8")
+    doctor_paths: list[object] = []
+
+    monkeypatch.setattr(init_module, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(
+        init_module,
+        "_run_existing_project_tui",
+        lambda: init_module.ExistingProjectSelection(action="run-doctor"),
+    )
+    monkeypatch.setattr(init_module, "_run_doctor", doctor_paths.append)
+    monkeypatch.setattr(
+        init_module,
+        "_run_init_tui",
+        lambda *, language_choices, focus_choices: (_ for _ in ()).throw(
+            AssertionError("language/focus TUI should not launch")
+        ),
+    )
+
+    result = CliRunner().invoke(init_command, [str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert doctor_paths == [tmp_path.resolve()]
+    assert not (tmp_path / "Dockerfile").exists()
+
+
+def test_init_existing_code_interactive_creates_project_in_subfolder(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "server.py").write_text("print('already here')\n", encoding="utf-8")
+
+    monkeypatch.setattr(init_module, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(
+        init_module,
+        "_run_existing_project_tui",
+        lambda: init_module.ExistingProjectSelection(
+            action="create-subfolder",
+            subfolder_name="hello-agent",
+        ),
+    )
+    monkeypatch.setattr(
+        init_module,
+        "_run_init_tui",
+        lambda *, language_choices, focus_choices: ("typescript", "backend-agent"),
+    )
+
+    result = CliRunner().invoke(init_command, [str(tmp_path)])
+    project_root = tmp_path / "hello-agent"
+
+    assert result.exit_code == 0
+    assert f"New project: {project_root.resolve()}" in result.output
+    assert (project_root / "package.json").is_file()
+    assert (project_root / "src" / "server.ts").is_file()
+    assert (project_root / "Dockerfile").is_file()
+    assert not (tmp_path / "Dockerfile").exists()
+    assert "@meshagent/meshagent" in (project_root / "package.json").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_init_existing_code_interactive_rejects_existing_subfolder(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "server.py").write_text("print('already here')\n", encoding="utf-8")
+    (tmp_path / "hello-agent").mkdir()
+
+    monkeypatch.setattr(init_module, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(
+        init_module,
+        "_run_existing_project_tui",
+        lambda: init_module.ExistingProjectSelection(
+            action="create-subfolder",
+            subfolder_name="hello-agent",
+        ),
+    )
+
+    result = CliRunner().invoke(init_command, [str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "Subfolder already exists" in result.output
+    assert not (tmp_path / "hello-agent" / "Dockerfile").exists()
 
 
 def test_init_no_interactive_bypasses_tui_even_when_tty(tmp_path, monkeypatch) -> None:

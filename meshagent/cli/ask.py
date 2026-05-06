@@ -16,6 +16,7 @@ import click
 import typer
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.table import Table
 from meshagent.agents.adapter import LLMAdapter
 from meshagent.agents.messages import (
     AGENT_EVENT_TEXT_CONTENT_DELTA,
@@ -27,6 +28,7 @@ from meshagent.agents.messages import (
     AGENT_MESSAGE_TURN_START,
     AGENT_MESSAGE_TURN_STEER,
     AgentTextContent,
+    AgentUsageUpdated,
     TurnEnded,
     TurnInterrupt,
     TurnStart,
@@ -63,6 +65,18 @@ _ASK_TERMINAL_STATUS_STATES = {
 }
 
 app = async_typer.AsyncTyper(no_args_is_help=False)
+
+
+def _format_token_count(value: float | int) -> str:
+    count = float(value)
+    magnitude = abs(count)
+    if magnitude >= 1_000_000:
+        formatted = f"{count / 1_000_000:.1f}".rstrip("0").rstrip(".")
+        return f"{formatted}M"
+    if magnitude >= 1_000:
+        formatted = f"{count / 1_000:.1f}".rstrip("0").rstrip(".")
+        return f"{formatted}K"
+    return str(int(count))
 
 
 class _AskSupervisor(AgentSupervisor):
@@ -280,6 +294,7 @@ class _AskSession:
         prompt: str,
         on_delta: Callable[[str], Awaitable[None] | None] | None = None,
         on_status: Callable[[str | None], None] | None = None,
+        on_usage: Callable[[AgentUsageUpdated], Awaitable[None] | None] | None = None,
         on_turn_started: Callable[[], Awaitable[None] | None] | None = None,
     ) -> str:
         turn_start = TurnStart(
@@ -366,6 +381,19 @@ class _AskSession:
                 output_parts.append(text_delta.text)
                 if on_delta is not None:
                     callback_result = on_delta(text_delta.text)
+                    if inspect.isawaitable(callback_result):
+                        await callback_result
+                continue
+
+            if isinstance(event.data, AgentUsageUpdated):
+                usage_update = event.data
+                if active_turn_id is not None and usage_update.turn_id not in (
+                    None,
+                    active_turn_id,
+                ):
+                    continue
+                if on_usage is not None:
+                    callback_result = on_usage(usage_update)
                     if inspect.isawaitable(callback_result):
                         await callback_result
                 continue
@@ -672,6 +700,14 @@ async def _run_ask_tui(
         pending: bool = False
 
     @dataclass(slots=True)
+    class _AskUsageState:
+        context_used_tokens: int
+        context_total_tokens: int | None
+        compaction_mode: str | None
+        compaction_threshold: int | None
+        total_tokens: float
+
+    @dataclass(slots=True)
     class _QueuedAskTurn:
         prompt: str
         sent: bool = False
@@ -841,6 +877,7 @@ async def _run_ask_tui(
             self._queued_turns: list[_QueuedAskTurn] = []
             self._active_assistant_entry: _AskFeedEntry | None = None
             self._status_text: str | None = None
+            self._usage_state: _AskUsageState | None = None
             self._status_started_at: float | None = None
             self._status_gradient_offset = 0
             self._spinner_timer = None
@@ -983,6 +1020,7 @@ async def _run_ask_tui(
                     prompt=prompt,
                     on_delta=self._append_delta,
                     on_status=self._set_status_text,
+                    on_usage=self._set_usage,
                     on_turn_started=self._dispatch_pending_queued_turns,
                 )
             except asyncio.CancelledError:
@@ -1115,6 +1153,19 @@ async def _run_ask_tui(
             self._status_text = status
             self._render_status_line()
 
+        def _set_usage(self, usage_update: AgentUsageUpdated) -> None:
+            total_tokens = usage_update.usage.get("total_tokens")
+            if total_tokens is None:
+                total_tokens = sum(usage_update.usage.values())
+            self._usage_state = _AskUsageState(
+                context_used_tokens=usage_update.context_window.used_tokens,
+                context_total_tokens=usage_update.context_window.total_tokens,
+                compaction_mode=usage_update.context_window.compaction_mode,
+                compaction_threshold=usage_update.context_window.compaction_threshold,
+                total_tokens=total_tokens,
+            )
+            self._render_session_meta()
+
         def _render_status_line(self) -> None:
             if self._status_view is None:
                 return
@@ -1174,14 +1225,57 @@ async def _run_ask_tui(
         def _render_session_meta(self) -> None:
             if self._session_meta_view is None:
                 return
-            self._session_meta_view.update(
+            table = Table.grid(expand=True)
+            table.add_column(ratio=1)
+            table.add_column(justify="right", no_wrap=True)
+            table.add_row(
                 Text.assemble(
                     ("model ", "bold #9aa5b8"),
                     (model, "#cfd3dc"),
                     ("  •  ", "#5f6778"),
                     ("cwd ", "bold #9aa5b8"),
                     (self._session.current_working_directory, "#cfd3dc"),
+                ),
+                self._usage_footer_text(),
+            )
+            self._session_meta_view.update(table)
+
+        def _usage_footer_text(self) -> Text:
+            usage_state = self._usage_state
+            if usage_state is None:
+                return Text("")
+
+            context_label = _format_token_count(usage_state.context_used_tokens)
+            context_limit_tokens = usage_state.compaction_threshold
+            if context_limit_tokens is None:
+                context_limit_tokens = usage_state.context_total_tokens
+            if context_limit_tokens is not None:
+                context_label = (
+                    f"{context_label}/{_format_token_count(context_limit_tokens)}"
                 )
+
+            compaction_label = ""
+            if usage_state.compaction_mode is not None:
+                compaction_label = usage_state.compaction_mode
+
+            if compaction_label != "":
+                return Text.assemble(
+                    ("compaction ", "bold #9aa5b8"),
+                    (compaction_label, "#cfd3dc"),
+                    ("  •  ", "#5f6778"),
+                    ("context ", "bold #9aa5b8"),
+                    (context_label, "#cfd3dc"),
+                    ("  •  ", "#5f6778"),
+                    ("tokens ", "bold #9aa5b8"),
+                    (_format_token_count(usage_state.total_tokens), "#cfd3dc"),
+                )
+
+            return Text.assemble(
+                ("context ", "bold #9aa5b8"),
+                (context_label, "#cfd3dc"),
+                ("  •  ", "#5f6778"),
+                ("tokens ", "bold #9aa5b8"),
+                (_format_token_count(usage_state.total_tokens), "#cfd3dc"),
             )
 
         def _render_active_assistant_header(self) -> None:

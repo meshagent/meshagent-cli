@@ -99,6 +99,9 @@ def test_root_cli_registers_process_group() -> None:
                 "--discovery",
                 "--computer-use",
                 "--thread-storage",
+                "--context-management",
+                "--compaction-threshold",
+                "--max-output-tokens",
             },
             {
                 "--toolkit",
@@ -416,11 +419,17 @@ async def test_process_agent_uses_shared_decision_adapter_for_threaded_channels(
             api_key: str | None = None,
             response_options=None,
             log_requests=None,
+            context_management=None,
+            compaction_threshold=None,
+            max_output_tokens=None,
         ) -> None:
             self._model = model if model is not None else "default-model"
             self.api_key = api_key
             self.response_options = response_options
             self.log_requests = log_requests
+            self.context_management = context_management
+            self.compaction_threshold = compaction_threshold
+            self.max_output_tokens = max_output_tokens
             created_adapters.append(self)
 
         def default_model(self) -> str:
@@ -522,6 +531,9 @@ async def test_process_agent_uses_shared_decision_adapter_for_threaded_channels(
         toolkit=[],
         schema=[],
         channels=["chat", "queue:jobs", "mail:mailbox@mail.meshagent.com"],
+        context_management="standalone",
+        compaction_threshold=120000,
+        max_output_tokens=4096,
     )
     agent = agent_cls()
     room = _FakeProcessRoomClient()
@@ -538,6 +550,9 @@ async def test_process_agent_uses_shared_decision_adapter_for_threaded_channels(
         main_adapter = created_adapters[1]
         assert channel_adapter.default_model() == "gpt-5.4-mini"
         assert main_adapter.default_model() == "gpt-5.5"
+        assert main_adapter.context_management == "standalone"
+        assert main_adapter.compaction_threshold == 120000
+        assert main_adapter.max_output_tokens == 4096
         assert len(captured_calls) == 3
         assert {call["kind"] for call in captured_calls} == {"chat", "queue", "mail"}
         assert all(call["llm_adapter"] is channel_adapter for call in captured_calls)
@@ -675,6 +690,12 @@ def test_process_spec_uses_process_runtime_and_chat_channel(monkeypatch) -> None
             "chat",
             "--thread-storage",
             "dataset",
+            "--context-management",
+            "standalone",
+            "--compaction-threshold",
+            "120000",
+            "--max-output-tokens",
+            "4096",
         ],
     )
 
@@ -683,6 +704,9 @@ def test_process_spec_uses_process_runtime_and_chat_channel(monkeypatch) -> None
             agent_name="helper",
             decision_model="gpt-5.4-nano",
             channel=["chat"],
+            context_management="standalone",
+            compaction_threshold=120000,
+            max_output_tokens=4096,
         )
 
     root_command = click.Command("meshagent")
@@ -708,6 +732,9 @@ def test_process_spec_uses_process_runtime_and_chat_channel(monkeypatch) -> None
     )
     assert build_calls[0]["channels"] == ["chat"]
     assert build_calls[0]["decision_model"] == "gpt-5.4-nano"
+    assert build_calls[0]["context_management"] == "standalone"
+    assert build_calls[0]["compaction_threshold"] == 120000
+    assert build_calls[0]["max_output_tokens"] == 4096
     assert build_calls[0]["dataset_namespace"] is None
     assert "mcp" not in build_calls[0]
     assert build_calls[0]["require_mcp"] is False
@@ -836,6 +863,12 @@ def test_process_join_passes_supported_builder_kwargs(monkeypatch) -> None:
             "quickstart",
             "--channel",
             "chat",
+            "--context-management",
+            "none",
+            "--compaction-threshold",
+            "90000",
+            "--max-output-tokens",
+            "2048",
         ],
     )
 
@@ -846,6 +879,9 @@ def test_process_join_passes_supported_builder_kwargs(monkeypatch) -> None:
             agent_name="helper",
             channel=["chat"],
             thread_storage="dataset",
+            context_management="none",
+            compaction_threshold=90000,
+            max_output_tokens=2048,
         )
 
     root_command = click.Command("meshagent")
@@ -877,6 +913,9 @@ def test_process_join_passes_supported_builder_kwargs(monkeypatch) -> None:
     assert build_calls[0]["require_mcp"] is False
     assert build_calls[0]["api_key"] == "test-token"
     assert build_calls[0]["thread_storage"] == "dataset"
+    assert build_calls[0]["context_management"] == "none"
+    assert build_calls[0]["compaction_threshold"] == 90000
+    assert build_calls[0]["max_output_tokens"] == 2048
 
 
 def test_process_join_requires_at_least_one_channel(monkeypatch) -> None:

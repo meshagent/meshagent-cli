@@ -206,7 +206,13 @@ async def test_deploy_image_missing_room_prints_create_room_guidance(
     ]
 
 
-def test_replace_meshagent_image_vars_defaults_to_pkg_dev() -> None:
+def test_replace_meshagent_image_vars_defaults_to_pkg_dev(monkeypatch) -> None:
+    monkeypatch.setattr(
+        image,
+        "resolve_meshagent_image_prefix",
+        lambda: image._DEFAULT_MESHAGENT_IMAGE_PREFIX,
+    )
+
     assert image.replace_meshagent_image_vars("meshagent/python-sdk-slim:default") == (
         "us-central1-docker.pkg.dev/meshagent-public/images/"
         f"python-sdk-slim:{image.__version__}"
@@ -223,7 +229,28 @@ def test_replace_meshagent_image_vars_allows_prefix_override(
     )
 
 
-def test_replace_meshagent_image_vars_keeps_shell_images_on_estargz() -> None:
+def test_replace_meshagent_image_vars_uses_dev_prefix(monkeypatch) -> None:
+    monkeypatch.setattr(
+        image,
+        "resolve_meshagent_image_prefix",
+        lambda: "us-central1-docker.pkg.dev/meshagent-life/meshagent-public/",
+    )
+
+    assert image.replace_meshagent_image_vars("meshagent/node-sdk:default") == (
+        "us-central1-docker.pkg.dev/meshagent-life/meshagent-public/"
+        f"node-sdk:{image.__version__}"
+    )
+
+
+def test_replace_meshagent_image_vars_keeps_shell_images_on_estargz(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        image,
+        "resolve_meshagent_image_prefix",
+        lambda: image._DEFAULT_MESHAGENT_IMAGE_PREFIX,
+    )
+
     assert image.replace_meshagent_image_vars("meshagent/shell-codex:default") == (
         "us-central1-docker.pkg.dev/meshagent-public/images/"
         f"shell-codex:{image.__version__}-esgz"
