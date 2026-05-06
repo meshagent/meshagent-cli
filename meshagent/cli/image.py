@@ -81,6 +81,10 @@ from meshagent.cli.oci_archive import (
     DockerIgnore,
     write_build_context_archive,
 )
+from meshagent.cli.meshagent_images import (
+    PROD_MESHAGENT_IMAGE_PREFIX,
+    meshagent_image_prefix as resolve_meshagent_image_prefix,
+)
 from meshagent.cli.version import __version__
 
 
@@ -97,7 +101,7 @@ _TOKEN_ENVIRONMENT_NAMES = (
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
 )
-_DEFAULT_MESHAGENT_IMAGE_PREFIX = "us-central1-docker.pkg.dev/meshagent-public/images/"
+_DEFAULT_MESHAGENT_IMAGE_PREFIX = PROD_MESHAGENT_IMAGE_PREFIX
 _IMAGE_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
 _REPOSITORY_COMPONENT_RE = re.compile(r"^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$")
 _REGISTRY_COMPONENT_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
@@ -152,9 +156,7 @@ def _meshagent_default_image_tag(*, image: str) -> str:
 
 def replace_meshagent_image_vars(image: str) -> str:
     resolved_image = image
-    meshagent_image_prefix = os.environ.get("MESHAGENT_IMAGE_PREFIX")
-    if meshagent_image_prefix is None or meshagent_image_prefix.strip() == "":
-        meshagent_image_prefix = _DEFAULT_MESHAGENT_IMAGE_PREFIX
+    meshagent_image_prefix = resolve_meshagent_image_prefix()
     if resolved_image.startswith("meshagent/"):
         meshagent_default_tag: str | None = None
         if resolved_image.endswith(":default"):

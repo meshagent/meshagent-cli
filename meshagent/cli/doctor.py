@@ -14,6 +14,7 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
+from meshagent.cli.meshagent_images import meshagent_image_prefix
 from meshagent.cli.version import __version__ as MESHAGENT_CLIENT_VERSION
 
 
@@ -28,6 +29,7 @@ SOURCE_SUFFIXES = {
     ".ts",
     ".tsx",
 }
+MESHAGENT_RUNTIME_LABEL = "meshagent.runtime"
 PYTHON_REQUIRED_VERSION = "3.13"
 PYTHON_REQUIRED_MAJOR_MINOR = (3, 13)
 PYTHON_SDK_PACKAGE_NAME = "meshagent-api"
@@ -59,6 +61,8 @@ class ProjectDiagnosis:
     sdk: str | None
     has_deployment_artifact: bool
     deployment_artifacts: tuple[str, ...]
+    has_dockerfile: bool
+    dockerfile_is_meshagent_optimized: bool
     has_health_route: bool
     has_http_port_hint: bool
     is_headless_backend_agent: bool
@@ -72,6 +76,13 @@ class ProjectDiagnosis:
     liveness_path: str
     start_command: str
     dockerfile: str
+
+
+@dataclass(frozen=True)
+class DoctorAutoFix:
+    description: str
+    path: Path
+    contents: str
 
 
 def _iter_files(root: Path) -> Iterable[Path]:
@@ -715,10 +726,79 @@ def _deployment_artifacts(root: Path) -> tuple[str, ...]:
     return tuple(artifacts)
 
 
+def _dockerfile_paths(root: Path) -> tuple[Path, ...]:
+    return tuple(
+        root / name
+        for name in ("Dockerfile", "Containerfile")
+        if (root / name).is_file()
+    )
+
+
+def _dockerfile_text(root: Path) -> str:
+    return "\n".join(_read_text(path) for path in _dockerfile_paths(root))
+
+
+def _dockerfile_from_image(args: str) -> str | None:
+    for token in args.split():
+        if token.startswith("--"):
+            continue
+        return token
+    return None
+
+
+def _dockerfile_final_stage_lines(dockerfile_text: str) -> tuple[str, ...]:
+    final_stage_lines: list[str] = []
+    for raw_line in dockerfile_text.splitlines():
+        line = raw_line.strip()
+        if line == "" or line.startswith("#"):
+            continue
+        instruction, _, args = line.partition(" ")
+        if instruction.lower() == "from":
+            final_stage_lines = [line]
+            continue
+        if final_stage_lines:
+            final_stage_lines.append(line)
+    return tuple(final_stage_lines)
+
+
+def _dockerfile_final_stage_base(dockerfile_text: str) -> str | None:
+    final_stage_lines = _dockerfile_final_stage_lines(dockerfile_text)
+    if len(final_stage_lines) == 0:
+        return None
+    instruction, _, args = final_stage_lines[0].partition(" ")
+    if instruction.lower() != "from":
+        return None
+    return _dockerfile_from_image(args)
+
+
+def _dockerfile_final_stage_runtime_label(dockerfile_text: str) -> str | None:
+    for line in _dockerfile_final_stage_lines(dockerfile_text):
+        instruction, _, args = line.partition(" ")
+        if instruction.lower() != "label":
+            continue
+        match = re.search(
+            rf"(?:^|\s){re.escape(MESHAGENT_RUNTIME_LABEL)}\s*=\s*\"?([^\"\s]+)",
+            args,
+            flags=re.IGNORECASE,
+        )
+        if match is not None:
+            return match.group(1).strip().lower()
+    return None
+
+
+def _dockerfile_is_meshagent_optimized(root: Path) -> bool:
+    dockerfile_text = _dockerfile_text(root)
+    final_stage_base = _dockerfile_final_stage_base(dockerfile_text)
+    runtime_label = _dockerfile_final_stage_runtime_label(dockerfile_text)
+    return (
+        final_stage_base is not None
+        and final_stage_base.lower() == "scratch"
+        and runtime_label in {"node", "python"}
+    )
+
+
 def _has_http_port_hint(root: Path, source_files: list[Path]) -> bool:
-    dockerfile_text = "\n".join(
-        _read_text(root / name) for name in ("Dockerfile", "Containerfile")
-    ).lower()
+    dockerfile_text = _dockerfile_text(root).lower()
     if re.search(r"(?m)^\s*expose\s+\d+", dockerfile_text) is not None:
         return True
 
@@ -814,31 +894,51 @@ def _dockerfile_for(
     *,
     headless_backend_agent: bool = False,
 ) -> str:
+    image_prefix = meshagent_image_prefix()
     if headless_backend_agent:
         snippets = {
-            "Python": """
-                FROM python:3.13-slim
+            "Python": f"""
+                ARG MESHAGENT_IMAGE_PREFIX={image_prefix}
+                FROM ${{MESHAGENT_IMAGE_PREFIX}}python-sdk-slim:{MESHAGENT_CLIENT_VERSION} AS build
                 WORKDIR /app
-                COPY pyproject.toml server.py ./
-                RUN pip install --no-cache-dir .
-                CMD ["python", "server.py"]
+                COPY . .
+                RUN python -m pip install --no-cache-dir --target /out .
+
+                FROM scratch
+                LABEL meshagent.runtime=python
+                WORKDIR /app
+                COPY --from=build /out /app
+                CMD ["-m", "server"]
             """,
-            "TypeScript": """
-                FROM node:22-alpine
+            "TypeScript": f"""
+                ARG MESHAGENT_IMAGE_PREFIX={image_prefix}
+                FROM ${{MESHAGENT_IMAGE_PREFIX}}node-sdk:{MESHAGENT_CLIENT_VERSION} AS build
                 WORKDIR /app
                 COPY package*.json tsconfig.json ./
                 RUN npm install
-                COPY . .
-                RUN npm run build && npm prune --omit=dev
-                CMD ["npm", "start"]
+                COPY src ./src
+                RUN npm run build
+
+                FROM scratch
+                LABEL meshagent.runtime=node
+                WORKDIR /app
+                COPY --from=build /app/dist/index.js /app/index.js
+                CMD ["index.js"]
             """,
-            "JavaScript": """
-                FROM node:22-alpine
+            "JavaScript": f"""
+                ARG MESHAGENT_IMAGE_PREFIX={image_prefix}
+                FROM ${{MESHAGENT_IMAGE_PREFIX}}node-sdk:{MESHAGENT_CLIENT_VERSION} AS build
                 WORKDIR /app
                 COPY package*.json ./
-                RUN npm install --omit=dev
-                COPY . .
-                CMD ["npm", "start"]
+                RUN npm install
+                COPY server.js ./
+                RUN npm run build
+
+                FROM scratch
+                LABEL meshagent.runtime=node
+                WORKDIR /app
+                COPY --from=build /app/dist/index.js /app/index.js
+                CMD ["index.js"]
             """,
             ".NET": """
                 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
@@ -866,32 +966,51 @@ def _dockerfile_for(
         return textwrap.dedent(snippets.get(language, "")).strip()
 
     snippets = {
-        "Python": """
-            FROM python:3.13-slim
+        "Python": f"""
+            ARG MESHAGENT_IMAGE_PREFIX={image_prefix}
+            FROM ${{MESHAGENT_IMAGE_PREFIX}}python-sdk-slim:{MESHAGENT_CLIENT_VERSION} AS build
             WORKDIR /app
-            COPY pyproject.toml server.py ./
-            RUN pip install --no-cache-dir .
+            COPY . .
+            RUN python -m pip install --no-cache-dir --target /out .
+
+            FROM scratch
+            LABEL meshagent.runtime=python
+            WORKDIR /app
+            COPY --from=build /out /app
             EXPOSE 8000
-            CMD ["python", "server.py"]
+            CMD ["-m", "server"]
         """,
-        "TypeScript": """
-            FROM node:22-alpine
+        "TypeScript": f"""
+            ARG MESHAGENT_IMAGE_PREFIX={image_prefix}
+            FROM ${{MESHAGENT_IMAGE_PREFIX}}node-sdk:{MESHAGENT_CLIENT_VERSION} AS build
             WORKDIR /app
             COPY package*.json tsconfig.json ./
             RUN npm install
-            COPY . .
-            RUN npm run build && npm prune --omit=dev
+            COPY src ./src
+            RUN npm run build
+
+            FROM scratch
+            LABEL meshagent.runtime=node
+            WORKDIR /app
+            COPY --from=build /app/dist/index.js /app/index.js
             EXPOSE 3000
-            CMD ["npm", "start"]
+            CMD ["index.js"]
         """,
-        "JavaScript": """
-            FROM node:22-alpine
+        "JavaScript": f"""
+            ARG MESHAGENT_IMAGE_PREFIX={image_prefix}
+            FROM ${{MESHAGENT_IMAGE_PREFIX}}node-sdk:{MESHAGENT_CLIENT_VERSION} AS build
             WORKDIR /app
             COPY package*.json ./
-            RUN npm install --omit=dev
-            COPY . .
+            RUN npm install
+            COPY server.js ./
+            RUN npm run build
+
+            FROM scratch
+            LABEL meshagent.runtime=node
+            WORKDIR /app
+            COPY --from=build /app/dist/index.js /app/index.js
             EXPOSE 3000
-            CMD ["npm", "start"]
+            CMD ["index.js"]
         """,
         ".NET": """
             FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
@@ -1061,6 +1180,10 @@ def diagnose_project(root: Path) -> ProjectDiagnosis:
         sdk=sdk,
         has_deployment_artifact=bool(artifacts),
         deployment_artifacts=artifacts,
+        has_dockerfile=bool(_dockerfile_paths(resolved_root)),
+        dockerfile_is_meshagent_optimized=_dockerfile_is_meshagent_optimized(
+            resolved_root
+        ),
         has_health_route=has_health_route,
         has_http_port_hint=has_http_port_hint,
         is_headless_backend_agent=is_headless_backend_agent,
@@ -1107,6 +1230,159 @@ def _needs_roomclient_runtime(diagnosis: ProjectDiagnosis) -> bool:
     return diagnosis.sdk is not None or (
         diagnosis.language == "Python" and diagnosis.python_source_uses_sdk
     )
+
+
+def _supports_meshagent_optimized_dockerfile(diagnosis: ProjectDiagnosis) -> bool:
+    return diagnosis.language == "Python" or _is_javascript_project(diagnosis.language)
+
+
+def _relative_source_file_names(diagnosis: ProjectDiagnosis) -> tuple[str, ...]:
+    return tuple(
+        str(path.relative_to(diagnosis.root))
+        for path in _source_files(diagnosis.root)
+    )
+
+
+def _is_single_file_python_server(diagnosis: ProjectDiagnosis) -> bool:
+    return _relative_source_file_names(diagnosis) == ("server.py",)
+
+
+def _has_package_dependency(diagnosis: ProjectDiagnosis, package_name: str) -> bool:
+    return package_name in _package_json_dependencies(diagnosis.root)
+
+
+def _can_autofix_python_project_metadata(diagnosis: ProjectDiagnosis) -> bool:
+    return diagnosis.language == "Python" and _is_single_file_python_server(diagnosis)
+
+
+def _can_autofix_node_dockerfile(diagnosis: ProjectDiagnosis) -> bool:
+    scripts = dict(diagnosis.package_scripts)
+    if diagnosis.language == "JavaScript":
+        return (
+            _relative_source_file_names(diagnosis) == ("server.js",)
+            and scripts.get("build") == "ncc build server.js -o dist"
+            and scripts.get("start") == "node dist/index.js"
+            and _has_package_dependency(diagnosis, "@vercel/ncc")
+        )
+    if diagnosis.language == "TypeScript":
+        return (
+            _relative_source_file_names(diagnosis) == ("src/server.ts",)
+            and (diagnosis.root / "tsconfig.json").is_file()
+            and scripts.get("build") == "ncc build src/server.ts -o dist"
+            and scripts.get("start") == "node dist/index.js"
+            and _has_package_dependency(diagnosis, "@vercel/ncc")
+        )
+    return False
+
+
+def _can_autofix_dockerfile(diagnosis: ProjectDiagnosis) -> bool:
+    if diagnosis.dockerfile == "" or diagnosis.has_dockerfile:
+        return False
+    if diagnosis.language == "Python":
+        return _can_autofix_python_project_metadata(diagnosis)
+    if diagnosis.language in {"JavaScript", "TypeScript"}:
+        return _can_autofix_node_dockerfile(diagnosis)
+    return False
+
+
+def _python_requirements_dependency_entries(root: Path) -> tuple[str, ...]:
+    dependencies: list[str] = []
+    for raw_line in _read_text(root / "requirements.txt").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if line == "":
+            continue
+        if line.startswith(("-", "git+", "http://", "https://")):
+            continue
+        dependencies.append(line)
+    return tuple(dependencies)
+
+
+def _python_project_name(root: Path) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "-", root.name.lower()).strip("-")
+    if normalized == "":
+        return "meshagent-project"
+    if not normalized[0].isalpha():
+        return f"meshagent-{normalized}"
+    return normalized
+
+
+def _python_fix_dependencies(diagnosis: ProjectDiagnosis) -> tuple[str, ...]:
+    dependencies: list[str] = []
+    dependencies.extend(
+        dependency
+        for dependency in _python_requirements_dependency_entries(diagnosis.root)
+        if not _python_dependency_entry_matches(dependency, PYTHON_SDK_PACKAGE_NAME)
+    )
+    source_files = list(_source_files(diagnosis.root))
+    if diagnosis.python_source_uses_sdk or diagnosis.sdk == PYTHON_SDK_PACKAGE_NAME:
+        dependencies.append(f"meshagent-api=={MESHAGENT_CLIENT_VERSION}")
+    if _contains_any(source_files, ("aiohttp",)) and not any(
+        _python_dependency_entry_matches(dependency, "aiohttp")
+        for dependency in dependencies
+    ):
+        dependencies.append("aiohttp[speedups]~=3.13.0")
+    return tuple(dict.fromkeys(dependencies))
+
+
+def _python_pyproject_for(diagnosis: ProjectDiagnosis) -> str:
+    dependency_lines = "".join(
+        f'  "{dependency}",\n'
+        for dependency in _python_fix_dependencies(diagnosis)
+    )
+    setuptools_section = ""
+    if (diagnosis.root / "server.py").is_file():
+        setuptools_section = '\n[tool.setuptools]\npy-modules = ["server"]\n'
+    return (
+        "[build-system]\n"
+        'requires = ["setuptools>=61.0", "wheel"]\n'
+        'build-backend = "setuptools.build_meta"\n'
+        "\n"
+        "[project]\n"
+        f'name = "{_python_project_name(diagnosis.root)}"\n'
+        'version = "0.1.0"\n'
+        f'requires-python = ">={PYTHON_REQUIRED_VERSION}"\n'
+        "dependencies = [\n"
+        f"{dependency_lines}"
+        "]\n"
+        f"{setuptools_section}"
+    )
+
+
+def _autofix_plan(diagnosis: ProjectDiagnosis) -> tuple[DoctorAutoFix, ...]:
+    fixes: list[DoctorAutoFix] = []
+    if _can_autofix_dockerfile(diagnosis):
+        fixes.append(
+            DoctorAutoFix(
+                description="Create Dockerfile from MeshAgent doctor recommendation",
+                path=diagnosis.root / "Dockerfile",
+                contents=f"{diagnosis.dockerfile.rstrip()}\n",
+            )
+        )
+    if (
+        diagnosis.language == "Python"
+        and not diagnosis.python_has_pyproject
+        and _can_autofix_python_project_metadata(diagnosis)
+    ):
+        fixes.append(
+            DoctorAutoFix(
+                description="Create pyproject.toml with Python runtime metadata",
+                path=diagnosis.root / "pyproject.toml",
+                contents=_python_pyproject_for(diagnosis),
+            )
+        )
+    return tuple(fixes)
+
+
+def _apply_auto_fixes(diagnosis: ProjectDiagnosis) -> tuple[DoctorAutoFix, ...]:
+    fixes = _autofix_plan(diagnosis)
+    applied: list[DoctorAutoFix] = []
+    for fix in fixes:
+        if fix.path.exists():
+            continue
+        fix.path.parent.mkdir(parents=True, exist_ok=True)
+        fix.path.write_text(fix.contents, encoding="utf-8")
+        applied.append(fix)
+    return tuple(applied)
 
 
 def _sdk_checks(diagnosis: ProjectDiagnosis) -> list[str]:
@@ -1191,8 +1467,9 @@ def _deployment_checks(diagnosis: ProjectDiagnosis) -> list[str]:
     if diagnosis.language == "Python":
         checks.append(
             "Python runtime rule: MeshAgent Python deployments must target "
-            "Python 3.13; use a "
-            "`python:3.13-slim` base image."
+            "Python 3.13; use the MeshAgent-optimized Dockerfile shape with "
+            "`python-sdk-slim` in the build stage and `LABEL meshagent.runtime=python` "
+            "in the scratch final stage."
         )
         if not diagnosis.python_has_pyproject:
             checks.append(
@@ -1335,9 +1612,30 @@ def _deployment_checks(diagnosis: ProjectDiagnosis) -> list[str]:
             checks.append(
                 "Node app liveness check: after deploy, verify the public root "
                 "URL returns HTTP 200 with "
-                '`curl -fsS "$PUBLIC_URL/"`; the JavaScript-family evals require '
-                "the app URL itself to be reachable, not just `/health`."
+                '`curl -fsS "$PUBLIC_URL/"`; the app URL itself should be '
+                "reachable, not just `/health`."
             )
+        if (
+            diagnosis.javascript_flavor in {"Node.js", "Node.js/TypeScript"}
+            and not diagnosis.has_dockerfile
+            and not _can_autofix_node_dockerfile(diagnosis)
+        ):
+            if diagnosis.language == "TypeScript":
+                checks.append(
+                    "Node ncc optimization check: to use the MeshAgent-optimized "
+                    "Dockerfile snippet, add `@vercel/ncc`, set "
+                    '`"build": "ncc build src/server.ts -o dist"`, and set '
+                    '`"start": "node dist/index.js"`; otherwise adapt the '
+                    "Dockerfile to the project's actual build output."
+                )
+            else:
+                checks.append(
+                    "Node ncc optimization check: to use the MeshAgent-optimized "
+                    "Dockerfile snippet, add `@vercel/ncc`, set "
+                    '`"build": "ncc build server.js -o dist"`, and set '
+                    '`"start": "node dist/index.js"`; otherwise adapt the '
+                    "Dockerfile to the project's actual build output."
+                )
     if _needs_roomclient_runtime(diagnosis):
         checks.extend(
             [
@@ -1416,7 +1714,16 @@ def _echo_finding(severity: str, message: str) -> None:
     _DOCTOR_CONSOLE.print(f"  {_format_finding_label(severity)} {escape(message)}")
 
 
+def _display_path(root: Path, path: Path) -> str:
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
+
+
 def _print_report(diagnosis: ProjectDiagnosis) -> None:
+    auto_fixes = _autofix_plan(diagnosis)
+
     click.echo("MeshAgent doctor")
     click.echo(f"Project: {diagnosis.root}")
     click.echo(f"Detected project: {diagnosis.language}")
@@ -1435,7 +1742,9 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
         click.echo("Recommended next steps:")
         click.echo("1. Create a minimal deployable Python backend agent project:")
         click.echo("   meshagent init")
-        click.echo("2. Deployment checks:")
+        click.echo("2. Re-run doctor and address remaining findings:")
+        click.echo("   meshagent doctor")
+        click.echo("3. Deployment checks:")
         click.echo(
             "   - Project detection check: no recognizable application code or "
             "deployment metadata was found in this directory. Run `meshagent init` "
@@ -1452,6 +1761,22 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
         )
     else:
         _echo_finding("error", "Deployment artifact: add Dockerfile or meshagent.yaml")
+    if diagnosis.has_dockerfile and _supports_meshagent_optimized_dockerfile(
+        diagnosis
+    ):
+        if diagnosis.dockerfile_is_meshagent_optimized:
+            _echo_finding(
+                "ok",
+                "MeshAgent-optimized Dockerfile uses a scratch final stage "
+                "with a meshagent.runtime label",
+            )
+        else:
+            _echo_finding(
+                "warning",
+                "Dockerfile is not MeshAgent-optimized; use a final FROM scratch "
+                "stage with LABEL meshagent.runtime=python or node so deploy can "
+                "reuse cached runtime images",
+            )
     if diagnosis.is_headless_backend_agent:
         _echo_finding(
             "ok",
@@ -1604,14 +1929,22 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
     click.echo("")
 
     click.echo("Recommended next steps:")
+    next_step_number = 1
+    if auto_fixes:
+        click.echo(f"{next_step_number}. Auto-fix missing files:")
+        click.echo("   meshagent doctor --fix")
+        for fix in auto_fixes:
+            click.echo(
+                "   - "
+                f"{fix.description}: {_display_path(diagnosis.root, fix.path)}"
+            )
+        next_step_number += 1
     if not diagnosis.has_deployment_artifact and diagnosis.dockerfile != "":
-        click.echo("1. Add a Dockerfile like:")
+        click.echo(f"{next_step_number}. Add a Dockerfile like:")
         click.echo("")
         click.echo(textwrap.indent(diagnosis.dockerfile, "   "))
         click.echo("")
-        next_step_number = 2
-    else:
-        next_step_number = 1
+        next_step_number += 1
     sdk_checks = _sdk_checks(diagnosis)
     if sdk_checks:
         click.echo(f"{next_step_number}. SDK checks:")
@@ -1624,19 +1957,53 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
         for item in checks:
             click.echo(f"   - {item}")
         next_step_number += 1
+    click.echo(f"{next_step_number}. Re-run doctor after changes:")
+    click.echo("   meshagent doctor")
+    click.echo("   Address remaining findings before deploying.")
+    next_step_number += 1
     click.echo(f"{next_step_number}. Deploy from this directory:")
     click.echo(f"   {_deploy_command(diagnosis)}")
 
 
+def _print_fix_report(*, diagnosis: ProjectDiagnosis) -> None:
+    click.echo("MeshAgent doctor --fix")
+    click.echo(f"Project: {diagnosis.root}")
+    click.echo("")
+    fixes = _apply_auto_fixes(diagnosis)
+    if not fixes:
+        click.echo("No auto-fixable missing files were found.")
+        click.echo("")
+        click.echo("Next step:")
+        click.echo("  Run `meshagent doctor` and address remaining findings.")
+        return
+
+    click.echo("Applied fixes:")
+    for fix in fixes:
+        click.echo(f"  - Wrote {_display_path(diagnosis.root, fix.path)}")
+    click.echo("")
+    click.echo("Next step:")
+    click.echo("  Run `meshagent doctor` and address remaining findings.")
+
+
 @click.command(
     "doctor", help="Inspect the current directory for MeshAgent deployment gaps."
+)
+@click.option(
+    "--fix",
+    is_flag=True,
+    help="Create obvious missing project files such as Dockerfile or pyproject.toml.",
 )
 @click.argument(
     "path",
     required=False,
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
 )
-def doctor_command(path: Path | None = None) -> None:
+def doctor_command(path: Path | None = None, fix: bool = False) -> None:
     """Inspect a project directory and print deploy readiness checks."""
 
-    _print_report(diagnose_project(path or Path.cwd()))
+    diagnosis = diagnose_project(path or Path.cwd())
+    if fix:
+        _print_fix_report(diagnosis=diagnosis)
+        return
+
+    _print_report(diagnosis)

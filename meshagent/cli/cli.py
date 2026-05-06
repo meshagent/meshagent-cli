@@ -29,9 +29,15 @@ def _configure_runtime() -> None:
     if _runtime_configured:
         return
 
-    from meshagent.otel import otel_config
+    try:
+        from meshagent.otel import otel_config
+    except ModuleNotFoundError as exc:
+        if exc.name != "meshagent.otel":
+            raise
+        otel_config = None
 
-    otel_config(service_name="meshagent-cli")
+    if otel_config is not None:
+        otel_config(service_name="meshagent-cli")
 
     # Turn down noisy dependencies after OTEL installs the root handler.
     logging.getLogger("openai").setLevel(logging.ERROR)
