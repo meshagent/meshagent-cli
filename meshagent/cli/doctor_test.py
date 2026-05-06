@@ -111,8 +111,7 @@ def test_doctor_reports_python_source_sdk_import_without_project_dependency(
 
 def test_doctor_fix_writes_missing_python_dockerfile_and_pyproject(tmp_path) -> None:
     (tmp_path / "requirements.txt").write_text(
-        "requests==2.32.3\n"
-        "meshagent-api==0.5.18\n",
+        "requests==2.32.3\nmeshagent-api==0.5.18\n",
         encoding="utf-8",
     )
     (tmp_path / "server.py").write_text(
@@ -146,13 +145,11 @@ def test_doctor_fix_writes_missing_python_dockerfile_and_pyproject(tmp_path) -> 
 
 def test_doctor_fix_skips_multi_file_python_project(tmp_path) -> None:
     (tmp_path / "server.py").write_text(
-        "from app import create_app\n"
-        "app = create_app()\n",
+        "from app import create_app\napp = create_app()\n",
         encoding="utf-8",
     )
     (tmp_path / "app.py").write_text(
-        "def create_app():\n"
-        "    return object()\n",
+        "def create_app():\n    return object()\n",
         encoding="utf-8",
     )
 
@@ -236,7 +233,7 @@ def test_doctor_fix_does_not_overwrite_existing_files(tmp_path) -> None:
         encoding="utf-8",
     )
     (tmp_path / "pyproject.toml").write_text(
-        "[project]\nname = \"existing\"\n",
+        '[project]\nname = "existing"\n',
         encoding="utf-8",
     )
     (tmp_path / "server.py").write_text(
@@ -252,7 +249,7 @@ def test_doctor_fix_does_not_overwrite_existing_files(tmp_path) -> None:
         "FROM python:3.13-slim\n"
     )
     assert (tmp_path / "pyproject.toml").read_text(encoding="utf-8") == (
-        "[project]\nname = \"existing\"\n"
+        '[project]\nname = "existing"\n'
     )
 
 
@@ -765,15 +762,11 @@ def test_doctor_reports_existing_dockerfile(tmp_path) -> None:
 
 def test_doctor_warns_for_non_optimized_python_dockerfile(tmp_path) -> None:
     (tmp_path / "Dockerfile").write_text(
-        "FROM python:3.13-slim\n"
-        "WORKDIR /app\n"
-        "COPY . .\n"
-        'CMD ["python", "server.py"]\n',
+        'FROM python:3.13-slim\nWORKDIR /app\nCOPY . .\nCMD ["python", "server.py"]\n',
         encoding="utf-8",
     )
     (tmp_path / "pyproject.toml").write_text(
-        "[project]\n"
-        'requires-python = ">=3.13"\n',
+        '[project]\nrequires-python = ">=3.13"\n',
         encoding="utf-8",
     )
     (tmp_path / "server.py").write_text(

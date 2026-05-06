@@ -1411,9 +1411,7 @@ def init_command(
             click.echo(f"New project: {root}")
         else:
             click.echo("")
-            click.echo(
-                "Existing application code or deployment metadata was detected."
-            )
+            click.echo("Existing application code or deployment metadata was detected.")
             click.echo("No files were written.")
             click.echo("")
             click.echo("Recommended next step for existing projects:")

@@ -1238,8 +1238,7 @@ def _supports_meshagent_optimized_dockerfile(diagnosis: ProjectDiagnosis) -> boo
 
 def _relative_source_file_names(diagnosis: ProjectDiagnosis) -> tuple[str, ...]:
     return tuple(
-        str(path.relative_to(diagnosis.root))
-        for path in _source_files(diagnosis.root)
+        str(path.relative_to(diagnosis.root)) for path in _source_files(diagnosis.root)
     )
 
 
@@ -1326,8 +1325,7 @@ def _python_fix_dependencies(diagnosis: ProjectDiagnosis) -> tuple[str, ...]:
 
 def _python_pyproject_for(diagnosis: ProjectDiagnosis) -> str:
     dependency_lines = "".join(
-        f'  "{dependency}",\n'
-        for dependency in _python_fix_dependencies(diagnosis)
+        f'  "{dependency}",\n' for dependency in _python_fix_dependencies(diagnosis)
     )
     setuptools_section = ""
     if (diagnosis.root / "server.py").is_file():
@@ -1761,9 +1759,7 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
         )
     else:
         _echo_finding("error", "Deployment artifact: add Dockerfile or meshagent.yaml")
-    if diagnosis.has_dockerfile and _supports_meshagent_optimized_dockerfile(
-        diagnosis
-    ):
+    if diagnosis.has_dockerfile and _supports_meshagent_optimized_dockerfile(diagnosis):
         if diagnosis.dockerfile_is_meshagent_optimized:
             _echo_finding(
                 "ok",
@@ -1935,8 +1931,7 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
         click.echo("   meshagent doctor --fix")
         for fix in auto_fixes:
             click.echo(
-                "   - "
-                f"{fix.description}: {_display_path(diagnosis.root, fix.path)}"
+                f"   - {fix.description}: {_display_path(diagnosis.root, fix.path)}"
             )
         next_step_number += 1
     if not diagnosis.has_deployment_artifact and diagnosis.dockerfile != "":

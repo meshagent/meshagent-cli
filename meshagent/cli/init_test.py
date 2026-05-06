@@ -583,8 +583,7 @@ def test_init_tui_focus_screen_asks_for_webserver_or_backend_agent(
     assert captured_text["message"] == "Choose what you want to build for Python."
     assert "Web server creates an HTTP app" in captured_text["help_text"]
     assert (
-        "Backend agent creates a RoomClient SDK service"
-        in captured_text["help_text"]
+        "Backend agent creates a RoomClient SDK service" in captured_text["help_text"]
     )
     assert [str(option.prompt) for option in captured_options] == [
         "Web server - HTTP app with a health endpoint and public route.",

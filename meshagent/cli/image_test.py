@@ -242,7 +242,9 @@ def test_replace_meshagent_image_vars_uses_dev_prefix(monkeypatch) -> None:
     )
 
 
-def test_replace_meshagent_image_vars_keeps_shell_images_on_estargz(monkeypatch) -> None:
+def test_replace_meshagent_image_vars_keeps_shell_images_on_estargz(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(
         image,
         "resolve_meshagent_image_prefix",
