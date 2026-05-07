@@ -101,6 +101,7 @@ from meshagent.tools.dataset import make_dataset_toolkit
 from meshagent.agents.adapter import LLMAdapter, MessageStreamLLMAdapter
 from meshagent.agents.messages import (
     AGENT_EVENT_FILE_CONTENT_DELTA,
+    AGENT_EVENT_THREAD_STARTED,
     AGENT_EVENT_THREAD_STATUS,
     AGENT_EVENT_TEXT_CONTENT_DELTA,
     AGENT_EVENT_TURN_ENDED,
@@ -119,6 +120,8 @@ from meshagent.agents.messages import (
     AgentTextContentDelta,
     CloseThread,
     OpenThread,
+    StartThread,
+    ThreadStarted,
     TurnStart,
 )
 from meshagent.agents.process import ContentScheme, Message
@@ -160,6 +163,15 @@ def _thread_status_text(status: object) -> str | None:
     if normalized == "":
         return None
     return normalized
+
+
+def _consume_task_exception(task: asyncio.Task[Any]) -> None:
+    if task.cancelled():
+        return
+    try:
+        task.exception()
+    except asyncio.CancelledError:
+        return
 
 
 def _agent_input_text_from_payload(payload: dict[str, Any]) -> str:
@@ -590,6 +602,10 @@ class _ProcessUseChatChannelClient:
         return self._room
 
     @property
+    def has_thread_path(self) -> bool:
+        return self._thread_path is not None
+
+    @property
     def thread_path(self) -> str:
         if self._thread_path is None:
             raise RoomException("process use chat channel client not started")
@@ -633,10 +649,16 @@ class _ProcessUseChatChannelClient:
             if self._thread_path is None:
                 if self._participant is None:
                     raise RoomException("process use chat channel client not started")
-                self._thread_path = _participant_chat_thread_path(
-                    participant=self._participant,
-                    participant_name=self._participant_name,
-                )
+                if (
+                    _participant_chat_threading_mode(participant=self._participant)
+                    == "default-new"
+                ):
+                    return
+                else:
+                    self._thread_path = _participant_chat_thread_path(
+                        participant=self._participant,
+                        participant_name=self._participant_name,
+                    )
             await self.send(
                 OpenThread(
                     type=AGENT_MESSAGE_THREAD_OPEN,
@@ -652,7 +674,7 @@ class _ProcessUseChatChannelClient:
 
     async def stop(self) -> None:
         try:
-            if self._participant is not None:
+            if self._participant is not None and self._thread_path is not None:
                 await self.send(
                     CloseThread(
                         type=AGENT_MESSAGE_THREAD_CLOSE,
@@ -690,11 +712,30 @@ class _ProcessUseChatChannelClient:
         raw_payload = raw_message.get("payload")
         if not isinstance(raw_payload, dict):
             return
+        payload_type = raw_payload.get("type")
+        if payload_type == AGENT_EVENT_THREAD_STARTED:
+            if not self._is_local_source_message(raw_payload.get("source_message_id")):
+                return
+            try:
+                thread_started = ThreadStarted.model_validate(raw_payload)
+            except Exception:
+                return
+            self._thread_path = thread_started.thread_id
+            self._events.put_nowait(raw_payload)
+            task = asyncio.create_task(
+                self.send(
+                    OpenThread(
+                        type=AGENT_MESSAGE_THREAD_OPEN,
+                        thread_id=thread_started.thread_id,
+                    )
+                )
+            )
+            task.add_done_callback(_consume_task_exception)
+            return
         if self._thread_path is None:
             return
         if raw_payload.get("thread_id") != self._thread_path:
             return
-        payload_type = raw_payload.get("type")
         if payload_type == AGENT_EVENT_THREAD_STATUS:
             self._thread_status_text = _thread_status_text(raw_payload.get("status"))
         elif payload_type == AGENT_EVENT_TURN_START_ACCEPTED:
@@ -897,6 +938,24 @@ class _ProcessUseChatChannelClient:
             attachment=None,
         )
 
+    async def start_thread(self, payload) -> None:
+        if not isinstance(payload, StartThread):
+            raise RoomException("start_thread requires a StartThread message")
+        await self.send(payload)
+        try:
+            async with asyncio.timeout(self._timeout):
+                while True:
+                    event = await self.receive()
+                    if event.get("type") != AGENT_EVENT_THREAD_STARTED:
+                        continue
+                    thread_started = ThreadStarted.model_validate(event)
+                    if thread_started.source_message_id != payload.message_id:
+                        continue
+                    self._thread_path = thread_started.thread_id
+                    return
+        except asyncio.TimeoutError as exc:
+            raise RoomException("timed out waiting for thread to start") from exc
+
     async def receive(self) -> dict[str, Any]:
         return await self._events.get()
 
@@ -945,6 +1004,9 @@ class _ChatChannelUseSession:
 
     async def start(self) -> None:
         if self._started:
+            return
+        if not self._chat_client.has_thread_path:
+            self._started = True
             return
         for message in await _load_thread_agent_messages(
             room=self._chat_client.room,
@@ -1452,6 +1514,15 @@ def _default_chat_thread_path_for_agent(agent_name: str | None) -> str | None:
     if normalized_agent_name is None:
         return None
     return f".threads/{normalized_agent_name}/main.thread"
+
+
+def _participant_chat_threading_mode(
+    *,
+    participant: RemoteParticipant,
+) -> str | None:
+    return _normalized_annotation_string(
+        participant.get_attribute("meshagent.chatbot.threading")
+    )
 
 
 def _participant_chat_thread_path(

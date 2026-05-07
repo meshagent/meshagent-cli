@@ -164,6 +164,7 @@ async def test_ask_session_reuses_process_for_multiple_prompts() -> None:
 @pytest.mark.asyncio
 async def test_agent_message_session_orders_inputs_by_accepted_events() -> None:
     class _FakeChannelClient:
+        has_thread_path = True
         thread_path = "/threads/test.thread"
         thread_status_text = None
         queued_message_labels: tuple[str, ...] = ()
@@ -215,6 +216,9 @@ async def test_agent_message_session_orders_inputs_by_accepted_events() -> None:
                 }
             )
 
+        async def start_thread(self, payload) -> None:
+            raise AssertionError("start_thread should not be called")
+
         async def receive(self) -> dict[str, object]:
             return await self.events.get()
 
@@ -242,12 +246,16 @@ def test_agent_message_session_labels_loaded_local_participant_messages_as_you()
     None
 ):
     class _FakeChannelClient:
+        has_thread_path = True
         thread_path = "/threads/test.thread"
         thread_status_text = None
         queued_message_labels: tuple[str, ...] = ()
 
         async def send(self, payload) -> None:
             del payload
+
+        async def start_thread(self, payload) -> None:
+            raise AssertionError("start_thread should not be called")
 
         async def receive(self) -> dict[str, object]:
             raise AssertionError("receive should not be called")
@@ -265,22 +273,22 @@ def test_agent_message_session_labels_loaded_local_participant_messages_as_you()
     )
 
     session.add_agent_message(
-        {
-            "type": ask_module.AGENT_MESSAGE_TURN_START,
-            "thread_id": "/threads/test.thread",
-            "message_id": "local-message",
-            "sender_name": "local-user",
-            "content": [{"type": "text", "text": "local prompt"}],
-        }
+        ask_module.TurnStart(
+            type=ask_module.AGENT_MESSAGE_TURN_START,
+            thread_id="/threads/test.thread",
+            message_id="local-message",
+            sender_name="local-user",
+            content=[ask_module.AgentTextContent(type="text", text="local prompt")],
+        )
     )
     session.add_agent_message(
-        {
-            "type": ask_module.AGENT_MESSAGE_TURN_START,
-            "thread_id": "/threads/test.thread",
-            "message_id": "remote-message",
-            "sender_name": "remote-user",
-            "content": [{"type": "text", "text": "remote prompt"}],
-        }
+        ask_module.TurnStart(
+            type=ask_module.AGENT_MESSAGE_TURN_START,
+            thread_id="/threads/test.thread",
+            message_id="remote-message",
+            sender_name="remote-user",
+            content=[ask_module.AgentTextContent(type="text", text="remote prompt")],
+        )
     )
 
     assert [(message.role, message.text) for message in session.messages] == [

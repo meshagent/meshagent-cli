@@ -8,6 +8,7 @@ import pytest
 
 from meshagent.agents.context import AgentSessionContext
 from meshagent.agents.messages import (
+    AGENT_EVENT_THREAD_STARTED,
     AGENT_EVENT_THREAD_STATUS,
     AGENT_EVENT_TEXT_CONTENT_DELTA,
     AGENT_EVENT_TURN_ENDED,
@@ -15,6 +16,7 @@ from meshagent.agents.messages import (
     AGENT_EVENT_TURN_STARTED,
     AGENT_MESSAGE_THREAD_CLOSE,
     AGENT_MESSAGE_THREAD_OPEN,
+    AGENT_MESSAGE_THREAD_START,
     AGENT_MESSAGE_TURN_START,
     AGENT_MESSAGE_TURN_STEER,
     AgentTextContent,
@@ -22,6 +24,7 @@ from meshagent.agents.messages import (
     AgentThreadStatus,
     CloseThread,
     OpenThread,
+    StartThread,
     TurnEnded,
     TurnStart,
     TurnStarted,
@@ -1572,6 +1575,7 @@ async def test_process_use_tui_uses_chat_channel_session(
     class _DummyChatClient:
         def __init__(self) -> None:
             self.room = object()
+            self.has_thread_path = True
             self.thread_path = "/threads/remote.thread"
             self.local_participant_name = "local-user"
             self.sent_payloads: list[object] = []
@@ -1610,6 +1614,9 @@ async def test_process_use_tui_uses_chat_channel_session(
                         error=None,
                     ).model_dump(mode="json")
                 )
+
+        async def start_thread(self, payload) -> None:
+            raise AssertionError("start_thread should not be called")
 
         async def receive(self) -> dict[str, object]:
             return await self.events.get()
@@ -1708,6 +1715,7 @@ async def test_process_use_tui_uses_chat_channel_session(
 async def test_process_chat_channel_session_uses_thread_status_messages() -> None:
     class _DummyChatClient:
         def __init__(self) -> None:
+            self.has_thread_path = True
             self.thread_path = "/threads/remote.thread"
             self.local_participant_name = None
             self.sent_payloads: list[object] = []
@@ -1760,6 +1768,9 @@ async def test_process_chat_channel_session_uses_thread_status_messages() -> Non
                         error=None,
                     ).model_dump(mode="json")
                 )
+
+        async def start_thread(self, payload) -> None:
+            raise AssertionError("start_thread should not be called")
 
         async def receive(self) -> dict[str, object]:
             return await self.events.get()
@@ -1991,6 +2002,111 @@ async def test_process_use_chat_channel_client_resolves_studio_thread_path(
     assert client.thread_path == expected_thread_path
     assert OpenThread.model_validate(room.messaging.sent_payloads[0]).thread_id == (
         expected_thread_path
+    )
+
+    await client.stop()
+
+
+@pytest.mark.asyncio
+async def test_process_use_chat_channel_client_starts_default_new_thread_with_message() -> (
+    None
+):
+    class _Participant:
+        id = "agent-1"
+
+        def get_attribute(self, name: str):
+            if name == "name":
+                return "remote-helper"
+            if name == "meshagent.chatbot.threading":
+                return "default-new"
+            if name == "meshagent.chatbot.thread-dir":
+                return ".threads/remote-helper"
+            return None
+
+    class _Messaging:
+        def __init__(self) -> None:
+            self.is_enabled = True
+            self.handlers: list[object] = []
+            self.sent_payloads: list[object] = []
+            self.participant = _Participant()
+
+        def on(self, event: str, handler) -> None:
+            assert event == "message"
+            self.handlers.append(handler)
+
+        def off(self, event: str, handler) -> None:
+            assert event == "message"
+            self.handlers.remove(handler)
+
+        def get_participants(self) -> list[_Participant]:
+            return [self.participant]
+
+        async def enable(self) -> None:
+            self.is_enabled = True
+
+        async def send_message(
+            self,
+            *,
+            to,
+            type: str,
+            message: dict[str, object],
+            attachment,
+        ) -> None:
+            assert to is self.participant
+            assert type == "agent-message"
+            assert attachment is None
+            self.sent_payloads.append(message["payload"])
+
+    class _Room:
+        def __init__(self) -> None:
+            self.messaging = _Messaging()
+
+    class _RoomMessage:
+        from_participant_id = "agent-1"
+        type = "agent-message"
+
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.message = {"payload": payload}
+
+    room = _Room()
+    client = process._ProcessUseChatChannelClient(
+        room=room,
+        participant_name="remote-helper",
+        thread_path=None,
+        timeout=0.1,
+    )
+
+    await client.start()
+    assert client.has_thread_path is False
+    assert room.messaging.sent_payloads == []
+
+    start_thread = StartThread(
+        type=AGENT_MESSAGE_THREAD_START,
+        message_id="start-thread-1",
+        content=[AgentTextContent(type="text", text="hello")],
+    )
+    start_task = asyncio.create_task(client.start_thread(start_thread))
+    await asyncio.sleep(0)
+
+    assert room.messaging.sent_payloads[0]["type"] == AGENT_MESSAGE_THREAD_START
+    assert room.messaging.sent_payloads[0]["message_id"] == "start-thread-1"
+
+    room.messaging.handlers[0](
+        _RoomMessage(
+            {
+                "type": AGENT_EVENT_THREAD_STARTED,
+                "message_id": "thread-started-1",
+                "source_message_id": "start-thread-1",
+                "thread_id": ".threads/remote-helper/new.thread",
+            }
+        )
+    )
+    await start_task
+
+    assert client.thread_path == ".threads/remote-helper/new.thread"
+    assert room.messaging.sent_payloads[1]["type"] == AGENT_MESSAGE_THREAD_OPEN
+    assert room.messaging.sent_payloads[1]["thread_id"] == (
+        ".threads/remote-helper/new.thread"
     )
 
     await client.stop()

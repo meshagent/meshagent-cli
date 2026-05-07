@@ -19,7 +19,6 @@ from rich.markdown import Markdown
 from rich.table import Table
 from meshagent.agents.adapter import LLMAdapter
 from meshagent.agents.messages import (
-    AGENT_EVENT_FILE_CONTENT_DELTA,
     AGENT_EVENT_THREAD_STATUS,
     AGENT_EVENT_TEXT_CONTENT_DELTA,
     AGENT_EVENT_TURN_ENDED,
@@ -30,6 +29,7 @@ from meshagent.agents.messages import (
     AGENT_EVENT_TURN_STARTED,
     AGENT_EVENT_USAGE_UPDATED,
     AGENT_MESSAGE_TURN_INTERRUPT,
+    AGENT_MESSAGE_THREAD_START,
     AGENT_MESSAGE_TURN_START,
     AGENT_MESSAGE_TURN_STEER,
     AgentFileContent,
@@ -39,6 +39,7 @@ from meshagent.agents.messages import (
     AgentTextContentDelta,
     AgentThreadStatus,
     AgentUsageUpdated,
+    StartThread,
     TurnEnded,
     TurnInterrupt,
     TurnStart,
@@ -108,6 +109,9 @@ class _AskExternalThreadState(Protocol):
 
 class _AgentMessageChannelClient(Protocol):
     @property
+    def has_thread_path(self) -> bool: ...
+
+    @property
     def thread_path(self) -> str: ...
 
     @property
@@ -119,6 +123,8 @@ class _AgentMessageChannelClient(Protocol):
     def clear_applied_queued_agent_inputs(self) -> None: ...
 
     async def send(self, payload: Any) -> None: ...
+
+    async def start_thread(self, payload: Any) -> None: ...
 
     async def receive(self) -> dict[str, Any]: ...
 
@@ -330,6 +336,10 @@ class _LocalAgentMessageChannelClient:
         self._on_close = on_close
 
     @property
+    def has_thread_path(self) -> bool:
+        return True
+
+    @property
     def thread_path(self) -> str:
         return self._thread_path
 
@@ -346,6 +356,10 @@ class _LocalAgentMessageChannelClient:
 
     async def send(self, payload: Any) -> None:
         self._send_message(Message(data=payload))
+
+    async def start_thread(self, payload: Any) -> None:
+        del payload
+        raise RoomException("local agent message client already has a thread")
 
     async def receive(self) -> dict[str, Any]:
         event = await self._events.get()
@@ -417,44 +431,30 @@ class _AgentMessageSession:
             )
         )
 
-    def add_agent_message(self, message: AgentMessage | dict[str, Any]) -> None:
-        if isinstance(message, AgentMessage):
-            payload = message.model_dump(mode="json")
-        else:
-            payload = message
-
-        event_type = payload.get("type")
-        if event_type in {AGENT_MESSAGE_TURN_START, AGENT_MESSAGE_TURN_STEER}:
-            message_id = payload.get("message_id")
-            if not isinstance(message_id, str):
-                return
-            text = self._agent_input_content_text(payload.get("content"))
+    def add_agent_message(self, message: AgentMessage) -> None:
+        if isinstance(message, (TurnStart, TurnSteer)):
+            text = self._agent_input_content_text(message.content)
             if text == "":
                 return
-            sender_name = payload.get("sender_name")
-            role = self._role_for_sender(sender_name, default="user")
-            self.add_message(message_id=message_id, role=role, text=text)
+            role = self._role_for_sender(message.sender_name, default="user")
+            self.add_message(message_id=message.message_id, role=role, text=text)
             return
 
-        if event_type == AGENT_EVENT_TEXT_CONTENT_DELTA:
-            text_delta = AgentTextContentDelta.model_validate(payload)
-            sender_name = payload.get("sender_name")
-            role = self._role_for_sender(sender_name, default="assistant")
+        if isinstance(message, AgentTextContentDelta):
+            role = self._role_for_sender(message.sender_name, default="assistant")
             self.add_message(
-                message_id=text_delta.item_id,
+                message_id=message.item_id,
                 role=role,
-                text=text_delta.text,
+                text=message.text,
             )
             return
 
-        if event_type == AGENT_EVENT_FILE_CONTENT_DELTA:
-            file_delta = AgentFileContentDelta.model_validate(payload)
-            sender_name = payload.get("sender_name")
-            role = self._role_for_sender(sender_name, default="assistant")
+        if isinstance(message, AgentFileContentDelta):
+            role = self._role_for_sender(message.sender_name, default="assistant")
             self.add_message(
-                message_id=file_delta.item_id,
+                message_id=message.item_id,
                 role=role,
-                text=f"[attachment] {file_delta.url}",
+                text=f"[attachment] {message.url}",
             )
 
     def _role_for_sender(self, sender_name: object, *, default: str) -> str:
@@ -468,10 +468,9 @@ class _AgentMessageSession:
         return normalized_sender_name
 
     @staticmethod
-    def _agent_input_content_text(content: object) -> str:
-        if not isinstance(content, list):
-            return ""
-
+    def _agent_input_content_text(
+        content: list[AgentTextContent | AgentFileContent],
+    ) -> str:
         text_parts: list[str] = []
         for item in content:
             if isinstance(item, AgentTextContent) and item.text.strip() != "":
@@ -479,19 +478,6 @@ class _AgentMessageSession:
                 continue
             if isinstance(item, AgentFileContent) and item.url.strip() != "":
                 text_parts.append(f"[attachment] {item.url}")
-                continue
-            if not isinstance(item, dict):
-                continue
-            item_type = item.get("type")
-            if item_type == "text":
-                text = item.get("text")
-                if isinstance(text, str) and text.strip() != "":
-                    text_parts.append(text)
-                continue
-            if item_type == "file":
-                url = item.get("url")
-                if isinstance(url, str) and url.strip() != "":
-                    text_parts.append(f"[attachment] {url}")
 
         return "\n\n".join(text_parts).strip()
 
@@ -506,25 +492,42 @@ class _AgentMessageSession:
         prompt: str,
         on_message: Callable[[AgentMessage], Awaitable[None] | None] | None = None,
     ) -> str:
-        turn_start_args: dict[str, Any] = {
-            "type": AGENT_MESSAGE_TURN_START,
-            "thread_id": self._client.thread_path,
-            "content": [
-                AgentTextContent(
-                    type="text",
-                    text=prompt,
-                )
-            ],
-        }
-        if self._model is not None:
-            turn_start_args["model"] = self._model
+        content = [
+            AgentTextContent(
+                type="text",
+                text=prompt,
+            )
+        ]
+        if self._client.has_thread_path:
+            turn_start_args: dict[str, Any] = {
+                "type": AGENT_MESSAGE_TURN_START,
+                "thread_id": self._client.thread_path,
+                "content": content,
+            }
+            if self._model is not None:
+                turn_start_args["model"] = self._model
+            input_message = TurnStart.model_validate(turn_start_args)
+        else:
+            start_thread_args: dict[str, Any] = {
+                "type": AGENT_MESSAGE_THREAD_START,
+                "content": content,
+            }
+            if self._model is not None:
+                start_thread_args["model"] = self._model
+            input_message = StartThread.model_validate(start_thread_args)
 
-        turn_start = TurnStart.model_validate(turn_start_args)
-        self._pending_input_messages[turn_start.message_id] = _AskConversationMessage(
-            message_id=turn_start.message_id,
-            role="you",
-            text=prompt,
+        self._pending_input_messages[input_message.message_id] = (
+            _AskConversationMessage(
+                message_id=input_message.message_id,
+                role="you",
+                text=prompt,
+            )
         )
+        if isinstance(input_message, StartThread):
+            await self._client.start_thread(input_message)
+        else:
+            await self._client.send(input_message)
+
         await _emit_agent_message(
             on_message,
             AgentThreadStatus(
@@ -533,7 +536,6 @@ class _AgentMessageSession:
                 status="Working",
             ),
         )
-        await self._client.send(turn_start)
 
         output_parts: list[str] = []
         active_turn_id: str | None = None
@@ -545,16 +547,14 @@ class _AgentMessageSession:
                 event_type = payload.get("type")
 
                 if event_type == AGENT_EVENT_TURN_START_ACCEPTED:
-                    self._add_accepted_agent_input(payload)
-                    await _emit_agent_message(
-                        on_message,
-                        TurnStartAccepted.model_validate(payload),
-                    )
+                    turn_start_accepted = TurnStartAccepted.model_validate(payload)
+                    self._add_accepted_agent_input(turn_start_accepted)
+                    await _emit_agent_message(on_message, turn_start_accepted)
                     continue
 
                 if event_type == AGENT_EVENT_TURN_STARTED:
                     turn_started = TurnStarted.model_validate(payload)
-                    if turn_started.source_message_id == turn_start.message_id:
+                    if turn_started.source_message_id == input_message.message_id:
                         active_turn_id = turn_started.turn_id
                         self._active_turn_id = active_turn_id
                         await _emit_agent_message(on_message, turn_started)
@@ -669,12 +669,11 @@ class _AgentMessageSession:
                 ),
             )
 
-    def _add_accepted_agent_input(self, payload: dict[str, Any]) -> None:
-        source_message_id = payload.get("source_message_id")
-        if not isinstance(source_message_id, str):
-            return
-
-        pending_input = self._pending_input_messages.pop(source_message_id, None)
+    def _add_accepted_agent_input(self, accepted: TurnStartAccepted) -> None:
+        pending_input = self._pending_input_messages.pop(
+            accepted.source_message_id,
+            None,
+        )
         if pending_input is not None:
             self.add_message(
                 message_id=pending_input.message_id,
@@ -683,23 +682,12 @@ class _AgentMessageSession:
             )
             return
 
-        text_parts: list[str] = []
-        content = payload.get("content")
-        if isinstance(content, list):
-            for item in content:
-                if not isinstance(item, dict):
-                    continue
-                if item.get("type") != "text":
-                    continue
-                text = item.get("text")
-                if isinstance(text, str) and text.strip() != "":
-                    text_parts.append(text)
-        text = "\n\n".join(text_parts).strip()
+        text = self._agent_input_content_text(accepted.content)
         if text == "":
             return
 
-        role = self._role_for_sender(payload.get("sender_name"), default="user")
-        self.add_message(message_id=source_message_id, role=role, text=text)
+        role = self._role_for_sender(accepted.sender_name, default="user")
+        self.add_message(message_id=accepted.source_message_id, role=role, text=text)
 
     def steer(
         self,
