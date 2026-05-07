@@ -17,8 +17,8 @@ from meshagent.agents.messages import (
     AGENT_MESSAGE_THREAD_OPEN,
     AGENT_MESSAGE_TURN_START,
     AGENT_MESSAGE_TURN_STEER,
-    AgentTextContentDelta,
     AgentTextContent,
+    AgentTextContentDelta,
     AgentThreadStatus,
     CloseThread,
     OpenThread,
@@ -1086,17 +1086,17 @@ async def test_process_run_starts_room_agent_and_uses_ask_tui(
         raise AssertionError("process run should use ask TUI, not chat_with")
 
     monkeypatch.setenv("MESHAGENT_TOKEN", "test-token")
-    monkeypatch.setattr(chatbot, "get_client", fake_get_client)
-    monkeypatch.setattr(chatbot, "resolve_project_id", fake_resolve_project_id)
-    monkeypatch.setattr(chatbot, "resolve_key", fake_resolve_key)
-    monkeypatch.setattr(chatbot, "resolve_room", lambda room_name=None: room_name)
-    monkeypatch.setattr(chatbot, "RoomClient", fake_room_client)
+    monkeypatch.setattr(process, "get_client", fake_get_client)
+    monkeypatch.setattr(process, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(process, "resolve_key", fake_resolve_key)
+    monkeypatch.setattr(process, "resolve_room", lambda room_name=None: room_name)
+    monkeypatch.setattr(process, "RoomClient", fake_room_client)
     monkeypatch.setattr(
-        chatbot, "WebSocketClientProtocol", _DummyWebSocketClientProtocol
+        process, "WebSocketClientProtocol", _DummyWebSocketClientProtocol
     )
-    monkeypatch.setattr(chatbot, "_build_runtime_agent", fake_build_runtime_agent)
-    monkeypatch.setattr(chatbot, "_run_process_run_tui", fake_run_process_run_tui)
-    monkeypatch.setattr(chatbot, "chat_with", fail_chat_with)
+    monkeypatch.setattr(process, "_build_runtime_agent", fake_build_runtime_agent)
+    monkeypatch.setattr(process, "_run_process_run_tui", fake_run_process_run_tui)
+    monkeypatch.setattr(process, "chat_with", fail_chat_with)
 
     root_command = click.Command("meshagent")
     process_command = click.Command("process")
@@ -1112,7 +1112,7 @@ async def test_process_run_starts_room_agent_and_uses_ask_tui(
                 info_name="run",
                 parent=process_context,
             ):
-                await chatbot.run(
+                await process.run(
                     project_id=None,
                     room="quickstart",
                     agent_name="helper",
@@ -1130,6 +1130,9 @@ async def test_process_run_starts_room_agent_and_uses_ask_tui(
         "bot": process_agent,
         "model": "gpt-5.5",
         "thread_path": None,
+        "thread_storage": "meshdocument",
+        "agent_name": "helper",
+        "thread_dir": "/agents/helper/threads",
         "message": None,
         "working_dir": None,
     }
@@ -1145,6 +1148,8 @@ def test_process_run_thread_id_uses_dataset_scheme_for_dataset_storage(
         process._process_run_thread_id(
             thread_path=None,
             thread_storage="dataset",
+            agent_name=None,
+            thread_dir=None,
         )
         == "dataset://process-run/fixed-id"
     )
@@ -1152,6 +1157,8 @@ def test_process_run_thread_id_uses_dataset_scheme_for_dataset_storage(
         process._process_run_thread_id(
             thread_path="/threads/custom",
             thread_storage="dataset",
+            agent_name=None,
+            thread_dir=None,
         )
         == "dataset://threads/custom"
     )
@@ -1159,8 +1166,37 @@ def test_process_run_thread_id_uses_dataset_scheme_for_dataset_storage(
         process._process_run_thread_id(
             thread_path="dataset://threads/custom",
             thread_storage="dataset",
+            agent_name=None,
+            thread_dir=None,
         )
         == "dataset://threads/custom"
+    )
+    assert (
+        process._process_run_thread_id(
+            thread_path=None,
+            thread_storage="meshdocument",
+            agent_name="helper",
+            thread_dir=None,
+        )
+        == ".threads/helper/main.thread"
+    )
+    assert (
+        process._process_run_thread_id(
+            thread_path=None,
+            thread_storage="meshdocument",
+            agent_name="helper",
+            thread_dir="/agents/helper/threads",
+        )
+        == "/agents/helper/threads/main.thread"
+    )
+    assert (
+        process._process_run_thread_id(
+            thread_path=None,
+            thread_storage="dataset",
+            agent_name="helper",
+            thread_dir="dataset://agents/helper/threads",
+        )
+        == "dataset://agents/helper/threads/main"
     )
 
 
@@ -1174,6 +1210,8 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
         def __init__(self) -> None:
             self.subscribed_queue = None
             self.unsubscribed_queue = None
+            self.sent_messages: list[Message] = []
+            self.processes: list[object] = []
 
         def subscribe_local_events(self):
             self.subscribed_queue = asyncio.Queue()
@@ -1181,6 +1219,12 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
 
         def unsubscribe_local_events(self, queue) -> None:
             self.unsubscribed_queue = queue
+
+        def send(self, message: Message) -> None:
+            self.sent_messages.append(message)
+
+        async def route(self, message: Message) -> None:
+            self.sent_messages.append(message)
 
     class _DummyBot:
         def __init__(self) -> None:
@@ -1192,10 +1236,13 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
     bot = _DummyBot()
     monkeypatch.setattr(ask_module, "_run_ask_tui", fake_run_ask_tui)
 
-    await chatbot._run_process_run_tui(
+    await process._run_process_run_tui(
         bot=bot,
         model="gpt-5.5",
         thread_path="/threads/process-run.thread",
+        thread_storage="meshdocument",
+        agent_name="helper",
+        thread_dir=None,
         message=None,
         working_dir="/tmp",
     )
@@ -1204,6 +1251,87 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
     assert captured["title"] == "meshagent process run"
     assert captured["session"].current_working_directory == "/tmp"
     assert bot._supervisor.unsubscribed_queue is bot._supervisor.subscribed_queue
+
+
+@pytest.mark.asyncio
+async def test_process_run_tui_loads_existing_thread_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from meshagent.cli import ask as ask_module
+
+    captured: dict[str, object] = {}
+
+    class _FakeStorage:
+        pass
+
+    class _FakeProcess:
+        thread_id = "/threads/process-run.thread"
+        thread_storage = _FakeStorage()
+
+    class _DummySupervisor:
+        def __init__(self) -> None:
+            self.events: asyncio.Queue[Message] = asyncio.Queue()
+            self.processes: list[object] = []
+
+        def subscribe_local_events(self):
+            return self.events
+
+        def unsubscribe_local_events(self, queue) -> None:
+            assert queue is self.events
+
+        def send(self, message: Message) -> None:
+            del message
+
+        async def route(self, message: Message) -> None:
+            assert isinstance(message.data, OpenThread)
+            self.processes.append(_FakeProcess())
+
+    class _DummyBot:
+        def __init__(self) -> None:
+            self._supervisor = _DummySupervisor()
+
+    async def fake_run_ask_tui(**kwargs):
+        captured["messages"] = kwargs["session"].messages
+
+    monkeypatch.setattr(ask_module, "_run_ask_tui", fake_run_ask_tui)
+    monkeypatch.setattr(
+        process,
+        "_thread_agent_messages_from_storage",
+        lambda thread_storage: [
+            TurnStart(
+                type=AGENT_MESSAGE_TURN_START,
+                thread_id="/threads/process-run.thread",
+                message_id="existing-1",
+                content=[AgentTextContent(type="text", text="existing prompt")],
+                sender_name="alex",
+            ),
+            AgentTextContentDelta(
+                type=AGENT_EVENT_TEXT_CONTENT_DELTA,
+                thread_id="/threads/process-run.thread",
+                message_id="existing-2",
+                turn_id="turn-existing",
+                item_id="existing-2",
+                text="existing answer",
+                sender_name="helper",
+            ),
+        ],
+    )
+
+    await process._run_process_run_tui(
+        bot=_DummyBot(),
+        model="gpt-5.5",
+        thread_path="/threads/process-run.thread",
+        thread_storage="meshdocument",
+        agent_name="helper",
+        thread_dir=None,
+        message=None,
+        working_dir="/tmp",
+    )
+
+    assert [(message.role, message.text) for message in captured["messages"]] == [
+        ("alex", "existing prompt"),
+        ("helper", "existing answer"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -1282,11 +1410,17 @@ async def test_process_run_session_uses_thread_status_messages() -> None:
         model="gpt-5.5",
         thread_path="/threads/process-run.thread",
         thread_storage="meshdocument",
+        agent_name="helper",
+        thread_dir=None,
         current_working_directory="/tmp",
     )
     statuses: list[str | None] = []
 
-    result = await session.ask(prompt="hello local", on_status=statuses.append)
+    def _on_message(message) -> None:
+        if isinstance(message, AgentThreadStatus):
+            statuses.append(message.status)
+
+    result = await session.ask(prompt="hello local", on_message=_on_message)
 
     assert result == "local response"
     assert statuses == ["Working", "Planning", "Running tools", None]
@@ -1316,11 +1450,11 @@ async def test_process_use_routes_to_chat_channel_ask_tui(
         del kwargs
         raise AssertionError("process use should not use chatbot chat_with")
 
-    monkeypatch.setattr(chatbot, "get_client", fake_get_client)
-    monkeypatch.setattr(chatbot, "resolve_project_id", fake_resolve_project_id)
-    monkeypatch.setattr(chatbot, "resolve_room", lambda room_name=None: room_name)
-    monkeypatch.setattr(chatbot, "_run_process_use_tui", fake_run_process_use_tui)
-    monkeypatch.setattr(chatbot, "chat_with", fail_chat_with)
+    monkeypatch.setattr(process, "get_client", fake_get_client)
+    monkeypatch.setattr(process, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(process, "resolve_room", lambda room_name=None: room_name)
+    monkeypatch.setattr(process, "_run_process_use_tui", fake_run_process_use_tui)
+    monkeypatch.setattr(process, "chat_with", fail_chat_with)
 
     root_command = click.Command("meshagent")
     process_command = click.Command("process")
@@ -1336,7 +1470,7 @@ async def test_process_use_routes_to_chat_channel_ask_tui(
                 info_name="use",
                 parent=process_context,
             ):
-                await chatbot.use(
+                await process.use(
                     project_id=None,
                     room="quickstart",
                     agent_name="remote-helper",
@@ -1437,10 +1571,16 @@ async def test_process_use_tui_uses_chat_channel_session(
 
     class _DummyChatClient:
         def __init__(self) -> None:
+            self.room = object()
             self.thread_path = "/threads/remote.thread"
+            self.local_participant_name = "local-user"
             self.sent_payloads: list[object] = []
             self.events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
             self.exit_calls = 0
+            self.accepted_input_callback = None
+
+        def set_accepted_input_callback(self, callback) -> None:
+            self.accepted_input_callback = callback
 
         async def send(self, payload) -> None:
             self.sent_payloads.append(payload)
@@ -1474,6 +1614,9 @@ async def test_process_use_tui_uses_chat_channel_session(
         async def receive(self) -> dict[str, object]:
             return await self.events.get()
 
+        def clear_applied_queued_agent_inputs(self) -> None:
+            pass
+
         async def __aexit__(self, exc_type, exc, tb) -> None:
             del exc_type
             del exc
@@ -1493,21 +1636,44 @@ async def test_process_use_tui_uses_chat_channel_session(
         captured["assistant_name"] = kwargs["assistant_name"]
         session = kwargs["session"]
         captured["session_cwd"] = session.current_working_directory
+        captured["initial_messages"] = session.messages
         deltas: list[str] = []
+
+        def _on_message(message) -> None:
+            if isinstance(message, AgentTextContentDelta):
+                deltas.append(message.text)
+
         captured["ask_result"] = await session.ask(
             prompt="hello remote",
-            on_delta=deltas.append,
+            on_message=_on_message,
         )
         captured["deltas"] = deltas
 
+    async def fake_load_thread_agent_messages(**kwargs):
+        captured["load_messages_kwargs"] = kwargs
+        return [
+            TurnStart(
+                type=AGENT_MESSAGE_TURN_START,
+                thread_id="/threads/remote.thread",
+                message_id="existing-remote-1",
+                content=[AgentTextContent(type="text", text="stored remote prompt")],
+                sender_name="local-user",
+            )
+        ]
+
     monkeypatch.setattr(
-        chatbot,
+        process,
         "_open_process_use_chat_session",
         fake_open_process_use_chat_session,
     )
+    monkeypatch.setattr(
+        process,
+        "_load_thread_agent_messages",
+        fake_load_thread_agent_messages,
+    )
     monkeypatch.setattr(ask_module, "_run_ask_tui", fake_run_ask_tui)
 
-    await chatbot._run_process_use_tui(
+    await process._run_process_use_tui(
         account_client=object(),
         project_id="project-123",
         room="quickstart",
@@ -1523,6 +1689,9 @@ async def test_process_use_tui_uses_chat_channel_session(
     assert captured["tui_model"] == "remote"
     assert captured["tui_title"] == "meshagent process use: remote-helper"
     assert captured["assistant_name"] == "remote-helper"
+    assert [
+        (message.role, message.text) for message in captured["initial_messages"]
+    ] == [("you", "stored remote prompt")]
     assert captured["ask_result"] == "remote response"
     assert captured["deltas"] == ["remote response"]
     assert len(chat_client.sent_payloads) == 1
@@ -1540,8 +1709,13 @@ async def test_process_chat_channel_session_uses_thread_status_messages() -> Non
     class _DummyChatClient:
         def __init__(self) -> None:
             self.thread_path = "/threads/remote.thread"
+            self.local_participant_name = None
             self.sent_payloads: list[object] = []
             self.events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+            self.accepted_input_callback = None
+
+        def set_accepted_input_callback(self, callback) -> None:
+            self.accepted_input_callback = callback
 
         async def send(self, payload) -> None:
             self.sent_payloads.append(payload)
@@ -1598,9 +1772,13 @@ async def test_process_chat_channel_session_uses_thread_status_messages() -> Non
     session = process._ChatChannelUseSession(chat_client=chat_client)
     statuses: list[str | None] = []
 
+    def _on_message(message) -> None:
+        if isinstance(message, AgentThreadStatus):
+            statuses.append(message.status)
+
     result = await session.ask(
         prompt="hello remote",
-        on_status=statuses.append,
+        on_message=_on_message,
     )
 
     assert result == "remote response"
@@ -1686,6 +1864,14 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
     assert client.thread_status_text == "Reviewing changes"
     assert await client.receive() == status_payload
 
+    local_turn_start = TurnStart(
+        type=AGENT_MESSAGE_TURN_START,
+        thread_id="/threads/remote.thread",
+        message_id="message-1",
+        content=[AgentTextContent(type="text", text="queued prompt")],
+    )
+    await client.send(local_turn_start)
+
     accepted_payload = {
         "type": AGENT_EVENT_TURN_START_ACCEPTED,
         "thread_id": "/threads/remote.thread",
@@ -1706,7 +1892,7 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
     }
     room.messaging.handlers[0](_RoomMessage(applied_payload))
 
-    assert client.queued_message_labels == ("self: queued prompt",)
+    assert client.queued_message_labels == ()
     assert await client.receive() == applied_payload
 
     ended_payload = {
@@ -1725,6 +1911,224 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
         CloseThread,
     )
     assert room.messaging.sent_payloads[-1]["type"] == AGENT_MESSAGE_THREAD_CLOSE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("attributes", "expected_thread_path"),
+    [
+        (
+            {"meshagent.chatbot.thread-path": "dataset://agents/helper/threads/main"},
+            "dataset://agents/helper/threads/main",
+        ),
+        (
+            {"meshagent.chatbot.thread-dir": "dataset://agents/helper/threads"},
+            "dataset://agents/helper/threads/main",
+        ),
+        ({}, ".threads/remote-helper/main.thread"),
+    ],
+)
+async def test_process_use_chat_channel_client_resolves_studio_thread_path(
+    attributes: dict[str, str],
+    expected_thread_path: str,
+) -> None:
+    class _Participant:
+        id = "agent-1"
+
+        def get_attribute(self, name: str):
+            if name == "name":
+                return "remote-helper"
+            return attributes.get(name)
+
+    class _Messaging:
+        def __init__(self) -> None:
+            self.is_enabled = True
+            self.handlers: list[object] = []
+            self.sent_payloads: list[object] = []
+            self.participant = _Participant()
+
+        def on(self, event: str, handler) -> None:
+            assert event == "message"
+            self.handlers.append(handler)
+
+        def off(self, event: str, handler) -> None:
+            assert event == "message"
+            self.handlers.remove(handler)
+
+        def get_participants(self) -> list[_Participant]:
+            return [self.participant]
+
+        async def enable(self) -> None:
+            self.is_enabled = True
+
+        async def send_message(
+            self,
+            *,
+            to,
+            type: str,
+            message: dict[str, object],
+            attachment,
+        ) -> None:
+            assert to is self.participant
+            assert type == "agent-message"
+            assert attachment is None
+            self.sent_payloads.append(message["payload"])
+
+    class _Room:
+        def __init__(self) -> None:
+            self.messaging = _Messaging()
+
+    room = _Room()
+    client = process._ProcessUseChatChannelClient(
+        room=room,
+        participant_name="remote-helper",
+        thread_path=None,
+        timeout=0.1,
+    )
+
+    await client.start()
+
+    assert client.thread_path == expected_thread_path
+    assert OpenThread.model_validate(room.messaging.sent_payloads[0]).thread_id == (
+        expected_thread_path
+    )
+
+    await client.stop()
+
+
+@pytest.mark.asyncio
+async def test_process_use_chat_channel_client_reports_accepted_remote_inputs() -> None:
+    accepted_inputs: list[object] = []
+
+    class _Participant:
+        id = "agent-1"
+
+        def get_attribute(self, name: str):
+            if name == "name":
+                return "remote-helper"
+            return None
+
+    class _Messaging:
+        def __init__(self) -> None:
+            self.is_enabled = True
+            self.handlers: list[object] = []
+            self.sent_payloads: list[object] = []
+            self.participant = _Participant()
+
+        def on(self, event: str, handler) -> None:
+            assert event == "message"
+            self.handlers.append(handler)
+
+        def off(self, event: str, handler) -> None:
+            assert event == "message"
+            self.handlers.remove(handler)
+
+        def get_participants(self) -> list[_Participant]:
+            return [self.participant]
+
+        async def enable(self) -> None:
+            self.is_enabled = True
+
+        async def send_message(
+            self,
+            *,
+            to,
+            type: str,
+            message: dict[str, object],
+            attachment,
+        ) -> None:
+            assert to is self.participant
+            assert type == "agent-message"
+            assert attachment is None
+            self.sent_payloads.append(message["payload"])
+
+    class _Room:
+        def __init__(self) -> None:
+            self.messaging = _Messaging()
+
+    class _RoomMessage:
+        from_participant_id = "agent-1"
+        type = "agent-message"
+
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.message = {"payload": payload}
+
+    room = _Room()
+    client = process._ProcessUseChatChannelClient(
+        room=room,
+        participant_name="remote-helper",
+        thread_path="/threads/remote.thread",
+        local_participant_name="local-user",
+        timeout=0.1,
+    )
+    client.set_accepted_input_callback(accepted_inputs.append)
+
+    await client.start()
+    accepted_payload = {
+        "type": AGENT_EVENT_TURN_START_ACCEPTED,
+        "thread_id": "/threads/remote.thread",
+        "source_message_id": "remote-message-1",
+        "sender_name": "other-user",
+        "content": [{"type": "text", "text": "hello from elsewhere"}],
+    }
+    room.messaging.handlers[0](_RoomMessage(accepted_payload))
+
+    assert len(accepted_inputs) == 1
+    assert accepted_inputs[0].message_id == "remote-message-1"
+    assert accepted_inputs[0].role == "other-user"
+    assert accepted_inputs[0].text == "hello from elsewhere"
+
+    local_payload = {
+        "type": AGENT_EVENT_TURN_START_ACCEPTED,
+        "thread_id": "/threads/remote.thread",
+        "source_message_id": "local-message-1",
+        "sender_name": "local-user",
+        "content": [{"type": "text", "text": "hello from here"}],
+    }
+    room.messaging.handlers[0](_RoomMessage(local_payload))
+
+    assert len(accepted_inputs) == 2
+    assert accepted_inputs[1].message_id == "local-message-1"
+    assert accepted_inputs[1].role == "you"
+    assert accepted_inputs[1].text == "hello from here"
+
+    started_payload = {
+        "type": AGENT_EVENT_TURN_STARTED,
+        "thread_id": "/threads/remote.thread",
+        "turn_id": "remote-turn-1",
+        "source_message_id": "remote-message-1",
+    }
+    room.messaging.handlers[0](_RoomMessage(started_payload))
+    first_delta_payload = {
+        "type": AGENT_EVENT_TEXT_CONTENT_DELTA,
+        "thread_id": "/threads/remote.thread",
+        "turn_id": "remote-turn-1",
+        "item_id": "text-1",
+        "text": "remote ",
+    }
+    room.messaging.handlers[0](_RoomMessage(first_delta_payload))
+    second_delta_payload = {
+        "type": AGENT_EVENT_TEXT_CONTENT_DELTA,
+        "thread_id": "/threads/remote.thread",
+        "turn_id": "remote-turn-1",
+        "item_id": "text-1",
+        "text": "response",
+    }
+    room.messaging.handlers[0](_RoomMessage(second_delta_payload))
+    ended_payload = {
+        "type": AGENT_EVENT_TURN_ENDED,
+        "thread_id": "/threads/remote.thread",
+        "turn_id": "remote-turn-1",
+        "error": None,
+    }
+    room.messaging.handlers[0](_RoomMessage(ended_payload))
+
+    assert len(accepted_inputs) == 3
+    assert accepted_inputs[2].message_id == "remote-turn-1"
+    assert accepted_inputs[2].role == "remote-helper"
+    assert accepted_inputs[2].text == "remote response"
+
+    await client.stop()
 
 
 class _FakeRoomClient:

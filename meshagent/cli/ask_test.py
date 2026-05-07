@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 import typer
 
@@ -7,9 +9,13 @@ from meshagent.agents.messages import (
     AGENT_EVENT_TEXT_CONTENT_DELTA,
     AGENT_EVENT_TEXT_CONTENT_ENDED,
     AGENT_EVENT_TEXT_CONTENT_STARTED,
+    AGENT_EVENT_TURN_ENDED,
+    AGENT_EVENT_TURN_START_ACCEPTED,
+    AGENT_EVENT_TURN_STARTED,
     AgentTextContentDelta,
     AgentTextContentEnded,
     AgentTextContentStarted,
+    TurnStart,
 )
 from meshagent.api import Participant
 from meshagent.cli import ask as ask_module
@@ -108,11 +114,15 @@ async def test_run_ask_process_returns_text_output() -> None:
 async def test_run_ask_process_streams_text_deltas() -> None:
     deltas: list[str] = []
 
+    def _on_message(message) -> None:
+        if isinstance(message, ask_module.AgentTextContentDelta):
+            deltas.append(message.text)
+
     result = await ask_module._run_ask_process(
         prompt="hi",
         model="gpt-5.5",
         llm_adapter=_FakeAskAdapter(),
-        on_delta=deltas.append,
+        on_message=_on_message,
     )
 
     assert result == "hello world"
@@ -123,14 +133,15 @@ async def test_run_ask_process_streams_text_deltas() -> None:
 async def test_run_ask_process_awaits_async_text_delta_callback() -> None:
     deltas: list[str] = []
 
-    async def _on_delta(text: str) -> None:
-        deltas.append(text)
+    async def _on_message(message) -> None:
+        if isinstance(message, ask_module.AgentTextContentDelta):
+            deltas.append(message.text)
 
     result = await ask_module._run_ask_process(
         prompt="hi",
         model="gpt-5.5",
         llm_adapter=_FakeAskAdapter(),
-        on_delta=_on_delta,
+        on_message=_on_message,
     )
 
     assert result == "hello world"
@@ -148,6 +159,134 @@ async def test_ask_session_reuses_process_for_multiple_prompts() -> None:
 
     assert first == "hello world"
     assert second == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_agent_message_session_orders_inputs_by_accepted_events() -> None:
+    class _FakeChannelClient:
+        thread_path = "/threads/test.thread"
+        thread_status_text = None
+        queued_message_labels: tuple[str, ...] = ()
+
+        def __init__(self) -> None:
+            self.events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+
+        async def send(self, payload) -> None:
+            assert isinstance(payload, TurnStart)
+            self.events.put_nowait(
+                {
+                    "type": AGENT_EVENT_TURN_START_ACCEPTED,
+                    "thread_id": payload.thread_id,
+                    "source_message_id": "remote-message-1",
+                    "sender_name": "remote-user",
+                    "content": [{"type": "text", "text": "remote first"}],
+                }
+            )
+            self.events.put_nowait(
+                {
+                    "type": AGENT_EVENT_TURN_START_ACCEPTED,
+                    "thread_id": payload.thread_id,
+                    "source_message_id": payload.message_id,
+                }
+            )
+            self.events.put_nowait(
+                {
+                    "type": AGENT_EVENT_TURN_STARTED,
+                    "thread_id": payload.thread_id,
+                    "turn_id": "turn-1",
+                    "source_message_id": payload.message_id,
+                }
+            )
+            self.events.put_nowait(
+                {
+                    "type": AGENT_EVENT_TEXT_CONTENT_DELTA,
+                    "thread_id": payload.thread_id,
+                    "turn_id": "turn-1",
+                    "item_id": "text-1",
+                    "text": "response",
+                }
+            )
+            self.events.put_nowait(
+                {
+                    "type": AGENT_EVENT_TURN_ENDED,
+                    "thread_id": payload.thread_id,
+                    "turn_id": "turn-1",
+                    "error": None,
+                }
+            )
+
+        async def receive(self) -> dict[str, object]:
+            return await self.events.get()
+
+        def clear_applied_queued_agent_inputs(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    session = ask_module._AgentMessageSession(
+        client=_FakeChannelClient(),
+        model=None,
+    )
+
+    result = await session.ask(prompt="local second")
+
+    assert result == "response"
+    assert [(message.role, message.text) for message in session.messages] == [
+        ("remote-user", "remote first"),
+        ("you", "local second"),
+    ]
+
+
+def test_agent_message_session_labels_loaded_local_participant_messages_as_you() -> (
+    None
+):
+    class _FakeChannelClient:
+        thread_path = "/threads/test.thread"
+        thread_status_text = None
+        queued_message_labels: tuple[str, ...] = ()
+
+        async def send(self, payload) -> None:
+            del payload
+
+        async def receive(self) -> dict[str, object]:
+            raise AssertionError("receive should not be called")
+
+        def clear_applied_queued_agent_inputs(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    session = ask_module._AgentMessageSession(
+        client=_FakeChannelClient(),
+        model=None,
+        local_participant_name="local-user",
+    )
+
+    session.add_agent_message(
+        {
+            "type": ask_module.AGENT_MESSAGE_TURN_START,
+            "thread_id": "/threads/test.thread",
+            "message_id": "local-message",
+            "sender_name": "local-user",
+            "content": [{"type": "text", "text": "local prompt"}],
+        }
+    )
+    session.add_agent_message(
+        {
+            "type": ask_module.AGENT_MESSAGE_TURN_START,
+            "thread_id": "/threads/test.thread",
+            "message_id": "remote-message",
+            "sender_name": "remote-user",
+            "content": [{"type": "text", "text": "remote prompt"}],
+        }
+    )
+
+    assert [(message.role, message.text) for message in session.messages] == [
+        ("you", "local prompt"),
+        ("remote-user", "remote prompt"),
+    ]
 
 
 @pytest.mark.asyncio

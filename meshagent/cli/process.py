@@ -41,6 +41,8 @@ from meshagent.cli.common_options import (
     StartingUrlOption,
 )
 from meshagent.api import (
+    Element,
+    MeshDocument,
     Participant,
     RoomClient,
     WebSocketClientProtocol,
@@ -98,7 +100,9 @@ from meshagent.openai.tools.responses_adapter import (
 from meshagent.tools.dataset import make_dataset_toolkit
 from meshagent.agents.adapter import LLMAdapter, MessageStreamLLMAdapter
 from meshagent.agents.messages import (
+    AGENT_EVENT_FILE_CONTENT_DELTA,
     AGENT_EVENT_THREAD_STATUS,
+    AGENT_EVENT_TEXT_CONTENT_DELTA,
     AGENT_EVENT_TURN_ENDED,
     AGENT_EVENT_TURN_START_ACCEPTED,
     AGENT_EVENT_TURN_STARTED,
@@ -107,11 +111,17 @@ from meshagent.agents.messages import (
     AGENT_EVENT_TURN_STEERED,
     AGENT_MESSAGE_THREAD_CLOSE,
     AGENT_MESSAGE_THREAD_OPEN,
-    AgentUsageUpdated,
+    AGENT_MESSAGE_TURN_START,
+    AgentFileContent,
+    AgentFileContentDelta,
+    AgentMessage,
+    AgentTextContent,
+    AgentTextContentDelta,
     CloseThread,
     OpenThread,
+    TurnStart,
 )
-from meshagent.agents.process import ContentScheme
+from meshagent.agents.process import ContentScheme, Message
 from meshagent.agents.images_dataset import ImagesDataset
 
 from meshagent.api import RequiredToolkit, RequiredSchema
@@ -193,6 +203,8 @@ def _process_run_thread_id(
     *,
     thread_path: str | None,
     thread_storage: "ThreadStorageBackend",
+    agent_name: str | None,
+    thread_dir: str | None,
 ) -> str:
     if isinstance(thread_path, str) and thread_path.strip() != "":
         normalized = thread_path.strip()
@@ -201,6 +213,14 @@ def _process_run_thread_id(
         if thread_storage == "none" and not normalized.startswith("tmp://"):
             return _thread_url_for_path(scheme="tmp", path=normalized)
         return normalized
+
+    normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
+    if normalized_thread_dir is not None:
+        return _chat_thread_path_for_dir(normalized_thread_dir)
+
+    default_thread_path = _default_chat_thread_path_for_agent(agent_name)
+    if default_thread_path is not None:
+        return default_thread_path
 
     generated_path = f"process-run/{uuid.uuid4()}"
     if thread_storage == "dataset":
@@ -215,6 +235,13 @@ class _QueuedAgentInput:
     message_id: str
     label: str
     applied: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _AcceptedAgentInput:
+    message_id: str
+    role: str
+    text: str
 
 
 async def _await_cleanup(awaitable: Awaitable[Any]) -> Any:
@@ -250,6 +277,131 @@ async def _run_agent_room_session(
             await _await_cleanup(client.__aexit__(None, None, None))
 
 
+def _mesh_document_attribute(element: Element, name: str) -> str:
+    value = element.get_attribute(name)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _mesh_document_agent_messages(
+    *,
+    document: MeshDocument,
+    thread_path: str,
+) -> list[AgentMessage]:
+    messages_elements = [
+        child
+        for child in document.root.get_children()
+        if isinstance(child, Element) and child.tag_name == "messages"
+    ]
+    if len(messages_elements) == 0:
+        return []
+
+    messages: list[AgentMessage] = []
+    for index, message in enumerate(messages_elements[0].get_children()):
+        if not isinstance(message, Element) or message.tag_name != "message":
+            continue
+
+        message_id = _mesh_document_attribute(message, "id")
+        if message_id == "":
+            message_id = _mesh_document_attribute(message, "turn_id")
+        if message_id == "":
+            message_id = f"{thread_path}:message:{index}"
+
+        role = _mesh_document_attribute(message, "role")
+        text = _mesh_document_attribute(message, "text")
+        file_paths: list[str] = []
+        for child in message.get_children():
+            if not isinstance(child, Element) or child.tag_name != "file":
+                continue
+            path = _mesh_document_attribute(child, "path")
+            if path != "":
+                file_paths.append(path)
+        if text == "" and len(file_paths) == 0:
+            continue
+
+        if role in {"agent", "assistant"}:
+            turn_id = _mesh_document_attribute(message, "turn_id") or message_id
+            author_name = _mesh_document_attribute(message, "author_name")
+            if text != "":
+                messages.append(
+                    AgentTextContentDelta(
+                        type=AGENT_EVENT_TEXT_CONTENT_DELTA,
+                        thread_id=thread_path,
+                        message_id=message_id,
+                        turn_id=turn_id,
+                        item_id=message_id,
+                        text=text,
+                    ).model_copy(update={"sender_name": author_name})
+                )
+            for file_index, path in enumerate(file_paths):
+                item_id = f"{message_id}:file:{file_index}"
+                messages.append(
+                    AgentFileContentDelta(
+                        type=AGENT_EVENT_FILE_CONTENT_DELTA,
+                        thread_id=thread_path,
+                        message_id=item_id,
+                        turn_id=turn_id,
+                        item_id=item_id,
+                        url=path,
+                    ).model_copy(update={"sender_name": author_name})
+                )
+            continue
+
+        author_name = _mesh_document_attribute(message, "author_name")
+        content: list[AgentTextContent | AgentFileContent] = []
+        if text != "":
+            content.append(AgentTextContent(type="text", text=text))
+        for path in file_paths:
+            content.append(AgentFileContent(type="file", url=path))
+        messages.append(
+            TurnStart(
+                type=AGENT_MESSAGE_TURN_START,
+                thread_id=thread_path,
+                message_id=message_id,
+                content=content,
+            ).model_copy(update={"sender_name": author_name})
+        )
+
+    return messages
+
+
+def _thread_agent_messages_from_storage(thread_storage: object) -> list[AgentMessage]:
+    from meshagent.agents.dataset_thread_storage import DatasetThreadStorage
+    from meshagent.agents.process_thread_adapter import MeshDocumentThreadStorage
+
+    if isinstance(thread_storage, (DatasetThreadStorage, MeshDocumentThreadStorage)):
+        return thread_storage.agent_messages()
+    return []
+
+
+async def _load_thread_agent_messages(
+    *,
+    room: RoomClient,
+    thread_path: str,
+) -> list[AgentMessage]:
+    from meshagent.agents.dataset_thread_storage import DatasetThreadStorage
+
+    normalized_path = thread_path.strip()
+    if normalized_path == "" or normalized_path.startswith("tmp://"):
+        return []
+
+    if normalized_path.startswith("dataset://"):
+        storage = DatasetThreadStorage(room=room, path=normalized_path)
+        await storage.start()
+        try:
+            return storage.agent_messages()
+        finally:
+            await storage.stop()
+
+    document = await room.sync.open(path=normalized_path)
+    try:
+        return _mesh_document_agent_messages(
+            document=document,
+            thread_path=normalized_path,
+        )
+    finally:
+        await room.sync.close(path=normalized_path)
+
+
 class _ProcessRunSession:
     def __init__(
         self,
@@ -258,17 +410,22 @@ class _ProcessRunSession:
         model: str,
         thread_path: str | None,
         thread_storage: "ThreadStorageBackend",
+        agent_name: str | None,
+        thread_dir: str | None,
         current_working_directory: str | None,
     ) -> None:
         from meshagent.cli import ask as ask_module
 
-        thread_id = _process_run_thread_id(
+        self._bot = bot
+        self._thread_id = _process_run_thread_id(
             thread_path=thread_path,
             thread_storage=thread_storage,
+            agent_name=agent_name,
+            thread_dir=thread_dir,
         )
         events = bot._supervisor.subscribe_local_events()
         channel_client = ask_module._LocalAgentMessageChannelClient(
-            thread_path=thread_id,
+            thread_path=self._thread_id,
             send_message=bot._supervisor.send,
             events=events,
             on_close=lambda: bot._supervisor.unsubscribe_local_events(events),
@@ -278,6 +435,7 @@ class _ProcessRunSession:
             model=model,
             current_working_directory=current_working_directory,
         )
+        self._started = False
 
     @property
     def current_working_directory(self) -> str:
@@ -291,6 +449,34 @@ class _ProcessRunSession:
     def queued_message_labels(self) -> tuple[str, ...]:
         return self._session.queued_message_labels
 
+    @property
+    def messages(self):
+        return self._session.messages
+
+    async def start(self) -> None:
+        if self._started:
+            return
+
+        supervisor = self._bot._supervisor
+        await supervisor.route(
+            Message(
+                data=OpenThread(
+                    type=AGENT_MESSAGE_THREAD_OPEN,
+                    thread_id=self._thread_id,
+                )
+            )
+        )
+        for agent_process in supervisor.processes:
+            if agent_process.thread_id != self._thread_id:
+                continue
+            thread_storage = agent_process.thread_storage
+            if thread_storage is None:
+                break
+            for message in _thread_agent_messages_from_storage(thread_storage):
+                self._session.add_agent_message(message)
+            break
+        self._started = True
+
     async def close(self) -> None:
         await self._session.close()
 
@@ -298,17 +484,11 @@ class _ProcessRunSession:
         self,
         *,
         prompt: str,
-        on_delta: Callable[[str], Awaitable[None] | None] | None = None,
-        on_status: Callable[[str | None], None] | None = None,
-        on_usage: Callable[[AgentUsageUpdated], Awaitable[None] | None] | None = None,
-        on_turn_started: Callable[[], Awaitable[None] | None] | None = None,
+        on_message: Callable[[AgentMessage], Awaitable[None] | None] | None = None,
     ) -> str:
         return await self._session.ask(
             prompt=prompt,
-            on_delta=on_delta,
-            on_status=on_status,
-            on_usage=on_usage,
-            on_turn_started=on_turn_started,
+            on_message=on_message,
         )
 
     def steer(
@@ -336,6 +516,8 @@ async def _run_process_run_tui(
     model: str,
     thread_path: str | None,
     thread_storage: "ThreadStorageBackend",
+    agent_name: str | None,
+    thread_dir: str | None,
     message: str | None,
     working_dir: str | None,
 ) -> None:
@@ -346,13 +528,21 @@ async def _run_process_run_tui(
         model=model,
         thread_path=thread_path,
         thread_storage=thread_storage,
+        agent_name=agent_name,
+        thread_dir=thread_dir,
         current_working_directory=working_dir,
     )
     try:
+        await session.start()
         if message is not None:
+
+            def _write_message(agent_message: AgentMessage) -> None:
+                if isinstance(agent_message, AgentTextContentDelta):
+                    click.echo(agent_message.text, nl=False)
+
             await session.ask(
                 prompt=message,
-                on_delta=lambda text: click.echo(text, nl=False),
+                on_message=_write_message,
             )
             click.echo()
             return
@@ -372,20 +562,37 @@ class _ProcessUseChatChannelClient:
         *,
         room: RoomClient,
         participant_name: str,
-        thread_path: str,
+        thread_path: str | None,
+        local_participant_name: str | None = None,
         timeout: float = 30,
     ) -> None:
         self._room = room
         self._participant_name = participant_name
-        self._thread_path = thread_path
+        self._thread_path = _normalized_annotation_string(thread_path)
+        self._local_participant_name = _normalized_annotation_string(
+            local_participant_name
+        )
         self._timeout = timeout
         self._participant: RemoteParticipant | None = None
         self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._thread_status_text: str | None = None
         self._queued_agent_inputs: dict[str, _QueuedAgentInput] = {}
+        self._accepted_input_callback: Callable[[_AcceptedAgentInput], None] | None = (
+            None
+        )
+        self._local_agent_message_ids: set[str] = set()
+        self._local_turn_ids: set[str] = set()
+        self._remote_source_message_ids: set[str] = set()
+        self._remote_turn_output_parts: dict[str, list[str]] = {}
+
+    @property
+    def room(self) -> RoomClient:
+        return self._room
 
     @property
     def thread_path(self) -> str:
+        if self._thread_path is None:
+            raise RoomException("process use chat channel client not started")
         return self._thread_path
 
     @property
@@ -393,8 +600,21 @@ class _ProcessUseChatChannelClient:
         return self._thread_status_text
 
     @property
+    def local_participant_name(self) -> str | None:
+        return self._local_participant_name
+
+    @property
     def queued_message_labels(self) -> tuple[str, ...]:
-        return tuple(item.label for item in self._queued_agent_inputs.values())
+        return tuple(
+            item.label
+            for item in self._queued_agent_inputs.values()
+            if not item.applied
+        )
+
+    def set_accepted_input_callback(
+        self, callback: Callable[[_AcceptedAgentInput], None] | None
+    ) -> None:
+        self._accepted_input_callback = callback
 
     async def __aenter__(self) -> "_ProcessUseChatChannelClient":
         await self.start()
@@ -410,10 +630,17 @@ class _ProcessUseChatChannelClient:
             await self._room.messaging.enable()
         try:
             await self._wait_for_participant()
+            if self._thread_path is None:
+                if self._participant is None:
+                    raise RoomException("process use chat channel client not started")
+                self._thread_path = _participant_chat_thread_path(
+                    participant=self._participant,
+                    participant_name=self._participant_name,
+                )
             await self.send(
                 OpenThread(
                     type=AGENT_MESSAGE_THREAD_OPEN,
-                    thread_id=self._thread_path,
+                    thread_id=self.thread_path,
                 )
             )
         except Exception:
@@ -429,7 +656,7 @@ class _ProcessUseChatChannelClient:
                 await self.send(
                     CloseThread(
                         type=AGENT_MESSAGE_THREAD_CLOSE,
-                        thread_id=self._thread_path,
+                        thread_id=self.thread_path,
                     )
                 )
         finally:
@@ -463,27 +690,153 @@ class _ProcessUseChatChannelClient:
         raw_payload = raw_message.get("payload")
         if not isinstance(raw_payload, dict):
             return
+        if self._thread_path is None:
+            return
         if raw_payload.get("thread_id") != self._thread_path:
             return
         payload_type = raw_payload.get("type")
         if payload_type == AGENT_EVENT_THREAD_STATUS:
             self._thread_status_text = _thread_status_text(raw_payload.get("status"))
-        elif payload_type in (
-            AGENT_EVENT_TURN_START_ACCEPTED,
-            AGENT_EVENT_TURN_STEER_ACCEPTED,
-        ):
+        elif payload_type == AGENT_EVENT_TURN_START_ACCEPTED:
+            if self._is_remote_agent_input(raw_payload):
+                self._track_accepted_input(raw_payload)
+            else:
+                self._track_queued_agent_input(raw_payload)
+        elif payload_type == AGENT_EVENT_TURN_STEER_ACCEPTED:
             self._track_queued_agent_input(raw_payload)
-        elif payload_type in (
-            AGENT_EVENT_TURN_STARTED,
-            AGENT_EVENT_TURN_STEERED,
-        ):
+        elif payload_type == AGENT_EVENT_TURN_STARTED:
             self._mark_queued_agent_input_applied(raw_payload.get("source_message_id"))
+            self._track_local_turn_started(raw_payload)
+            self._track_remote_turn_started(raw_payload)
+        elif payload_type == AGENT_EVENT_TURN_STEERED:
+            self._mark_queued_agent_input_applied(raw_payload.get("source_message_id"))
+        elif payload_type == AGENT_EVENT_TEXT_CONTENT_DELTA:
+            self._track_remote_text_delta(raw_payload)
         elif payload_type == AGENT_EVENT_TURN_STEER_REJECTED:
             self._clear_queued_agent_input(raw_payload.get("source_message_id"))
         elif payload_type == AGENT_EVENT_TURN_ENDED:
+            self._track_remote_turn_ended(raw_payload)
             self._thread_status_text = None
             self.clear_applied_queued_agent_inputs()
-        self._events.put_nowait(raw_payload)
+        should_enqueue = self._should_enqueue_agent_event(raw_payload)
+        if should_enqueue:
+            self._events.put_nowait(raw_payload)
+        if payload_type == AGENT_EVENT_TURN_ENDED:
+            self._clear_local_turn(raw_payload.get("turn_id"))
+
+    def _is_local_source_message(self, source_message_id: object) -> bool:
+        return (
+            isinstance(source_message_id, str)
+            and source_message_id.strip() in self._local_agent_message_ids
+        )
+
+    def _is_local_turn(self, turn_id: object) -> bool:
+        return isinstance(turn_id, str) and turn_id.strip() in self._local_turn_ids
+
+    def _clear_local_turn(self, turn_id: object) -> None:
+        if not isinstance(turn_id, str):
+            return
+        self._local_turn_ids.discard(turn_id.strip())
+
+    def _should_enqueue_agent_event(self, payload: dict[str, Any]) -> bool:
+        payload_type = payload.get("type")
+        if payload_type == AGENT_EVENT_THREAD_STATUS:
+            return True
+        if payload_type in (
+            AGENT_EVENT_TURN_START_ACCEPTED,
+            AGENT_EVENT_TURN_STEER_ACCEPTED,
+            AGENT_EVENT_TURN_STEERED,
+            AGENT_EVENT_TURN_STEER_REJECTED,
+            AGENT_EVENT_TURN_STARTED,
+        ):
+            return self._is_local_source_message(payload.get("source_message_id"))
+        if payload_type in (AGENT_EVENT_TEXT_CONTENT_DELTA, AGENT_EVENT_TURN_ENDED):
+            return self._is_local_turn(payload.get("turn_id"))
+        return True
+
+    def _is_remote_agent_input(self, payload: dict[str, Any]) -> bool:
+        source_message_id = payload.get("source_message_id")
+        if self._is_local_source_message(source_message_id):
+            return False
+
+        return _agent_input_text_from_payload(payload).strip() != ""
+
+    def _track_accepted_input(self, payload: dict[str, Any]) -> None:
+        source_message_id = payload.get("source_message_id")
+        if not isinstance(source_message_id, str) or source_message_id.strip() == "":
+            return
+
+        normalized_source_message_id = source_message_id.strip()
+        self._remote_source_message_ids.add(normalized_source_message_id)
+        text = _agent_input_text_from_payload(payload).strip()
+        if text == "":
+            return
+
+        if self._accepted_input_callback is not None:
+            self._accepted_input_callback(
+                _AcceptedAgentInput(
+                    message_id=normalized_source_message_id,
+                    role=self._role_for_sender(payload.get("sender_name")),
+                    text=text,
+                )
+            )
+
+    def _role_for_sender(self, sender_name: object) -> str:
+        normalized_sender_name = _normalized_annotation_string(sender_name)
+        if normalized_sender_name is None:
+            return "user"
+        if normalized_sender_name == self._local_participant_name:
+            return "you"
+        return normalized_sender_name
+
+    def _track_local_turn_started(self, payload: dict[str, Any]) -> None:
+        if not self._is_local_source_message(payload.get("source_message_id")):
+            return
+        turn_id = payload.get("turn_id")
+        if not isinstance(turn_id, str) or turn_id.strip() == "":
+            return
+        self._local_turn_ids.add(turn_id.strip())
+
+    def _track_remote_turn_started(self, payload: dict[str, Any]) -> None:
+        source_message_id = payload.get("source_message_id")
+        turn_id = payload.get("turn_id")
+        if not isinstance(source_message_id, str) or not isinstance(turn_id, str):
+            return
+        if source_message_id.strip() not in self._remote_source_message_ids:
+            return
+        normalized_turn_id = turn_id.strip()
+        if normalized_turn_id == "":
+            return
+        self._remote_turn_output_parts.setdefault(normalized_turn_id, [])
+
+    def _track_remote_text_delta(self, payload: dict[str, Any]) -> None:
+        turn_id = payload.get("turn_id")
+        text = payload.get("text")
+        if not isinstance(turn_id, str) or not isinstance(text, str):
+            return
+        parts = self._remote_turn_output_parts.get(turn_id.strip())
+        if parts is None:
+            return
+        parts.append(text)
+
+    def _track_remote_turn_ended(self, payload: dict[str, Any]) -> None:
+        turn_id = payload.get("turn_id")
+        if not isinstance(turn_id, str):
+            return
+        normalized_turn_id = turn_id.strip()
+        parts = self._remote_turn_output_parts.pop(normalized_turn_id, None)
+        if parts is None:
+            return
+        text = "".join(parts).strip()
+        if text == "" or self._accepted_input_callback is None:
+            return
+        self._accepted_input_callback(
+            _AcceptedAgentInput(
+                message_id=normalized_turn_id,
+                role=self._participant_name,
+                text=text,
+            )
+        )
 
     def _track_queued_agent_input(self, payload: dict[str, Any]) -> None:
         source_message_id = payload.get("source_message_id")
@@ -533,10 +886,14 @@ class _ProcessUseChatChannelClient:
     async def send(self, payload) -> None:
         if self._participant is None:
             raise RoomException("process use chat channel client not started")
+        payload_json = payload.model_dump(mode="json")
+        message_id = payload_json.get("message_id")
+        if isinstance(message_id, str) and message_id.strip() != "":
+            self._local_agent_message_ids.add(message_id.strip())
         await self._room.messaging.send_message(
             to=self._participant,
             type="agent-message",
-            message={"payload": payload.model_dump(mode="json")},
+            message={"payload": payload_json},
             attachment=None,
         )
 
@@ -558,7 +915,10 @@ class _ChatChannelUseSession:
             client=chat_client,
             model=None,
             current_working_directory=current_working_directory,
+            local_participant_name=chat_client.local_participant_name,
         )
+        chat_client.set_accepted_input_callback(self._add_accepted_input)
+        self._started = False
 
     @property
     def current_working_directory(self) -> str:
@@ -572,24 +932,40 @@ class _ChatChannelUseSession:
     def queued_message_labels(self) -> tuple[str, ...]:
         return self._session.queued_message_labels
 
+    @property
+    def messages(self):
+        return self._session.messages
+
+    def _add_accepted_input(self, input_message: _AcceptedAgentInput) -> None:
+        self._session.add_message(
+            message_id=input_message.message_id,
+            role=input_message.role,
+            text=input_message.text,
+        )
+
+    async def start(self) -> None:
+        if self._started:
+            return
+        for message in await _load_thread_agent_messages(
+            room=self._chat_client.room,
+            thread_path=self._chat_client.thread_path,
+        ):
+            self._session.add_agent_message(message)
+        self._started = True
+
     async def close(self) -> None:
+        self._chat_client.set_accepted_input_callback(None)
         await self._session.close(close_client=False)
 
     async def ask(
         self,
         *,
         prompt: str,
-        on_delta: Callable[[str], Awaitable[None] | None] | None = None,
-        on_status: Callable[[str | None], None] | None = None,
-        on_usage: Callable[[AgentUsageUpdated], Awaitable[None] | None] | None = None,
-        on_turn_started: Callable[[], Awaitable[None] | None] | None = None,
+        on_message: Callable[[AgentMessage], Awaitable[None] | None] | None = None,
     ) -> str:
         return await self._session.ask(
             prompt=prompt,
-            on_delta=on_delta,
-            on_status=on_status,
-            on_usage=on_usage,
-            on_turn_started=on_turn_started,
+            on_message=on_message,
         )
 
     def steer(
@@ -649,17 +1025,12 @@ async def _open_process_use_chat_session(
     chat_client: _ProcessUseChatChannelClient | None = None
     try:
         await user_client.__aenter__()
-        local_user_name = user_client.local_participant.get_attribute("name")
-        resolved_thread_path = thread_path
-        if resolved_thread_path is None:
-            resolved_thread_path = (
-                f".threads/{participant_name}/{local_user_name}.thread"
-            )
-
+        local_participant_name = user_client.local_participant.get_attribute("name")
         chat_client = _ProcessUseChatChannelClient(
             room=user_client,
             participant_name=participant_name,
-            thread_path=resolved_thread_path,
+            thread_path=thread_path,
+            local_participant_name=local_participant_name,
         )
         await chat_client.__aenter__()
         return user_client, chat_client
@@ -692,11 +1063,17 @@ async def _run_process_use_tui(
             thread_path=thread_path,
         )
         session = _ChatChannelUseSession(chat_client=chat_client)
+        await session.start()
 
         if message is not None:
+
+            def _write_message(agent_message: AgentMessage) -> None:
+                if isinstance(agent_message, AgentTextContentDelta):
+                    click.echo(agent_message.text, nl=False)
+
             await session.ask(
                 prompt=message,
-                on_delta=lambda text: click.echo(text, nl=False),
+                on_message=_write_message,
             )
             click.echo()
             return
@@ -1051,6 +1428,54 @@ def _thread_url_for_path(*, scheme: str, path: str) -> str:
 
 def _dataset_thread_url_for_path(*, path: str) -> str:
     return _thread_url_for_path(scheme="dataset", path=path)
+
+
+def _normalized_annotation_string(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+
+    normalized = value.strip()
+    if normalized == "":
+        return None
+
+    return normalized
+
+
+def _chat_thread_path_for_dir(thread_dir: str) -> str:
+    if thread_dir.startswith("dataset://") or thread_dir.startswith("tmp://"):
+        return f"{thread_dir}/main"
+    return f"{thread_dir}/main.thread"
+
+
+def _default_chat_thread_path_for_agent(agent_name: str | None) -> str | None:
+    normalized_agent_name = _normalized_annotation_string(agent_name)
+    if normalized_agent_name is None:
+        return None
+    return f".threads/{normalized_agent_name}/main.thread"
+
+
+def _participant_chat_thread_path(
+    *,
+    participant: RemoteParticipant,
+    participant_name: str,
+) -> str:
+    thread_path = _normalized_annotation_string(
+        participant.get_attribute("meshagent.chatbot.thread-path")
+    )
+    if thread_path is not None:
+        return thread_path
+
+    thread_dir = _normalized_annotation_string(
+        participant.get_attribute("meshagent.chatbot.thread-dir")
+    )
+    if thread_dir is not None:
+        return _chat_thread_path_for_dir(thread_dir)
+
+    default_thread_path = _default_chat_thread_path_for_agent(participant_name)
+    if default_thread_path is not None:
+        return default_thread_path
+
+    return ".threads/main.thread"
 
 
 def _normalized_decision_model(*, decision_model: Optional[str]) -> Optional[str]:
@@ -6324,6 +6749,8 @@ async def run(
                         model=model,
                         thread_path=thread_path,
                         thread_storage=thread_storage,
+                        agent_name=agent_name,
+                        thread_dir=resolved_thread_dir,
                         message=message,
                         working_dir=working_dir,
                     )

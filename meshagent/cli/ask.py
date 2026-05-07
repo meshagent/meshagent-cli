@@ -19,9 +19,11 @@ from rich.markdown import Markdown
 from rich.table import Table
 from meshagent.agents.adapter import LLMAdapter
 from meshagent.agents.messages import (
+    AGENT_EVENT_FILE_CONTENT_DELTA,
     AGENT_EVENT_THREAD_STATUS,
     AGENT_EVENT_TEXT_CONTENT_DELTA,
     AGENT_EVENT_TURN_ENDED,
+    AGENT_EVENT_TURN_START_ACCEPTED,
     AGENT_EVENT_TURN_STEER_ACCEPTED,
     AGENT_EVENT_TURN_STEER_REJECTED,
     AGENT_EVENT_TURN_STEERED,
@@ -30,6 +32,9 @@ from meshagent.agents.messages import (
     AGENT_MESSAGE_TURN_INTERRUPT,
     AGENT_MESSAGE_TURN_START,
     AGENT_MESSAGE_TURN_STEER,
+    AgentFileContent,
+    AgentFileContentDelta,
+    AgentMessage,
     AgentTextContent,
     AgentTextContentDelta,
     AgentThreadStatus,
@@ -37,6 +42,7 @@ from meshagent.agents.messages import (
     TurnEnded,
     TurnInterrupt,
     TurnStart,
+    TurnStartAccepted,
     TurnStarted,
     TurnSteer,
     TurnSteerAccepted,
@@ -73,6 +79,21 @@ _ASK_TERMINAL_STATUS_STATES = {
 app = async_typer.AsyncTyper(no_args_is_help=False)
 
 
+@dataclass(frozen=True, slots=True)
+class _AskConversationMessage:
+    message_id: str
+    role: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingSteerCallback:
+    prompt: str
+    on_accepted: Callable[[], Awaitable[None] | None] | None
+    on_applied: Callable[[], Awaitable[None] | None] | None
+    on_rejected: Callable[[RoomException], Awaitable[None] | None] | None
+
+
 @runtime_checkable
 class _AskExternalThreadState(Protocol):
     @property
@@ -80,6 +101,9 @@ class _AskExternalThreadState(Protocol):
 
     @property
     def queued_message_labels(self) -> tuple[str, ...]: ...
+
+    @property
+    def messages(self) -> tuple[_AskConversationMessage, ...]: ...
 
 
 class _AgentMessageChannelClient(Protocol):
@@ -125,6 +149,14 @@ def _thread_status_text(status: object) -> str | None:
 async def _maybe_await(callback_result: Any) -> None:
     if inspect.isawaitable(callback_result):
         await callback_result
+
+
+async def _emit_agent_message(
+    callback: Callable[[AgentMessage], Awaitable[None] | None] | None,
+    message: AgentMessage,
+) -> None:
+    if callback is not None:
+        await _maybe_await(callback(message))
 
 
 def _consume_task_exception(task: asyncio.Task[Any]) -> None:
@@ -331,22 +363,25 @@ class _AgentMessageSession:
         client: _AgentMessageChannelClient,
         model: str | None,
         current_working_directory: str | None = None,
+        local_participant_name: str | None = None,
     ) -> None:
         self._client = client
         self._model = model
         self._current_working_directory = os.path.abspath(
             current_working_directory or os.getcwd()
         )
+        self._local_participant_name = (
+            local_participant_name.strip()
+            if isinstance(local_participant_name, str)
+            and local_participant_name.strip() != ""
+            else None
+        )
         self._active_turn_id: str | None = None
         self._thread_status_text: str | None = None
-        self._pending_steer_callbacks: dict[
-            str,
-            tuple[
-                Callable[[], Awaitable[None] | None] | None,
-                Callable[[], Awaitable[None] | None] | None,
-                Callable[[RoomException], Awaitable[None] | None] | None,
-            ],
-        ] = {}
+        self._messages: list[_AskConversationMessage] = []
+        self._message_ids: set[str] = set()
+        self._pending_input_messages: dict[str, _AskConversationMessage] = {}
+        self._pending_steer_callbacks: dict[str, _PendingSteerCallback] = {}
 
     @property
     def current_working_directory(self) -> str:
@@ -362,6 +397,104 @@ class _AgentMessageSession:
     def queued_message_labels(self) -> tuple[str, ...]:
         return self._client.queued_message_labels
 
+    @property
+    def messages(self) -> tuple[_AskConversationMessage, ...]:
+        return tuple(self._messages)
+
+    def add_message(self, *, message_id: str, role: str, text: str) -> None:
+        normalized_message_id = message_id.strip()
+        normalized_text = text.strip()
+        if normalized_message_id == "" or normalized_text == "":
+            return
+        if normalized_message_id in self._message_ids:
+            return
+        self._message_ids.add(normalized_message_id)
+        self._messages.append(
+            _AskConversationMessage(
+                message_id=normalized_message_id,
+                role=role.strip() or "user",
+                text=normalized_text,
+            )
+        )
+
+    def add_agent_message(self, message: AgentMessage | dict[str, Any]) -> None:
+        if isinstance(message, AgentMessage):
+            payload = message.model_dump(mode="json")
+        else:
+            payload = message
+
+        event_type = payload.get("type")
+        if event_type in {AGENT_MESSAGE_TURN_START, AGENT_MESSAGE_TURN_STEER}:
+            message_id = payload.get("message_id")
+            if not isinstance(message_id, str):
+                return
+            text = self._agent_input_content_text(payload.get("content"))
+            if text == "":
+                return
+            sender_name = payload.get("sender_name")
+            role = self._role_for_sender(sender_name, default="user")
+            self.add_message(message_id=message_id, role=role, text=text)
+            return
+
+        if event_type == AGENT_EVENT_TEXT_CONTENT_DELTA:
+            text_delta = AgentTextContentDelta.model_validate(payload)
+            sender_name = payload.get("sender_name")
+            role = self._role_for_sender(sender_name, default="assistant")
+            self.add_message(
+                message_id=text_delta.item_id,
+                role=role,
+                text=text_delta.text,
+            )
+            return
+
+        if event_type == AGENT_EVENT_FILE_CONTENT_DELTA:
+            file_delta = AgentFileContentDelta.model_validate(payload)
+            sender_name = payload.get("sender_name")
+            role = self._role_for_sender(sender_name, default="assistant")
+            self.add_message(
+                message_id=file_delta.item_id,
+                role=role,
+                text=f"[attachment] {file_delta.url}",
+            )
+
+    def _role_for_sender(self, sender_name: object, *, default: str) -> str:
+        if not isinstance(sender_name, str):
+            return default
+        normalized_sender_name = sender_name.strip()
+        if normalized_sender_name == "":
+            return default
+        if normalized_sender_name == self._local_participant_name:
+            return "you"
+        return normalized_sender_name
+
+    @staticmethod
+    def _agent_input_content_text(content: object) -> str:
+        if not isinstance(content, list):
+            return ""
+
+        text_parts: list[str] = []
+        for item in content:
+            if isinstance(item, AgentTextContent) and item.text.strip() != "":
+                text_parts.append(item.text)
+                continue
+            if isinstance(item, AgentFileContent) and item.url.strip() != "":
+                text_parts.append(f"[attachment] {item.url}")
+                continue
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type")
+            if item_type == "text":
+                text = item.get("text")
+                if isinstance(text, str) and text.strip() != "":
+                    text_parts.append(text)
+                continue
+            if item_type == "file":
+                url = item.get("url")
+                if isinstance(url, str) and url.strip() != "":
+                    text_parts.append(f"[attachment] {url}")
+
+        return "\n\n".join(text_parts).strip()
+
     async def close(self, *, close_client: bool = True) -> None:
         self._pending_steer_callbacks.clear()
         if close_client:
@@ -371,10 +504,7 @@ class _AgentMessageSession:
         self,
         *,
         prompt: str,
-        on_delta: Callable[[str], Awaitable[None] | None] | None = None,
-        on_status: Callable[[str | None], None] | None = None,
-        on_usage: Callable[[AgentUsageUpdated], Awaitable[None] | None] | None = None,
-        on_turn_started: Callable[[], Awaitable[None] | None] | None = None,
+        on_message: Callable[[AgentMessage], Awaitable[None] | None] | None = None,
     ) -> str:
         turn_start_args: dict[str, Any] = {
             "type": AGENT_MESSAGE_TURN_START,
@@ -390,8 +520,19 @@ class _AgentMessageSession:
             turn_start_args["model"] = self._model
 
         turn_start = TurnStart.model_validate(turn_start_args)
-        if on_status is not None:
-            on_status("Working")
+        self._pending_input_messages[turn_start.message_id] = _AskConversationMessage(
+            message_id=turn_start.message_id,
+            role="you",
+            text=prompt,
+        )
+        await _emit_agent_message(
+            on_message,
+            AgentThreadStatus(
+                type=AGENT_EVENT_THREAD_STATUS,
+                thread_id=self._client.thread_path,
+                status="Working",
+            ),
+        )
         await self._client.send(turn_start)
 
         output_parts: list[str] = []
@@ -403,13 +544,20 @@ class _AgentMessageSession:
                     continue
                 event_type = payload.get("type")
 
+                if event_type == AGENT_EVENT_TURN_START_ACCEPTED:
+                    self._add_accepted_agent_input(payload)
+                    await _emit_agent_message(
+                        on_message,
+                        TurnStartAccepted.model_validate(payload),
+                    )
+                    continue
+
                 if event_type == AGENT_EVENT_TURN_STARTED:
                     turn_started = TurnStarted.model_validate(payload)
                     if turn_started.source_message_id == turn_start.message_id:
                         active_turn_id = turn_started.turn_id
                         self._active_turn_id = active_turn_id
-                        if on_turn_started is not None:
-                            await _maybe_await(on_turn_started())
+                        await _emit_agent_message(on_message, turn_started)
                     continue
 
                 if event_type == AGENT_EVENT_TURN_STEER_ACCEPTED:
@@ -419,9 +567,9 @@ class _AgentMessageSession:
                     )
                     if pending_callbacks is None:
                         continue
-                    accepted_callback, _, _ = pending_callbacks
-                    if accepted_callback is not None:
-                        await _maybe_await(accepted_callback())
+                    if pending_callbacks.on_accepted is not None:
+                        await _maybe_await(pending_callbacks.on_accepted())
+                    await _emit_agent_message(on_message, steer_accepted)
                     continue
 
                 if event_type == AGENT_EVENT_TURN_STEERED:
@@ -431,9 +579,14 @@ class _AgentMessageSession:
                     )
                     if pending_callbacks is None:
                         continue
-                    _, applied_callback, _ = pending_callbacks
-                    if applied_callback is not None:
-                        await _maybe_await(applied_callback())
+                    self.add_message(
+                        message_id=steer_applied.source_message_id,
+                        role="you",
+                        text=pending_callbacks.prompt,
+                    )
+                    if pending_callbacks.on_applied is not None:
+                        await _maybe_await(pending_callbacks.on_applied())
+                    await _emit_agent_message(on_message, steer_applied)
                     continue
 
                 if event_type == AGENT_EVENT_TURN_STEER_REJECTED:
@@ -443,16 +596,16 @@ class _AgentMessageSession:
                     )
                     if pending_callbacks is None:
                         continue
-                    _, _, rejected_callback = pending_callbacks
-                    if rejected_callback is not None:
+                    if pending_callbacks.on_rejected is not None:
                         await _maybe_await(
-                            rejected_callback(
+                            pending_callbacks.on_rejected(
                                 RoomException(
                                     steer_rejected.error.message,
                                     code=steer_rejected.error.code,
                                 )
                             )
                         )
+                    await _emit_agent_message(on_message, steer_rejected)
                     continue
 
                 if event_type == AGENT_EVENT_THREAD_STATUS:
@@ -463,8 +616,7 @@ class _AgentMessageSession:
                     ):
                         continue
                     self._thread_status_text = _thread_status_text(thread_status.status)
-                    if on_status is not None:
-                        on_status(self._thread_status_text or "Working")
+                    await _emit_agent_message(on_message, thread_status)
                     continue
 
                 if event_type == AGENT_EVENT_TEXT_CONTENT_DELTA:
@@ -475,8 +627,7 @@ class _AgentMessageSession:
                     ):
                         continue
                     output_parts.append(text_delta.text)
-                    if on_delta is not None:
-                        await _maybe_await(on_delta(text_delta.text))
+                    await _emit_agent_message(on_message, text_delta)
                     continue
 
                 if event_type == AGENT_EVENT_USAGE_UPDATED:
@@ -486,8 +637,7 @@ class _AgentMessageSession:
                         active_turn_id,
                     ):
                         continue
-                    if on_usage is not None:
-                        await _maybe_await(on_usage(usage_update))
+                    await _emit_agent_message(on_message, usage_update)
                     continue
 
                 if event_type == AGENT_EVENT_TURN_ENDED:
@@ -502,14 +652,54 @@ class _AgentMessageSession:
                             turn_ended.error.message,
                             code=turn_ended.error.code,
                         )
+                    await _emit_agent_message(on_message, turn_ended)
                     return "".join(output_parts)
         finally:
             self._active_turn_id = None
             self._pending_steer_callbacks.clear()
+            self._pending_input_messages.clear()
             self._thread_status_text = None
             self._client.clear_applied_queued_agent_inputs()
-            if on_status is not None:
-                on_status(None)
+            await _emit_agent_message(
+                on_message,
+                AgentThreadStatus(
+                    type=AGENT_EVENT_THREAD_STATUS,
+                    thread_id=self._client.thread_path,
+                    status=None,
+                ),
+            )
+
+    def _add_accepted_agent_input(self, payload: dict[str, Any]) -> None:
+        source_message_id = payload.get("source_message_id")
+        if not isinstance(source_message_id, str):
+            return
+
+        pending_input = self._pending_input_messages.pop(source_message_id, None)
+        if pending_input is not None:
+            self.add_message(
+                message_id=pending_input.message_id,
+                role=pending_input.role,
+                text=pending_input.text,
+            )
+            return
+
+        text_parts: list[str] = []
+        content = payload.get("content")
+        if isinstance(content, list):
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") != "text":
+                    continue
+                text = item.get("text")
+                if isinstance(text, str) and text.strip() != "":
+                    text_parts.append(text)
+        text = "\n\n".join(text_parts).strip()
+        if text == "":
+            return
+
+        role = self._role_for_sender(payload.get("sender_name"), default="user")
+        self.add_message(message_id=source_message_id, role=role, text=text)
 
     def steer(
         self,
@@ -533,10 +723,11 @@ class _AgentMessageSession:
                 )
             ],
         )
-        self._pending_steer_callbacks[turn_steer.message_id] = (
-            on_accepted,
-            on_applied,
-            on_rejected,
+        self._pending_steer_callbacks[turn_steer.message_id] = _PendingSteerCallback(
+            prompt=prompt,
+            on_accepted=on_accepted,
+            on_applied=on_applied,
+            on_rejected=on_rejected,
         )
 
         async def _send_steer() -> None:
@@ -622,6 +813,18 @@ class _AskSession:
     def current_working_directory(self) -> str:
         return self._session.current_working_directory
 
+    @property
+    def thread_status_text(self) -> str | None:
+        return self._session.thread_status_text
+
+    @property
+    def queued_message_labels(self) -> tuple[str, ...]:
+        return self._session.queued_message_labels
+
+    @property
+    def messages(self) -> tuple[_AskConversationMessage, ...]:
+        return self._session.messages
+
     async def __aenter__(self) -> _AskSession:
         await self.start()
         return self
@@ -641,21 +844,27 @@ class _AskSession:
         self,
         *,
         prompt: str,
-        on_delta: Callable[[str], Awaitable[None] | None] | None = None,
-        on_status: Callable[[str | None], None] | None = None,
-        on_usage: Callable[[AgentUsageUpdated], Awaitable[None] | None] | None = None,
-        on_turn_started: Callable[[], Awaitable[None] | None] | None = None,
+        on_message: Callable[[AgentMessage], Awaitable[None] | None] | None = None,
     ) -> str:
+        async def _handle_adapter_status(status: str) -> None:
+            await _emit_agent_message(
+                on_message,
+                AgentThreadStatus(
+                    type=AGENT_EVENT_THREAD_STATUS,
+                    thread_id=self._thread_id,
+                    status=status,
+                ),
+            )
+
         self._status_adapter.set_status_callback(
-            None if on_status is None else lambda status: on_status(status)
+            None
+            if on_message is None
+            else lambda status: asyncio.create_task(_handle_adapter_status(status))
         )
         try:
             return await self._session.ask(
                 prompt=prompt,
-                on_delta=on_delta,
-                on_status=on_status,
-                on_usage=on_usage,
-                on_turn_started=on_turn_started,
+                on_message=on_message,
             )
         finally:
             self._status_adapter.set_status_callback(None)
@@ -839,7 +1048,7 @@ async def _run_ask_process(
     prompt: str,
     model: str,
     llm_adapter: LLMAdapter,
-    on_delta: Callable[[str], Awaitable[None] | None] | None = None,
+    on_message: Callable[[AgentMessage], Awaitable[None] | None] | None = None,
 ) -> str:
     with _suppress_ask_process_logs():
         async with _AskSession(
@@ -847,7 +1056,7 @@ async def _run_ask_process(
             llm_adapter=llm_adapter,
             interactive=False,
         ) as session:
-            return await session.ask(prompt=prompt, on_delta=on_delta)
+            return await session.ask(prompt=prompt, on_message=on_message)
 
 
 def _is_cancelled_turn_error(error: Exception) -> bool:
@@ -1092,6 +1301,7 @@ async def _run_ask_tui(
             self._pending = False
             self._queued_turns: list[_QueuedAskTurn] = []
             self._external_queued_messages: list[str] = []
+            self._rendered_session_message_ids: set[str] = set()
             self._external_thread_active = False
             self._active_assistant_entry: _AskFeedEntry | None = None
             self._status_text: str | None = None
@@ -1197,8 +1407,6 @@ async def _run_ask_tui(
             self._start_turn(prompt=prompt)
 
         def _start_turn(self, *, prompt: str) -> None:
-            user_entry = _AskFeedEntry(role="you", text=prompt)
-            self._entries.append(user_entry)
             self._pending = True
             self._begin_active_assistant()
             self._status_started_at = time.monotonic()
@@ -1237,10 +1445,7 @@ async def _run_ask_tui(
             try:
                 await self._session.ask(
                     prompt=prompt,
-                    on_delta=self._append_delta,
-                    on_status=self._set_status_text,
-                    on_usage=self._set_usage,
-                    on_turn_started=self._dispatch_pending_queued_turns,
+                    on_message=self._handle_agent_message,
                 )
             except asyncio.CancelledError:
                 raise
@@ -1253,8 +1458,8 @@ async def _run_ask_tui(
                 await self._stop_active_assistant_stream()
                 self._pending = False
                 self._active_assistant_entry = None
+                self._sync_session_messages()
                 self._finalize_active_assistant()
-                self._promote_accepted_queued_turns()
                 self._render_feed()
                 self._status_started_at = None
                 self._set_status_text(None)
@@ -1278,22 +1483,6 @@ async def _run_ask_tui(
                     )
                 )
             self._active_assistant_text = ""
-
-        def _promote_accepted_queued_turns(self) -> None:
-            accepted_turns = [
-                queued_turn
-                for queued_turn in self._queued_turns
-                if queued_turn.accepted
-            ]
-            if len(accepted_turns) == 0:
-                return
-            self._queued_turns = [
-                queued_turn
-                for queued_turn in self._queued_turns
-                if not queued_turn.accepted
-            ]
-            for queued_turn in accepted_turns:
-                self._entries.append(_AskFeedEntry(role="you", text=queued_turn.prompt))
 
         async def _dispatch_pending_queued_turns(self) -> None:
             for queued_turn in self._queued_turns:
@@ -1322,10 +1511,6 @@ async def _run_ask_tui(
 
         def _accept_queued_turn(self, queued_turn: _QueuedAskTurn) -> None:
             queued_turn.accepted = True
-            if not self._pending:
-                self._promote_accepted_queued_turns()
-                self._render_feed()
-                self._scroll_to_end()
             self._render_turn_queue()
 
         async def _apply_queued_turn(self, queued_turn: _QueuedAskTurn) -> None:
@@ -1334,11 +1519,11 @@ async def _run_ask_tui(
             await self._stop_active_assistant_stream()
             self._finalize_active_assistant()
             self._queued_turns.remove(queued_turn)
-            self._entries.append(_AskFeedEntry(role="you", text=queued_turn.prompt))
+            self._render_turn_queue()
+            self._sync_session_messages()
             self._render_feed()
             if self._pending:
                 self._begin_active_assistant()
-            self._render_turn_queue()
             self._scroll_to_end()
 
         def _reject_queued_turn(
@@ -1369,6 +1554,19 @@ async def _run_ask_tui(
             if self._active_assistant_stream is not None:
                 await self._active_assistant_stream.write(text)
             self._scroll_to_end()
+
+        async def _handle_agent_message(self, message: AgentMessage) -> None:
+            if isinstance(message, TurnStarted):
+                await self._dispatch_pending_queued_turns()
+                return
+            if isinstance(message, AgentThreadStatus):
+                self._set_status_text(_thread_status_text(message.status))
+                return
+            if isinstance(message, AgentTextContentDelta):
+                await self._append_delta(message.text)
+                return
+            if isinstance(message, AgentUsageUpdated):
+                self._set_usage(message)
 
         def _resize_input(self, input_view: TextArea) -> None:
             if input_view.text == "":
@@ -1432,6 +1630,30 @@ async def _run_ask_tui(
                 self._render_status_line()
             if status_changed or queue_changed:
                 self._render_turn_queue()
+            self._sync_session_messages()
+
+        def _sync_session_messages(self) -> None:
+            if not isinstance(self._session, _AskExternalThreadState):
+                return
+            queued_message_ids = {
+                queued_turn.message_id
+                for queued_turn in self._queued_turns
+                if queued_turn.message_id is not None
+            }
+            changed = False
+            for message in self._session.messages:
+                if message.message_id in self._rendered_session_message_ids:
+                    continue
+                if message.message_id in queued_message_ids:
+                    continue
+                self._rendered_session_message_ids.add(message.message_id)
+                self._entries.append(
+                    _AskFeedEntry(role=message.role, text=message.text)
+                )
+                changed = True
+            if changed:
+                self._render_feed()
+                self._scroll_to_end()
 
         def _set_usage(self, usage_update: AgentUsageUpdated) -> None:
             total_tokens = usage_update.usage.get("total_tokens")
@@ -1785,16 +2007,17 @@ async def ask(
 
     wrote_output = False
 
-    def _write_delta(text: str) -> None:
+    def _write_message(message: AgentMessage) -> None:
         nonlocal wrote_output
-        wrote_output = True
-        click.echo(text, nl=False)
+        if isinstance(message, AgentTextContentDelta):
+            wrote_output = True
+            click.echo(message.text, nl=False)
 
     result = await _run_ask_process(
         prompt=message,
         model=model,
         llm_adapter=llm_adapter,
-        on_delta=_write_delta,
+        on_message=_write_message,
     )
     if wrote_output:
         click.echo()
