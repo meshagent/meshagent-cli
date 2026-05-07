@@ -8,13 +8,20 @@ import pytest
 
 from meshagent.agents.context import AgentSessionContext
 from meshagent.agents.messages import (
+    AGENT_EVENT_THREAD_STATUS,
     AGENT_EVENT_TEXT_CONTENT_DELTA,
     AGENT_EVENT_TURN_ENDED,
+    AGENT_EVENT_TURN_START_ACCEPTED,
     AGENT_EVENT_TURN_STARTED,
+    AGENT_MESSAGE_THREAD_CLOSE,
+    AGENT_MESSAGE_THREAD_OPEN,
     AGENT_MESSAGE_TURN_START,
     AGENT_MESSAGE_TURN_STEER,
     AgentTextContentDelta,
     AgentTextContent,
+    AgentThreadStatus,
+    CloseThread,
+    OpenThread,
     TurnEnded,
     TurnStart,
     TurnStarted,
@@ -22,7 +29,7 @@ from meshagent.agents.messages import (
 )
 from meshagent.agents.process import Message
 from meshagent.agents.thread_status_publisher import (
-    thread_status_attribute_path_suffix,
+    AgentMessageThreadStatusPublisher,
 )
 from meshagent.api import RoomClient
 from meshagent.api.specs.service import ContainerSpec, ServiceMetadata, ServiceSpec
@@ -1129,6 +1136,34 @@ async def test_process_run_starts_room_agent_and_uses_ask_tui(
     assert captured["account_closed"] is True
 
 
+def test_process_run_thread_id_uses_dataset_scheme_for_dataset_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(process.uuid, "uuid4", lambda: "fixed-id")
+
+    assert (
+        process._process_run_thread_id(
+            thread_path=None,
+            thread_storage="dataset",
+        )
+        == "dataset://process-run/fixed-id"
+    )
+    assert (
+        process._process_run_thread_id(
+            thread_path="/threads/custom",
+            thread_storage="dataset",
+        )
+        == "dataset://threads/custom"
+    )
+    assert (
+        process._process_run_thread_id(
+            thread_path="dataset://threads/custom",
+            thread_storage="dataset",
+        )
+        == "dataset://threads/custom"
+    )
+
+
 @pytest.mark.asyncio
 async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -> None:
     from meshagent.cli import ask as ask_module
@@ -1169,6 +1204,92 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
     assert captured["title"] == "meshagent process run"
     assert captured["session"].current_working_directory == "/tmp"
     assert bot._supervisor.unsubscribed_queue is bot._supervisor.subscribed_queue
+
+
+@pytest.mark.asyncio
+async def test_process_run_session_uses_thread_status_messages() -> None:
+    class _DummySupervisor:
+        def __init__(self) -> None:
+            self.events: asyncio.Queue[Message] = asyncio.Queue()
+            self.sent_messages: list[Message] = []
+
+        def subscribe_local_events(self):
+            return self.events
+
+        def unsubscribe_local_events(self, queue) -> None:
+            assert queue is self.events
+
+        def send(self, message: Message) -> None:
+            self.sent_messages.append(message)
+            if isinstance(message.data, TurnStart):
+                self.events.put_nowait(
+                    Message(
+                        data=AgentThreadStatus(
+                            type=AGENT_EVENT_THREAD_STATUS,
+                            thread_id=message.data.thread_id,
+                            status="Planning",
+                        )
+                    )
+                )
+                self.events.put_nowait(
+                    Message(
+                        data=TurnStarted(
+                            type=AGENT_EVENT_TURN_STARTED,
+                            thread_id=message.data.thread_id,
+                            turn_id="turn-1",
+                            source_message_id=message.data.message_id,
+                        )
+                    )
+                )
+                self.events.put_nowait(
+                    Message(
+                        data=AgentThreadStatus(
+                            type=AGENT_EVENT_THREAD_STATUS,
+                            thread_id=message.data.thread_id,
+                            turn_id="turn-1",
+                            status="Running tools",
+                        )
+                    )
+                )
+                self.events.put_nowait(
+                    Message(
+                        data=AgentTextContentDelta(
+                            type=AGENT_EVENT_TEXT_CONTENT_DELTA,
+                            thread_id=message.data.thread_id,
+                            turn_id="turn-1",
+                            item_id="text-1",
+                            text="local response",
+                        )
+                    )
+                )
+                self.events.put_nowait(
+                    Message(
+                        data=TurnEnded(
+                            type=AGENT_EVENT_TURN_ENDED,
+                            thread_id=message.data.thread_id,
+                            turn_id="turn-1",
+                            error=None,
+                        )
+                    )
+                )
+
+    class _DummyBot:
+        def __init__(self) -> None:
+            self._supervisor = _DummySupervisor()
+
+    session = process._ProcessRunSession(
+        bot=_DummyBot(),
+        model="gpt-5.5",
+        thread_path="/threads/process-run.thread",
+        thread_storage="meshdocument",
+        current_working_directory="/tmp",
+    )
+    statuses: list[str | None] = []
+
+    result = await session.ask(prompt="hello local", on_status=statuses.append)
+
+    assert result == "local response"
+    assert statuses == ["Working", "Planning", "Running tools", None]
 
 
 @pytest.mark.asyncio
@@ -1414,6 +1535,198 @@ async def test_process_use_tui_uses_chat_channel_session(
     assert room_client.exit_calls == 1
 
 
+@pytest.mark.asyncio
+async def test_process_chat_channel_session_uses_thread_status_messages() -> None:
+    class _DummyChatClient:
+        def __init__(self) -> None:
+            self.thread_path = "/threads/remote.thread"
+            self.sent_payloads: list[object] = []
+            self.events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+
+        async def send(self, payload) -> None:
+            self.sent_payloads.append(payload)
+            if isinstance(payload, TurnStart):
+                self.events.put_nowait(
+                    AgentThreadStatus(
+                        type=AGENT_EVENT_THREAD_STATUS,
+                        thread_id=payload.thread_id,
+                        status="Searching files",
+                    ).model_dump(mode="json")
+                )
+                self.events.put_nowait(
+                    TurnStarted(
+                        type=AGENT_EVENT_TURN_STARTED,
+                        thread_id=payload.thread_id,
+                        turn_id="turn-1",
+                        source_message_id=payload.message_id,
+                    ).model_dump(mode="json")
+                )
+                self.events.put_nowait(
+                    AgentThreadStatus(
+                        type=AGENT_EVENT_THREAD_STATUS,
+                        thread_id=payload.thread_id,
+                        turn_id="turn-1",
+                        status="Editing file",
+                    ).model_dump(mode="json")
+                )
+                self.events.put_nowait(
+                    AgentTextContentDelta(
+                        type=AGENT_EVENT_TEXT_CONTENT_DELTA,
+                        thread_id=payload.thread_id,
+                        turn_id="turn-1",
+                        item_id="text-1",
+                        text="remote response",
+                    ).model_dump(mode="json")
+                )
+                self.events.put_nowait(
+                    TurnEnded(
+                        type=AGENT_EVENT_TURN_ENDED,
+                        thread_id=payload.thread_id,
+                        turn_id="turn-1",
+                        error=None,
+                    ).model_dump(mode="json")
+                )
+
+        async def receive(self) -> dict[str, object]:
+            return await self.events.get()
+
+        def clear_applied_queued_agent_inputs(self) -> None:
+            pass
+
+    chat_client = _DummyChatClient()
+
+    session = process._ChatChannelUseSession(chat_client=chat_client)
+    statuses: list[str | None] = []
+
+    result = await session.ask(
+        prompt="hello remote",
+        on_status=statuses.append,
+    )
+
+    assert result == "remote response"
+    assert statuses == ["Working", "Searching files", "Editing file", None]
+
+
+@pytest.mark.asyncio
+async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() -> None:
+    class _Participant:
+        id = "agent-1"
+
+        def get_attribute(self, name: str):
+            if name == "name":
+                return "remote-helper"
+            return None
+
+    class _Messaging:
+        def __init__(self) -> None:
+            self.is_enabled = True
+            self.handlers: list[object] = []
+            self.sent_payloads: list[object] = []
+            self.participant = _Participant()
+
+        def on(self, event: str, handler) -> None:
+            assert event == "message"
+            self.handlers.append(handler)
+
+        def off(self, event: str, handler) -> None:
+            assert event == "message"
+            self.handlers.remove(handler)
+
+        def get_participants(self) -> list[_Participant]:
+            return [self.participant]
+
+        async def enable(self) -> None:
+            self.is_enabled = True
+
+        async def send_message(
+            self,
+            *,
+            to,
+            type: str,
+            message: dict[str, object],
+            attachment,
+        ) -> None:
+            assert to is self.participant
+            assert type == "agent-message"
+            assert attachment is None
+            self.sent_payloads.append(message["payload"])
+
+    class _Room:
+        def __init__(self) -> None:
+            self.messaging = _Messaging()
+
+    class _RoomMessage:
+        from_participant_id = "agent-1"
+        type = "agent-message"
+
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.message = {"payload": payload}
+
+    room = _Room()
+    client = process._ProcessUseChatChannelClient(
+        room=room,
+        participant_name="remote-helper",
+        thread_path="/threads/remote.thread",
+        timeout=0.1,
+    )
+
+    await client.start()
+    assert isinstance(
+        OpenThread.model_validate(room.messaging.sent_payloads[0]), OpenThread
+    )
+    assert room.messaging.sent_payloads[0]["type"] == AGENT_MESSAGE_THREAD_OPEN
+
+    status_payload = AgentThreadStatus(
+        type=AGENT_EVENT_THREAD_STATUS,
+        thread_id="/threads/remote.thread",
+        status="Reviewing changes",
+    ).model_dump(mode="json")
+    room.messaging.handlers[0](_RoomMessage(status_payload))
+
+    assert client.thread_status_text == "Reviewing changes"
+    assert await client.receive() == status_payload
+
+    accepted_payload = {
+        "type": AGENT_EVENT_TURN_START_ACCEPTED,
+        "thread_id": "/threads/remote.thread",
+        "source_message_id": "message-1",
+        "sender_name": "self",
+        "content": [{"type": "text", "text": "queued prompt"}],
+    }
+    room.messaging.handlers[0](_RoomMessage(accepted_payload))
+
+    assert client.queued_message_labels == ("self: queued prompt",)
+    assert await client.receive() == accepted_payload
+
+    applied_payload = {
+        "type": AGENT_EVENT_TURN_STARTED,
+        "thread_id": "/threads/remote.thread",
+        "turn_id": "turn-1",
+        "source_message_id": "message-1",
+    }
+    room.messaging.handlers[0](_RoomMessage(applied_payload))
+
+    assert client.queued_message_labels == ("self: queued prompt",)
+    assert await client.receive() == applied_payload
+
+    ended_payload = {
+        "type": AGENT_EVENT_TURN_ENDED,
+        "thread_id": "/threads/remote.thread",
+        "turn_id": "turn-1",
+    }
+    room.messaging.handlers[0](_RoomMessage(ended_payload))
+
+    assert client.queued_message_labels == ()
+    assert await client.receive() == ended_payload
+
+    await client.stop()
+    assert isinstance(
+        CloseThread.model_validate(room.messaging.sent_payloads[-1]),
+        CloseThread,
+    )
+    assert room.messaging.sent_payloads[-1]["type"] == AGENT_MESSAGE_THREAD_CLOSE
+
+
 class _FakeRoomClient:
     def __init__(self) -> None:
         self.enter_calls = 0
@@ -1591,6 +1904,10 @@ class _SteeringRecordingAdapter:
 
     def set_tool_call_approval_handler(self, handler) -> None:
         self.tool_call_approval_handler = handler
+
+    def needs_compaction(self, *, context: AgentSessionContext) -> bool:
+        del context
+        return False
 
     def make_agent_event_publisher(
         self,
@@ -1828,39 +2145,7 @@ async def test_build_process_agent_uses_selected_dataset_thread_storage(
         status_publisher = process_state.thread_status_publisher
         assert isinstance(
             status_publisher,
-            agents_module.ParticipantAttributeThreadStatusPublisher,
-        )
-        await status_publisher.set_thread_status(
-            status="Generating image",
-            pending_item_id="image-1",
-        )
-        status_suffix = thread_status_attribute_path_suffix(
-            path="dataset://threads/example"
-        )
-        assert (
-            room.local_participant.attributes[f"thread.status.{status_suffix}"]
-            == "Generating image"
-        )
-        assert (
-            room.local_participant.attributes[
-                f"thread.status.pending_item_id.{status_suffix}"
-            ]
-            == "image-1"
-        )
-        assert "thread.status.threads/example" not in room.local_participant.attributes
-        assert (
-            "thread.status.pending_item_id.threads/example"
-            not in room.local_participant.attributes
-        )
-        await status_publisher.set_thread_status(
-            status="Generating image",
-            pending_item_id="image-2",
-        )
-        assert (
-            room.local_participant.attributes[
-                f"thread.status.pending_item_id.{status_suffix}"
-            ]
-            == "image-2"
+            AgentMessageThreadStatusPublisher,
         )
     finally:
         await agent.stop()
@@ -1908,15 +2193,7 @@ async def test_build_process_agent_can_disable_thread_storage(
         status_publisher = process_state.thread_status_publisher
         assert isinstance(
             status_publisher,
-            agents_module.ParticipantAttributeThreadStatusPublisher,
-        )
-        await status_publisher.set_thread_status(status="Thinking")
-        status_suffix = thread_status_attribute_path_suffix(
-            path="tmp://threads/example"
-        )
-        assert (
-            room.local_participant.attributes[f"thread.status.{status_suffix}"]
-            == "Thinking"
+            AgentMessageThreadStatusPublisher,
         )
     finally:
         await agent.stop()
