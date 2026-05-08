@@ -75,6 +75,7 @@ from meshagent.cli.helper import (
     strip_command_options,
     supports_openai_shell_tool,
 )
+from meshagent.cli.preamble_rules import DEFAULT_PREAMBLE_RULE
 
 from meshagent.openai import OpenAIResponsesAdapter, OpenAIResponsesMCPToolkit
 from meshagent.anthropic import (
@@ -450,6 +451,11 @@ class _ProcessRunSession:
             thread_dir=thread_dir,
             threading_mode=threading_mode,
         )
+        self._open_on_start = not (
+            threading_mode == "default-new"
+            and (thread_path is None or thread_path.strip() == "")
+        )
+        self._agent_name = _normalized_annotation_string(agent_name)
         events = bot._supervisor.subscribe_local_events()
         channel_client = ask_module._LocalAgentMessageChannelClient(
             thread_path=self._thread_id,
@@ -484,6 +490,10 @@ class _ProcessRunSession:
         if self._started:
             return
 
+        if not self._open_on_start:
+            self._started = True
+            return
+
         supervisor = self._bot._supervisor
         await supervisor.route(
             Message(
@@ -500,9 +510,20 @@ class _ProcessRunSession:
             if thread_storage is None:
                 break
             for message in _thread_agent_messages_from_storage(thread_storage):
-                self._session.add_agent_message(message)
+                self._session.add_agent_message(
+                    self._stored_agent_message_with_sender(message)
+                )
             break
         self._started = True
+
+    def _stored_agent_message_with_sender(self, message: AgentMessage) -> AgentMessage:
+        if self._agent_name is None:
+            return message
+        if isinstance(message, (AgentTextContentDelta, AgentFileContentDelta)):
+            if message.sender_name is not None and message.sender_name.strip() != "":
+                return message
+            return message.model_copy(update={"sender_name": self._agent_name})
+        return message
 
     async def close(self) -> None:
         await self._session.close()
@@ -1208,6 +1229,17 @@ InstructionsOption = Annotated[
         help=(
             "a path in the configured storage toolkit to a rules file that "
             "will be loaded at runtime"
+        ),
+    ),
+]
+
+PreambleRuleOption = Annotated[
+    bool,
+    typer.Option(
+        "--preamble-rule/--no-preamble-rule",
+        help=(
+            "Include the default rule asking the model to send concise pre-tool "
+            "preambles when no custom rules are configured."
         ),
     ),
 ]
@@ -1919,6 +1951,7 @@ def _build_runtime_agent(
     starting_url: Optional[str],
     allow_goto_url: bool,
     room_rules_path: Optional[list[str]],
+    preamble_rule: bool = True,
 ):
     builder = _builder_for_runtime(runtime)
     builder_kwargs: dict[str, Any] = {
@@ -1977,6 +2010,7 @@ def _build_runtime_agent(
         builder_kwargs["context_management"] = context_management
         builder_kwargs["compaction_threshold"] = compaction_threshold
         builder_kwargs["max_output_tokens"] = max_output_tokens
+        builder_kwargs["preamble_rule"] = preamble_rule
     return builder(**builder_kwargs)
 
 
@@ -2114,6 +2148,7 @@ def build_chatbot(
     shell_copy_env: Optional[list[str]] = None,
     shell_set_env: Optional[list[str]] = None,
     channels: Optional[list[str]] = None,
+    preamble_rule: bool = True,
 ):
     del channels
     from meshagent.agents.chat import ChatBot
@@ -2578,6 +2613,7 @@ def build_process_agent(
     shell_copy_env: Optional[list[str]] = None,
     shell_set_env: Optional[list[str]] = None,
     channels: Optional[list[str]] = None,
+    preamble_rule: bool = True,
 ):
     from meshagent.agents import (
         AgentMessageThreadStatusPublisher,
@@ -3045,6 +3081,9 @@ def build_process_agent(
                         )
                     )
 
+            if preamble_rule and len(rules) == 0:
+                rules.append(DEFAULT_PREAMBLE_RULE)
+
             rules.append("based on the previous transcript, take your turn and respond")
             return rules
 
@@ -3400,6 +3439,7 @@ async def join(
     ] = [],
     rules_file: Optional[list[str]] = None,
     instructions: InstructionsOption = [],
+    preamble_rule: PreambleRuleOption = True,
     require_toolkit: Annotated[
         List[str],
         typer.Option(
@@ -3774,6 +3814,7 @@ async def join(
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
             room_rules_path=room_rules,
+            preamble_rule=preamble_rule,
         )
 
         bot = CustomChatbot()
@@ -6489,6 +6530,7 @@ async def run(
     ] = [],
     rules_file: Optional[list[str]] = None,
     instructions: InstructionsOption = [],
+    preamble_rule: PreambleRuleOption = True,
     require_toolkit: Annotated[
         List[str],
         typer.Option(
@@ -6873,6 +6915,7 @@ async def run(
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
             room_rules_path=room_rules,
+            preamble_rule=preamble_rule,
         )
 
         bot = CustomChatbot()
