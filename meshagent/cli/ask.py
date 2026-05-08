@@ -8,7 +8,7 @@ import os
 import sys
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, Protocol, runtime_checkable
 
@@ -19,10 +19,31 @@ from rich.markdown import Markdown
 from rich.table import Table
 from meshagent.agents.adapter import LLMAdapter
 from meshagent.agents.messages import (
+    AGENT_EVENT_CONTEXT_COMPACTED,
+    AGENT_EVENT_FILE_CONTENT_DELTA,
+    AGENT_EVENT_FILE_CONTENT_ENDED,
+    AGENT_EVENT_FILE_CONTENT_STARTED,
+    AGENT_EVENT_IMAGE_GENERATION_COMPLETED,
+    AGENT_EVENT_IMAGE_GENERATION_FAILED,
+    AGENT_EVENT_IMAGE_GENERATION_PARTIAL,
+    AGENT_EVENT_IMAGE_GENERATION_STARTED,
+    AGENT_EVENT_REASONING_CONTENT_DELTA,
+    AGENT_EVENT_REASONING_CONTENT_ENDED,
+    AGENT_EVENT_REASONING_CONTENT_STARTED,
+    AGENT_EVENT_THREAD_EVENT,
     AGENT_EVENT_THREAD_STATUS,
     AGENT_EVENT_TEXT_CONTENT_DELTA,
+    AGENT_EVENT_TEXT_CONTENT_ENDED,
+    AGENT_EVENT_TEXT_CONTENT_STARTED,
+    AGENT_EVENT_TOOL_CALL_APPROVAL_REQUESTED,
+    AGENT_EVENT_TOOL_CALL_ENDED,
+    AGENT_EVENT_TOOL_CALL_IN_PROGRESS,
+    AGENT_EVENT_TOOL_CALL_LOG_DELTA,
+    AGENT_EVENT_TOOL_CALL_PENDING,
+    AGENT_EVENT_TOOL_CALL_STARTED,
     AGENT_EVENT_TURN_ENDED,
     AGENT_EVENT_TURN_START_ACCEPTED,
+    AGENT_EVENT_TURN_START_REJECTED,
     AGENT_EVENT_TURN_STEER_ACCEPTED,
     AGENT_EVENT_TURN_STEER_REJECTED,
     AGENT_EVENT_TURN_STEERED,
@@ -32,23 +53,44 @@ from meshagent.agents.messages import (
     AGENT_MESSAGE_THREAD_START,
     AGENT_MESSAGE_TURN_START,
     AGENT_MESSAGE_TURN_STEER,
+    AgentContextCompacted,
     AgentFileContent,
     AgentFileContentDelta,
+    AgentFileContentEnded,
+    AgentFileContentStarted,
+    AgentImageGenerationCompleted,
+    AgentImageGenerationFailed,
+    AgentImageGenerationPartial,
+    AgentImageGenerationStarted,
     AgentMessage,
+    AgentReasoningContentDelta,
+    AgentReasoningContentEnded,
+    AgentReasoningContentStarted,
     AgentTextContent,
     AgentTextContentDelta,
+    AgentTextContentEnded,
+    AgentTextContentStarted,
     AgentThreadStatus,
+    AgentThreadEvent,
+    AgentToolCallApprovalRequested,
+    AgentToolCallEnded,
+    AgentToolCallInProgress,
+    AgentToolCallLogDelta,
+    AgentToolCallPending,
+    AgentToolCallStarted,
     AgentUsageUpdated,
     StartThread,
     TurnEnded,
     TurnInterrupt,
     TurnStart,
     TurnStartAccepted,
+    TurnStartRejected,
     TurnStarted,
     TurnSteer,
     TurnSteerAccepted,
     TurnSteerRejected,
     TurnSteered,
+    parse_agent_message,
 )
 from meshagent.agents.process import (
     AgentSupervisor,
@@ -60,6 +102,8 @@ from meshagent.api import Participant, RoomException
 from meshagent.cli import async_typer, auth_async
 from meshagent.cli.common_options import ProjectIdOption
 from meshagent.cli.helper import resolve_project_id
+from meshagent.cli.preamble_rules import DEFAULT_PREAMBLE_RULE
+from meshagent.cli.tool_call_summary import format_tool_call_summary
 from meshagent.tools import Toolkit
 from meshagent.tools.storage import StorageToolLocalMount, StorageToolkit
 
@@ -76,6 +120,130 @@ _ASK_TERMINAL_STATUS_STATES = {
     "cancelled",
     "canceled",
 }
+_ASK_TOOL_LOG_RENDER_LIMIT = 4
+_ASK_PASS_THROUGH_AGENT_EVENT_TYPES = {
+    AGENT_EVENT_CONTEXT_COMPACTED,
+    AGENT_EVENT_FILE_CONTENT_DELTA,
+    AGENT_EVENT_FILE_CONTENT_ENDED,
+    AGENT_EVENT_FILE_CONTENT_STARTED,
+    AGENT_EVENT_IMAGE_GENERATION_COMPLETED,
+    AGENT_EVENT_IMAGE_GENERATION_FAILED,
+    AGENT_EVENT_IMAGE_GENERATION_PARTIAL,
+    AGENT_EVENT_IMAGE_GENERATION_STARTED,
+    AGENT_EVENT_REASONING_CONTENT_DELTA,
+    AGENT_EVENT_REASONING_CONTENT_ENDED,
+    AGENT_EVENT_REASONING_CONTENT_STARTED,
+    AGENT_EVENT_TEXT_CONTENT_ENDED,
+    AGENT_EVENT_TEXT_CONTENT_STARTED,
+    AGENT_EVENT_THREAD_EVENT,
+    AGENT_EVENT_TOOL_CALL_APPROVAL_REQUESTED,
+    AGENT_EVENT_TOOL_CALL_ENDED,
+    AGENT_EVENT_TOOL_CALL_IN_PROGRESS,
+    AGENT_EVENT_TOOL_CALL_LOG_DELTA,
+    AGENT_EVENT_TOOL_CALL_PENDING,
+    AGENT_EVENT_TOOL_CALL_STARTED,
+}
+
+
+def _ask_tool_raw_label(*, toolkit: str, tool: str) -> str:
+    normalized_tool = tool.strip() or "tool"
+    normalized_toolkit = toolkit.strip()
+    if normalized_toolkit != "" and normalized_toolkit != normalized_tool:
+        return f"{normalized_toolkit}: {normalized_tool}"
+    return normalized_tool
+
+
+def _ask_tool_log_lines(logs: list[str]) -> list[str]:
+    lines: list[str] = []
+    for log in logs:
+        for line in log.splitlines():
+            stripped = line.strip()
+            if stripped != "":
+                lines.append(stripped)
+    return lines
+
+
+def _ask_log_lines_look_like_traceback(lines: list[str]) -> bool:
+    if any(line.startswith("Traceback (most recent call last):") for line in lines):
+        return True
+    has_frame = any(
+        line.startswith('File "') or line.startswith("File ") for line in lines
+    )
+    has_exception = any(
+        "Exception:" in line
+        or line.endswith("Exception")
+        or line.endswith("Error")
+        or "Error:" in line
+        for line in lines
+    )
+    return has_frame and has_exception
+
+
+def _ask_tool_error_line(error_message: str | None) -> str | None:
+    if error_message is None:
+        return None
+    lines = [line.strip() for line in error_message.splitlines() if line.strip()]
+    if len(lines) == 0:
+        return None
+    last_line = lines[-1]
+    if ": " in last_line:
+        prefix, message = last_line.split(": ", 1)
+        if "." in prefix or prefix.endswith("Error") or prefix.endswith("Exception"):
+            return message.strip() or last_line
+    return last_line
+
+
+def _format_ask_tool_call_entry_text(
+    *,
+    toolkit: str,
+    tool: str,
+    arguments: dict[str, Any] | None,
+    logs: list[str],
+    error_message: str | None,
+) -> str:
+    failed = error_message is not None
+    headline = format_tool_call_summary(
+        toolkit=toolkit,
+        tool=tool,
+        arguments=arguments,
+        failed=failed,
+    )
+    raw_headline = (
+        f"{'Failed' if failed else 'Ran'} "
+        f"{_ask_tool_raw_label(toolkit=toolkit, tool=tool)}"
+    )
+    log_lines = _ask_tool_log_lines(logs)
+    if failed and _ask_log_lines_look_like_traceback(log_lines):
+        log_lines = []
+    log_limit = _ASK_TOOL_LOG_RENDER_LIMIT
+    if headline == raw_headline and log_lines:
+        headline = log_lines.pop(0)
+        log_limit -= 1
+
+    detail_lines = [headline]
+    detail_lines.extend(log_lines[:log_limit])
+    error_line = _ask_tool_error_line(error_message)
+    if error_line is not None:
+        detail_lines.append(error_line)
+    return "\n".join(detail_lines)
+
+
+def _ask_feed_previous_participant_role(
+    roles: Sequence[str], *, before_index: int
+) -> str | None:
+    for role in reversed(roles[:before_index]):
+        if role == "event":
+            continue
+        return role
+    return None
+
+
+def _ask_text_needs_markdown(text: str) -> bool:
+    stripped = text.strip()
+    if "\n" in stripped:
+        return True
+    return any(marker in stripped for marker in ("`", "[", "]", "*", "_", "#", ">"))
+
 
 app = async_typer.AsyncTyper(no_args_is_help=False)
 
@@ -415,7 +583,14 @@ class _AgentMessageSession:
     def messages(self) -> tuple[_AskConversationMessage, ...]:
         return tuple(self._messages)
 
-    def add_message(self, *, message_id: str, role: str, text: str) -> None:
+    def add_message(
+        self,
+        *,
+        message_id: str,
+        role: str,
+        text: str,
+        before_pending_inputs: bool = False,
+    ) -> None:
         normalized_message_id = message_id.strip()
         normalized_text = text.strip()
         if normalized_message_id == "" or normalized_text == "":
@@ -423,13 +598,18 @@ class _AgentMessageSession:
         if normalized_message_id in self._message_ids:
             return
         self._message_ids.add(normalized_message_id)
-        self._messages.append(
-            _AskConversationMessage(
-                message_id=normalized_message_id,
-                role=role.strip() or "user",
-                text=normalized_text,
-            )
+        message = _AskConversationMessage(
+            message_id=normalized_message_id,
+            role=role.strip() or "user",
+            text=normalized_text,
         )
+        if before_pending_inputs:
+            pending_input_ids = set(self._pending_input_messages)
+            for index, existing in enumerate(self._messages):
+                if existing.message_id in pending_input_ids:
+                    self._messages.insert(index, message)
+                    return
+        self._messages.append(message)
 
     def add_agent_message(self, message: AgentMessage) -> None:
         if isinstance(message, (TurnStart, TurnSteer)):
@@ -523,6 +703,11 @@ class _AgentMessageSession:
                 text=prompt,
             )
         )
+        self.add_message(
+            message_id=input_message.message_id,
+            role="you",
+            text=prompt,
+        )
         if isinstance(input_message, StartThread):
             await self._client.start_thread(input_message)
         else:
@@ -559,6 +744,19 @@ class _AgentMessageSession:
                         self._active_turn_id = active_turn_id
                         await _emit_agent_message(on_message, turn_started)
                     continue
+
+                if event_type == AGENT_EVENT_TURN_START_REJECTED:
+                    turn_start_rejected = TurnStartRejected.model_validate(payload)
+                    if (
+                        turn_start_rejected.source_message_id
+                        != input_message.message_id
+                    ):
+                        continue
+                    await _emit_agent_message(on_message, turn_start_rejected)
+                    raise RoomException(
+                        turn_start_rejected.error.message,
+                        code=turn_start_rejected.error.code,
+                    )
 
                 if event_type == AGENT_EVENT_TURN_STEER_ACCEPTED:
                     steer_accepted = TurnSteerAccepted.model_validate(payload)
@@ -640,6 +838,39 @@ class _AgentMessageSession:
                     await _emit_agent_message(on_message, usage_update)
                     continue
 
+                if event_type in _ASK_PASS_THROUGH_AGENT_EVENT_TYPES:
+                    agent_message = parse_agent_message(payload)
+                    if (
+                        active_turn_id is not None
+                        and isinstance(
+                            agent_message,
+                            (
+                                AgentFileContentDelta,
+                                AgentFileContentEnded,
+                                AgentFileContentStarted,
+                                AgentImageGenerationCompleted,
+                                AgentImageGenerationFailed,
+                                AgentImageGenerationPartial,
+                                AgentImageGenerationStarted,
+                                AgentReasoningContentDelta,
+                                AgentReasoningContentEnded,
+                                AgentReasoningContentStarted,
+                                AgentTextContentEnded,
+                                AgentTextContentStarted,
+                                AgentToolCallApprovalRequested,
+                                AgentToolCallEnded,
+                                AgentToolCallInProgress,
+                                AgentToolCallLogDelta,
+                                AgentToolCallPending,
+                                AgentToolCallStarted,
+                            ),
+                        )
+                        and agent_message.turn_id != active_turn_id
+                    ):
+                        continue
+                    await _emit_agent_message(on_message, agent_message)
+                    continue
+
                 if event_type == AGENT_EVENT_TURN_ENDED:
                     turn_ended = TurnEnded.model_validate(payload)
                     if (
@@ -687,7 +918,12 @@ class _AgentMessageSession:
             return
 
         role = self._role_for_sender(accepted.sender_name, default="user")
-        self.add_message(message_id=accepted.source_message_id, role=role, text=text)
+        self.add_message(
+            message_id=accepted.source_message_id,
+            role=role,
+            text=text,
+            before_pending_inputs=True,
+        )
 
     def steer(
         self,
@@ -760,6 +996,7 @@ class _AskSession:
         llm_adapter: LLMAdapter,
         current_working_directory: str | None = None,
         interactive: bool = True,
+        preamble_rule: bool = True,
     ) -> None:
         self._model = model
         self._thread_id = f"/ask/{uuid.uuid4()}"
@@ -783,6 +1020,7 @@ class _AskSession:
             turn_instructions_provider=_build_ask_turn_instructions_provider(
                 current_working_directory=resolved_current_working_directory,
                 interactive=interactive,
+                preamble_rule=preamble_rule,
             ),
         )
         self._supervisor = _AskSupervisor(process=self._process)
@@ -981,6 +1219,7 @@ def _build_ask_instructions(
     *,
     current_working_directory: str,
     interactive: bool = True,
+    preamble_rule: bool = True,
 ) -> str:
     sections = [
         (
@@ -1011,6 +1250,8 @@ def _build_ask_instructions(
             "You are not being run interactively. Return useful and actionable "
             "information rather than asking for user input."
         )
+    if preamble_rule:
+        sections.append(DEFAULT_PREAMBLE_RULE)
     return "\n\n".join(sections)
 
 
@@ -1018,10 +1259,12 @@ def _build_ask_turn_instructions_provider(
     *,
     current_working_directory: str,
     interactive: bool,
+    preamble_rule: bool = True,
 ) -> TurnInstructionsProvider:
     instructions = _build_ask_instructions(
         current_working_directory=current_working_directory,
         interactive=interactive,
+        preamble_rule=preamble_rule,
     )
 
     async def provide_instructions(sender: Participant | None) -> str:
@@ -1037,12 +1280,14 @@ async def _run_ask_process(
     model: str,
     llm_adapter: LLMAdapter,
     on_message: Callable[[AgentMessage], Awaitable[None] | None] | None = None,
+    preamble_rule: bool = True,
 ) -> str:
     with _suppress_ask_process_logs():
         async with _AskSession(
             model=model,
             llm_adapter=llm_adapter,
             interactive=False,
+            preamble_rule=preamble_rule,
         ) as session:
             return await session.ask(prompt=prompt, on_message=on_message)
 
@@ -1088,9 +1333,9 @@ async def _run_ask_tui(
     session: Any | None = None,
     title: str = "meshagent ask",
     assistant_name: str = "assistant",
+    preamble_rule: bool = True,
 ) -> None:
     try:
-        from rich.console import Group
         from rich.text import Text
         from textual._context import active_app
         from textual.app import App, ComposeResult
@@ -1112,6 +1357,13 @@ async def _run_ask_tui(
         pending: bool = False
 
     @dataclass(slots=True)
+    class _AskToolCallState:
+        toolkit: str
+        tool: str
+        arguments: dict[str, Any] | None = None
+        logs: list[str] | None = None
+
+    @dataclass(slots=True)
     class _AskUsageState:
         context_used_tokens: int
         context_total_tokens: int | None
@@ -1131,7 +1383,7 @@ async def _run_ask_tui(
         Screen {
             layout: grid;
             grid-size: 1 6;
-            grid-rows: auto 1fr 2 auto auto auto;
+            grid-rows: auto 1fr 3 auto auto auto;
             padding: 0;
             background: #101114;
             color: white;
@@ -1155,8 +1407,12 @@ async def _run_ask_tui(
             height: auto;
             padding: 1 2 0 2;
         }
+        .feed-entry--continued {
+            padding: 1 2 0 2;
+        }
         .feed-entry--you {
             background: #2d3138;
+            padding: 1 2 1 2;
         }
         .feed-entry-header {
             width: 100%;
@@ -1189,22 +1445,37 @@ async def _run_ask_tui(
         .feed-entry--error .feed-entry-markdown {
             color: red;
         }
+        .feed-event-break {
+            width: 100%;
+            height: 1;
+        }
+        #active-assistant-event-break {
+            display: none;
+        }
+        #active-assistant-entry {
+            display: none;
+            width: 100%;
+            height: auto;
+            padding: 1 2 0 2;
+        }
         #active-assistant-header {
             display: none;
             width: 100%;
-            padding: 1 2 0 2;
+            padding: 0;
             color: cyan;
         }
         #active-assistant-body {
-            display: none;
+            display: block;
             width: 100%;
-            padding: 0 2 0 2;
+            padding: 0;
             background: transparent;
         }
         #status-line {
             width: 100%;
+            height: 3;
             padding: 0 2 0 2;
             color: #9aa5b8;
+            background: #101114;
         }
         #turn-queue {
             display: none;
@@ -1274,10 +1545,14 @@ async def _run_ask_tui(
             self._entries: list[_AskFeedEntry] = []
             self._feed_view: Vertical | None = None
             self._feed_scroll: VerticalScroll | None = None
+            self._active_assistant_event_break: Static | None = None
+            self._active_assistant_entry_view: Vertical | None = None
             self._active_assistant_header: Static | None = None
             self._active_assistant_body: TextualMarkdown | None = None
             self._active_assistant_stream = None
             self._active_assistant_text = ""
+            self._active_assistant_name: str | None = None
+            self._active_assistant_item_id: str | None = None
             self._status_view: Static | None = None
             self._queue_view: Static | None = None
             self._input_row: Horizontal | None = None
@@ -1294,6 +1569,8 @@ async def _run_ask_tui(
             self._active_assistant_entry: _AskFeedEntry | None = None
             self._status_text: str | None = None
             self._usage_state: _AskUsageState | None = None
+            self._reasoning_parts: dict[str, list[str]] = {}
+            self._tool_calls: dict[str, _AskToolCallState] = {}
             self._status_started_at: float | None = None
             self._status_gradient_offset = 0
             self._spinner_timer = None
@@ -1308,8 +1585,14 @@ async def _run_ask_tui(
             )
             with VerticalScroll(id="feed-scroll"):
                 yield Vertical(id="feed")
-                yield Static("", id="active-assistant-header")
-                yield TextualMarkdown("", id="active-assistant-body")
+                yield Static("", id="active-assistant-event-break")
+                with Vertical(id="active-assistant-entry", classes="feed-entry"):
+                    yield Static("", id="active-assistant-header")
+                    yield TextualMarkdown(
+                        "",
+                        id="active-assistant-body",
+                        classes="feed-entry-body feed-entry-markdown",
+                    )
             yield Static("", id="status-line")
             yield Static("", id="turn-queue")
             with Horizontal(id="input-row"):
@@ -1325,6 +1608,12 @@ async def _run_ask_tui(
         async def on_mount(self) -> None:
             self._feed_view = self.query_one("#feed", Vertical)
             self._feed_scroll = self.query_one("#feed-scroll", VerticalScroll)
+            self._active_assistant_event_break = self.query_one(
+                "#active-assistant-event-break", Static
+            )
+            self._active_assistant_entry_view = self.query_one(
+                "#active-assistant-entry", Vertical
+            )
             self._active_assistant_header = self.query_one(
                 "#active-assistant-header", Static
             )
@@ -1410,10 +1699,15 @@ async def _run_ask_tui(
 
         def _begin_active_assistant(self) -> None:
             self._active_assistant_text = ""
+            self._active_assistant_name = None
+            self._active_assistant_item_id = None
+            if self._active_assistant_entry_view is not None:
+                self._active_assistant_entry_view.styles.display = "block"
+            self._render_active_assistant_event_break()
             if self._active_assistant_header is not None:
-                self._active_assistant_header.styles.display = "block"
+                self._active_assistant_header.styles.display = "none"
+                self._active_assistant_header.update("")
             if self._active_assistant_body is not None:
-                self._active_assistant_body.styles.display = "block"
                 self._active_assistant_body.update("")
                 self._active_assistant_stream = TextualMarkdown.get_stream(
                     self._active_assistant_body
@@ -1443,34 +1737,89 @@ async def _run_ask_tui(
             except Exception as ex:
                 self._entries.append(_AskFeedEntry(role="error", text=str(ex)))
             finally:
+                await self._finalize_active_assistant()
+                with self.batch_update():
+                    self._active_assistant_entry = None
+                    self._sync_session_messages()
+                    self._pending = False
+                    self._status_started_at = None
+                    self._status_text = None
+                    self._render_status_line()
+                    self._render_feed()
+                    self._render_turn_queue()
                 await self._stop_active_assistant_stream()
-                self._pending = False
-                self._active_assistant_entry = None
-                self._sync_session_messages()
-                self._finalize_active_assistant()
-                self._render_feed()
-                self._status_started_at = None
-                self._set_status_text(None)
-                self._render_turn_queue()
                 self._scroll_to_end()
                 if self._input_view is not None:
                     self._input_view.focus()
 
-        def _finalize_active_assistant(self) -> None:
-            if self._active_assistant_header is not None:
-                self._active_assistant_header.styles.display = "none"
-                self._active_assistant_header.update("")
-            if self._active_assistant_body is not None:
-                self._active_assistant_body.styles.display = "none"
-                self._active_assistant_body.update("")
-            if self._active_assistant_text.strip() != "":
-                self._entries.append(
-                    _AskFeedEntry(
-                        role=self._assistant_name,
-                        text=self._active_assistant_text,
+        async def _finalize_active_assistant(self) -> None:
+            active_text = self._active_assistant_text
+            active_name = self._active_assistant_name
+            await self._stop_active_assistant_stream()
+            with self.batch_update():
+                if self._active_assistant_event_break is not None:
+                    self._active_assistant_event_break.styles.display = "none"
+                if self._active_assistant_entry_view is not None:
+                    self._active_assistant_entry_view.styles.display = "none"
+                if self._active_assistant_header is not None:
+                    self._active_assistant_header.styles.display = "none"
+                    self._active_assistant_header.update("")
+                if self._active_assistant_body is not None:
+                    self._active_assistant_body.update("")
+                if active_text.strip() != "":
+                    self._entries.append(
+                        _AskFeedEntry(
+                            role=active_name or "agent",
+                            text=active_text,
+                        )
                     )
-                )
+                    self._render_feed()
             self._active_assistant_text = ""
+            self._active_assistant_name = None
+            self._active_assistant_item_id = None
+
+        async def _prepare_active_assistant_text_item(
+            self,
+            *,
+            item_id: str,
+            sender_name: str | None = None,
+        ) -> None:
+            if (
+                self._active_assistant_item_id is not None
+                and self._active_assistant_item_id != item_id
+            ):
+                await self._finalize_active_assistant()
+            elif (
+                self._active_assistant_item_id is None
+                and self._active_assistant_text.strip() != ""
+            ):
+                await self._finalize_active_assistant()
+
+            self._active_assistant_item_id = item_id
+            resolved_name = self._agent_message_sender_name(sender_name)
+            if resolved_name is not None:
+                self._active_assistant_name = resolved_name
+            if self._active_assistant_entry_view is not None:
+                self._active_assistant_entry_view.styles.display = "block"
+            self._render_active_assistant_event_break()
+            if self._active_assistant_body is not None:
+                if self._active_assistant_stream is None:
+                    self._active_assistant_stream = TextualMarkdown.get_stream(
+                        self._active_assistant_body
+                    )
+            self._render_active_assistant_header()
+
+        def _render_active_assistant_event_break(self) -> None:
+            if self._active_assistant_event_break is None:
+                return
+            if (
+                self._pending
+                and len(self._entries) > 0
+                and self._entries[-1].role == "event"
+            ):
+                self._active_assistant_event_break.styles.display = "block"
+                return
+            self._active_assistant_event_break.styles.display = "none"
 
         async def _dispatch_pending_queued_turns(self) -> None:
             for queued_turn in self._queued_turns:
@@ -1504,14 +1853,16 @@ async def _run_ask_tui(
         async def _apply_queued_turn(self, queued_turn: _QueuedAskTurn) -> None:
             if queued_turn not in self._queued_turns:
                 return
+            await self._finalize_active_assistant()
+            with self.batch_update():
+                self._queued_turns.remove(queued_turn)
+                self._render_turn_queue()
+                self._sync_session_messages()
+                self._render_feed()
             await self._stop_active_assistant_stream()
-            self._finalize_active_assistant()
-            self._queued_turns.remove(queued_turn)
-            self._render_turn_queue()
-            self._sync_session_messages()
-            self._render_feed()
             if self._pending:
-                self._begin_active_assistant()
+                with self.batch_update():
+                    self._begin_active_assistant()
             self._scroll_to_end()
 
         def _reject_queued_turn(
@@ -1548,13 +1899,134 @@ async def _run_ask_tui(
                 await self._dispatch_pending_queued_turns()
                 return
             if isinstance(message, AgentThreadStatus):
+                self._sync_session_messages()
                 self._set_status_text(_thread_status_text(message.status))
                 return
+            if isinstance(message, AgentTextContentStarted):
+                await self._prepare_active_assistant_text_item(item_id=message.item_id)
+                return
             if isinstance(message, AgentTextContentDelta):
+                await self._prepare_active_assistant_text_item(
+                    item_id=message.item_id,
+                    sender_name=message.sender_name,
+                )
                 await self._append_delta(message.text)
+                return
+            if isinstance(message, AgentTextContentEnded):
+                if (
+                    self._active_assistant_item_id is None
+                    or self._active_assistant_item_id == message.item_id
+                ):
+                    await self._finalize_active_assistant()
+                return
+            if isinstance(message, AgentReasoningContentStarted):
+                await self._finalize_active_assistant()
+                self._reasoning_parts[message.item_id] = []
+                return
+            if isinstance(message, AgentReasoningContentDelta):
+                self._reasoning_parts.setdefault(message.item_id, []).append(
+                    message.text
+                )
+                return
+            if isinstance(message, AgentReasoningContentEnded):
+                parts = self._reasoning_parts.pop(message.item_id, [])
+                summary = "".join(parts).strip()
+                if summary != "":
+                    self._append_event_entry(f"Reasoning\n{summary}")
+                return
+            if isinstance(
+                message,
+                (
+                    AgentToolCallPending,
+                    AgentToolCallInProgress,
+                    AgentToolCallStarted,
+                    AgentToolCallApprovalRequested,
+                ),
+            ):
+                await self._finalize_active_assistant()
+                self._tool_calls[message.item_id] = _AskToolCallState(
+                    toolkit=message.toolkit,
+                    tool=message.tool,
+                    arguments=message.arguments,
+                    logs=[],
+                )
+                return
+            if isinstance(message, AgentToolCallLogDelta):
+                await self._finalize_active_assistant()
+                state = self._tool_calls.get(message.item_id)
+                if state is None:
+                    return
+                if state.logs is None:
+                    state.logs = []
+                for line in message.lines:
+                    state.logs.append(line.text)
+                return
+            if isinstance(message, AgentToolCallEnded):
+                await self._finalize_active_assistant()
+                state = self._tool_calls.pop(message.item_id, None)
+                self._append_event_entry(self._tool_call_entry_text(message, state))
+                return
+            if isinstance(message, AgentThreadEvent):
+                await self._finalize_active_assistant()
+                event_text = self._thread_event_entry_text(message.event)
+                if event_text != "":
+                    self._append_event_entry(event_text)
+                return
+            if isinstance(message, AgentContextCompacted):
+                await self._finalize_active_assistant()
+                self._append_event_entry("Compacted context")
                 return
             if isinstance(message, AgentUsageUpdated):
                 self._set_usage(message)
+
+        def _append_event_entry(self, text: str) -> None:
+            normalized = text.strip()
+            if normalized == "":
+                return
+            self._entries.append(_AskFeedEntry(role="event", text=f"• {normalized}"))
+            self._render_feed()
+            self._scroll_to_end()
+
+        def _tool_call_entry_text(
+            self,
+            message: AgentToolCallEnded,
+            state: _AskToolCallState | None,
+        ) -> str:
+            tool = "tool"
+            toolkit = ""
+            arguments: dict[str, Any] | None = None
+            logs: list[str] = []
+            if state is not None:
+                tool = state.tool.strip() or tool
+                toolkit = state.toolkit.strip()
+                arguments = state.arguments
+                if state.logs is not None:
+                    logs = state.logs
+
+            error_message = None
+            if message.error is not None:
+                error_message = message.error.message
+            return _format_ask_tool_call_entry_text(
+                toolkit=toolkit,
+                tool=tool,
+                arguments=arguments,
+                logs=logs,
+                error_message=error_message,
+            )
+
+        def _thread_event_entry_text(self, event: dict[str, Any]) -> str:
+            for key in (
+                "headline",
+                "summary",
+                "status_detail",
+                "message",
+                "type",
+                "kind",
+            ):
+                value = event.get(key)
+                if isinstance(value, str) and value.strip() != "":
+                    return value.strip()
+            return ""
 
         def _resize_input(self, input_view: TextArea) -> None:
             if input_view.text == "":
@@ -1662,35 +2134,29 @@ async def _run_ask_tui(
             if (
                 self._pending or self._external_thread_active
             ) and self._status_text is not None:
-                self._status_view.update(
-                    Group(
-                        self._status_renderable(),
-                        Text(" "),
-                    )
-                )
+                self._status_view.update(self._status_block(self._status_renderable()))
                 return
 
             if len(self._entries) == 0:
                 self._status_view.update(
-                    Group(
+                    self._status_block(
                         Text(
                             "Ask a question to start a conversation.",
                             style="dim",
-                        ),
-                        Text(" "),
+                        )
                     )
                 )
                 return
 
             self._status_view.update(
-                Group(
-                    Text(
-                        "Waiting for user input",
-                        style="dim",
-                    ),
-                    Text(" "),
-                )
+                self._status_block(Text("Waiting for user input", style="dim"))
             )
+
+        def _status_block(self, status: Text) -> Text:
+            block = Text(" \n")
+            block.append_text(status)
+            block.append("\n ")
+            return block
 
         def _render_turn_queue(self) -> None:
             if self._queue_view is None:
@@ -1797,13 +2263,33 @@ async def _run_ask_tui(
                 self._active_assistant_header.styles.display = "none"
                 self._active_assistant_header.update("")
                 return
+            if self._active_assistant_name is None:
+                self._active_assistant_header.styles.display = "none"
+                self._active_assistant_header.update("")
+                return
+            previous_participant_role = _ask_feed_previous_participant_role(
+                [entry.role for entry in self._entries],
+                before_index=len(self._entries),
+            )
+            if previous_participant_role == self._active_assistant_name:
+                self._active_assistant_header.styles.display = "none"
+                self._active_assistant_header.update("")
+                return
             self._active_assistant_header.styles.display = "block"
             self._active_assistant_header.update(
                 Text(
-                    self._assistant_name,
+                    self._active_assistant_name,
                     style="bold cyan",
                 )
             )
+
+        def _agent_message_sender_name(self, sender_name: object) -> str | None:
+            if not isinstance(sender_name, str):
+                return None
+            normalized_sender_name = sender_name.strip()
+            if normalized_sender_name == "":
+                return None
+            return normalized_sender_name
 
         def _status_renderable(self) -> Text:
             elapsed_label = "0s"
@@ -1854,11 +2340,44 @@ async def _run_ask_tui(
             if self._rendered_entry_count >= len(self._entries):
                 return
 
+            entry_roles = [entry.role for entry in self._entries]
             for entry in self._entries[self._rendered_entry_count :]:
-                self._feed_view.mount(self._render_entry(entry))
+                if (
+                    self._rendered_entry_count > 0
+                    and entry.role != "event"
+                    and self._entries[self._rendered_entry_count - 1].role == "event"
+                ):
+                    self._feed_view.mount(Static("", classes="feed-event-break"))
+                previous_participant_role = _ask_feed_previous_participant_role(
+                    entry_roles,
+                    before_index=self._rendered_entry_count,
+                )
+                self._feed_view.mount(
+                    self._render_entry(
+                        entry,
+                        show_header=self._should_show_entry_header(
+                            entry=entry,
+                            previous_participant_role=previous_participant_role,
+                        ),
+                    )
+                )
                 self._rendered_entry_count += 1
 
-        def _render_entry(self, entry: _AskFeedEntry) -> Vertical:
+        def _should_show_entry_header(
+            self,
+            *,
+            entry: _AskFeedEntry,
+            previous_participant_role: str | None,
+        ) -> bool:
+            if entry.role in {"event", "error"}:
+                return True
+            if previous_participant_role is None:
+                return True
+            if previous_participant_role == "error":
+                return True
+            return previous_participant_role != entry.role
+
+        def _render_entry(self, entry: _AskFeedEntry, *, show_header: bool) -> Vertical:
             header_style = "bold cyan"
             body_style = ""
             entry_classes = "feed-entry"
@@ -1870,12 +2389,56 @@ async def _run_ask_tui(
                 header_style = "bold red"
                 body_style = "red"
                 entry_classes += " feed-entry--error"
+            elif entry.role == "event":
+                event_text = Text("", no_wrap=False, overflow="fold")
+                lines = entry.text.splitlines()
+                if len(lines) == 0:
+                    event_text.append(" ")
+                else:
+                    event_text.append(lines[0], style="white")
+                    for line in lines[1:]:
+                        event_text.append("\n")
+                        event_text.append(line, style="dim")
+                return Vertical(
+                    Static(
+                        event_text,
+                        classes="feed-entry-body",
+                    ),
+                    classes="feed-entry feed-entry--event",
+                )
+            elif not show_header:
+                entry_classes += " feed-entry--continued"
 
             body_text = entry.text if entry.text.strip() != "" else " "
-            if body_text.strip() != "":
+            if entry.role == "error":
+                body_widget = Static(
+                    Text(
+                        body_text,
+                        style=body_style,
+                        no_wrap=False,
+                        overflow="fold",
+                    ),
+                    classes="feed-entry-body",
+                )
+            elif entry.role != "you" and body_text.strip() != "":
                 body_widget = TextualMarkdown(
                     body_text,
                     classes="feed-entry-body feed-entry-markdown",
+                )
+            elif body_text.strip() != "" and _ask_text_needs_markdown(body_text):
+                body_widget = TextualMarkdown(
+                    body_text,
+                    classes="feed-entry-body feed-entry-markdown",
+                )
+            elif body_text.strip() != "":
+                body_widget = Static(
+                    Text(
+                        body_text,
+                        style=body_style,
+                        no_wrap=False,
+                        overflow="fold",
+                    ),
+                    classes="feed-entry-body",
                 )
             else:
                 body_widget = Static(
@@ -1888,14 +2451,17 @@ async def _run_ask_tui(
                     classes="feed-entry-body",
                 )
 
-            return Vertical(
-                Static(
-                    Text(entry.role, style=header_style),
-                    classes="feed-entry-header",
-                ),
-                body_widget,
-                classes=entry_classes,
-            )
+            widgets = [body_widget]
+            if show_header:
+                widgets.insert(
+                    0,
+                    Static(
+                        Text(entry.role, style=header_style),
+                        classes="feed-entry-header",
+                    ),
+                )
+
+            return Vertical(*widgets, classes=entry_classes)
 
     async def _run_app(session_arg: Any) -> None:
         app = _AskTextualApp(
@@ -1923,6 +2489,7 @@ async def _run_ask_tui(
             model=model,
             llm_adapter=llm_adapter,
             interactive=True,
+            preamble_rule=preamble_rule,
         ) as created_session:
             await _run_app(created_session)
 
@@ -1947,6 +2514,13 @@ async def ask(
         str,
         typer.Option("--model", help="Name of the LLM model to use"),
     ] = _DEFAULT_ASK_MODEL,
+    preamble_rule: Annotated[
+        bool,
+        typer.Option(
+            "--preamble-rule/--no-preamble-rule",
+            help="Include the default rule asking the model to send concise pre-tool preambles.",
+        ),
+    ] = True,
 ) -> None:
     resolved_project_id = await resolve_project_id(project_id=project_id)
     access_token = await _resolve_ask_access_token()
@@ -1970,6 +2544,7 @@ async def ask(
         await _run_ask_tui(
             model=model,
             llm_adapter=llm_adapter,
+            preamble_rule=preamble_rule,
         )
         return
 
@@ -1989,6 +2564,7 @@ async def ask(
             prompt=message,
             model=model,
             llm_adapter=llm_adapter,
+            preamble_rule=preamble_rule,
         )
         Console().print(Markdown(result))
         return
@@ -2006,6 +2582,7 @@ async def ask(
         model=model,
         llm_adapter=llm_adapter,
         on_message=_write_message,
+        preamble_rule=preamble_rule,
     )
     if wrote_output:
         click.echo()

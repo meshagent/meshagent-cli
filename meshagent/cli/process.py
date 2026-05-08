@@ -75,6 +75,7 @@ from meshagent.cli.helper import (
     strip_command_options,
     supports_openai_shell_tool,
 )
+from meshagent.cli.preamble_rules import DEFAULT_PREAMBLE_RULE
 
 from meshagent.openai import OpenAIResponsesAdapter, OpenAIResponsesMCPToolkit
 from meshagent.anthropic import (
@@ -106,6 +107,7 @@ from meshagent.agents.messages import (
     AGENT_EVENT_TEXT_CONTENT_DELTA,
     AGENT_EVENT_TURN_ENDED,
     AGENT_EVENT_TURN_START_ACCEPTED,
+    AGENT_EVENT_TURN_START_REJECTED,
     AGENT_EVENT_TURN_STARTED,
     AGENT_EVENT_TURN_STEER_ACCEPTED,
     AGENT_EVENT_TURN_STEER_REJECTED,
@@ -217,6 +219,7 @@ def _process_run_thread_id(
     thread_storage: "ThreadStorageBackend",
     agent_name: str | None,
     thread_dir: str | None,
+    threading_mode: "ThreadingMode" = "none",
 ) -> str:
     if isinstance(thread_path, str) and thread_path.strip() != "":
         normalized = thread_path.strip()
@@ -228,9 +231,20 @@ def _process_run_thread_id(
 
     normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
     if normalized_thread_dir is not None:
-        return _chat_thread_path_for_dir(normalized_thread_dir)
+        if threading_mode == "default-new":
+            return _new_process_thread_path_for_dir(
+                thread_dir=normalized_thread_dir,
+                thread_storage=thread_storage,
+            )
+        return _process_thread_path_for_dir(
+            thread_dir=normalized_thread_dir,
+            thread_storage=thread_storage,
+        )
 
-    default_thread_path = _default_chat_thread_path_for_agent(agent_name)
+    default_thread_path = _default_process_thread_path_for_agent(
+        agent_name=agent_name,
+        thread_storage=thread_storage,
+    )
     if default_thread_path is not None:
         return default_thread_path
 
@@ -424,6 +438,7 @@ class _ProcessRunSession:
         thread_storage: "ThreadStorageBackend",
         agent_name: str | None,
         thread_dir: str | None,
+        threading_mode: "ThreadingMode",
         current_working_directory: str | None,
     ) -> None:
         from meshagent.cli import ask as ask_module
@@ -434,7 +449,13 @@ class _ProcessRunSession:
             thread_storage=thread_storage,
             agent_name=agent_name,
             thread_dir=thread_dir,
+            threading_mode=threading_mode,
         )
+        self._open_on_start = not (
+            threading_mode == "default-new"
+            and (thread_path is None or thread_path.strip() == "")
+        )
+        self._agent_name = _normalized_annotation_string(agent_name)
         events = bot._supervisor.subscribe_local_events()
         channel_client = ask_module._LocalAgentMessageChannelClient(
             thread_path=self._thread_id,
@@ -469,6 +490,10 @@ class _ProcessRunSession:
         if self._started:
             return
 
+        if not self._open_on_start:
+            self._started = True
+            return
+
         supervisor = self._bot._supervisor
         await supervisor.route(
             Message(
@@ -485,9 +510,20 @@ class _ProcessRunSession:
             if thread_storage is None:
                 break
             for message in _thread_agent_messages_from_storage(thread_storage):
-                self._session.add_agent_message(message)
+                self._session.add_agent_message(
+                    self._stored_agent_message_with_sender(message)
+                )
             break
         self._started = True
+
+    def _stored_agent_message_with_sender(self, message: AgentMessage) -> AgentMessage:
+        if self._agent_name is None:
+            return message
+        if isinstance(message, (AgentTextContentDelta, AgentFileContentDelta)):
+            if message.sender_name is not None and message.sender_name.strip() != "":
+                return message
+            return message.model_copy(update={"sender_name": self._agent_name})
+        return message
 
     async def close(self) -> None:
         await self._session.close()
@@ -530,6 +566,7 @@ async def _run_process_run_tui(
     thread_storage: "ThreadStorageBackend",
     agent_name: str | None,
     thread_dir: str | None,
+    threading_mode: "ThreadingMode",
     message: str | None,
     working_dir: str | None,
 ) -> None:
@@ -542,6 +579,7 @@ async def _run_process_run_tui(
         thread_storage=thread_storage,
         agent_name=agent_name,
         thread_dir=thread_dir,
+        threading_mode=threading_mode,
         current_working_directory=working_dir,
     )
     try:
@@ -755,6 +793,8 @@ class _ProcessUseChatChannelClient:
             self._track_remote_text_delta(raw_payload)
         elif payload_type == AGENT_EVENT_TURN_STEER_REJECTED:
             self._clear_queued_agent_input(raw_payload.get("source_message_id"))
+        elif payload_type == AGENT_EVENT_TURN_START_REJECTED:
+            self._clear_queued_agent_input(raw_payload.get("source_message_id"))
         elif payload_type == AGENT_EVENT_TURN_ENDED:
             self._track_remote_turn_ended(raw_payload)
             self._thread_status_text = None
@@ -788,6 +828,7 @@ class _ProcessUseChatChannelClient:
             AGENT_EVENT_TURN_STEER_ACCEPTED,
             AGENT_EVENT_TURN_STEERED,
             AGENT_EVENT_TURN_STEER_REJECTED,
+            AGENT_EVENT_TURN_START_REJECTED,
             AGENT_EVENT_TURN_STARTED,
         ):
             return self._is_local_source_message(payload.get("source_message_id"))
@@ -1192,6 +1233,17 @@ InstructionsOption = Annotated[
     ),
 ]
 
+PreambleRuleOption = Annotated[
+    bool,
+    typer.Option(
+        "--preamble-rule/--no-preamble-rule",
+        help=(
+            "Include the default rule asking the model to send concise pre-tool "
+            "preambles when no custom rules are configured."
+        ),
+    ),
+]
+
 RequireAdvancedShellOption = Annotated[
     Optional[bool],
     typer.Option(
@@ -1509,11 +1561,56 @@ def _chat_thread_path_for_dir(thread_dir: str) -> str:
     return f"{thread_dir}/main.thread"
 
 
+def _process_thread_path_for_dir(
+    *,
+    thread_dir: str,
+    thread_storage: "ThreadStorageBackend",
+) -> str:
+    if thread_storage == "dataset" and not thread_dir.startswith("dataset://"):
+        return _dataset_thread_url_for_path(path=f"{thread_dir}/main")
+    if thread_storage == "none" and not thread_dir.startswith("tmp://"):
+        return _thread_url_for_path(scheme="tmp", path=f"{thread_dir}/main")
+    return _chat_thread_path_for_dir(thread_dir)
+
+
+def _new_process_thread_path_for_dir(
+    *,
+    thread_dir: str,
+    thread_storage: "ThreadStorageBackend",
+) -> str:
+    path = posixpath.join(thread_dir.strip().strip("/"), str(uuid.uuid4()))
+    if thread_storage == "dataset" and not thread_dir.startswith("dataset://"):
+        return _dataset_thread_url_for_path(path=path)
+    if thread_storage == "none" and not thread_dir.startswith("tmp://"):
+        return _thread_url_for_path(scheme="tmp", path=path)
+    if thread_dir.startswith("dataset://"):
+        return f"{thread_dir}/{posixpath.basename(path)}"
+    if thread_dir.startswith("tmp://"):
+        return f"{thread_dir}/{posixpath.basename(path)}"
+    return f"/{path}.thread"
+
+
 def _default_chat_thread_path_for_agent(agent_name: str | None) -> str | None:
     normalized_agent_name = _normalized_annotation_string(agent_name)
     if normalized_agent_name is None:
         return None
     return f".threads/{normalized_agent_name}/main.thread"
+
+
+def _default_process_thread_path_for_agent(
+    *,
+    agent_name: str | None,
+    thread_storage: "ThreadStorageBackend",
+) -> str | None:
+    normalized_agent_name = _normalized_annotation_string(agent_name)
+    if normalized_agent_name is None:
+        return None
+
+    thread_dir = f".threads/{normalized_agent_name}"
+    return _process_thread_path_for_dir(
+        thread_dir=thread_dir,
+        thread_storage=thread_storage,
+    )
 
 
 def _participant_chat_threading_mode(
@@ -1854,6 +1951,7 @@ def _build_runtime_agent(
     starting_url: Optional[str],
     allow_goto_url: bool,
     room_rules_path: Optional[list[str]],
+    preamble_rule: bool = True,
 ):
     builder = _builder_for_runtime(runtime)
     builder_kwargs: dict[str, Any] = {
@@ -1912,6 +2010,7 @@ def _build_runtime_agent(
         builder_kwargs["context_management"] = context_management
         builder_kwargs["compaction_threshold"] = compaction_threshold
         builder_kwargs["max_output_tokens"] = max_output_tokens
+        builder_kwargs["preamble_rule"] = preamble_rule
     return builder(**builder_kwargs)
 
 
@@ -2049,6 +2148,7 @@ def build_chatbot(
     shell_copy_env: Optional[list[str]] = None,
     shell_set_env: Optional[list[str]] = None,
     channels: Optional[list[str]] = None,
+    preamble_rule: bool = True,
 ):
     del channels
     from meshagent.agents.chat import ChatBot
@@ -2513,6 +2613,7 @@ def build_process_agent(
     shell_copy_env: Optional[list[str]] = None,
     shell_set_env: Optional[list[str]] = None,
     channels: Optional[list[str]] = None,
+    preamble_rule: bool = True,
 ):
     from meshagent.agents import (
         AgentMessageThreadStatusPublisher,
@@ -2980,6 +3081,9 @@ def build_process_agent(
                         )
                     )
 
+            if preamble_rule and len(rules) == 0:
+                rules.append(DEFAULT_PREAMBLE_RULE)
+
             rules.append("based on the previous transcript, take your turn and respond")
             return rules
 
@@ -3335,6 +3439,7 @@ async def join(
     ] = [],
     rules_file: Optional[list[str]] = None,
     instructions: InstructionsOption = [],
+    preamble_rule: PreambleRuleOption = True,
     require_toolkit: Annotated[
         List[str],
         typer.Option(
@@ -3709,6 +3814,7 @@ async def join(
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
             room_rules_path=room_rules,
+            preamble_rule=preamble_rule,
         )
 
         bot = CustomChatbot()
@@ -6424,6 +6530,7 @@ async def run(
     ] = [],
     rules_file: Optional[list[str]] = None,
     instructions: InstructionsOption = [],
+    preamble_rule: PreambleRuleOption = True,
     require_toolkit: Annotated[
         List[str],
         typer.Option(
@@ -6808,6 +6915,7 @@ async def run(
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
             room_rules_path=room_rules,
+            preamble_rule=preamble_rule,
         )
 
         bot = CustomChatbot()
@@ -6822,6 +6930,7 @@ async def run(
                         thread_storage=thread_storage,
                         agent_name=agent_name,
                         thread_dir=resolved_thread_dir,
+                        threading_mode=resolved_threading_mode,
                         message=message,
                         working_dir=working_dir,
                     )

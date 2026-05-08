@@ -1136,6 +1136,7 @@ async def test_process_run_starts_room_agent_and_uses_ask_tui(
         "thread_storage": "meshdocument",
         "agent_name": "helper",
         "thread_dir": "/agents/helper/threads",
+        "threading_mode": "default-new",
         "message": None,
         "working_dir": None,
     }
@@ -1197,9 +1198,56 @@ def test_process_run_thread_id_uses_dataset_scheme_for_dataset_storage(
             thread_path=None,
             thread_storage="dataset",
             agent_name="helper",
+            thread_dir="threads/custom",
+        )
+        == "dataset://threads/custom/main"
+    )
+    assert (
+        process._process_run_thread_id(
+            thread_path=None,
+            thread_storage="dataset",
+            agent_name="helper",
             thread_dir="dataset://agents/helper/threads",
         )
         == "dataset://agents/helper/threads/main"
+    )
+    assert (
+        process._process_run_thread_id(
+            thread_path=None,
+            thread_storage="dataset",
+            agent_name="helper",
+            thread_dir=None,
+        )
+        == "dataset://.threads/helper/main"
+    )
+    assert (
+        process._process_run_thread_id(
+            thread_path=None,
+            thread_storage="dataset",
+            agent_name="helper",
+            thread_dir="threads/custom",
+            threading_mode="default-new",
+        )
+        == "dataset://threads/custom/fixed-id"
+    )
+    assert (
+        process._process_run_thread_id(
+            thread_path=None,
+            thread_storage="meshdocument",
+            agent_name="helper",
+            thread_dir="/agents/helper/threads",
+            threading_mode="default-new",
+        )
+        == "/agents/helper/threads/fixed-id.thread"
+    )
+    assert (
+        process._process_run_thread_id(
+            thread_path=None,
+            thread_storage="none",
+            agent_name="helper",
+            thread_dir="threads/custom",
+        )
+        == "tmp://threads/custom/main"
     )
 
 
@@ -1246,6 +1294,7 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
         thread_storage="meshdocument",
         agent_name="helper",
         thread_dir=None,
+        threading_mode="none",
         message=None,
         working_dir="/tmp",
     )
@@ -1315,7 +1364,6 @@ async def test_process_run_tui_loads_existing_thread_messages(
                 turn_id="turn-existing",
                 item_id="existing-2",
                 text="existing answer",
-                sender_name="helper",
             ),
         ],
     )
@@ -1327,6 +1375,7 @@ async def test_process_run_tui_loads_existing_thread_messages(
         thread_storage="meshdocument",
         agent_name="helper",
         thread_dir=None,
+        threading_mode="none",
         message=None,
         working_dir="/tmp",
     )
@@ -1335,6 +1384,58 @@ async def test_process_run_tui_loads_existing_thread_messages(
         ("alex", "existing prompt"),
         ("helper", "existing answer"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_process_run_tui_default_new_does_not_open_implicit_thread_on_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from meshagent.cli import ask as ask_module
+
+    captured: dict[str, object] = {}
+
+    class _DummySupervisor:
+        def __init__(self) -> None:
+            self.events: asyncio.Queue[Message] = asyncio.Queue()
+            self.routed_messages: list[Message] = []
+
+        def subscribe_local_events(self):
+            return self.events
+
+        def unsubscribe_local_events(self, queue) -> None:
+            assert queue is self.events
+
+        def send(self, message: Message) -> None:
+            del message
+
+        async def route(self, message: Message) -> None:
+            self.routed_messages.append(message)
+
+    class _DummyBot:
+        def __init__(self) -> None:
+            self._supervisor = _DummySupervisor()
+
+    bot = _DummyBot()
+
+    async def fake_run_ask_tui(**kwargs):
+        captured["messages"] = kwargs["session"].messages
+
+    monkeypatch.setattr(ask_module, "_run_ask_tui", fake_run_ask_tui)
+
+    await process._run_process_run_tui(
+        bot=bot,
+        model="gpt-5.5",
+        thread_path=None,
+        thread_storage="dataset",
+        agent_name="helper",
+        thread_dir="shelltest",
+        threading_mode="default-new",
+        message=None,
+        working_dir="/tmp",
+    )
+
+    assert captured["messages"] == ()
+    assert bot._supervisor.routed_messages == []
 
 
 @pytest.mark.asyncio
@@ -1415,6 +1516,7 @@ async def test_process_run_session_uses_thread_status_messages() -> None:
         thread_storage="meshdocument",
         agent_name="helper",
         thread_dir=None,
+        threading_mode="none",
         current_working_directory="/tmp",
     )
     statuses: list[str | None] = []
@@ -3087,6 +3189,43 @@ async def test_chatbot_get_rules_loads_instructions_from_configured_storage(
     assert "base rule" in rules
     assert "global instruction" in rules
     assert "web instruction" in rules
+
+
+@pytest.mark.asyncio
+async def test_process_agent_get_rules_adds_default_preamble_rule() -> None:
+    custom_process_agent = process.build_process_agent(
+        model="gpt-5",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+    )
+    agent = custom_process_agent()
+
+    rules = await agent.get_rules(participant=None)
+
+    assert process.DEFAULT_PREAMBLE_RULE in rules
+
+
+@pytest.mark.asyncio
+async def test_process_agent_get_rules_can_disable_default_preamble_rule() -> None:
+    custom_process_agent = process.build_process_agent(
+        model="gpt-5",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+        preamble_rule=False,
+    )
+    agent = custom_process_agent()
+
+    rules = await agent.get_rules(participant=None)
+
+    assert process.DEFAULT_PREAMBLE_RULE not in rules
 
 
 @pytest.mark.asyncio

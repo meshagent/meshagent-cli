@@ -6,19 +6,27 @@ import typer
 from meshagent.agents import AgentSessionContext
 from meshagent.agents.adapter import LLMAdapter
 from meshagent.agents.messages import (
+    AGENT_EVENT_THREAD_EVENT,
     AGENT_EVENT_TEXT_CONTENT_DELTA,
     AGENT_EVENT_TEXT_CONTENT_ENDED,
     AGENT_EVENT_TEXT_CONTENT_STARTED,
+    AGENT_EVENT_TOOL_CALL_ENDED,
+    AGENT_EVENT_TOOL_CALL_STARTED,
     AGENT_EVENT_TURN_ENDED,
     AGENT_EVENT_TURN_START_ACCEPTED,
+    AGENT_EVENT_TURN_START_REJECTED,
     AGENT_EVENT_TURN_STARTED,
+    AgentThreadEvent,
     AgentTextContentDelta,
     AgentTextContentEnded,
     AgentTextContentStarted,
+    AgentToolCallEnded,
+    AgentToolCallStarted,
     TurnStart,
 )
-from meshagent.api import Participant
+from meshagent.api import Participant, RoomException
 from meshagent.cli import ask as ask_module
+from meshagent.cli.preamble_rules import DEFAULT_PREAMBLE_RULE
 from meshagent.openai import OpenAIResponsesAdapter
 
 
@@ -97,6 +105,147 @@ class _FakeTTY:
 
     def isatty(self) -> bool:
         return self._is_tty
+
+
+def test_build_ask_instructions_includes_preamble_rule_by_default() -> None:
+    instructions = ask_module._build_ask_instructions(
+        current_working_directory="/tmp/project"
+    )
+
+    assert DEFAULT_PREAMBLE_RULE in instructions
+
+
+def test_build_ask_instructions_can_disable_preamble_rule() -> None:
+    instructions = ask_module._build_ask_instructions(
+        current_working_directory="/tmp/project",
+        preamble_rule=False,
+    )
+
+    assert DEFAULT_PREAMBLE_RULE not in instructions
+
+
+def test_ask_feed_previous_participant_role_skips_event_rows() -> None:
+    assert (
+        ask_module._ask_feed_previous_participant_role(
+            ["you", "chatbot", "event", "event"],
+            before_index=4,
+        )
+        == "chatbot"
+    )
+
+
+def test_ask_feed_previous_participant_role_keeps_errors_as_breaks() -> None:
+    assert (
+        ask_module._ask_feed_previous_participant_role(
+            ["chatbot", "event", "error", "event"],
+            before_index=4,
+        )
+        == "error"
+    )
+
+
+def test_ask_text_needs_markdown_ignores_plain_commentary() -> None:
+    assert not ask_module._ask_text_needs_markdown(
+        "The output directory is missing, so I will save the report nearby."
+    )
+
+
+def test_ask_text_needs_markdown_keeps_structured_content() -> None:
+    assert ask_module._ask_text_needs_markdown("Generated `pie_chart.svg`.")
+    assert ask_module._ask_text_needs_markdown("First line\nSecond line")
+
+
+def test_format_ask_tool_call_entry_promotes_raw_tool_log_headline() -> None:
+    text = ask_module._format_ask_tool_call_entry_text(
+        toolkit="openai",
+        tool="shell",
+        arguments=None,
+        logs=[
+            "\n".join(
+                [
+                    "Created /src/python_generated_report.html",
+                    "-rw-r--r-- 1 root root 5311 May  8 07:35 /src/python_generated_report.html",
+                    "<!doctype html>",
+                    '<html lang="en">',
+                    "<body>",
+                ]
+            )
+        ],
+        error_message=None,
+    )
+
+    assert text.splitlines() == [
+        "Created /src/python_generated_report.html",
+        "-rw-r--r-- 1 root root 5311 May  8 07:35 /src/python_generated_report.html",
+        "<!doctype html>",
+        '<html lang="en">',
+    ]
+    assert "Ran openai: shell" not in text
+
+
+def test_format_ask_tool_call_entry_keeps_parsed_summary_headline() -> None:
+    text = ask_module._format_ask_tool_call_entry_text(
+        toolkit="shell",
+        tool="shell",
+        arguments={"command": "rg food"},
+        logs=["match 1\nmatch 2\nmatch 3\nmatch 4\nmatch 5"],
+        error_message=None,
+    )
+
+    assert text.splitlines() == [
+        "Explored",
+        "  └ Search food",
+        "match 1",
+        "match 2",
+        "match 3",
+        "match 4",
+    ]
+
+
+def test_format_ask_tool_call_entry_cleans_exception_error_message() -> None:
+    text = ask_module._format_ask_tool_call_entry_text(
+        toolkit="chat",
+        tool="attach_file",
+        arguments={"path": "src/candy_report.md"},
+        logs=[],
+        error_message=(
+            "meshagent.api.room_server_client.RoomException: "
+            "attach_file could not find a room file at src/candy_report.md"
+        ),
+    )
+
+    assert text.splitlines() == [
+        "Failed: Attached file: src/candy_report.md",
+        "attach_file could not find a room file at src/candy_report.md",
+    ]
+
+
+def test_format_ask_tool_call_entry_hides_traceback_logs_for_failed_tools() -> None:
+    text = ask_module._format_ask_tool_call_entry_text(
+        toolkit="chat",
+        tool="attach_file",
+        arguments={"path": "src/candy_report.md"},
+        logs=[
+            "\n".join(
+                [
+                    "Traceback (most recent call last):",
+                    'File "/src/chat_channel.py", line 1159, in attach_file',
+                    'f"attach_file could not find a room file at {room_storage_path}"',
+                    "meshagent.api.room_server_client.RoomException: attach_file could not find a room file at src/candy_report.md",
+                ]
+            )
+        ],
+        error_message=(
+            "meshagent.api.room_server_client.RoomException: "
+            "attach_file could not find a room file at src/candy_report.md"
+        ),
+    )
+
+    assert text.splitlines() == [
+        "Failed: Attached file: src/candy_report.md",
+        "attach_file could not find a room file at src/candy_report.md",
+    ]
+    assert "meshagent.api.room_server_client.RoomException" not in text
 
 
 @pytest.mark.asyncio
@@ -240,6 +389,226 @@ async def test_agent_message_session_orders_inputs_by_accepted_events() -> None:
         ("remote-user", "remote first"),
         ("you", "local second"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_agent_message_session_eagerly_records_local_start_message() -> None:
+    session: ask_module._AgentMessageSession | None = None
+
+    class _FakeChannelClient:
+        has_thread_path = True
+        thread_path = "/threads/test.thread"
+        thread_status_text = None
+        queued_message_labels: tuple[str, ...] = ()
+
+        def __init__(self) -> None:
+            self.events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+
+        async def send(self, payload) -> None:
+            assert isinstance(payload, TurnStart)
+            assert session is not None
+            assert [(message.role, message.text) for message in session.messages] == [
+                ("you", "local second"),
+            ]
+            self.events.put_nowait(
+                {
+                    "type": AGENT_EVENT_TURN_START_ACCEPTED,
+                    "thread_id": payload.thread_id,
+                    "source_message_id": payload.message_id,
+                    "content": [{"type": "text", "text": "local second"}],
+                }
+            )
+            self.events.put_nowait(
+                {
+                    "type": AGENT_EVENT_TURN_STARTED,
+                    "thread_id": payload.thread_id,
+                    "turn_id": "turn-1",
+                    "source_message_id": payload.message_id,
+                }
+            )
+            self.events.put_nowait(
+                {
+                    "type": AGENT_EVENT_TEXT_CONTENT_DELTA,
+                    "thread_id": payload.thread_id,
+                    "turn_id": "turn-1",
+                    "item_id": "text-1",
+                    "text": "response",
+                }
+            )
+            self.events.put_nowait(
+                {
+                    "type": AGENT_EVENT_TURN_ENDED,
+                    "thread_id": payload.thread_id,
+                    "turn_id": "turn-1",
+                    "error": None,
+                }
+            )
+
+        async def start_thread(self, payload) -> None:
+            raise AssertionError("start_thread should not be called")
+
+        async def receive(self) -> dict[str, object]:
+            return await self.events.get()
+
+        def clear_applied_queued_agent_inputs(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    session = ask_module._AgentMessageSession(
+        client=_FakeChannelClient(),
+        model=None,
+    )
+
+    result = await session.ask(prompt="local second")
+
+    assert result == "response"
+    assert [(message.role, message.text) for message in session.messages] == [
+        ("you", "local second"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_agent_message_session_emits_intermediate_agent_events() -> None:
+    class _FakeChannelClient:
+        has_thread_path = True
+        thread_path = "/threads/test.thread"
+        thread_status_text = None
+        queued_message_labels: tuple[str, ...] = ()
+
+        def __init__(self) -> None:
+            self.events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+
+        async def send(self, payload) -> None:
+            assert isinstance(payload, TurnStart)
+            self.events.put_nowait(
+                {
+                    "type": AGENT_EVENT_TURN_START_ACCEPTED,
+                    "thread_id": payload.thread_id,
+                    "source_message_id": payload.message_id,
+                    "content": [{"type": "text", "text": "local prompt"}],
+                }
+            )
+            self.events.put_nowait(
+                {
+                    "type": AGENT_EVENT_TURN_STARTED,
+                    "thread_id": payload.thread_id,
+                    "turn_id": "turn-1",
+                    "source_message_id": payload.message_id,
+                }
+            )
+            self.events.put_nowait(
+                {
+                    "type": AGENT_EVENT_TOOL_CALL_STARTED,
+                    "thread_id": payload.thread_id,
+                    "turn_id": "turn-1",
+                    "item_id": "tool-1",
+                    "toolkit": "shell",
+                    "tool": "shell",
+                    "arguments": {"command": "ruff check"},
+                }
+            )
+            self.events.put_nowait(
+                {
+                    "type": AGENT_EVENT_THREAD_EVENT,
+                    "thread_id": payload.thread_id,
+                    "event": {"headline": "Ran ruff check"},
+                }
+            )
+            self.events.put_nowait(
+                {
+                    "type": AGENT_EVENT_TOOL_CALL_ENDED,
+                    "thread_id": payload.thread_id,
+                    "turn_id": "turn-1",
+                    "item_id": "tool-1",
+                    "error": None,
+                }
+            )
+            self.events.put_nowait(
+                {
+                    "type": AGENT_EVENT_TURN_ENDED,
+                    "thread_id": payload.thread_id,
+                    "turn_id": "turn-1",
+                    "error": None,
+                }
+            )
+
+        async def start_thread(self, payload) -> None:
+            raise AssertionError("start_thread should not be called")
+
+        async def receive(self) -> dict[str, object]:
+            return await self.events.get()
+
+        def clear_applied_queued_agent_inputs(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    emitted: list[object] = []
+    session = ask_module._AgentMessageSession(
+        client=_FakeChannelClient(),
+        model=None,
+    )
+
+    result = await session.ask(prompt="local prompt", on_message=emitted.append)
+
+    assert result == ""
+    assert any(isinstance(message, AgentToolCallStarted) for message in emitted)
+    assert any(isinstance(message, AgentThreadEvent) for message in emitted)
+    assert any(isinstance(message, AgentToolCallEnded) for message in emitted)
+
+
+@pytest.mark.asyncio
+async def test_agent_message_session_raises_turn_start_rejection() -> None:
+    class _FakeChannelClient:
+        has_thread_path = True
+        thread_path = "/threads/test.thread"
+        thread_status_text = None
+        queued_message_labels: tuple[str, ...] = ()
+
+        def __init__(self) -> None:
+            self.events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+
+        async def send(self, payload) -> None:
+            assert isinstance(payload, TurnStart)
+            self.events.put_nowait(
+                {
+                    "type": AGENT_EVENT_TURN_START_REJECTED,
+                    "thread_id": payload.thread_id,
+                    "source_message_id": payload.message_id,
+                    "error": {
+                        "message": "dataset thread storage requires a dataset:// thread id",
+                        "code": "thread_process_creation_failed",
+                    },
+                }
+            )
+
+        async def start_thread(self, payload) -> None:
+            raise AssertionError("start_thread should not be called")
+
+        async def receive(self) -> dict[str, object]:
+            return await self.events.get()
+
+        def clear_applied_queued_agent_inputs(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    session = ask_module._AgentMessageSession(
+        client=_FakeChannelClient(),
+        model=None,
+    )
+
+    with pytest.raises(RoomException) as exc_info:
+        await session.ask(prompt="local second")
+
+    assert exc_info.value.code == "thread_process_creation_failed"
+    assert (
+        str(exc_info.value) == "dataset thread storage requires a dataset:// thread id"
+    )
 
 
 def test_agent_message_session_labels_loaded_local_participant_messages_as_you() -> (
@@ -555,9 +924,12 @@ async def test_ask_command_launches_tui_when_prompt_missing_in_tty(monkeypatch) 
         captured["access_token"] = access_token
         return _FakeAskAdapter()
 
-    async def _fake_run_ask_tui(*, model: str, llm_adapter: LLMAdapter) -> None:
+    async def _fake_run_ask_tui(
+        *, model: str, llm_adapter: LLMAdapter, preamble_rule: bool
+    ) -> None:
         captured["tui_model"] = model
         captured["tui_adapter"] = llm_adapter
+        captured["preamble_rule"] = preamble_rule
 
     monkeypatch.setattr(
         ask_module.auth_async, "get_access_token", _fake_get_access_token
@@ -578,6 +950,7 @@ async def test_ask_command_launches_tui_when_prompt_missing_in_tty(monkeypatch) 
     assert captured["project_id"] == "project-123"
     assert captured["access_token"] == "oauth-token"
     assert captured["tui_model"] == "gpt-5.5"
+    assert captured["preamble_rule"] is True
 
 
 @pytest.mark.asyncio
