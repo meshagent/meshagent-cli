@@ -1449,16 +1449,25 @@ async def _run_ask_tui(
             width: 100%;
             height: 1;
         }
+        #active-assistant-event-break {
+            display: none;
+        }
+        #active-assistant-entry {
+            display: none;
+            width: 100%;
+            height: auto;
+            padding: 1 2 0 2;
+        }
         #active-assistant-header {
             display: none;
             width: 100%;
-            padding: 1 2 0 2;
+            padding: 0;
             color: cyan;
         }
         #active-assistant-body {
-            display: none;
+            display: block;
             width: 100%;
-            padding: 0 2 0 2;
+            padding: 0;
             background: transparent;
         }
         #status-line {
@@ -1536,6 +1545,8 @@ async def _run_ask_tui(
             self._entries: list[_AskFeedEntry] = []
             self._feed_view: Vertical | None = None
             self._feed_scroll: VerticalScroll | None = None
+            self._active_assistant_event_break: Static | None = None
+            self._active_assistant_entry_view: Vertical | None = None
             self._active_assistant_header: Static | None = None
             self._active_assistant_body: TextualMarkdown | None = None
             self._active_assistant_stream = None
@@ -1574,8 +1585,14 @@ async def _run_ask_tui(
             )
             with VerticalScroll(id="feed-scroll"):
                 yield Vertical(id="feed")
-                yield Static("", id="active-assistant-header")
-                yield TextualMarkdown("", id="active-assistant-body")
+                yield Static("", id="active-assistant-event-break")
+                with Vertical(id="active-assistant-entry", classes="feed-entry"):
+                    yield Static("", id="active-assistant-header")
+                    yield TextualMarkdown(
+                        "",
+                        id="active-assistant-body",
+                        classes="feed-entry-body feed-entry-markdown",
+                    )
             yield Static("", id="status-line")
             yield Static("", id="turn-queue")
             with Horizontal(id="input-row"):
@@ -1591,6 +1608,12 @@ async def _run_ask_tui(
         async def on_mount(self) -> None:
             self._feed_view = self.query_one("#feed", Vertical)
             self._feed_scroll = self.query_one("#feed-scroll", VerticalScroll)
+            self._active_assistant_event_break = self.query_one(
+                "#active-assistant-event-break", Static
+            )
+            self._active_assistant_entry_view = self.query_one(
+                "#active-assistant-entry", Vertical
+            )
             self._active_assistant_header = self.query_one(
                 "#active-assistant-header", Static
             )
@@ -1678,11 +1701,13 @@ async def _run_ask_tui(
             self._active_assistant_text = ""
             self._active_assistant_name = None
             self._active_assistant_item_id = None
+            if self._active_assistant_entry_view is not None:
+                self._active_assistant_entry_view.styles.display = "block"
+            self._render_active_assistant_event_break()
             if self._active_assistant_header is not None:
                 self._active_assistant_header.styles.display = "none"
                 self._active_assistant_header.update("")
             if self._active_assistant_body is not None:
-                self._active_assistant_body.styles.display = "block"
                 self._active_assistant_body.update("")
                 self._active_assistant_stream = TextualMarkdown.get_stream(
                     self._active_assistant_body
@@ -1728,21 +1753,27 @@ async def _run_ask_tui(
                     self._input_view.focus()
 
         async def _finalize_active_assistant(self) -> None:
-            if self._active_assistant_text.strip() != "":
-                self._entries.append(
-                    _AskFeedEntry(
-                        role=self._active_assistant_name or "agent",
-                        text=self._active_assistant_text,
-                    )
-                )
-                self._render_feed()
+            active_text = self._active_assistant_text
+            active_name = self._active_assistant_name
             await self._stop_active_assistant_stream()
-            if self._active_assistant_header is not None:
-                self._active_assistant_header.styles.display = "none"
-                self._active_assistant_header.update("")
-            if self._active_assistant_body is not None:
-                self._active_assistant_body.styles.display = "none"
-                self._active_assistant_body.update("")
+            with self.batch_update():
+                if self._active_assistant_event_break is not None:
+                    self._active_assistant_event_break.styles.display = "none"
+                if self._active_assistant_entry_view is not None:
+                    self._active_assistant_entry_view.styles.display = "none"
+                if self._active_assistant_header is not None:
+                    self._active_assistant_header.styles.display = "none"
+                    self._active_assistant_header.update("")
+                if self._active_assistant_body is not None:
+                    self._active_assistant_body.update("")
+                if active_text.strip() != "":
+                    self._entries.append(
+                        _AskFeedEntry(
+                            role=active_name or "agent",
+                            text=active_text,
+                        )
+                    )
+                    self._render_feed()
             self._active_assistant_text = ""
             self._active_assistant_name = None
             self._active_assistant_item_id = None
@@ -1768,13 +1799,27 @@ async def _run_ask_tui(
             resolved_name = self._agent_message_sender_name(sender_name)
             if resolved_name is not None:
                 self._active_assistant_name = resolved_name
+            if self._active_assistant_entry_view is not None:
+                self._active_assistant_entry_view.styles.display = "block"
+            self._render_active_assistant_event_break()
             if self._active_assistant_body is not None:
-                self._active_assistant_body.styles.display = "block"
                 if self._active_assistant_stream is None:
                     self._active_assistant_stream = TextualMarkdown.get_stream(
                         self._active_assistant_body
                     )
             self._render_active_assistant_header()
+
+        def _render_active_assistant_event_break(self) -> None:
+            if self._active_assistant_event_break is None:
+                return
+            if (
+                self._pending
+                and len(self._entries) > 0
+                and self._entries[-1].role == "event"
+            ):
+                self._active_assistant_event_break.styles.display = "block"
+                return
+            self._active_assistant_event_break.styles.display = "none"
 
         async def _dispatch_pending_queued_turns(self) -> None:
             for queued_turn in self._queued_turns:
@@ -2214,8 +2259,6 @@ async def _run_ask_tui(
         def _render_active_assistant_header(self) -> None:
             if self._active_assistant_header is None:
                 return
-            if self._active_assistant_body is not None:
-                self._active_assistant_body.styles.padding = (0, 2, 0, 2)
             if not self._pending:
                 self._active_assistant_header.styles.display = "none"
                 self._active_assistant_header.update("")
@@ -2231,8 +2274,6 @@ async def _run_ask_tui(
             if previous_participant_role == self._active_assistant_name:
                 self._active_assistant_header.styles.display = "none"
                 self._active_assistant_header.update("")
-                if self._active_assistant_body is not None:
-                    self._active_assistant_body.styles.padding = (1, 2, 0, 2)
                 return
             self._active_assistant_header.styles.display = "block"
             self._active_assistant_header.update(
