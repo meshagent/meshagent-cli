@@ -11,13 +11,14 @@ from meshagent.agents.messages import (
     AGENT_EVENT_TEXT_CONTENT_STARTED,
     AGENT_EVENT_TURN_ENDED,
     AGENT_EVENT_TURN_START_ACCEPTED,
+    AGENT_EVENT_TURN_START_REJECTED,
     AGENT_EVENT_TURN_STARTED,
     AgentTextContentDelta,
     AgentTextContentEnded,
     AgentTextContentStarted,
     TurnStart,
 )
-from meshagent.api import Participant
+from meshagent.api import Participant, RoomException
 from meshagent.cli import ask as ask_module
 from meshagent.openai import OpenAIResponsesAdapter
 
@@ -240,6 +241,57 @@ async def test_agent_message_session_orders_inputs_by_accepted_events() -> None:
         ("remote-user", "remote first"),
         ("you", "local second"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_agent_message_session_raises_turn_start_rejection() -> None:
+    class _FakeChannelClient:
+        has_thread_path = True
+        thread_path = "/threads/test.thread"
+        thread_status_text = None
+        queued_message_labels: tuple[str, ...] = ()
+
+        def __init__(self) -> None:
+            self.events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+
+        async def send(self, payload) -> None:
+            assert isinstance(payload, TurnStart)
+            self.events.put_nowait(
+                {
+                    "type": AGENT_EVENT_TURN_START_REJECTED,
+                    "thread_id": payload.thread_id,
+                    "source_message_id": payload.message_id,
+                    "error": {
+                        "message": "dataset thread storage requires a dataset:// thread id",
+                        "code": "thread_process_creation_failed",
+                    },
+                }
+            )
+
+        async def start_thread(self, payload) -> None:
+            raise AssertionError("start_thread should not be called")
+
+        async def receive(self) -> dict[str, object]:
+            return await self.events.get()
+
+        def clear_applied_queued_agent_inputs(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    session = ask_module._AgentMessageSession(
+        client=_FakeChannelClient(),
+        model=None,
+    )
+
+    with pytest.raises(RoomException) as exc_info:
+        await session.ask(prompt="local second")
+
+    assert exc_info.value.code == "thread_process_creation_failed"
+    assert (
+        str(exc_info.value) == "dataset thread storage requires a dataset:// thread id"
+    )
 
 
 def test_agent_message_session_labels_loaded_local_participant_messages_as_you() -> (

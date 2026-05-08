@@ -23,6 +23,7 @@ from meshagent.agents.messages import (
     AGENT_EVENT_TEXT_CONTENT_DELTA,
     AGENT_EVENT_TURN_ENDED,
     AGENT_EVENT_TURN_START_ACCEPTED,
+    AGENT_EVENT_TURN_START_REJECTED,
     AGENT_EVENT_TURN_STEER_ACCEPTED,
     AGENT_EVENT_TURN_STEER_REJECTED,
     AGENT_EVENT_TURN_STEERED,
@@ -44,6 +45,7 @@ from meshagent.agents.messages import (
     TurnInterrupt,
     TurnStart,
     TurnStartAccepted,
+    TurnStartRejected,
     TurnStarted,
     TurnSteer,
     TurnSteerAccepted,
@@ -559,6 +561,19 @@ class _AgentMessageSession:
                         self._active_turn_id = active_turn_id
                         await _emit_agent_message(on_message, turn_started)
                     continue
+
+                if event_type == AGENT_EVENT_TURN_START_REJECTED:
+                    turn_start_rejected = TurnStartRejected.model_validate(payload)
+                    if (
+                        turn_start_rejected.source_message_id
+                        != input_message.message_id
+                    ):
+                        continue
+                    await _emit_agent_message(on_message, turn_start_rejected)
+                    raise RoomException(
+                        turn_start_rejected.error.message,
+                        code=turn_start_rejected.error.code,
+                    )
 
                 if event_type == AGENT_EVENT_TURN_STEER_ACCEPTED:
                     steer_accepted = TurnSteerAccepted.model_validate(payload)

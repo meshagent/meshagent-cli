@@ -1136,6 +1136,7 @@ async def test_process_run_starts_room_agent_and_uses_ask_tui(
         "thread_storage": "meshdocument",
         "agent_name": "helper",
         "thread_dir": "/agents/helper/threads",
+        "threading_mode": "default-new",
         "message": None,
         "working_dir": None,
     }
@@ -1197,9 +1198,56 @@ def test_process_run_thread_id_uses_dataset_scheme_for_dataset_storage(
             thread_path=None,
             thread_storage="dataset",
             agent_name="helper",
+            thread_dir="threads/custom",
+        )
+        == "dataset://threads/custom/main"
+    )
+    assert (
+        process._process_run_thread_id(
+            thread_path=None,
+            thread_storage="dataset",
+            agent_name="helper",
             thread_dir="dataset://agents/helper/threads",
         )
         == "dataset://agents/helper/threads/main"
+    )
+    assert (
+        process._process_run_thread_id(
+            thread_path=None,
+            thread_storage="dataset",
+            agent_name="helper",
+            thread_dir=None,
+        )
+        == "dataset://.threads/helper/main"
+    )
+    assert (
+        process._process_run_thread_id(
+            thread_path=None,
+            thread_storage="dataset",
+            agent_name="helper",
+            thread_dir="threads/custom",
+            threading_mode="default-new",
+        )
+        == "dataset://threads/custom/fixed-id"
+    )
+    assert (
+        process._process_run_thread_id(
+            thread_path=None,
+            thread_storage="meshdocument",
+            agent_name="helper",
+            thread_dir="/agents/helper/threads",
+            threading_mode="default-new",
+        )
+        == "/agents/helper/threads/fixed-id.thread"
+    )
+    assert (
+        process._process_run_thread_id(
+            thread_path=None,
+            thread_storage="none",
+            agent_name="helper",
+            thread_dir="threads/custom",
+        )
+        == "tmp://threads/custom/main"
     )
 
 
@@ -1246,6 +1294,7 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
         thread_storage="meshdocument",
         agent_name="helper",
         thread_dir=None,
+        threading_mode="none",
         message=None,
         working_dir="/tmp",
     )
@@ -1327,6 +1376,7 @@ async def test_process_run_tui_loads_existing_thread_messages(
         thread_storage="meshdocument",
         agent_name="helper",
         thread_dir=None,
+        threading_mode="none",
         message=None,
         working_dir="/tmp",
     )
@@ -1415,6 +1465,7 @@ async def test_process_run_session_uses_thread_status_messages() -> None:
         thread_storage="meshdocument",
         agent_name="helper",
         thread_dir=None,
+        threading_mode="none",
         current_working_directory="/tmp",
     )
     statuses: list[str | None] = []

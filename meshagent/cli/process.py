@@ -106,6 +106,7 @@ from meshagent.agents.messages import (
     AGENT_EVENT_TEXT_CONTENT_DELTA,
     AGENT_EVENT_TURN_ENDED,
     AGENT_EVENT_TURN_START_ACCEPTED,
+    AGENT_EVENT_TURN_START_REJECTED,
     AGENT_EVENT_TURN_STARTED,
     AGENT_EVENT_TURN_STEER_ACCEPTED,
     AGENT_EVENT_TURN_STEER_REJECTED,
@@ -217,6 +218,7 @@ def _process_run_thread_id(
     thread_storage: "ThreadStorageBackend",
     agent_name: str | None,
     thread_dir: str | None,
+    threading_mode: "ThreadingMode" = "none",
 ) -> str:
     if isinstance(thread_path, str) and thread_path.strip() != "":
         normalized = thread_path.strip()
@@ -228,9 +230,20 @@ def _process_run_thread_id(
 
     normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
     if normalized_thread_dir is not None:
-        return _chat_thread_path_for_dir(normalized_thread_dir)
+        if threading_mode == "default-new":
+            return _new_process_thread_path_for_dir(
+                thread_dir=normalized_thread_dir,
+                thread_storage=thread_storage,
+            )
+        return _process_thread_path_for_dir(
+            thread_dir=normalized_thread_dir,
+            thread_storage=thread_storage,
+        )
 
-    default_thread_path = _default_chat_thread_path_for_agent(agent_name)
+    default_thread_path = _default_process_thread_path_for_agent(
+        agent_name=agent_name,
+        thread_storage=thread_storage,
+    )
     if default_thread_path is not None:
         return default_thread_path
 
@@ -424,6 +437,7 @@ class _ProcessRunSession:
         thread_storage: "ThreadStorageBackend",
         agent_name: str | None,
         thread_dir: str | None,
+        threading_mode: "ThreadingMode",
         current_working_directory: str | None,
     ) -> None:
         from meshagent.cli import ask as ask_module
@@ -434,6 +448,7 @@ class _ProcessRunSession:
             thread_storage=thread_storage,
             agent_name=agent_name,
             thread_dir=thread_dir,
+            threading_mode=threading_mode,
         )
         events = bot._supervisor.subscribe_local_events()
         channel_client = ask_module._LocalAgentMessageChannelClient(
@@ -530,6 +545,7 @@ async def _run_process_run_tui(
     thread_storage: "ThreadStorageBackend",
     agent_name: str | None,
     thread_dir: str | None,
+    threading_mode: "ThreadingMode",
     message: str | None,
     working_dir: str | None,
 ) -> None:
@@ -542,6 +558,7 @@ async def _run_process_run_tui(
         thread_storage=thread_storage,
         agent_name=agent_name,
         thread_dir=thread_dir,
+        threading_mode=threading_mode,
         current_working_directory=working_dir,
     )
     try:
@@ -755,6 +772,8 @@ class _ProcessUseChatChannelClient:
             self._track_remote_text_delta(raw_payload)
         elif payload_type == AGENT_EVENT_TURN_STEER_REJECTED:
             self._clear_queued_agent_input(raw_payload.get("source_message_id"))
+        elif payload_type == AGENT_EVENT_TURN_START_REJECTED:
+            self._clear_queued_agent_input(raw_payload.get("source_message_id"))
         elif payload_type == AGENT_EVENT_TURN_ENDED:
             self._track_remote_turn_ended(raw_payload)
             self._thread_status_text = None
@@ -788,6 +807,7 @@ class _ProcessUseChatChannelClient:
             AGENT_EVENT_TURN_STEER_ACCEPTED,
             AGENT_EVENT_TURN_STEERED,
             AGENT_EVENT_TURN_STEER_REJECTED,
+            AGENT_EVENT_TURN_START_REJECTED,
             AGENT_EVENT_TURN_STARTED,
         ):
             return self._is_local_source_message(payload.get("source_message_id"))
@@ -1509,11 +1529,56 @@ def _chat_thread_path_for_dir(thread_dir: str) -> str:
     return f"{thread_dir}/main.thread"
 
 
+def _process_thread_path_for_dir(
+    *,
+    thread_dir: str,
+    thread_storage: "ThreadStorageBackend",
+) -> str:
+    if thread_storage == "dataset" and not thread_dir.startswith("dataset://"):
+        return _dataset_thread_url_for_path(path=f"{thread_dir}/main")
+    if thread_storage == "none" and not thread_dir.startswith("tmp://"):
+        return _thread_url_for_path(scheme="tmp", path=f"{thread_dir}/main")
+    return _chat_thread_path_for_dir(thread_dir)
+
+
+def _new_process_thread_path_for_dir(
+    *,
+    thread_dir: str,
+    thread_storage: "ThreadStorageBackend",
+) -> str:
+    path = posixpath.join(thread_dir.strip().strip("/"), str(uuid.uuid4()))
+    if thread_storage == "dataset" and not thread_dir.startswith("dataset://"):
+        return _dataset_thread_url_for_path(path=path)
+    if thread_storage == "none" and not thread_dir.startswith("tmp://"):
+        return _thread_url_for_path(scheme="tmp", path=path)
+    if thread_dir.startswith("dataset://"):
+        return f"{thread_dir}/{posixpath.basename(path)}"
+    if thread_dir.startswith("tmp://"):
+        return f"{thread_dir}/{posixpath.basename(path)}"
+    return f"/{path}.thread"
+
+
 def _default_chat_thread_path_for_agent(agent_name: str | None) -> str | None:
     normalized_agent_name = _normalized_annotation_string(agent_name)
     if normalized_agent_name is None:
         return None
     return f".threads/{normalized_agent_name}/main.thread"
+
+
+def _default_process_thread_path_for_agent(
+    *,
+    agent_name: str | None,
+    thread_storage: "ThreadStorageBackend",
+) -> str | None:
+    normalized_agent_name = _normalized_annotation_string(agent_name)
+    if normalized_agent_name is None:
+        return None
+
+    thread_dir = f".threads/{normalized_agent_name}"
+    return _process_thread_path_for_dir(
+        thread_dir=thread_dir,
+        thread_storage=thread_storage,
+    )
 
 
 def _participant_chat_threading_mode(
@@ -6822,6 +6887,7 @@ async def run(
                         thread_storage=thread_storage,
                         agent_name=agent_name,
                         thread_dir=resolved_thread_dir,
+                        threading_mode=resolved_threading_mode,
                         message=message,
                         working_dir=working_dir,
                     )
