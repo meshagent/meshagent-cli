@@ -687,9 +687,10 @@ class _ProcessUseChatChannelClient:
             if self._thread_path is None:
                 if self._participant is None:
                     raise RoomException("process use chat channel client not started")
-                if (
-                    _participant_chat_threading_mode(participant=self._participant)
-                    == "default-new"
+                if _participant_chat_threading_mode(
+                    participant=self._participant
+                ) == "default-new" and _participant_supports_agent_messages(
+                    participant=self._participant
                 ):
                     return
                 else:
@@ -1628,6 +1629,10 @@ def _participant_chat_threading_mode(
     return _normalized_annotation_string(
         participant.get_attribute("meshagent.chatbot.threading")
     )
+
+
+def _participant_supports_agent_messages(*, participant: RemoteParticipant) -> bool:
+    return participant.get_attribute("supports_agent_messages") is True
 
 
 def _participant_chat_thread_path(

@@ -2127,6 +2127,8 @@ async def test_process_use_chat_channel_client_starts_default_new_thread_with_me
                 return "default-new"
             if name == "meshagent.chatbot.thread-dir":
                 return ".threads/remote-helper"
+            if name == "supports_agent_messages":
+                return True
             return None
 
     class _Messaging:
@@ -2214,6 +2216,83 @@ async def test_process_use_chat_channel_client_starts_default_new_thread_with_me
     assert room.messaging.sent_payloads[1]["thread_id"] == (
         ".threads/remote-helper/new.thread"
     )
+
+    await client.stop()
+
+
+@pytest.mark.asyncio
+async def test_process_use_chat_channel_client_uses_main_thread_for_default_new_without_agent_message_support() -> (
+    None
+):
+    class _Participant:
+        id = "agent-1"
+
+        def get_attribute(self, name: str):
+            if name == "name":
+                return "remote-helper"
+            if name == "meshagent.chatbot.threading":
+                return "default-new"
+            if name == "meshagent.chatbot.thread-dir":
+                return ".threads/remote-helper"
+            return None
+
+    class _Messaging:
+        def __init__(self) -> None:
+            self.is_enabled = True
+            self.handlers: list[object] = []
+            self.sent_payloads: list[object] = []
+            self.participant = _Participant()
+
+        def on(self, event: str, handler) -> None:
+            assert event == "message"
+            self.handlers.append(handler)
+
+        def off(self, event: str, handler) -> None:
+            assert event == "message"
+            self.handlers.remove(handler)
+
+        def get_participants(self) -> list[_Participant]:
+            return [self.participant]
+
+        async def enable(self) -> None:
+            self.is_enabled = True
+
+        async def send_message(
+            self,
+            *,
+            to,
+            type: str,
+            message: dict[str, object],
+            attachment,
+        ) -> None:
+            assert to is self.participant
+            assert type == "agent-message"
+            assert attachment is None
+            self.sent_payloads.append(message["payload"])
+
+    class _Room:
+        def __init__(self) -> None:
+            self.messaging = _Messaging()
+
+    room = _Room()
+    client = process._ProcessUseChatChannelClient(
+        room=room,
+        participant_name="remote-helper",
+        thread_path=None,
+        timeout=0.1,
+    )
+
+    await client.start()
+
+    assert client.thread_path == ".threads/remote-helper/main.thread"
+    assert room.messaging.sent_payloads == [
+        {
+            "type": AGENT_MESSAGE_THREAD_OPEN,
+            "thread_id": ".threads/remote-helper/main.thread",
+            "message_id": room.messaging.sent_payloads[0]["message_id"],
+            "sender_name": None,
+        }
+    ]
 
     await client.stop()
 
