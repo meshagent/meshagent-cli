@@ -113,10 +113,20 @@ async def index(request: web.Request) -> web.Response:
     )
 
 
+async def status(request: web.Request) -> web.Response:
+    return web.Response(text="ready\\n", content_type="text/plain")
+
+
+async def ping(request: web.Request) -> web.Response:
+    return web.json_response({"pong": True})
+
+
 async def main() -> None:
     port = int(os.environ.get("PORT", "8000"))
     app = web.Application()
     app.router.add_get("/health", health)
+    app.router.add_get("/status", status)
+    app.router.add_get("/api/ping", ping)
     app.router.add_get("/", index)
 
     runner = web.AppRunner(app)
@@ -282,6 +292,18 @@ const server = http.createServer((request, response) => {
     return;
   }
 
+  if (request.url === "/status") {
+    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+    response.end("ready\\n");
+    return;
+  }
+
+  if (request.url === "/api/ping") {
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ pong: true }) + "\\n");
+    return;
+  }
+
   if (request.url === "/") {
     response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
     response.end("hello from meshagent init\\n");
@@ -421,6 +443,18 @@ const server = createServer((request: IncomingMessage, response: ServerResponse)
   if (request.url === "/health") {
     response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
     response.end("ok\\n");
+    return;
+  }
+
+  if (request.url === "/status") {
+    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+    response.end("ready\\n");
+    return;
+  }
+
+  if (request.url === "/api/ping") {
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ pong: true }) + "\\n");
     return;
   }
 
@@ -599,7 +633,7 @@ RUN rm -f /etc/nginx/conf.d/default.conf && printf '%s\\n' \\
   '  fastcgi_temp_path /data/nginx/fastcgi_temp;' \\
   '  uwsgi_temp_path /data/nginx/uwsgi_temp;' \\
   '  scgi_temp_path /data/nginx/scgi_temp;' \\
-  '  server { listen 80; location = /health { return 200 "ok\\n"; } location / { try_files $uri $uri/ /index.html; } }' \\
+  '  server { listen 80; location = /health { return 200 "ok\\n"; } location = /status { return 200 "ready\\n"; } location = /api/ping { default_type application/json; return 200 "{\\"pong\\":true}\\n"; } location / { try_files $uri $uri/ /index.html; } }' \\
   '}' > /etc/nginx/nginx.conf
 EXPOSE 80
 CMD ["sh", "-c", "mkdir -p /data/nginx/client_temp /data/nginx/proxy_temp /data/nginx/fastcgi_temp /data/nginx/uwsgi_temp /data/nginx/scgi_temp && nginx -c /etc/nginx/nginx.conf -g 'daemon off;'"]
@@ -645,6 +679,8 @@ app.Urls.Clear();
 app.Urls.Add($"http://0.0.0.0:{port}");
 
 app.MapGet("/health", () => Results.Text("ok\\n", "text/plain"));
+app.MapGet("/status", () => Results.Text("ready\\n", "text/plain"));
+app.MapGet("/api/ping", () => Results.Json(new { pong = true }));
 app.MapGet("/", () => Results.Text("hello from meshagent init\\n", "text/plain"));
 
 await app.RunAsync();
@@ -849,7 +885,7 @@ RUN rm -f /etc/nginx/conf.d/default.conf && printf '%s\\n' \\
   '  fastcgi_temp_path /data/nginx/fastcgi_temp;' \\
   '  uwsgi_temp_path /data/nginx/uwsgi_temp;' \\
   '  scgi_temp_path /data/nginx/scgi_temp;' \\
-  '  server { listen 80; location = /health { return 200 "ok\\n"; } location / { try_files $uri $uri/ /index.html; } }' \\
+  '  server { listen 80; location = /health { return 200 "ok\\n"; } location = /status { return 200 "ready\\n"; } location = /api/ping { default_type application/json; return 200 "{\\"pong\\":true}\\n"; } location / { try_files $uri $uri/ /index.html; } }' \\
   '}' > /etc/nginx/nginx.conf
 EXPOSE 80
 CMD ["sh", "-c", "mkdir -p /data/nginx/client_temp /data/nginx/proxy_temp /data/nginx/fastcgi_temp /data/nginx/uwsgi_temp /data/nginx/scgi_temp && nginx -c /etc/nginx/nginx.conf -g 'daemon off;'"]
