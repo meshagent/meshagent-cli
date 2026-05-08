@@ -155,6 +155,15 @@ def test_format_tool_call_summary_uses_in_progress_wording_before_completion() -
         )
         == "Running shell"
     )
+    assert (
+        format_tool_call_summary(
+            toolkit="openai",
+            tool="shell",
+            arguments=None,
+            completed=False,
+        )
+        == "Running commands"
+    )
 
 
 def test_format_tool_call_summary_uses_dataset_friendly_items() -> None:

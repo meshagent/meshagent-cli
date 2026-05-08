@@ -59,6 +59,15 @@ def format_tool_call_summary(
         return friendly
 
     normalized_tool = tool.strip().casefold()
+    normalized_toolkit = toolkit.strip().casefold()
+    if (
+        not completed
+        and not failed
+        and normalized_toolkit == "openai"
+        and normalized_tool in _SHELL_TOOLS
+        and arguments is None
+    ):
+        return "Running commands"
     if failed or normalized_tool not in _COMMAND_TOOLS or arguments is None:
         return f"{'Failed' if failed else ('Ran' if completed else 'Running')} {label}"
 
