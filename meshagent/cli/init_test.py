@@ -99,6 +99,8 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     assert '"aiohttp[speedups]~=3.13.0"' in pyproject
     assert "meshagent-api" not in pyproject
     assert "from aiohttp import web" in server_py
+    assert 'app.router.add_get("/status", status)' in server_py
+    assert 'app.router.add_get("/api/ping", ping)' in server_py
     assert "RoomClient" not in server_py
     assert "python-sdk-slim" in dockerfile
     assert "FROM scratch" in dockerfile
@@ -137,7 +139,10 @@ def test_init_creates_javascript_webserver_non_interactively(tmp_path) -> None:
     assert '"start": "node dist/index.js"' in package_text
     assert '"@vercel/ncc"' in package_text
     assert "@meshagent/meshagent" not in package_text
-    assert "hello from meshagent init" in server_js.read_text(encoding="utf-8")
+    server_text = server_js.read_text(encoding="utf-8")
+    assert "hello from meshagent init" in server_text
+    assert 'request.url === "/status"' in server_text
+    assert 'request.url === "/api/ping"' in server_text
     assert "node-sdk" in dockerfile_text
     assert "RUN npm run build" in dockerfile_text
     assert "COPY --from=build /app/dist/index.js /app/index.js" in dockerfile_text
@@ -207,12 +212,11 @@ def test_init_creates_typescript_webserver_non_interactively(tmp_path) -> None:
     assert '"build": "ncc build src/server.ts -o dist"' in package_text
     assert '"start": "node dist/index.js"' in package_text
     assert '"@vercel/ncc"' in package_text
-    assert "createServer" in (tmp_path / "src" / "server.ts").read_text(
-        encoding="utf-8"
-    )
-    assert "RoomClient" not in (tmp_path / "src" / "server.ts").read_text(
-        encoding="utf-8"
-    )
+    server_ts = (tmp_path / "src" / "server.ts").read_text(encoding="utf-8")
+    assert "createServer" in server_ts
+    assert 'request.url === "/status"' in server_ts
+    assert 'request.url === "/api/ping"' in server_ts
+    assert "RoomClient" not in server_ts
     assert "node-sdk" in dockerfile_text
     assert "RUN npm run build" in dockerfile_text
     assert "COPY --from=build /app/dist/index.js /app/index.js" in dockerfile_text
@@ -290,6 +294,8 @@ def test_init_creates_react_webserver_non_interactively(tmp_path) -> None:
     assert '"vite"' in package_json
     assert "nginx:1.27-alpine" in dockerfile
     assert "listen 80" in dockerfile
+    assert "location = /status" in dockerfile
+    assert "location = /api/ping" in dockerfile
     assert "EXPOSE 80" in dockerfile
     assert diagnosis.language == "TypeScript"
     assert diagnosis.javascript_flavor == "React/Vite"
@@ -346,6 +352,34 @@ def test_init_creates_dotnet_backend_agent_non_interactively(tmp_path) -> None:
     assert "EXPOSE" not in dockerfile
 
 
+def test_init_creates_dotnet_webserver_non_interactively(tmp_path) -> None:
+    result = CliRunner().invoke(
+        init_command,
+        [
+            "--language",
+            "dotnet",
+            "--focus",
+            "webserver",
+            "--no-interactive",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Created a minimal deployable .NET web server" in result.output
+    assert "--meshagent-token" not in result.output
+    csproj = (tmp_path / "MeshAgentHello.csproj").read_text(encoding="utf-8")
+    program_cs = (tmp_path / "Program.cs").read_text(encoding="utf-8")
+    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    assert '<Project Sdk="Microsoft.NET.Sdk.Web">' in csproj
+    assert 'MapGet("/health"' in program_cs
+    assert 'MapGet("/status"' in program_cs
+    assert 'MapGet("/api/ping"' in program_cs
+    assert "RoomClient" not in program_cs
+    assert "mcr.microsoft.com/dotnet/aspnet:9.0" in dockerfile
+    assert "EXPOSE 5000" in dockerfile
+
+
 def test_init_creates_flutter_webserver_non_interactively(tmp_path) -> None:
     result = CliRunner().invoke(
         init_command,
@@ -368,8 +402,11 @@ def test_init_creates_flutter_webserver_non_interactively(tmp_path) -> None:
     assert "flutter build web --release" in (tmp_path / "Dockerfile").read_text(
         encoding="utf-8"
     )
-    assert "listen 80" in (tmp_path / "Dockerfile").read_text(encoding="utf-8")
-    assert "EXPOSE 80" in (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    flutter_dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    assert "listen 80" in flutter_dockerfile
+    assert "location = /status" in flutter_dockerfile
+    assert "location = /api/ping" in flutter_dockerfile
+    assert "EXPOSE 80" in flutter_dockerfile
 
 
 def test_init_creates_dart_backend_agent_non_interactively(tmp_path) -> None:

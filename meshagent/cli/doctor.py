@@ -1208,7 +1208,7 @@ def _deploy_command(diagnosis: ProjectDiagnosis) -> str:
     parts = [
         "meshagent deploy .",
         '--room "$MESHAGENT_ROOM"',
-        "--tag <repository>:<tag>",
+        f"--tag {_suggested_image_tag(diagnosis.root)}",
     ]
     if not diagnosis.is_headless_backend_agent:
         parts.extend(
@@ -1224,6 +1224,13 @@ def _deploy_command(diagnosis: ProjectDiagnosis) -> str:
     if _needs_roomclient_runtime(diagnosis):
         parts.append("--meshagent-token agentDefault")
     return " ".join(parts)
+
+
+def _suggested_image_tag(root: Path) -> str:
+    repository = re.sub(r"[^a-z0-9._-]+", "-", root.name.lower()).strip(".-_")
+    if not repository:
+        repository = "meshagent-app"
+    return f"{repository}:latest"
 
 
 def _needs_roomclient_runtime(diagnosis: ProjectDiagnosis) -> bool:
