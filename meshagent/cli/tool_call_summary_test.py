@@ -127,6 +127,36 @@ def test_format_tool_call_summary_uses_storage_friendly_items() -> None:
     )
 
 
+def test_format_tool_call_summary_uses_in_progress_wording_before_completion() -> None:
+    assert (
+        format_tool_call_summary(
+            toolkit="storage",
+            tool="write_file",
+            arguments=None,
+            completed=False,
+        )
+        == "Writing file"
+    )
+    assert (
+        format_tool_call_summary(
+            toolkit="storage",
+            tool="write_file",
+            arguments={"path": "/src/report.html"},
+            completed=False,
+        )
+        == "Writing file: /src/report.html"
+    )
+    assert (
+        format_tool_call_summary(
+            toolkit="",
+            tool="shell",
+            arguments=None,
+            completed=False,
+        )
+        == "Running shell"
+    )
+
+
 def test_format_tool_call_summary_uses_dataset_friendly_items() -> None:
     assert (
         format_tool_call_summary(

@@ -183,6 +183,18 @@ def test_format_ask_tool_call_entry_promotes_raw_tool_log_headline() -> None:
     assert "Ran openai: shell" not in text
 
 
+def test_format_ask_tool_call_entry_prefixes_path_only_log_headline() -> None:
+    text = ask_module._format_ask_tool_call_entry_text(
+        toolkit="openai",
+        tool="shell",
+        arguments=None,
+        logs=["/tmp/pie_chart.svg\n/data/pie_chart.svg"],
+        error_message=None,
+    )
+
+    assert text.splitlines()[0] == "Output: /tmp/pie_chart.svg"
+
+
 def test_format_ask_tool_call_entry_keeps_parsed_summary_headline() -> None:
     text = ask_module._format_ask_tool_call_entry_text(
         toolkit="shell",

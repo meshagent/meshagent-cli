@@ -45,6 +45,7 @@ def format_tool_call_summary(
     tool: str,
     arguments: dict[str, object] | None,
     failed: bool = False,
+    completed: bool = True,
 ) -> str:
     label = tool_call_label(toolkit=toolkit, tool=tool, arguments=arguments)
     friendly = _friendly_builtin_summary(
@@ -52,23 +53,24 @@ def format_tool_call_summary(
         tool=tool,
         arguments=arguments,
         failed=failed,
+        completed=completed,
     )
     if friendly is not None:
         return friendly
 
     normalized_tool = tool.strip().casefold()
     if failed or normalized_tool not in _COMMAND_TOOLS or arguments is None:
-        return f"{'Failed' if failed else 'Ran'} {label}"
+        return f"{'Failed' if failed else ('Ran' if completed else 'Running')} {label}"
 
     commands = _command_arguments(tool=normalized_tool, arguments=arguments)
     if len(commands) == 0:
-        return f"{'Failed' if failed else 'Ran'} {label}"
+        return f"{'Failed' if failed else ('Ran' if completed else 'Running')} {label}"
 
     parsed: list[ParsedCommand] = []
     for command in commands:
         parsed.extend(parse_command(command))
     if len(parsed) == 0 or any(item.kind == "unknown" for item in parsed):
-        return f"Ran {label}"
+        return f"{'Ran' if completed else 'Running'} {label}"
 
     lines = ["Explored"]
     for line in _exploring_detail_lines(parsed):
@@ -102,6 +104,7 @@ def _friendly_builtin_summary(
     tool: str,
     arguments: dict[str, object] | None,
     failed: bool,
+    completed: bool,
 ) -> str | None:
     normalized_toolkit = toolkit.strip().casefold()
     normalized_tool = tool.strip().casefold()
@@ -110,19 +113,43 @@ def _friendly_builtin_summary(
 
     summary: str | None = None
     if normalized_toolkit == "storage":
-        summary = _storage_summary(tool=normalized_tool, arguments=arguments)
+        summary = _storage_summary(
+            tool=normalized_tool,
+            arguments=arguments,
+            completed=completed,
+        )
     elif normalized_toolkit == "dataset":
-        summary = _dataset_summary(tool=normalized_tool, arguments=arguments)
+        summary = _dataset_summary(
+            tool=normalized_tool,
+            arguments=arguments,
+            completed=completed,
+        )
     elif normalized_toolkit in {"datetime", "time"}:
-        summary = _datetime_summary(tool=normalized_tool, arguments=arguments)
+        summary = _datetime_summary(
+            tool=normalized_tool,
+            arguments=arguments,
+            completed=completed,
+        )
     elif normalized_toolkit == "web_fetch":
-        summary = _web_fetch_summary(tool=normalized_tool, arguments=arguments)
+        summary = _web_fetch_summary(
+            tool=normalized_tool,
+            arguments=arguments,
+            completed=completed,
+        )
     elif normalized_toolkit == "container":
-        summary = _container_summary(tool=normalized_tool)
+        summary = _container_summary(tool=normalized_tool, completed=completed)
     elif normalized_toolkit == "chat":
-        summary = _chat_summary(tool=normalized_tool, arguments=arguments)
+        summary = _chat_summary(
+            tool=normalized_tool,
+            arguments=arguments,
+            completed=completed,
+        )
     elif normalized_toolkit in {"mail", "email", "emails"}:
-        summary = _mail_summary(tool=normalized_tool, arguments=arguments)
+        summary = _mail_summary(
+            tool=normalized_tool,
+            arguments=arguments,
+            completed=completed,
+        )
 
     if summary is None:
         return None
@@ -131,133 +158,224 @@ def _friendly_builtin_summary(
     return summary
 
 
-def _storage_summary(*, tool: str, arguments: dict[str, object]) -> str | None:
+def _storage_summary(
+    *,
+    tool: str,
+    arguments: dict[str, object],
+    completed: bool,
+) -> str | None:
     path = _string_argument(arguments, "path")
     if tool == "read_file":
-        return _with_optional_suffix("Read file", path)
+        return _with_optional_suffix(
+            "Read file" if completed else "Reading file",
+            path,
+        )
     if tool == "grep_file":
         pattern = _string_argument(arguments, "pattern")
         if pattern is not None and path is not None:
-            return f"Searched {path} for {pattern}"
-        return _with_optional_suffix("Searched file", path)
+            return f"{'Searched' if completed else 'Searching'} {path} for {pattern}"
+        return _with_optional_suffix(
+            "Searched file" if completed else "Searching file",
+            path,
+        )
     if tool == "write_file":
-        return _with_optional_suffix("Wrote file", path)
+        return _with_optional_suffix(
+            "Wrote file" if completed else "Writing file",
+            path,
+        )
     if tool == "get_file_download_url":
-        return _with_optional_suffix("Prepared download", path)
+        return _with_optional_suffix(
+            "Prepared download" if completed else "Preparing download",
+            path,
+        )
     if tool == "list_files_in_room":
-        return _with_optional_suffix("Listed files", path)
+        return _with_optional_suffix(
+            "Listed files" if completed else "Listing files",
+            path,
+        )
     if tool == "save_file_from_url":
         url = _string_argument(arguments, "url")
         if path is not None:
-            return f"Saved file to {path}"
-        return _with_optional_suffix("Saved file from URL", url)
+            return f"{'Saved' if completed else 'Saving'} file to {path}"
+        return _with_optional_suffix(
+            "Saved file from URL" if completed else "Saving file from URL",
+            url,
+        )
     return None
 
 
-def _dataset_summary(*, tool: str, arguments: dict[str, object]) -> str | None:
+def _dataset_summary(
+    *,
+    tool: str,
+    arguments: dict[str, object],
+    completed: bool,
+) -> str | None:
     if tool == "list_tables":
-        return "Listed dataset tables"
+        return "Listed dataset tables" if completed else "Listing dataset tables"
     if tool == "execute_sql":
         query = _string_argument(arguments, "query")
+        prefix = "Ran SQL" if completed else "Running SQL"
         if query is not None:
-            return f"Ran SQL: {_single_line(query)}"
-        return "Ran SQL"
+            return f"{prefix}: {_single_line(query)}"
+        return prefix
 
     table = _dataset_table_from_tool(tool=tool)
     if tool.startswith("insert_") and tool.endswith("_rows"):
-        return _with_optional_suffix("Inserted dataset rows", table)
+        return _with_optional_suffix(
+            "Inserted dataset rows" if completed else "Inserting dataset rows",
+            table,
+        )
     if tool.startswith("update_") and tool.endswith("_rows"):
-        return _with_optional_suffix("Updated dataset rows", table)
+        return _with_optional_suffix(
+            "Updated dataset rows" if completed else "Updating dataset rows",
+            table,
+        )
     if tool.startswith("delete_") and tool.endswith("_rows"):
-        return _with_optional_suffix("Deleted dataset rows", table)
+        return _with_optional_suffix(
+            "Deleted dataset rows" if completed else "Deleting dataset rows",
+            table,
+        )
     if tool.startswith("advanced_delete_"):
-        return _with_optional_suffix("Deleted dataset rows", table)
+        return _with_optional_suffix(
+            "Deleted dataset rows" if completed else "Deleting dataset rows",
+            table,
+        )
     if tool.startswith("search_") or tool.startswith("advanced_search_"):
-        return _with_optional_suffix("Searched dataset", table)
+        return _with_optional_suffix(
+            "Searched dataset" if completed else "Searching dataset",
+            table,
+        )
     if tool.startswith("count_"):
-        return _with_optional_suffix("Counted dataset rows", table)
+        return _with_optional_suffix(
+            "Counted dataset rows" if completed else "Counting dataset rows",
+            table,
+        )
     if tool.startswith("spawn_task_for_each_") and tool.endswith("_row"):
-        return _with_optional_suffix("Queued tasks for dataset rows", table)
+        return _with_optional_suffix(
+            "Queued tasks for dataset rows"
+            if completed
+            else "Queueing tasks for dataset rows",
+            table,
+        )
     return None
 
 
-def _datetime_summary(*, tool: str, arguments: dict[str, object]) -> str | None:
+def _datetime_summary(
+    *,
+    tool: str,
+    arguments: dict[str, object],
+    completed: bool,
+) -> str | None:
     tz = _string_argument(arguments, "tz", "assume_tz")
     if tool == "now":
-        return _with_optional_suffix("Checked current time", tz)
+        return _with_optional_suffix(
+            "Checked current time" if completed else "Checking current time",
+            tz,
+        )
     if tool == "today_range":
-        return _with_optional_suffix("Checked today", tz)
+        return _with_optional_suffix(
+            "Checked today" if completed else "Checking today", tz
+        )
     if tool == "week_range":
-        return _with_optional_suffix("Checked week range", tz)
+        return _with_optional_suffix(
+            "Checked week range" if completed else "Checking week range",
+            tz,
+        )
     if tool == "month_range":
-        return _with_optional_suffix("Checked month range", tz)
+        return _with_optional_suffix(
+            "Checked month range" if completed else "Checking month range",
+            tz,
+        )
     if tool == "add_duration":
-        return "Added duration"
+        return "Added duration" if completed else "Adding duration"
     if tool == "diff":
-        return "Compared datetimes"
+        return "Compared datetimes" if completed else "Comparing datetimes"
     if tool == "parse_iso":
-        return "Parsed datetime"
+        return "Parsed datetime" if completed else "Parsing datetime"
     if tool == "format_dt":
-        return "Formatted datetime"
+        return "Formatted datetime" if completed else "Formatting datetime"
     if tool == "to_utc_z":
-        return "Converted datetime to UTC"
+        return (
+            "Converted datetime to UTC" if completed else "Converting datetime to UTC"
+        )
     return None
 
 
-def _web_fetch_summary(*, tool: str, arguments: dict[str, object]) -> str | None:
+def _web_fetch_summary(
+    *,
+    tool: str,
+    arguments: dict[str, object],
+    completed: bool,
+) -> str | None:
     url = _string_argument(arguments, "url")
     if tool == "web_fetch":
-        return _with_optional_suffix("Fetched URL", url)
+        return _with_optional_suffix(
+            "Fetched URL" if completed else "Fetching URL", url
+        )
     if tool == "web_grep":
         pattern = _string_argument(arguments, "pattern")
         if pattern is not None and url is not None:
-            return f"Searched {url} for {pattern}"
-        return _with_optional_suffix("Searched URL", url)
+            return f"{'Searched' if completed else 'Searching'} {url} for {pattern}"
+        return _with_optional_suffix(
+            "Searched URL" if completed else "Searching URL",
+            url,
+        )
     return None
 
 
-def _container_summary(*, tool: str) -> str | None:
+def _container_summary(*, tool: str, completed: bool) -> str | None:
     if tool == "list_managed_containers":
-        return "Listed containers"
+        return "Listed containers" if completed else "Listing containers"
     if tool == "start_container":
-        return "Started container"
+        return "Started container" if completed else "Starting container"
     if tool == "stop_managed_container":
-        return "Stopped container"
+        return "Stopped container" if completed else "Stopping container"
     return None
 
 
-def _chat_summary(*, tool: str, arguments: dict[str, object]) -> str | None:
+def _chat_summary(
+    *,
+    tool: str,
+    arguments: dict[str, object],
+    completed: bool,
+) -> str | None:
     if tool == "new_thread":
-        return "Started chat thread"
+        return "Started chat thread" if completed else "Starting chat thread"
     if tool == "attach_file":
         return _with_optional_suffix(
-            "Attached file",
+            "Attached file" if completed else "Attaching file",
             _string_argument(arguments, "path"),
         )
     if tool == "list_threads":
-        return "Listed chat threads"
+        return "Listed chat threads" if completed else "Listing chat threads"
     if tool == "grep_thread_list":
         return _with_optional_suffix(
-            "Searched chat threads",
+            "Searched chat threads" if completed else "Searching chat threads",
             _string_argument(arguments, "pattern"),
         )
     if tool.startswith("run_") and tool.endswith("_task"):
         return _with_optional_suffix(
-            "Sent task",
+            "Sent task" if completed else "Sending task",
             _string_argument(arguments, "prompt"),
         )
     return None
 
 
-def _mail_summary(*, tool: str, arguments: dict[str, object]) -> str | None:
+def _mail_summary(
+    *,
+    tool: str,
+    arguments: dict[str, object],
+    completed: bool,
+) -> str | None:
     if tool == "new_email_thread":
         subject = _string_argument(arguments, "subject")
+        prefix = "Started email thread" if completed else "Starting email thread"
         if subject is not None:
-            return f"Started email thread: {subject}"
-        return "Started email thread"
+            return f"{prefix}: {subject}"
+        return prefix
     if tool in {"attach_file", "attach file"}:
         return _with_optional_suffix(
-            "Attached file",
+            "Attached file" if completed else "Attaching file",
             _string_argument(arguments, "path"),
         )
     return None

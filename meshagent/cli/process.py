@@ -1329,6 +1329,14 @@ MaxOutputTokensOption = Annotated[
     ),
 ]
 
+ReasoningEffortOption = Annotated[
+    Optional[str],
+    typer.Option(
+        "--reasoning-effort",
+        help="Reasoning effort to request from OpenAI Responses models.",
+    ),
+]
+
 DecisionModelOption = Annotated[
     Optional[str],
     typer.Option(
@@ -1939,6 +1947,7 @@ def _build_runtime_agent(
     context_management: ContextManagementMode,
     compaction_threshold: Optional[int],
     max_output_tokens: Optional[int],
+    reasoning_effort: Optional[str],
     working_dir: Optional[str],
     dataset_namespace: Optional[list[str]],
     skill_dirs: Optional[list[str]],
@@ -2010,6 +2019,7 @@ def _build_runtime_agent(
         builder_kwargs["context_management"] = context_management
         builder_kwargs["compaction_threshold"] = compaction_threshold
         builder_kwargs["max_output_tokens"] = max_output_tokens
+        builder_kwargs["reasoning_effort"] = reasoning_effort
         builder_kwargs["preamble_rule"] = preamble_rule
     return builder(**builder_kwargs)
 
@@ -2605,6 +2615,7 @@ def build_process_agent(
     context_management: ContextManagementMode = "auto",
     compaction_threshold: Optional[int] = None,
     max_output_tokens: Optional[int] = 32000,
+    reasoning_effort: Optional[str] = None,
     skill_dirs: Optional[list[str]] = None,
     threading_mode: ThreadingMode = "default-new",
     shell_image: Optional[str] = None,
@@ -2696,6 +2707,11 @@ def build_process_agent(
 
     is_claude_model = model.startswith("claude-")
     supports_openai_tools = llm_participant is None and not is_claude_model
+    if reasoning_effort is not None and not supports_openai_tools:
+        print(
+            "[red]--reasoning-effort is only supported by OpenAI Responses models[/red]"
+        )
+        raise typer.Exit(1)
     base_shell_env = _copy_shell_env_vars(copy_env=shell_copy_env)
     base_shell_env.update(_set_shell_env_vars(set_env=shell_set_env))
     resolved_shell_image = resolve_shell_image(shell_image)
@@ -2741,6 +2757,7 @@ def build_process_agent(
                 context_management=context_management,
                 compaction_threshold=compaction_threshold,
                 max_output_tokens=max_output_tokens,
+                reasoning_effort=reasoning_effort,
             )
         else:
             if is_claude_model:
@@ -2757,6 +2774,7 @@ def build_process_agent(
                     context_management=context_management,
                     compaction_threshold=compaction_threshold,
                     max_output_tokens=max_output_tokens,
+                    reasoning_effort=reasoning_effort,
                 )
 
     resolved_channels = _resolved_channels(
@@ -3650,6 +3668,7 @@ async def join(
     context_management: ContextManagementOption = "auto",
     compaction_threshold: CompactionThresholdOption = None,
     max_output_tokens: MaxOutputTokensOption = 32000,
+    reasoning_effort: ReasoningEffortOption = None,
     channel: ChannelOption = [],
     skill_dir: Annotated[
         list[str],
@@ -3802,6 +3821,7 @@ async def join(
             context_management=context_management,
             compaction_threshold=compaction_threshold,
             max_output_tokens=max_output_tokens,
+            reasoning_effort=reasoning_effort,
             working_dir=working_dir,
             dataset_namespace=resolved_dataset_namespace,
             skill_dirs=skill_dir,
@@ -4071,6 +4091,7 @@ async def service(
     context_management: ContextManagementOption = "auto",
     compaction_threshold: CompactionThresholdOption = None,
     max_output_tokens: MaxOutputTokensOption = 32000,
+    reasoning_effort: ReasoningEffortOption = None,
     channel: ChannelOption = [],
     skill_dir: Annotated[
         list[str],
@@ -4208,6 +4229,7 @@ async def service(
             context_management=context_management,
             compaction_threshold=compaction_threshold,
             max_output_tokens=max_output_tokens,
+            reasoning_effort=reasoning_effort,
             working_dir=working_dir,
             dataset_namespace=resolved_dataset_namespace,
             skill_dirs=skill_dir,
@@ -4443,6 +4465,7 @@ async def spec(
     context_management: ContextManagementOption = "auto",
     compaction_threshold: CompactionThresholdOption = None,
     max_output_tokens: MaxOutputTokensOption = 32000,
+    reasoning_effort: ReasoningEffortOption = None,
     channel: ChannelOption = [],
     skill_dir: Annotated[
         list[str],
@@ -4579,6 +4602,7 @@ async def spec(
             context_management=context_management,
             compaction_threshold=compaction_threshold,
             max_output_tokens=max_output_tokens,
+            reasoning_effort=reasoning_effort,
             working_dir=working_dir,
             dataset_namespace=resolved_dataset_namespace,
             skill_dirs=skill_dir,
@@ -4832,6 +4856,7 @@ async def deploy(
     context_management: ContextManagementOption = "auto",
     compaction_threshold: CompactionThresholdOption = None,
     max_output_tokens: MaxOutputTokensOption = 32000,
+    reasoning_effort: ReasoningEffortOption = None,
     channel: ChannelOption = [],
     skill_dir: Annotated[
         list[str],
@@ -4975,6 +5000,7 @@ async def deploy(
             context_management=context_management,
             compaction_threshold=compaction_threshold,
             max_output_tokens=max_output_tokens,
+            reasoning_effort=reasoning_effort,
             working_dir=working_dir,
             dataset_namespace=resolved_dataset_namespace,
             skill_dirs=skill_dir,
@@ -6725,6 +6751,7 @@ async def run(
     context_management: ContextManagementOption = "auto",
     compaction_threshold: CompactionThresholdOption = None,
     max_output_tokens: MaxOutputTokensOption = 32000,
+    reasoning_effort: ReasoningEffortOption = None,
     channel: ChannelOption = [],
     skill_dir: Annotated[
         list[str],
@@ -6903,6 +6930,7 @@ async def run(
             context_management=context_management,
             compaction_threshold=compaction_threshold,
             max_output_tokens=max_output_tokens,
+            reasoning_effort=reasoning_effort,
             working_dir=working_dir,
             dataset_namespace=resolved_dataset_namespace,
             skill_dirs=skill_dir,

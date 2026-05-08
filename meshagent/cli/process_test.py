@@ -879,6 +879,8 @@ def test_process_join_passes_supported_builder_kwargs(monkeypatch) -> None:
             "90000",
             "--max-output-tokens",
             "2048",
+            "--reasoning-effort",
+            "high",
         ],
     )
 
@@ -892,6 +894,7 @@ def test_process_join_passes_supported_builder_kwargs(monkeypatch) -> None:
             context_management="none",
             compaction_threshold=90000,
             max_output_tokens=2048,
+            reasoning_effort="high",
         )
 
     root_command = click.Command("meshagent")
@@ -926,6 +929,7 @@ def test_process_join_passes_supported_builder_kwargs(monkeypatch) -> None:
     assert build_calls[0]["context_management"] == "none"
     assert build_calls[0]["compaction_threshold"] == 90000
     assert build_calls[0]["max_output_tokens"] == 2048
+    assert build_calls[0]["reasoning_effort"] == "high"
 
 
 def test_process_join_requires_at_least_one_channel(monkeypatch) -> None:

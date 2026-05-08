@@ -163,6 +163,19 @@ def _ask_tool_log_lines(logs: list[str]) -> list[str]:
     return lines
 
 
+def _ask_log_headline(line: str) -> str:
+    normalized = line.strip()
+    if _ask_looks_like_path_only_log_line(normalized):
+        return f"Output: {normalized}"
+    return normalized
+
+
+def _ask_looks_like_path_only_log_line(line: str) -> bool:
+    if line == "" or " " in line:
+        return False
+    return line.startswith(("/", "./", "../", "~/"))
+
+
 def _ask_log_lines_look_like_traceback(lines: list[str]) -> bool:
     if any(line.startswith("Traceback (most recent call last):") for line in lines):
         return True
@@ -200,6 +213,7 @@ def _format_ask_tool_call_entry_text(
     arguments: dict[str, Any] | None,
     logs: list[str],
     error_message: str | None,
+    completed: bool = True,
 ) -> str:
     failed = error_message is not None
     headline = format_tool_call_summary(
@@ -207,6 +221,7 @@ def _format_ask_tool_call_entry_text(
         tool=tool,
         arguments=arguments,
         failed=failed,
+        completed=completed,
     )
     raw_headline = (
         f"{'Failed' if failed else 'Ran'} "
@@ -217,7 +232,7 @@ def _format_ask_tool_call_entry_text(
         log_lines = []
     log_limit = _ASK_TOOL_LOG_RENDER_LIMIT
     if headline == raw_headline and log_lines:
-        headline = log_lines.pop(0)
+        headline = _ask_log_headline(log_lines.pop(0))
         log_limit -= 1
 
     detail_lines = [headline]
