@@ -5261,20 +5261,7 @@ async def chat_with(
             return False
 
         def _active_thread_status_text(self) -> str | None:
-            participant = self._chat_client._participant
-            if participant is None:
-                return None
-
-            status_attr = f"thread.status.text.{self._chat_client.thread_path}"
-            status = participant.get_attribute(status_attr)
-            if not isinstance(status, str):
-                return None
-
-            normalized = status.strip()
-            if normalized == "":
-                return None
-
-            return normalized
+            return None
 
         def _render_thread_status_item(self, status_text: str) -> RenderableType:
             table = Table.grid(expand=True, padding=(0, 0))

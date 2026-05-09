@@ -971,6 +971,47 @@ def test_process_join_requires_at_least_one_channel(monkeypatch) -> None:
     ]
 
 
+def test_process_join_requires_room(monkeypatch) -> None:
+    printed: list[str] = []
+    monkeypatch.delenv("MESHAGENT_ROOM", raising=False)
+    monkeypatch.setattr(
+        process,
+        "print",
+        lambda *args, **kwargs: printed.append(" ".join(str(arg) for arg in args)),
+    )
+    monkeypatch.setattr(process, "resolve_room", lambda room_name=None: None)
+
+    async def invoke_join() -> None:
+        await process.join(
+            project_id=None,
+            room=None,
+            agent_name="helper",
+            channel=["chat"],
+        )
+
+    root_command = click.Command("meshagent")
+    process_command = click.Command("process")
+    join_command = click.Command("join")
+    with click.Context(root_command, info_name="meshagent") as root_context:
+        with click.Context(
+            process_command,
+            info_name="process",
+            parent=root_context,
+        ) as process_context:
+            with click.Context(
+                join_command,
+                info_name="join",
+                parent=process_context,
+            ):
+                with pytest.raises(click.exceptions.Exit) as exc_info:
+                    asyncio.run(invoke_join())
+
+    assert exc_info.value.exit_code == 1
+    assert printed == [
+        "[bold red]--room is required (or set MESHAGENT_ROOM)[/bold red]"
+    ]
+
+
 def test_process_service_requires_at_least_one_channel(monkeypatch) -> None:
     printed: list[str] = []
     monkeypatch.setattr(
@@ -1599,6 +1640,51 @@ async def test_process_use_routes_to_chat_channel_ask_tui(
 
 
 @pytest.mark.asyncio
+async def test_process_use_requires_room(monkeypatch: pytest.MonkeyPatch) -> None:
+    printed: list[str] = []
+    monkeypatch.delenv("MESHAGENT_ROOM", raising=False)
+    monkeypatch.setattr(
+        process,
+        "print",
+        lambda *args, **kwargs: printed.append(" ".join(str(arg) for arg in args)),
+    )
+    monkeypatch.setattr(process, "resolve_room", lambda room_name=None: None)
+
+    async def fail_get_client():
+        raise AssertionError("process use should fail before opening an API client")
+
+    monkeypatch.setattr(process, "get_client", fail_get_client)
+
+    root_command = click.Command("meshagent")
+    process_command = click.Command("process")
+    use_command = click.Command("use")
+    with click.Context(root_command, info_name="meshagent") as root_context:
+        with click.Context(
+            process_command,
+            info_name="process",
+            parent=root_context,
+        ) as process_context:
+            with click.Context(
+                use_command,
+                info_name="use",
+                parent=process_context,
+            ):
+                with pytest.raises(click.exceptions.Exit) as exc_info:
+                    await process.use(
+                        project_id=None,
+                        room=None,
+                        agent_name="remote-helper",
+                        thread_path=None,
+                        message="hello",
+                    )
+
+    assert exc_info.value.exit_code == 1
+    assert printed == [
+        "[bold red]--room is required (or set MESHAGENT_ROOM)[/bold red]"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_chatbot_use_keeps_legacy_chat_with_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1910,6 +1996,8 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
         def get_attribute(self, name: str):
             if name == "name":
                 return "remote-helper"
+            if name == "thread.status.text./threads/remote.thread":
+                return "stale attribute status"
             return None
 
     class _Messaging:
@@ -1970,6 +2058,7 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
         OpenThread.model_validate(room.messaging.sent_payloads[0]), OpenThread
     )
     assert room.messaging.sent_payloads[0]["type"] == AGENT_MESSAGE_THREAD_OPEN
+    assert client.thread_status_text is None
 
     status_payload = AgentThreadStatus(
         type=AGENT_EVENT_THREAD_STATUS,
@@ -2020,6 +2109,7 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
     room.messaging.handlers[0](_RoomMessage(ended_payload))
 
     assert client.queued_message_labels == ()
+    assert client.thread_status_text is None
     assert await client.receive() == ended_payload
 
     await client.stop()

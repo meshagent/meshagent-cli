@@ -1534,6 +1534,13 @@ def _has_chat_channel(*, channels: list[str]) -> bool:
     return "chat" in channels
 
 
+def _require_resolved_room(room: str | None) -> str:
+    if room is None or room.strip() == "":
+        print("[bold red]--room is required (or set MESHAGENT_ROOM)[/bold red]")
+        raise typer.Exit(1)
+    return room.strip()
+
+
 def _normalized_thread_dir(*, thread_dir: Optional[str]) -> Optional[str]:
     if thread_dir is None:
         return None
@@ -3734,12 +3741,12 @@ async def join(
         storage=storage,
         require_storage=require_storage,
     )
+    room = _require_resolved_room(resolve_room(room))
 
     key = await resolve_key(project_id=project_id, key=key)
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        room = resolve_room(room)
 
         token_env = token_from_env or "MESHAGENT_TOKEN"
         jwt = os.getenv(token_env)
@@ -5946,26 +5953,9 @@ async def chat_with(
             return False
 
         def _active_thread_status_text(self) -> str | None:
-            status = _thread_status_text(
+            return _thread_status_text(
                 getattr(self._chat_client, "thread_status_text", None)
             )
-            if status is not None:
-                return status
-
-            participant = self._chat_client._participant
-            if participant is None:
-                return None
-
-            status_attr = f"thread.status.text.{self._chat_client.thread_path}"
-            status = participant.get_attribute(status_attr)
-            if not isinstance(status, str):
-                return None
-
-            normalized = status.strip()
-            if normalized == "":
-                return None
-
-            return normalized
 
         def _render_thread_status_item(self, status_text: str) -> RenderableType:
             table = Table.grid(expand=True, padding=(0, 0))
@@ -6851,12 +6841,12 @@ async def run(
         storage=storage,
         require_storage=require_storage,
     )
+    room = _require_resolved_room(resolve_room(room))
 
     key = await resolve_key(project_id=project_id, key=key)
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        room = resolve_room(room)
 
         jwt = os.getenv("MESHAGENT_TOKEN")
         if jwt is None:
@@ -7032,11 +7022,11 @@ async def use(
     runtime = _current_command_runtime()
     root = logging.getLogger()
     root.setLevel(logging.ERROR)
+    room = _require_resolved_room(resolve_room(room))
 
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        room = resolve_room(room)
 
         if runtime == "process":
             if agent_name is None or agent_name.strip() == "":
