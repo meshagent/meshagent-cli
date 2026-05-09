@@ -139,6 +139,7 @@ import yaml
 
 import shlex
 import sys
+import re
 
 import asyncio
 from dataclasses import dataclass
@@ -5502,6 +5503,16 @@ async def chat_with(
             if headline == "":
                 headline = "event"
 
+            diff_blocks = (
+                self._diff_preview_blocks(item) if normalized_kind == "diff" else []
+            )
+            if len(diff_blocks) > 0:
+                headline = self._diff_preview_headline(
+                    blocks=diff_blocks,
+                    state=state,
+                    fallback=headline,
+                )
+
             if active:
                 headline_text = f"{self._event_spinner()} {headline}"
             else:
@@ -5538,7 +5549,22 @@ async def chat_with(
                     )
 
             detail_lines = self._event_detail_lines(item)
-            if len(detail_lines) > 0:
+            if len(diff_blocks) > 0:
+                table.add_row(Text("  "), Text(" "), Text("  "))
+                for index, block in enumerate(diff_blocks):
+                    if index > 0:
+                        table.add_row(Text("  "), Text(" "), Text("  "))
+                    table.add_row(
+                        Text("  "),
+                        Text(f"└ {block['header']}", style="dim"),
+                        Text("  "),
+                    )
+                    for line in block["lines"]:
+                        detail_text = Text("    ")
+                        detail_text.append_text(self._render_diff_line(line))
+                        table.add_row(Text("  "), detail_text, Text("  "))
+                table.add_row(Text("  "), Text(" "), Text("  "))
+            elif len(detail_lines) > 0:
                 table.add_row(Text("  "), Text(" "), Text("  "))
                 for line in detail_lines:
                     detail_text = Text("  ")
@@ -5557,6 +5583,112 @@ async def chat_with(
             if not isinstance(details, str) or details.strip() == "":
                 return []
             return details.splitlines()
+
+        def _diff_preview_blocks(self, item) -> list[dict[str, object]]:
+            candidates: list[str] = []
+            for attr in ("preview", "data"):
+                value = item.get_attribute(attr)
+                if isinstance(value, str) and value.strip() != "":
+                    candidates.append(value)
+            for candidate in candidates:
+                blocks = self._apply_patch_preview_blocks(candidate)
+                if len(blocks) > 0:
+                    return blocks
+            return []
+
+        def _apply_patch_preview_blocks(self, text: str) -> list[dict[str, object]]:
+            normalized = text.replace("\r\n", "\n").rstrip()
+            if (
+                "*** Begin Patch" not in normalized
+                and "*** Update File:" not in normalized
+                and "*** Add File:" not in normalized
+                and "*** Delete File:" not in normalized
+            ):
+                return []
+
+            blocks: list[dict[str, object]] = []
+            current_path = ""
+            current_lines: list[str] = []
+            lines_added = 0
+            lines_removed = 0
+
+            def flush() -> None:
+                nonlocal current_lines, lines_added, lines_removed
+                if current_path == "" or len(current_lines) == 0:
+                    current_lines = []
+                    lines_added = 0
+                    lines_removed = 0
+                    return
+                blocks.append(
+                    {
+                        "path": current_path,
+                        "header": self._diff_preview_header(
+                            path=current_path,
+                            lines_added=lines_added,
+                            lines_removed=lines_removed,
+                        ),
+                        "lines": current_lines,
+                        "lines_added": lines_added,
+                        "lines_removed": lines_removed,
+                    }
+                )
+                current_lines = []
+                lines_added = 0
+                lines_removed = 0
+
+            for line in normalized.splitlines():
+                match = re.match(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$", line)
+                if match is not None:
+                    flush()
+                    current_path = match.group(1).strip()
+                    continue
+                if current_path == "" or line.startswith("*** "):
+                    continue
+                current_lines.append(line)
+                if line.startswith("+") and not line.startswith("+++"):
+                    lines_added += 1
+                elif line.startswith("-") and not line.startswith("---"):
+                    lines_removed += 1
+            flush()
+            return blocks
+
+        def _diff_preview_header(
+            self, *, path: str, lines_added: int, lines_removed: int
+        ) -> str:
+            if lines_added == 0 and lines_removed == 0:
+                return path
+            return f"{path} (+{lines_added} -{lines_removed})"
+
+        def _diff_preview_headline(
+            self, *, blocks: list[dict[str, object]], state: str, fallback: str
+        ) -> str:
+            if len(blocks) == 0:
+                return fallback
+            lines_added = sum(
+                value if isinstance(value := block.get("lines_added"), int) else 0
+                for block in blocks
+            )
+            lines_removed = sum(
+                value if isinstance(value := block.get("lines_removed"), int) else 0
+                for block in blocks
+            )
+            path = blocks[0].get("path")
+            target = (
+                f"{len(blocks)} files"
+                if len(blocks) != 1
+                else path
+                if isinstance(path, str) and path.strip() != ""
+                else "patch"
+            )
+            verb = "Editing"
+            normalized_state = state.strip().lower()
+            if normalized_state == "completed":
+                verb = "Edited"
+            elif normalized_state == "failed":
+                verb = "Attempted to patch"
+            elif normalized_state == "cancelled":
+                verb = "Patch cancelled:"
+            return f"{verb} {target} (+{lines_added} -{lines_removed})"
 
         def _render_event_detail_line(self, *, kind: str, line: str) -> Text:
             if kind == "diff":

@@ -2651,9 +2651,10 @@ class _FakeProcessRoomClient(RoomClient):
 
 
 class _FakeProcessThreadAdapter:
-    def __init__(self, *, room, path: str) -> None:
+    def __init__(self, *, room, path: str, persist_deltas: bool = False) -> None:
         del room
         self.path = path
+        self.persist_deltas = persist_deltas
 
     async def start(self) -> None:
         return None
@@ -2693,6 +2694,9 @@ class _SteeringRecordingAdapter:
 
     def default_model(self) -> str:
         return "gpt-5.5"
+
+    def provider_name(self) -> str:
+        return "openai"
 
     def create_session(self) -> AgentSessionContext:
         return self.session
@@ -2936,12 +2940,57 @@ async def test_build_process_agent_uses_selected_dataset_thread_storage(
         process_state = supervisor.create_thread_process("dataset://threads/example")
         assert isinstance(process_state.thread_storage, _FakeDatasetThreadStorage)
         assert process_state.thread_storage.path == "dataset://threads/example"
+        assert process_state.thread_storage.persist_deltas is False
         assert process_state.thread_id == "dataset://threads/example"
         status_publisher = process_state.thread_status_publisher
         assert isinstance(
             status_publisher,
             AgentMessageThreadStatusPublisher,
         )
+    finally:
+        await agent.stop()
+
+
+@pytest.mark.asyncio
+async def test_build_process_agent_enables_verbose_dataset_thread_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import meshagent.agents as agents_module
+
+    monkeypatch.setattr(
+        agents_module,
+        "MeshDocumentThreadStorage",
+        _FakeProcessThreadAdapter,
+    )
+    monkeypatch.setattr(
+        agents_module,
+        "DatasetThreadStorage",
+        _FakeDatasetThreadStorage,
+    )
+    agent_cls = process.build_process_agent(
+        model="gpt-5.5",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+        thread_storage="dataset",
+        verbose_dataset=True,
+    )
+    agent = agent_cls()
+    monkeypatch.setattr(agent, "install_requirements", lambda: asyncio.sleep(0))
+    monkeypatch.setattr(agent, "get_exposed_toolkits", lambda: asyncio.sleep(0, []))
+
+    room = _FakeProcessRoomClient()
+    await agent.start(room=room)  # type: ignore[arg-type]
+    try:
+        supervisor = agent._supervisor
+        assert supervisor is not None
+
+        process_state = supervisor.create_thread_process("dataset://threads/example")
+        assert isinstance(process_state.thread_storage, _FakeDatasetThreadStorage)
+        assert process_state.thread_storage.persist_deltas is True
     finally:
         await agent.stop()
 
