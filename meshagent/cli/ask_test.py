@@ -37,7 +37,7 @@ class _FakeAskAdapter(LLMAdapter[object]):
     def create_session(self) -> AgentSessionContext:
         return AgentSessionContext()
 
-    async def next(
+    async def create_response(
         self,
         *,
         context: AgentSessionContext,

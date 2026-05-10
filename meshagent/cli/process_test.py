@@ -19,11 +19,15 @@ from meshagent.agents.messages import (
     AGENT_MESSAGE_THREAD_START,
     AGENT_MESSAGE_TURN_START,
     AGENT_MESSAGE_TURN_STEER,
+    AgentModelChanged,
+    AgentModelInfo,
+    AgentProviderInfo,
     AgentTextContent,
     AgentTextContentDelta,
     AgentThreadStatus,
     CloseThread,
     OpenThread,
+    ModelsResponse,
     StartThread,
     TurnEnded,
     TurnStart,
@@ -88,6 +92,51 @@ def _assert_builder_kwargs_match_signature(
 def test_root_cli_registers_process_group() -> None:
     command = get_command(root_cli.app)
     assert "process" in command.commands
+
+
+async def test_chatbot_await_cleanup_cancels_hung_cleanup() -> None:
+    cancelled = asyncio.Event()
+
+    async def hung_cleanup() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    await chatbot._await_cleanup(
+        hung_cleanup(),
+        timeout=0.01,
+        label="test cleanup",
+    )
+
+    await asyncio.wait_for(cancelled.wait(), timeout=1)
+
+
+async def test_chatbot_await_cleanup_respects_outer_cancellation() -> None:
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def hung_cleanup() -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    task = asyncio.create_task(
+        chatbot._await_cleanup(
+            hung_cleanup(),
+            timeout=10,
+            label="test cleanup",
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.wait_for(cancelled.wait(), timeout=1)
 
 
 @pytest.mark.parametrize(
@@ -448,7 +497,7 @@ async def test_process_agent_uses_shared_decision_adapter_for_threaded_channels(
         def create_session(self) -> AgentSessionContext:
             return AgentSessionContext()
 
-        async def next(self, **kwargs):
+        async def create_response(self, **kwargs):
             del kwargs
             raise AssertionError("decision adapter should not be used in this test")
 
@@ -576,6 +625,198 @@ def test_resolved_channels_accept_toolkit_channel() -> None:
         runtime="process",
         channel=["toolkit:assistant"],
     ) == ["toolkit:assistant"]
+
+
+def test_resolve_openai_realtime_model_accepts_aliases_and_model_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_REALTIME_MODEL", raising=False)
+
+    assert process._resolve_openai_realtime_model(model="openai realtime") == (
+        "gpt-realtime"
+    )
+    assert process._resolve_openai_realtime_model(model="openai:realtime") == (
+        "gpt-realtime"
+    )
+    assert process._resolve_openai_realtime_model(model="gpt-realtime") == (
+        "gpt-realtime"
+    )
+    assert process._resolve_openai_realtime_model(model="gpt-realtime-2") == (
+        "gpt-realtime-2"
+    )
+    assert process._resolve_openai_realtime_model(model="gpt-5.5") is None
+
+    monkeypatch.setenv("OPENAI_REALTIME_MODEL", "gpt-realtime-preview")
+    assert process._resolve_openai_realtime_model(model="openai realtime") == (
+        "gpt-realtime-preview"
+    )
+
+
+def test_build_process_agent_uses_realtime_adapter_for_openai_realtime_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_adapters: list[dict[str, object]] = []
+
+    class _FakeRealtimeAdapter:
+        def __init__(
+            self,
+            *,
+            model: str,
+            api_key=None,
+            log_requests=None,
+            session_options=None,
+            response_options=None,
+            allowed_models=None,
+        ) -> None:
+            created_adapters.append(
+                {
+                    "model": model,
+                    "api_key": api_key,
+                    "log_requests": log_requests,
+                    "session_options": session_options,
+                    "response_options": response_options,
+                    "allowed_models": allowed_models,
+                }
+            )
+
+        def default_model(self) -> str:
+            return "gpt-realtime"
+
+    monkeypatch.setattr(process, "OpenAIRealtimeAdapter", _FakeRealtimeAdapter)
+
+    agent_cls = process.build_process_agent(
+        model="openai realtime",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+    )
+
+    assert agent_cls is not None
+    assert created_adapters == [
+        {
+            "model": "gpt-realtime",
+            "api_key": None,
+            "log_requests": None,
+            "session_options": {"output_modalities": ["text"]},
+            "response_options": {"output_modalities": ["text"]},
+            "allowed_models": ["gpt-realtime"],
+        }
+    ]
+
+
+def test_build_process_agent_groups_repeated_models_by_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_adapters: list[dict[str, object]] = []
+
+    class _FakeOpenAIAdapter:
+        def __init__(
+            self,
+            *,
+            model: str,
+            api_key=None,
+            log_requests=None,
+            context_management=None,
+            compaction_threshold=None,
+            max_output_tokens=None,
+            reasoning_effort=None,
+            allowed_models=None,
+        ) -> None:
+            del api_key
+            del log_requests
+            del context_management
+            del compaction_threshold
+            del max_output_tokens
+            del reasoning_effort
+            created_adapters.append(
+                {
+                    "provider": "openai",
+                    "model": model,
+                    "allowed_models": allowed_models,
+                }
+            )
+
+    class _FakeRealtimeAdapter:
+        def __init__(
+            self,
+            *,
+            model: str,
+            api_key=None,
+            log_requests=None,
+            session_options=None,
+            response_options=None,
+            allowed_models=None,
+        ) -> None:
+            del api_key
+            del log_requests
+            del session_options
+            del response_options
+            created_adapters.append(
+                {
+                    "provider": "openai-realtime",
+                    "model": model,
+                    "allowed_models": allowed_models,
+                }
+            )
+
+    class _FakeAnthropicAdapter:
+        def __init__(
+            self,
+            *,
+            model: str,
+            api_key=None,
+            log_requests=None,
+            allowed_models=None,
+        ) -> None:
+            del api_key
+            del log_requests
+            created_adapters.append(
+                {
+                    "provider": "anthropic",
+                    "model": model,
+                    "allowed_models": allowed_models,
+                }
+            )
+
+    monkeypatch.setattr(process, "OpenAIResponsesAdapter", _FakeOpenAIAdapter)
+    monkeypatch.setattr(process, "OpenAIRealtimeAdapter", _FakeRealtimeAdapter)
+    monkeypatch.setattr(
+        process,
+        "AnthropicOpenAIResponsesStreamAdapter",
+        _FakeAnthropicAdapter,
+    )
+
+    agent_cls = process.build_process_agent(
+        model=["gpt-5.5", "gpt-5.4", "claude-opus-4-7", "gpt-realtime"],
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+    )
+
+    assert agent_cls is not None
+    assert created_adapters[1:] == [
+        {
+            "provider": "openai",
+            "model": "gpt-5.5",
+            "allowed_models": ["gpt-5.5", "gpt-5.4"],
+        },
+        {
+            "provider": "openai-realtime",
+            "model": "gpt-realtime",
+            "allowed_models": ["gpt-realtime"],
+        },
+        {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "allowed_models": ["claude-opus-4-7"],
+        },
+    ]
 
 
 def test_chatbot_agent_annotations_include_thread_dir() -> None:
@@ -1176,7 +1417,7 @@ async def test_process_run_starts_room_agent_and_uses_ask_tui(
     assert process_agent.started_room is room_client
     assert captured["process_tui_kwargs"] == {
         "bot": process_agent,
-        "model": "gpt-5.5",
+        "model": ["gpt-5.5"],
         "thread_path": None,
         "thread_storage": "meshdocument",
         "agent_name": "helper",
@@ -1334,7 +1575,7 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
 
     await process._run_process_run_tui(
         bot=bot,
-        model="gpt-5.5",
+        model=["gpt-realtime", "gpt-5.4"],
         thread_path="/threads/process-run.thread",
         thread_storage="meshdocument",
         agent_name="helper",
@@ -1344,10 +1585,116 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
         working_dir="/tmp",
     )
 
-    assert captured["model"] == "gpt-5.5"
+    assert captured["model"] == "openai-realtime/gpt-realtime"
     assert captured["title"] == "meshagent process run"
+    assert captured["command_handler"] is not None
+    assert captured["model_label_provider"]() == "openai-realtime/gpt-realtime"
+    command_options = captured["command_options_provider"]("/model")
+    assert [option.command for option in command_options] == [
+        "/model openai-realtime/gpt-realtime",
+        "/model openai/gpt-5.4",
+    ]
+    assert command_options[0].active is True
+    assert captured["session"]._session._model is None
     assert captured["session"].current_working_directory == "/tmp"
     assert bot._supervisor.unsubscribed_queue is bot._supervisor.subscribed_queue
+
+
+@pytest.mark.asyncio
+async def test_process_model_command_lists_and_changes_models() -> None:
+    class _FakeModelSession:
+        def __init__(self) -> None:
+            self.current_model = AgentModelChanged(
+                type=process.AGENT_EVENT_MODEL_CHANGED,
+                thread_id="/threads/process-run.thread",
+                provider="openai-realtime",
+                model="gpt-realtime",
+            )
+            self.changes: list[tuple[str | None, str | None]] = []
+            self.models_response: ModelsResponse | None = None
+
+        @property
+        def thread_id(self) -> str:
+            return "/threads/process-run.thread"
+
+        async def request_models(self) -> ModelsResponse:
+            self.models_response = ModelsResponse(
+                type=process.AGENT_MESSAGE_MODELS_RESPONSE,
+                source_message_id="models-request",
+                providers=[
+                    AgentProviderInfo(
+                        name="openai-realtime",
+                        friendly_name="OpenAI Realtime",
+                        default_model="gpt-realtime",
+                        models=[
+                            AgentModelInfo(
+                                name="gpt-realtime",
+                                friendly_name="GPT Realtime",
+                            )
+                        ],
+                    ),
+                    AgentProviderInfo(
+                        name="openai",
+                        friendly_name="OpenAI",
+                        default_model="gpt-5.4",
+                        models=[
+                            AgentModelInfo(name="gpt-5.4"),
+                            AgentModelInfo(name="gpt-5.5"),
+                        ],
+                    ),
+                ],
+            )
+            return self.models_response
+
+        def select_model(self, model: AgentModelChanged) -> None:
+            self.current_model = model
+
+        async def change_model(
+            self,
+            *,
+            provider: str | None,
+            model: str | None,
+        ) -> AgentModelChanged:
+            self.changes.append((provider, model))
+            return AgentModelChanged(
+                type=process.AGENT_EVENT_MODEL_CHANGED,
+                thread_id="/threads/process-run.thread",
+                provider=provider or "openai",
+                model=model or "gpt-5.4",
+            )
+
+    session = _FakeModelSession()
+
+    model_list = await process._handle_process_model_command("/model", session=session)
+    assert model_list is not None
+    assert "* openai-realtime/gpt-realtime" in model_list
+    assert "  openai/gpt-5.4" in model_list
+
+    provider_list = await process._handle_process_model_command(
+        "/provider",
+        session=session,
+    )
+    assert provider_list is not None
+    assert "* openai-realtime" in provider_list
+    assert "  openai" in provider_list
+
+    changed = await process._handle_process_model_command(
+        "/model openai/gpt-5.4",
+        session=session,
+    )
+    assert changed == "Using openai/gpt-5.4"
+    assert session.current_model.provider == "openai"
+    assert session.current_model.model == "gpt-5.4"
+    assert session.changes == []
+
+    changed = await process._handle_process_model_command(
+        "/provider openai-realtime",
+        session=session,
+    )
+    assert changed == "Using openai-realtime/gpt-realtime"
+    assert session.current_model.provider == "openai-realtime"
+    assert session.current_model.model == "gpt-realtime"
+    assert session.changes == []
 
 
 @pytest.mark.asyncio
@@ -2676,6 +3023,9 @@ class _FakeProcessThreadAdapter:
         del context
         del llm_adapter
 
+    async def restore_session_context_async(self, *, context, llm_adapter=None) -> None:
+        self.restore_session_context(context=context, llm_adapter=llm_adapter)
+
     def make_toolkit(self):
         return Toolkit(name="thread", tools=[])
 
@@ -2701,6 +3051,18 @@ class _SteeringRecordingAdapter:
     def create_session(self) -> AgentSessionContext:
         return self.session
 
+    async def start_session(
+        self,
+        *,
+        context: AgentSessionContext,
+        event_handler=None,
+    ) -> None:
+        del context
+        del event_handler
+
+    async def stop_session(self, *, context: AgentSessionContext) -> None:
+        del context
+
     def set_tool_call_approval_handler(self, handler) -> None:
         self.tool_call_approval_handler = handler
 
@@ -2722,7 +3084,7 @@ class _SteeringRecordingAdapter:
         del custom_event_callback
         return lambda message: None
 
-    async def next(
+    async def create_response(
         self,
         *,
         context: AgentSessionContext,

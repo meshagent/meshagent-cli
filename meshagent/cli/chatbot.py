@@ -97,7 +97,7 @@ from meshagent.openai.tools.responses_adapter import (
 )
 
 from meshagent.tools.dataset import make_dataset_toolkit
-from meshagent.agents.adapter import LLMAdapter, MessageStreamLLMAdapter
+from meshagent.agents.adapter import LLMAdapter, LLMProvider, MessageStreamLLMAdapter
 from meshagent.agents.messages import (
     AGENT_EVENT_TEXT_CONTENT_DELTA,
     AGENT_EVENT_TURN_ENDED,
@@ -105,12 +105,16 @@ from meshagent.agents.messages import (
     AGENT_EVENT_TURN_STEER_ACCEPTED,
     AGENT_EVENT_TURN_STEER_REJECTED,
     AGENT_EVENT_USAGE_UPDATED,
+    AGENT_MESSAGE_MODELS_RESPONSE,
     AGENT_MESSAGE_TURN_INTERRUPT,
     AGENT_MESSAGE_TURN_START,
     AGENT_MESSAGE_TURN_STEER,
+    AgentError,
     AgentTextContentDelta,
     AgentTextContent,
     AgentUsageUpdated,
+    ModelsRequest,
+    ModelsResponse,
     TurnEnded,
     TurnInterrupt,
     TurnStart,
@@ -119,7 +123,7 @@ from meshagent.agents.messages import (
     TurnSteerAccepted,
     TurnSteerRejected,
 )
-from meshagent.agents.process import ContentScheme, Message
+from meshagent.agents.process import ContentScheme, Message, agent_provider_info
 
 from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.api.messaging import FileContent
@@ -151,16 +155,46 @@ from meshagent.api.client import ConflictError
 logger = logging.getLogger("chatbot")
 
 
-async def _await_cleanup(awaitable: Awaitable[Any]) -> Any:
+async def _await_cleanup(
+    awaitable: Awaitable[Any],
+    *,
+    timeout: float = 2,
+    label: str = "cleanup",
+) -> Any:
     task = asyncio.ensure_future(awaitable)
     try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError as cancel_exc:
+        return await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning("%s did not finish during shutdown; cancelling", label)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return None
+    except asyncio.CancelledError:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        raise
+
+
+async def _cancel_background_tasks(
+    tasks: set[asyncio.Task[Any]],
+    *,
+    timeout: float = 1,
+) -> None:
+    if len(tasks) == 0:
+        return
+
+    for task in tasks:
+        task.cancel()
+
+    done, pending = await asyncio.wait(tasks, timeout=timeout)
+    for task in done:
         try:
-            return await task
-        except Exception:
-            raise
-        raise cancel_exc
+            task.result()
+        except asyncio.CancelledError:
+            pass
+
+    for task in pending:
+        logger.debug("background task did not exit during shutdown: %r", task)
 
 
 async def _run_agent_room_session(
@@ -179,9 +213,12 @@ async def _run_agent_room_session(
         await runner(client)
     finally:
         if bot_started:
-            await _await_cleanup(bot.stop())
+            await _await_cleanup(bot.stop(), label="agent stop")
         if client_entered:
-            await _await_cleanup(client.__aexit__(None, None, None))
+            await _await_cleanup(
+                client.__aexit__(None, None, None),
+                label="room client close",
+            )
 
 
 async def _maybe_await(callback_result: Any) -> None:
@@ -2761,6 +2798,67 @@ def build_process_agent(
                 for queue in [*self._local_event_queues]:
                     queue.put_nowait(message)
             super().send(message)
+
+        async def on_models_request(self, message: Message) -> None:
+            if not isinstance(message.data, ModelsRequest):
+                return
+            provider_name = llm_adapter.provider_name()
+            provider = LLMProvider(
+                name=provider_name.strip()
+                if provider_name is not None and provider_name.strip() != ""
+                else "default",
+                adapter=llm_adapter,
+            )
+            default_model = llm_adapter.default_model()
+            self._send_to_channels(
+                Message(
+                    data=ModelsResponse(
+                        type=AGENT_MESSAGE_MODELS_RESPONSE,
+                        source_message_id=message.data.message_id,
+                        providers=[
+                            agent_provider_info(
+                                provider=provider,
+                                current_provider=provider.name,
+                                current_model=default_model,
+                            )
+                        ],
+                    ),
+                    sender=message.sender,
+                )
+            )
+
+        async def validate_turn_start(self, turn_start: TurnStart) -> AgentError | None:
+            provider_name = llm_adapter.provider_name()
+            normalized_provider = (
+                provider_name.strip()
+                if provider_name is not None and provider_name.strip() != ""
+                else "default"
+            )
+            if (
+                turn_start.provider is not None
+                and turn_start.provider.strip() != ""
+                and turn_start.provider != normalized_provider
+            ):
+                return AgentError(
+                    message=f"unknown provider {turn_start.provider!r}",
+                    code="unknown_provider",
+                )
+
+            model = turn_start.model
+            if model is None or model.strip() == "":
+                return None
+
+            models = llm_adapter.list_models()
+            if not any(model_info.name == model for model_info in models):
+                names = ", ".join(model_info.name for model_info in models)
+                return AgentError(
+                    message=(
+                        f"unknown model {model!r} for provider {normalized_provider!r}; "
+                        f"available models: {names}"
+                    ),
+                    code="unknown_model",
+                )
+            return None
 
         def create_thread_process(self, thread_id: str) -> LLMAgentProcess:
             async def _turn_instructions_provider(
@@ -6397,9 +6495,7 @@ async def run(
                 return_when="FIRST_COMPLETED",
             )
 
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
+            await _cancel_background_tasks(pending)
             for task in done:
                 task.result()
 

@@ -1,11 +1,18 @@
 from click.testing import CliRunner
+from datetime import datetime, timezone
+import json
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import zipfile
 
 from meshagent.cli import async_typer
-from meshagent.cli.dataset import _import_source, _write_sql_query_output, app
+from meshagent.cli.dataset import (
+    _import_source,
+    _sql_display_records,
+    _write_sql_query_output,
+    app,
+)
 
 
 def test_datasets_help_groups_branch_commands() -> None:
@@ -97,6 +104,100 @@ async def test_write_sql_query_output_parquet_preserves_typed_table(tmp_path) ->
 
     restored = pq.read_table(output)
     assert restored.equals(table)
+
+
+@pytest.mark.asyncio
+async def test_write_sql_query_output_json_decodes_utf8_binary(tmp_path) -> None:
+    table = pa.table({"data": [b'{"type":"meshagent.agent.turn.start"}']})
+    output = tmp_path / "result.json"
+
+    await _write_sql_query_output(
+        batches=_single_table_stream(table),
+        schema=table.schema,
+        output_format="json",
+        output_path=str(output),
+        pretty=False,
+    )
+
+    assert json.loads(output.read_text(encoding="utf-8")) == [
+        {"data": '{"type":"meshagent.agent.turn.start"}'}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_write_sql_query_output_json_decodes_arrow_json_extension(
+    tmp_path,
+) -> None:
+    schema = pa.schema(
+        [
+            pa.field(
+                "data",
+                pa.string(),
+                metadata={b"ARROW:extension:name": b"arrow.json"},
+            )
+        ]
+    )
+    table = pa.Table.from_arrays(
+        [pa.array(['{"type":"meshagent.agent.turn.start","sequence":1}'])],
+        schema=schema,
+    )
+    output = tmp_path / "result.json"
+
+    await _write_sql_query_output(
+        batches=_single_table_stream(table),
+        schema=table.schema,
+        output_format="json",
+        output_path=str(output),
+        pretty=False,
+    )
+
+    assert json.loads(output.read_text(encoding="utf-8")) == [
+        {"data": {"type": "meshagent.agent.turn.start", "sequence": 1}}
+    ]
+
+
+def test_sql_display_records_decodes_arrow_json_extension() -> None:
+    schema = pa.schema(
+        [
+            pa.field(
+                "data",
+                pa.string(),
+                metadata={b"ARROW:extension:name": b"arrow.json"},
+            )
+        ]
+    )
+    table = pa.Table.from_arrays(
+        [pa.array(['{"type":"meshagent.agent.turn.start","sequence":1}'])],
+        schema=schema,
+    )
+
+    assert _sql_display_records(table) == [
+        {"data": {"type": "meshagent.agent.turn.start", "sequence": 1}}
+    ]
+
+
+def test_sql_display_records_serializes_datetimes_for_json_output() -> None:
+    table = pa.table({"timestamp": [datetime(2026, 5, 9, 18, 30, tzinfo=timezone.utc)]})
+
+    assert _sql_display_records(table) == [{"timestamp": "2026-05-09T18:30:00+00:00"}]
+
+
+@pytest.mark.asyncio
+async def test_write_sql_query_output_json_encodes_non_utf8_binary(tmp_path) -> None:
+    table = pa.table({"data": [b"\xff\x00"]})
+    output = tmp_path / "result.json"
+
+    await _write_sql_query_output(
+        batches=_single_table_stream(table),
+        schema=table.schema,
+        output_format="json",
+        output_path=str(output),
+        pretty=False,
+    )
+
+    assert json.loads(output.read_text(encoding="utf-8")) == [
+        {"data": {"base64": "/wA="}}
+    ]
 
 
 @pytest.mark.asyncio

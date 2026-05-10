@@ -1,7 +1,15 @@
 import typer
 import click
 from rich import print
-from typing import Annotated, Any, Optional, List, Literal, Awaitable, Callable
+from typing import (
+    Annotated,
+    Any,
+    Optional,
+    List,
+    Literal,
+    Awaitable,
+    Callable,
+)
 import uuid
 from meshagent.tools import (
     BaseTool,
@@ -53,6 +61,7 @@ from meshagent.api import (
 )
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.cli import async_typer
+from meshagent.cli.ask import AskCommandOption
 from meshagent.cli.helper import (
     NormalizedRequiredToolOptions,
     build_shell_tool,
@@ -77,7 +86,11 @@ from meshagent.cli.helper import (
 )
 from meshagent.cli.preamble_rules import DEFAULT_PREAMBLE_RULE
 
-from meshagent.openai import OpenAIResponsesAdapter, OpenAIResponsesMCPToolkit
+from meshagent.openai import (
+    OpenAIRealtimeAdapter,
+    OpenAIResponsesAdapter,
+    OpenAIResponsesMCPToolkit,
+)
 from meshagent.anthropic import (
     AnthropicMessagesMCPToolkit,
     AnthropicOpenAIResponsesStreamAdapter,
@@ -99,9 +112,10 @@ from meshagent.openai.tools.responses_adapter import (
 )
 
 from meshagent.tools.dataset import make_dataset_toolkit
-from meshagent.agents.adapter import LLMAdapter, MessageStreamLLMAdapter
+from meshagent.agents.adapter import LLMAdapter, LLMProvider, MessageStreamLLMAdapter
 from meshagent.agents.messages import (
     AGENT_EVENT_FILE_CONTENT_DELTA,
+    AGENT_EVENT_MODEL_CHANGED,
     AGENT_EVENT_THREAD_STARTED,
     AGENT_EVENT_THREAD_STATUS,
     AGENT_EVENT_TEXT_CONTENT_DELTA,
@@ -112,15 +126,25 @@ from meshagent.agents.messages import (
     AGENT_EVENT_TURN_STEER_ACCEPTED,
     AGENT_EVENT_TURN_STEER_REJECTED,
     AGENT_EVENT_TURN_STEERED,
+    AGENT_MESSAGE_MODEL_CHANGE,
+    AGENT_MESSAGE_MODELS_REQUEST,
+    AGENT_MESSAGE_MODELS_RESPONSE,
     AGENT_MESSAGE_THREAD_CLOSE,
     AGENT_MESSAGE_THREAD_OPEN,
     AGENT_MESSAGE_TURN_START,
     AgentFileContent,
     AgentFileContentDelta,
+    AgentError,
     AgentMessage,
+    AgentModelInfo,
+    AgentModelChanged,
+    AgentProviderInfo,
     AgentTextContent,
     AgentTextContentDelta,
+    ChangeModel,
     CloseThread,
+    ModelsRequest,
+    ModelsResponse,
     OpenThread,
     StartThread,
     ThreadStarted,
@@ -152,7 +176,6 @@ import re
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
-
 
 from meshagent.api.client import ConflictError
 
@@ -271,16 +294,24 @@ class _AcceptedAgentInput:
     text: str
 
 
-async def _await_cleanup(awaitable: Awaitable[Any]) -> Any:
+async def _await_cleanup(
+    awaitable: Awaitable[Any],
+    *,
+    timeout: float = 2,
+    label: str = "cleanup",
+) -> Any:
     task = asyncio.ensure_future(awaitable)
     try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError as cancel_exc:
-        try:
-            return await task
-        except Exception:
-            raise
-        raise cancel_exc
+        return await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning("%s did not finish during shutdown; cancelling", label)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return None
+    except asyncio.CancelledError:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        raise
 
 
 async def _run_agent_room_session(
@@ -299,9 +330,12 @@ async def _run_agent_room_session(
         await runner(client)
     finally:
         if bot_started:
-            await _await_cleanup(bot.stop())
+            await _await_cleanup(bot.stop(), label="agent stop")
         if client_entered:
-            await _await_cleanup(client.__aexit__(None, None, None))
+            await _await_cleanup(
+                client.__aexit__(None, None, None),
+                label="room client close",
+            )
 
 
 def _mesh_document_attribute(element: Element, name: str) -> str:
@@ -434,13 +468,14 @@ class _ProcessRunSession:
         self,
         *,
         bot: Any,
-        model: str,
+        model: str | None,
         thread_path: str | None,
         thread_storage: "ThreadStorageBackend",
         agent_name: str | None,
         thread_dir: str | None,
         threading_mode: "ThreadingMode",
         current_working_directory: str | None,
+        initial_model: AgentModelChanged | None = None,
     ) -> None:
         from meshagent.cli import ask as ask_module
 
@@ -464,10 +499,15 @@ class _ProcessRunSession:
             events=events,
             on_close=lambda: bot._supervisor.unsubscribe_local_events(events),
         )
+        self._channel_client = channel_client
+        self._current_model: AgentModelChanged | None = initial_model
+        self._models_response: ModelsResponse | None = None
+        self._timeout = 30
         self._session = ask_module._AgentMessageSession(
             client=channel_client,
             model=model,
             current_working_directory=current_working_directory,
+            model_provider=lambda: self._current_model,
         )
         self._started = False
 
@@ -478,6 +518,22 @@ class _ProcessRunSession:
     @property
     def thread_status_text(self) -> str | None:
         return self._session.thread_status_text
+
+    @property
+    def current_model(self) -> AgentModelChanged | None:
+        return self._current_model
+
+    @property
+    def thread_id(self) -> str:
+        return self._thread_id
+
+    @property
+    def models_response(self) -> ModelsResponse | None:
+        return self._models_response
+
+    @property
+    def can_request_initial_models(self) -> bool:
+        return self._open_on_start
 
     @property
     def queued_message_labels(self) -> tuple[str, ...]:
@@ -558,11 +614,158 @@ class _ProcessRunSession:
     def interrupt(self) -> bool:
         return self._session.interrupt()
 
+    async def request_models(self) -> ModelsResponse:
+        payload = ModelsRequest(
+            type=AGENT_MESSAGE_MODELS_REQUEST,
+        )
+        await self._channel_client.send(payload)
+        try:
+            async with asyncio.timeout(self._timeout):
+                while True:
+                    event = await self._channel_client.receive()
+                    if event.get("type") != AGENT_MESSAGE_MODELS_RESPONSE:
+                        continue
+                    response = ModelsResponse.model_validate(event)
+                    if response.source_message_id != payload.message_id:
+                        continue
+                    self._apply_models_response(response)
+                    return response
+        except asyncio.TimeoutError as exc:
+            raise RoomException("timed out waiting for model list") from exc
+
+    def _apply_models_response(self, response: ModelsResponse) -> None:
+        self._models_response = response
+        active_model = _active_model_from_models_response(
+            response,
+            thread_id=self._thread_id,
+        )
+        if active_model is not None:
+            self._current_model = active_model
+
+    def select_model(self, model: AgentModelChanged) -> None:
+        self._current_model = model
+
+    async def change_model(
+        self,
+        *,
+        provider: str | None,
+        model: str | None,
+    ) -> AgentModelChanged:
+        payload = ChangeModel(
+            type=AGENT_MESSAGE_MODEL_CHANGE,
+            thread_id=self._thread_id,
+            provider=provider,
+            model=model,
+        )
+        await self._channel_client.send(payload)
+        try:
+            async with asyncio.timeout(self._timeout):
+                while True:
+                    event = await self._channel_client.receive()
+                    if event.get("type") != AGENT_EVENT_MODEL_CHANGED:
+                        continue
+                    changed = AgentModelChanged.model_validate(event)
+                    if changed.source_message_id != payload.message_id:
+                        continue
+                    self._current_model = changed
+                    return changed
+        except asyncio.TimeoutError as exc:
+            raise RoomException("timed out waiting for model change") from exc
+
+
+async def _handle_process_model_command(
+    command: str,
+    *,
+    session: Any,
+) -> str | None:
+    parts = command.strip().split()
+    command_name = parts[0] if parts else ""
+    if command_name == "/provider":
+        response = session.models_response
+        if response is None:
+            response = await session.request_models()
+        if len(parts) == 1:
+            return _format_provider_list(
+                providers=response.providers,
+                current_model=session.current_model,
+            )
+        if len(parts) == 2:
+            changed = _selected_default_model_for_provider(
+                response=response,
+                thread_id=session.thread_id,
+                provider_name=parts[1],
+            )
+            if changed is None:
+                return f"Unknown provider: {parts[1]}"
+            session.select_model(changed)
+            return (
+                "Using "
+                f"{_provider_model_display_name(provider=changed.provider, model=changed.model)}"
+            )
+        return "Usage: /provider [provider]"
+    if command_name == "/model":
+        response = session.models_response
+        if response is None:
+            response = await session.request_models()
+        if len(parts) == 1:
+            return _format_model_list(
+                providers=response.providers,
+                current_model=session.current_model,
+            )
+        if len(parts) != 2:
+            return "Usage: /model [model|provider/model]"
+
+        requested = parts[1]
+        provider_name: str | None = None
+        model_name = requested
+        if "/" in requested:
+            provider_name, model_name = requested.split("/", 1)
+        else:
+            matching_providers = [
+                provider
+                for provider in response.providers
+                if any(model.name == requested for model in provider.models)
+            ]
+            if len(matching_providers) > 1:
+                names = ", ".join(
+                    _provider_model_display_name(
+                        provider=provider.name,
+                        model=requested,
+                    )
+                    for provider in matching_providers
+                )
+                return f"Model name is ambiguous. Use one of: {names}"
+            if len(matching_providers) == 1:
+                provider_name = matching_providers[0].name
+
+        changed = _selected_model_from_models_response(
+            response=response,
+            thread_id=session.thread_id,
+            provider=provider_name,
+            model=model_name,
+        )
+        if changed is None:
+            return f"Unknown model: {requested}"
+        session.select_model(changed)
+        return (
+            "Using "
+            f"{_provider_model_display_name(provider=changed.provider, model=changed.model)}"
+        )
+    return None
+
+
+async def _request_initial_models(*, session: Any) -> None:
+    try:
+        async with asyncio.timeout(0.5):
+            await session.request_models()
+    except Exception:
+        return
+
 
 async def _run_process_run_tui(
     *,
     bot: Any,
-    model: str,
+    model: str | list[str],
     thread_path: str | None,
     thread_storage: "ThreadStorageBackend",
     agent_name: str | None,
@@ -573,18 +776,48 @@ async def _run_process_run_tui(
 ) -> None:
     from meshagent.cli import ask as ask_module
 
+    configured_models = _normalize_model_options(model)
+    thread_id = _process_run_thread_id(
+        thread_path=thread_path,
+        thread_storage=thread_storage,
+        agent_name=agent_name,
+        thread_dir=thread_dir,
+        threading_mode=threading_mode,
+    )
+    initial_model = (
+        _agent_model_changed_for_model(
+            model=configured_models[0],
+            thread_id=thread_id,
+        )
+        if len(configured_models) > 0
+        else None
+    )
+    display_model = _current_model_label(
+        current_model=initial_model,
+        fallback=", ".join(configured_models),
+    )
     session = _ProcessRunSession(
         bot=bot,
-        model=model,
+        model=None,
         thread_path=thread_path,
         thread_storage=thread_storage,
         agent_name=agent_name,
         thread_dir=thread_dir,
         threading_mode=threading_mode,
         current_working_directory=working_dir,
+        initial_model=initial_model,
     )
     try:
         await session.start()
+        if len(configured_models) > 0:
+            session._apply_models_response(
+                _configured_models_response(
+                    models=configured_models,
+                    current_model=session.current_model,
+                )
+            )
+        if session.can_request_initial_models:
+            await _request_initial_models(session=session)
         if message is not None:
 
             def _write_message(agent_message: AgentMessage) -> None:
@@ -599,9 +832,22 @@ async def _run_process_run_tui(
             return
 
         await ask_module._run_ask_tui(
-            model=model,
+            model=display_model,
             session=session,
             title="meshagent process run",
+            command_handler=lambda command: _handle_process_model_command(
+                command,
+                session=session,
+            ),
+            model_label_provider=lambda: _current_model_label(
+                current_model=session.current_model,
+                fallback=display_model,
+            ),
+            command_options_provider=lambda prompt: _process_command_options(
+                prompt,
+                response=session.models_response,
+                current_model=session.current_model,
+            ),
         )
     finally:
         await session.close()
@@ -635,6 +881,8 @@ class _ProcessUseChatChannelClient:
         self._local_turn_ids: set[str] = set()
         self._remote_source_message_ids: set[str] = set()
         self._remote_turn_output_parts: dict[str, list[str]] = {}
+        self._current_model: AgentModelChanged | None = None
+        self._models_response: ModelsResponse | None = None
 
     @property
     def room(self) -> RoomClient:
@@ -653,6 +901,14 @@ class _ProcessUseChatChannelClient:
     @property
     def thread_status_text(self) -> str | None:
         return self._thread_status_text
+
+    @property
+    def current_model(self) -> AgentModelChanged | None:
+        return self._current_model
+
+    @property
+    def models_response(self) -> ModelsResponse | None:
+        return self._models_response
 
     @property
     def local_participant_name(self) -> str | None:
@@ -772,12 +1028,22 @@ class _ProcessUseChatChannelClient:
             )
             task.add_done_callback(_consume_task_exception)
             return
+        if payload_type == AGENT_MESSAGE_MODELS_RESPONSE:
+            if not self._is_local_source_message(raw_payload.get("source_message_id")):
+                return
+            self._events.put_nowait(raw_payload)
+            return
         if self._thread_path is None:
             return
         if raw_payload.get("thread_id") != self._thread_path:
             return
         if payload_type == AGENT_EVENT_THREAD_STATUS:
             self._thread_status_text = _thread_status_text(raw_payload.get("status"))
+        elif payload_type == AGENT_EVENT_MODEL_CHANGED:
+            try:
+                self._current_model = AgentModelChanged.model_validate(raw_payload)
+            except Exception:
+                return
         elif payload_type == AGENT_EVENT_TURN_START_ACCEPTED:
             if self._is_remote_agent_input(raw_payload):
                 self._track_accepted_input(raw_payload)
@@ -981,6 +1247,64 @@ class _ProcessUseChatChannelClient:
             attachment=None,
         )
 
+    async def request_models(self) -> ModelsResponse:
+        payload = ModelsRequest(
+            type=AGENT_MESSAGE_MODELS_REQUEST,
+        )
+        await self.send(payload)
+        try:
+            async with asyncio.timeout(self._timeout):
+                while True:
+                    event = await self.receive()
+                    if event.get("type") != AGENT_MESSAGE_MODELS_RESPONSE:
+                        continue
+                    response = ModelsResponse.model_validate(event)
+                    if response.source_message_id != payload.message_id:
+                        continue
+                    self._apply_models_response(response)
+                    return response
+        except asyncio.TimeoutError as exc:
+            raise RoomException("timed out waiting for model list") from exc
+
+    def _apply_models_response(self, response: ModelsResponse) -> None:
+        self._models_response = response
+        active_model = _active_model_from_models_response(
+            response,
+            thread_id=self.thread_path,
+        )
+        if active_model is not None:
+            self._current_model = active_model
+
+    def select_model(self, model: AgentModelChanged) -> None:
+        self._current_model = model
+
+    async def change_model(
+        self,
+        *,
+        provider: str | None,
+        model: str | None,
+    ) -> AgentModelChanged:
+        payload = ChangeModel(
+            type=AGENT_MESSAGE_MODEL_CHANGE,
+            thread_id=self.thread_path,
+            provider=provider,
+            model=model,
+        )
+        await self.send(payload)
+        try:
+            async with asyncio.timeout(self._timeout):
+                while True:
+                    event = await self.receive()
+                    if event.get("type") != AGENT_EVENT_MODEL_CHANGED:
+                        continue
+                    changed = AgentModelChanged.model_validate(event)
+                    if changed.source_message_id != payload.message_id:
+                        continue
+                    self._current_model = changed
+                    return changed
+        except asyncio.TimeoutError as exc:
+            raise RoomException("timed out waiting for model change") from exc
+
     async def start_thread(self, payload) -> None:
         if not isinstance(payload, StartThread):
             raise RoomException("start_thread requires a StartThread message")
@@ -1018,6 +1342,7 @@ class _ChatChannelUseSession:
             model=None,
             current_working_directory=current_working_directory,
             local_participant_name=chat_client.local_participant_name,
+            model_provider=lambda: self._chat_client.current_model,
         )
         chat_client.set_accepted_input_callback(self._add_accepted_input)
         self._started = False
@@ -1029,6 +1354,18 @@ class _ChatChannelUseSession:
     @property
     def thread_status_text(self) -> str | None:
         return self._session.thread_status_text
+
+    @property
+    def current_model(self) -> AgentModelChanged | None:
+        return self._chat_client.current_model
+
+    @property
+    def thread_id(self) -> str:
+        return self._chat_client.thread_path
+
+    @property
+    def models_response(self) -> ModelsResponse | None:
+        return self._chat_client.models_response
 
     @property
     def queued_message_labels(self) -> tuple[str, ...]:
@@ -1090,6 +1427,20 @@ class _ChatChannelUseSession:
 
     def interrupt(self) -> bool:
         return self._session.interrupt()
+
+    async def request_models(self) -> ModelsResponse:
+        return await self._chat_client.request_models()
+
+    def select_model(self, model: AgentModelChanged) -> None:
+        self._chat_client.select_model(model)
+
+    async def change_model(
+        self,
+        *,
+        provider: str | None,
+        model: str | None,
+    ) -> AgentModelChanged:
+        return await self._chat_client.change_model(provider=provider, model=model)
 
 
 async def _close_process_use_chat_client(
@@ -1156,6 +1507,11 @@ async def _run_process_use_tui(
 ) -> None:
     from meshagent.cli import ask as ask_module
 
+    async def _handle_model_command(command: str) -> str | None:
+        if session is None:
+            raise RoomException("process use session not started")
+        return await _handle_process_model_command(command, session=session)
+
     user_client: RoomClient | None = None
     chat_client: _ProcessUseChatChannelClient | None = None
     session: _ChatChannelUseSession | None = None
@@ -1169,6 +1525,8 @@ async def _run_process_use_tui(
         )
         session = _ChatChannelUseSession(chat_client=chat_client)
         await session.start()
+        if chat_client.has_thread_path:
+            await _request_initial_models(session=session)
 
         if message is not None:
 
@@ -1188,6 +1546,16 @@ async def _run_process_use_tui(
             session=session,
             title=f"meshagent process use: {agent_name}",
             assistant_name=agent_name,
+            command_handler=_handle_model_command,
+            model_label_provider=lambda: _current_model_label(
+                current_model=session.current_model if session is not None else None,
+                fallback="remote",
+            ),
+            command_options_provider=lambda prompt: _process_command_options(
+                prompt,
+                response=session.models_response if session is not None else None,
+                current_model=session.current_model if session is not None else None,
+            ),
         )
     finally:
         if session is not None:
@@ -1678,6 +2046,317 @@ def _normalized_decision_model(*, decision_model: Optional[str]) -> Optional[str
     return normalized
 
 
+_OPENAI_REALTIME_MODEL_ALIASES = {
+    "openai realtime",
+    "openai-realtime",
+    "openai:realtime",
+    "openai/realtime",
+}
+_DEFAULT_OPENAI_REALTIME_MODEL = "gpt-realtime"
+_DEFAULT_OPENAI_REALTIME_DECISION_MODEL = "gpt-5.4-mini"
+
+
+def _resolve_openai_realtime_model(*, model: str) -> str | None:
+    normalized = model.strip()
+    if normalized == "":
+        return None
+
+    normalized_lower = normalized.lower()
+    if normalized_lower in _OPENAI_REALTIME_MODEL_ALIASES:
+        return os.getenv("OPENAI_REALTIME_MODEL") or _DEFAULT_OPENAI_REALTIME_MODEL
+
+    if normalized_lower.startswith(("gpt-realtime", "gpt-4o-realtime")):
+        return normalized
+
+    return None
+
+
+def _normalize_model_options(model: str | list[str]) -> list[str]:
+    if isinstance(model, str):
+        models = [model]
+    else:
+        models = model
+
+    normalized = [item.strip() for item in models if item.strip() != ""]
+    if len(normalized) == 0:
+        return ["gpt-5.5"]
+    return normalized
+
+
+def _provider_name_for_model(model: str) -> str:
+    if _resolve_openai_realtime_model(model=model) is not None:
+        return "openai-realtime"
+    if model.startswith("claude-"):
+        return "anthropic"
+    return "openai"
+
+
+def _provider_model_display_name(*, provider: str, model: str) -> str:
+    return f"{provider}/{model}"
+
+
+def _active_model_from_models_response(
+    response: ModelsResponse,
+    *,
+    thread_id: str,
+) -> AgentModelChanged | None:
+    for provider in response.providers:
+        for model in provider.models:
+            if not model.active:
+                continue
+            return AgentModelChanged(
+                type=AGENT_EVENT_MODEL_CHANGED,
+                thread_id=thread_id,
+                source_message_id=response.source_message_id,
+                provider=provider.name,
+                model=model.name,
+            )
+    return None
+
+
+def _selected_model_from_models_response(
+    *,
+    response: ModelsResponse,
+    thread_id: str,
+    provider: str | None,
+    model: str,
+) -> AgentModelChanged | None:
+    for provider_info in response.providers:
+        if provider is not None and provider_info.name != provider:
+            continue
+        if not any(model_info.name == model for model_info in provider_info.models):
+            continue
+        return AgentModelChanged(
+            type=AGENT_EVENT_MODEL_CHANGED,
+            thread_id=thread_id,
+            provider=provider_info.name,
+            model=model,
+        )
+    return None
+
+
+def _selected_default_model_for_provider(
+    *,
+    response: ModelsResponse,
+    thread_id: str,
+    provider_name: str,
+) -> AgentModelChanged | None:
+    for provider in response.providers:
+        if provider.name != provider_name:
+            continue
+        model_name = provider.default_model
+        if model_name is None and len(provider.models) > 0:
+            model_name = provider.models[0].name
+        if model_name is None:
+            return None
+        return AgentModelChanged(
+            type=AGENT_EVENT_MODEL_CHANGED,
+            thread_id=thread_id,
+            provider=provider.name,
+            model=model_name,
+        )
+    return None
+
+
+def _current_model_label(
+    *,
+    current_model: AgentModelChanged | None,
+    fallback: str,
+) -> str:
+    if current_model is None:
+        return fallback
+    return _provider_model_display_name(
+        provider=current_model.provider,
+        model=current_model.model,
+    )
+
+
+def _agent_model_changed_for_model(
+    *,
+    model: str,
+    thread_id: str,
+) -> AgentModelChanged:
+    provider = _provider_name_for_model(model)
+    return AgentModelChanged(
+        type=AGENT_EVENT_MODEL_CHANGED,
+        thread_id=thread_id,
+        provider=provider,
+        model=model,
+    )
+
+
+def _configured_models_response(
+    *,
+    models: list[str],
+    current_model: AgentModelChanged | None,
+) -> ModelsResponse:
+    grouped: dict[str, list[str]] = {}
+    for model in models:
+        grouped.setdefault(_provider_name_for_model(model), []).append(model)
+    providers: list[AgentProviderInfo] = []
+    for provider_name, provider_models in grouped.items():
+        providers.append(
+            AgentProviderInfo(
+                name=provider_name,
+                friendly_name=provider_name,
+                default_model=provider_models[0],
+                models=[
+                    _agent_model_info_for_configured_model(
+                        provider_name=provider_name,
+                        model=model,
+                        current_model=current_model,
+                    )
+                    for model in provider_models
+                ],
+            )
+        )
+    return ModelsResponse(
+        type=AGENT_MESSAGE_MODELS_RESPONSE,
+        source_message_id="configured-models",
+        providers=providers,
+    )
+
+
+def _agent_model_info_for_configured_model(
+    *,
+    provider_name: str,
+    model: str,
+    current_model: AgentModelChanged | None,
+) -> AgentModelInfo:
+    return AgentModelInfo(
+        name=model,
+        friendly_name=model,
+        active=(
+            current_model is not None
+            and current_model.provider == provider_name
+            and current_model.model == model
+        ),
+    )
+
+
+def _model_command_options(
+    *,
+    response: ModelsResponse | None,
+    current_model: AgentModelChanged | None,
+) -> tuple["AskCommandOption", ...]:
+    if response is None:
+        return ()
+    options: list[AskCommandOption] = []
+    for provider in response.providers:
+        for model in provider.models:
+            is_active = (
+                current_model is not None
+                and current_model.provider == provider.name
+                and current_model.model == model.name
+            ) or (current_model is None and model.active)
+            command_value = _provider_model_display_name(
+                provider=provider.name,
+                model=model.name,
+            )
+            options.append(
+                AskCommandOption(
+                    command=f"/model {command_value}",
+                    label=command_value,
+                    description=model.description,
+                    active=is_active,
+                )
+            )
+    return tuple(sorted(options, key=lambda option: (not option.active, option.label)))
+
+
+def _process_command_options(
+    prompt: str,
+    *,
+    response: ModelsResponse | None,
+    current_model: AgentModelChanged | None,
+) -> tuple["AskCommandOption", ...]:
+    stripped = prompt.strip()
+    if not stripped.startswith("/model"):
+        return ()
+    parts = stripped.split(maxsplit=1)
+    if len(parts) > 1 and "/" not in parts[1]:
+        filter_text = parts[1].lower()
+    else:
+        filter_text = ""
+    options = _model_command_options(
+        response=response,
+        current_model=current_model,
+    )
+    if filter_text == "":
+        return options
+    return tuple(
+        option
+        for option in options
+        if filter_text in option.label.lower()
+        or (
+            option.description is not None and filter_text in option.description.lower()
+        )
+    )
+
+
+def _format_provider_list(
+    *,
+    providers: list[AgentProviderInfo],
+    current_model: AgentModelChanged | None,
+) -> str:
+    lines = ["Providers:"]
+    current_provider = current_model.provider if current_model is not None else None
+    if current_provider is None:
+        current_provider = next(
+            (
+                provider.name
+                for provider in providers
+                if any(model.active for model in provider.models)
+            ),
+            None,
+        )
+    for provider in providers:
+        marker = "*" if provider.name == current_provider else " "
+        lines.append(f"{marker} {provider.name} - {provider.friendly_name}")
+    return "\n".join(lines)
+
+
+def _format_model_list(
+    *,
+    providers: list[AgentProviderInfo],
+    current_model: AgentModelChanged | None,
+) -> str:
+    lines = ["Models:"]
+    current_provider = current_model.provider if current_model is not None else None
+    current_model_name = current_model.model if current_model is not None else None
+    for provider in providers:
+        for model in provider.models:
+            marker = (
+                "*"
+                if (
+                    provider.name == current_provider
+                    and model.name == current_model_name
+                )
+                or (current_model is None and model.active)
+                else " "
+            )
+            lines.append(
+                f"{marker} {_provider_model_display_name(provider=provider.name, model=model.name)}"
+            )
+    return "\n".join(lines)
+
+
+def _supports_openai_responses_builtin_tools(*, model: str) -> bool:
+    return _provider_name_for_model(model) == "openai"
+
+
+def _supports_anthropic_builtin_tools(*, model: str) -> bool:
+    return _provider_name_for_model(model) == "anthropic"
+
+
+def _has_openai_responses_provider(
+    *, models: list[str], llm_participant: str | None
+) -> bool:
+    if llm_participant is not None:
+        return False
+    return any(_provider_name_for_model(model) == "openai" for model in models)
+
+
 def _build_decision_llm_adapter(
     *,
     decision_model: str,
@@ -1932,7 +2611,7 @@ def _build_runtime_agent(
     api_key: str | None = None,
     runtime: Literal["chatbot", "process"],
     normalized_tool_options: NormalizedRequiredToolOptions,
-    model: str,
+    model: str | list[str],
     rule: list[str],
     rules_file: Optional[list[str]],
     instructions: Optional[list[str]],
@@ -1977,13 +2656,19 @@ def _build_runtime_agent(
     preamble_rule: bool = True,
 ):
     builder = _builder_for_runtime(runtime)
+    selected_models = _normalize_model_options(model)
+    builder_model: str | list[str]
+    if runtime == "process":
+        builder_model = selected_models
+    else:
+        builder_model = selected_models[0]
     builder_kwargs: dict[str, Any] = {
         "computer_use": False,
         "require_computer_use": normalized_tool_options["require_computer_use"],
         "api_key": api_key,
         "starting_url": starting_url,
         "allow_goto_url": allow_goto_url,
-        "model": model,
+        "model": builder_model,
         "rule": rule,
         "toolkit": normalized_tool_options["toolkit"],
         "schema": normalized_tool_options["schema"],
@@ -2211,8 +2896,12 @@ def build_chatbot(
             except FileNotFoundError:
                 print(f"[yellow]rules file not found at {rules_path}[/yellow]")
 
+    realtime_model = _resolve_openai_realtime_model(model=model)
+    is_openai_realtime_model = realtime_model is not None
     is_claude_model = model.startswith("claude-")
-    supports_openai_tools = llm_participant is None and not is_claude_model
+    supports_openai_tools = (
+        llm_participant is None and not is_claude_model and not is_openai_realtime_model
+    )
     supports_openai_shell = supports_openai_shell_tool(
         model=model, llm_participant=llm_participant
     )
@@ -2250,6 +2939,16 @@ def build_chatbot(
             )
             if resolved_decision_model is None:
                 resolved_decision_model = model
+        elif realtime_model is not None:
+            llm_adapter = OpenAIRealtimeAdapter(
+                model=realtime_model,
+                api_key=api_key,
+                log_requests=log_llm_requests,
+                session_options={"modalities": ["text"]},
+                response_options={"modalities": ["text"]},
+            )
+            if resolved_decision_model is None:
+                resolved_decision_model = _DEFAULT_OPENAI_REALTIME_DECISION_MODEL
         else:
             llm_adapter = OpenAIResponsesAdapter(
                 model=model,
@@ -2587,7 +3286,7 @@ def build_process_agent(
     *,
     client: RoomClient | None = None,
     api_key: str | None = None,
-    model: str,
+    model: str | list[str],
     rule: List[str],
     toolkit: List[str],
     schema: List[str],
@@ -2653,7 +3352,12 @@ def build_process_agent(
         ToolkitChannel,
     )
     from meshagent.agents.messages import TurnStart, TurnSteer
-    from meshagent.agents.process import AgentSupervisor, LLMAgentProcess, Message
+    from meshagent.agents.process import (
+        AgentSupervisor,
+        LLMAgentProcess,
+        Message,
+        agent_provider_info,
+    )
     from meshagent.tools import Toolkit, ToolContext
     from meshagent.tools.hosting import _RemoteToolkitWrapper, _start_hosted_toolkit
 
@@ -2722,9 +3426,12 @@ def build_process_agent(
             except FileNotFoundError:
                 print(f"[yellow]rules file not found at {rules_path}[/yellow]")
 
-    is_claude_model = model.startswith("claude-")
-    supports_openai_tools = llm_participant is None and not is_claude_model
-    if reasoning_effort is not None and not supports_openai_tools:
+    selected_models = _normalize_model_options(model)
+    supports_openai_responses_tools = _has_openai_responses_provider(
+        models=selected_models,
+        llm_participant=llm_participant,
+    )
+    if reasoning_effort is not None and not supports_openai_responses_tools:
         print(
             "[red]--reasoning-effort is only supported by OpenAI Responses models[/red]"
         )
@@ -2732,16 +3439,20 @@ def build_process_agent(
     base_shell_env = _copy_shell_env_vars(copy_env=shell_copy_env)
     base_shell_env.update(_set_shell_env_vars(set_env=shell_set_env))
     resolved_shell_image = resolve_shell_image(shell_image)
-    if not supports_openai_tools:
+    if not supports_openai_responses_tools:
         if require_image_generation:
-            print("[red]image generation tool is only supported by openai models[/red]")
+            print(
+                "[red]image generation tool is only supported by OpenAI Responses models[/red]"
+            )
             raise typer.Exit(1)
         if require_apply_patch:
-            print("[red]apply patch tool is only supported by openai models[/red]")
+            print(
+                "[red]apply patch tool is only supported by OpenAI Responses models[/red]"
+            )
             raise typer.Exit(1)
         if computer_use or require_computer_use:
             print(
-                "[red]computer use tool is currently only supported by openai models[/red]"
+                "[red]computer use tool is currently only supported by OpenAI Responses models[/red]"
             )
             raise typer.Exit(1)
 
@@ -2758,41 +3469,104 @@ def build_process_agent(
         log_llm_requests=log_llm_requests,
     )
 
+    llm_providers: list[LLMProvider] = []
     if llm_participant:
-        llm_adapter = MessageStreamLLMAdapter(
-            participant_name=llm_participant,
+        llm_providers.append(
+            LLMProvider(
+                name="remote",
+                adapter=MessageStreamLLMAdapter(
+                    participant_name=llm_participant,
+                ),
+            )
         )
     else:
+        openai_models: list[str] = []
+        realtime_models: list[str] = []
+        anthropic_models: list[str] = []
+        provider_order: list[str] = []
+        for selected_model in selected_models:
+            provider_name = _provider_name_for_model(selected_model)
+            if provider_name not in provider_order:
+                provider_order.append(provider_name)
+            if provider_name == "openai-realtime":
+                realtime_model = _resolve_openai_realtime_model(model=selected_model)
+                if realtime_model is not None and realtime_model not in realtime_models:
+                    realtime_models.append(realtime_model)
+            elif provider_name == "anthropic":
+                if selected_model not in anthropic_models:
+                    anthropic_models.append(selected_model)
+            elif selected_model not in openai_models:
+                openai_models.append(selected_model)
+
         if computer_use or require_computer_use:
-            llm_adapter = OpenAIResponsesAdapter(
-                model=model,
-                api_key=api_key,
-                response_options={
-                    "reasoning": {"summary": "concise"},
-                },
-                log_requests=log_llm_requests,
-                context_management=context_management,
-                compaction_threshold=compaction_threshold,
-                max_output_tokens=max_output_tokens,
-                reasoning_effort=reasoning_effort,
+            if not openai_models:
+                print(
+                    "[red]computer use tool is currently only supported by OpenAI Responses models[/red]"
+                )
+                raise typer.Exit(1)
+            default_openai_model = openai_models[0]
+            llm_providers.append(
+                LLMProvider(
+                    name="openai",
+                    adapter=OpenAIResponsesAdapter(
+                        model=default_openai_model,
+                        api_key=api_key,
+                        response_options={
+                            "reasoning": {"summary": "concise"},
+                        },
+                        log_requests=log_llm_requests,
+                        context_management=context_management,
+                        compaction_threshold=compaction_threshold,
+                        max_output_tokens=max_output_tokens,
+                        reasoning_effort=reasoning_effort,
+                        allowed_models=openai_models,
+                    ),
+                )
             )
         else:
-            if is_claude_model:
-                llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
-                    model=model,
-                    api_key=api_key,
-                    log_requests=log_llm_requests,
+            providers_by_name: dict[str, LLMProvider] = {}
+            if openai_models:
+                providers_by_name["openai"] = LLMProvider(
+                    name="openai",
+                    adapter=OpenAIResponsesAdapter(
+                        model=openai_models[0],
+                        api_key=api_key,
+                        log_requests=log_llm_requests,
+                        context_management=context_management,
+                        compaction_threshold=compaction_threshold,
+                        max_output_tokens=max_output_tokens,
+                        reasoning_effort=reasoning_effort,
+                        allowed_models=openai_models,
+                    ),
                 )
-            else:
-                llm_adapter = OpenAIResponsesAdapter(
-                    model=model,
-                    api_key=api_key,
-                    log_requests=log_llm_requests,
-                    context_management=context_management,
-                    compaction_threshold=compaction_threshold,
-                    max_output_tokens=max_output_tokens,
-                    reasoning_effort=reasoning_effort,
+            if realtime_models:
+                providers_by_name["openai-realtime"] = LLMProvider(
+                    name="openai-realtime",
+                    adapter=OpenAIRealtimeAdapter(
+                        model=realtime_models[0],
+                        api_key=api_key,
+                        log_requests=log_llm_requests,
+                        session_options={"output_modalities": ["text"]},
+                        response_options={"output_modalities": ["text"]},
+                        allowed_models=realtime_models,
+                    ),
                 )
+            if anthropic_models:
+                providers_by_name["anthropic"] = LLMProvider(
+                    name="anthropic",
+                    adapter=AnthropicOpenAIResponsesStreamAdapter(
+                        model=anthropic_models[0],
+                        api_key=api_key,
+                        log_requests=log_llm_requests,
+                        allowed_models=anthropic_models,
+                    ),
+                )
+            for provider_name in provider_order:
+                provider = providers_by_name.get(provider_name)
+                if provider is not None:
+                    llm_providers.append(provider)
+
+    default_provider = llm_providers[0]
 
     resolved_channels = _resolved_channels(
         runtime="process",
@@ -2870,10 +3644,10 @@ def build_process_agent(
                 raise RoomException("agent is already started")
 
             self._room = room
-            if require_image_generation and isinstance(
-                llm_adapter, OpenAIResponsesAdapter
-            ):
-                llm_adapter.set_images_dataset(ImagesDataset(room=room))
+            if require_image_generation:
+                for provider in llm_providers:
+                    if isinstance(provider.adapter, OpenAIResponsesAdapter):
+                        provider.adapter.set_images_dataset(ImagesDataset(room=room))
             if require_mcp:
                 await room.local_participant.set_attribute("supports_mcp", True)
             if _has_chat_channel(channels=resolved_channels):
@@ -3015,7 +3789,7 @@ def build_process_agent(
         async def init_session(self) -> AgentSessionContext:
             from meshagent.cli.helper import init_context_from_spec
 
-            context = llm_adapter.create_session()
+            context = default_provider.adapter.create_session()
             await init_context_from_spec(context)
             return context
 
@@ -3144,6 +3918,10 @@ def build_process_agent(
                     add_tool(toolkit_name="script", tool=script_tool)
 
             if require_image_generation:
+                if not _supports_openai_responses_builtin_tools(model=model):
+                    raise ValueError(
+                        "image generation tool is only supported by OpenAI Responses models"
+                    )
                 add_tool(
                     toolkit_name="image_generation",
                     tool=ImageGenerationTool(
@@ -3153,6 +3931,10 @@ def build_process_agent(
                 )
 
             if require_apply_patch:
+                if not _supports_openai_responses_builtin_tools(model=model):
+                    raise ValueError(
+                        "apply patch tool is only supported by OpenAI Responses models"
+                    )
                 add_tool(
                     toolkit_name="apply_patch",
                     tool=ApplyPatchTool(
@@ -3176,31 +3958,43 @@ def build_process_agent(
                 add_toolkit(self._advanced_shell_toolkit)
 
             if require_mcp:
-                if is_claude_model:
+                if _supports_anthropic_builtin_tools(model=model):
                     add_toolkit(AnthropicMessagesMCPToolkit())
-                else:
+                elif _supports_openai_responses_builtin_tools(model=model):
                     add_toolkit(OpenAIResponsesMCPToolkit())
+                else:
+                    raise ValueError(
+                        "MCP tools are only supported by OpenAI Responses and Anthropic models"
+                    )
 
             if require_web_search:
-                if is_claude_model:
+                if _supports_anthropic_builtin_tools(model=model):
                     add_tool(
                         toolkit_name="web_search",
                         tool=AnthropicWebSearchTool(),
                     )
-                else:
+                elif _supports_openai_responses_builtin_tools(model=model):
                     add_tool(
                         toolkit_name="web_search",
                         tool=WebSearchTool(),
                     )
+                else:
+                    raise ValueError(
+                        "web search is only supported by OpenAI Responses and Anthropic models"
+                    )
 
             if require_web_fetch:
-                if is_claude_model:
+                if _supports_anthropic_builtin_tools(model=model):
                     add_tool(
                         toolkit_name="web_fetch",
                         tool=AnthropicWebFetchTool(),
                     )
-                else:
+                elif _supports_openai_responses_builtin_tools(model=model):
                     add_tool(toolkit_name="web_fetch", tool=WebFetchTool())
+                else:
+                    raise ValueError(
+                        "web fetch is only supported by OpenAI Responses and Anthropic models"
+                    )
 
             if require_storage:
                 add_toolkit(
@@ -3404,6 +4198,65 @@ def build_process_agent(
                     queue.put_nowait(message)
             super().send(message)
 
+        async def on_models_request(self, message: Message) -> None:
+            if not isinstance(message.data, ModelsRequest):
+                return
+            default_model = default_provider.adapter.default_model()
+            self._send_to_channels(
+                Message(
+                    data=ModelsResponse(
+                        type=AGENT_MESSAGE_MODELS_RESPONSE,
+                        source_message_id=message.data.message_id,
+                        providers=[
+                            agent_provider_info(
+                                provider=provider,
+                                current_provider=default_provider.name,
+                                current_model=default_model,
+                            )
+                            for provider in llm_providers
+                        ],
+                    ),
+                    sender=message.sender,
+                )
+            )
+
+        async def validate_turn_start(self, turn_start: TurnStart) -> AgentError | None:
+            provider = default_provider
+            if turn_start.provider is not None and turn_start.provider.strip() != "":
+                provider = next(
+                    (
+                        candidate
+                        for candidate in llm_providers
+                        if candidate.name == turn_start.provider
+                    ),
+                    None,
+                )
+                if provider is None:
+                    return AgentError(
+                        message=f"unknown provider {turn_start.provider!r}",
+                        code="unknown_provider",
+                    )
+
+            model = turn_start.model
+            if model is None or model.strip() == "":
+                return None
+
+            if not any(
+                model_info.name == model
+                for model_info in provider.adapter.list_models()
+            ):
+                names = ", ".join(
+                    model_info.name for model_info in provider.adapter.list_models()
+                )
+                return AgentError(
+                    message=(
+                        f"unknown model {model!r} for provider {provider.name!r}; "
+                        f"available models: {names}"
+                    ),
+                    code="unknown_model",
+                )
+            return None
+
         def create_thread_process(self, thread_id: str) -> LLMAgentProcess:
             async def _turn_instructions_provider(
                 participant: Participant | None,
@@ -3420,7 +4273,8 @@ def build_process_agent(
             process = LLMAgentProcess(
                 thread_id=thread_id,
                 participant=self._agent.room.local_participant,
-                llm_adapter=llm_adapter,
+                llm_providers=llm_providers,
+                default_provider=default_provider,
                 toolkits=[*toolkits],
                 thread_storage=create_thread_storage(
                     room=self._agent.room,
@@ -3501,8 +4355,12 @@ async def join(
         typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
-        str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
-    ] = "gpt-5.5",
+        list[str],
+        typer.Option(
+            "--model",
+            help="Name of an LLM model to make available. Can be repeated.",
+        ),
+    ] = ["gpt-5.5"],
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -3937,8 +4795,12 @@ async def service(
         typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
-        str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
-    ] = "gpt-5.5",
+        list[str],
+        typer.Option(
+            "--model",
+            help="Name of an LLM model to make available. Can be repeated.",
+        ),
+    ] = ["gpt-5.5"],
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -4335,8 +5197,12 @@ async def spec(
         typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
-        str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
-    ] = "gpt-5.5",
+        list[str],
+        typer.Option(
+            "--model",
+            help="Name of an LLM model to make available. Can be repeated.",
+        ),
+    ] = ["gpt-5.5"],
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -4726,8 +5592,12 @@ async def deploy(
         typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
-        str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
-    ] = "gpt-5.5",
+        list[str],
+        typer.Option(
+            "--model",
+            help="Name of an LLM model to make available. Can be repeated.",
+        ),
+    ] = ["gpt-5.5"],
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -6730,8 +7600,12 @@ async def run(
         typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
-        str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
-    ] = "gpt-5.5",
+        list[str],
+        typer.Option(
+            "--model",
+            help="Name of an LLM model to make available. Can be repeated.",
+        ),
+    ] = ["gpt-5.5"],
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
