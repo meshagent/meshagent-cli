@@ -668,6 +668,7 @@ def test_build_process_agent_uses_realtime_adapter_for_openai_realtime_model(
             session_options=None,
             response_options=None,
             allowed_models=None,
+            transcription_model=None,
         ) -> None:
             created_adapters.append(
                 {
@@ -677,6 +678,7 @@ def test_build_process_agent_uses_realtime_adapter_for_openai_realtime_model(
                     "session_options": session_options,
                     "response_options": response_options,
                     "allowed_models": allowed_models,
+                    "transcription_model": transcription_model,
                 }
             )
 
@@ -704,8 +706,56 @@ def test_build_process_agent_uses_realtime_adapter_for_openai_realtime_model(
             "session_options": {"output_modalities": ["text"]},
             "response_options": {"output_modalities": ["text"]},
             "allowed_models": ["gpt-realtime"],
+            "transcription_model": process.DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL,
         }
     ]
+
+
+def test_openai_realtime_text_session_options_leave_transcription_to_adapter() -> None:
+    assert process._openai_realtime_text_session_options() == {
+        "output_modalities": ["text"],
+    }
+
+
+def test_build_process_agent_passes_custom_realtime_transcription_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_adapters: list[dict[str, object]] = []
+
+    class _FakeRealtimeAdapter:
+        def __init__(
+            self,
+            *,
+            model: str,
+            api_key=None,
+            log_requests=None,
+            session_options=None,
+            response_options=None,
+            allowed_models=None,
+            transcription_model=None,
+        ) -> None:
+            del model
+            del api_key
+            del log_requests
+            del session_options
+            del response_options
+            del allowed_models
+            created_adapters.append({"transcription_model": transcription_model})
+
+    monkeypatch.setattr(process, "OpenAIRealtimeAdapter", _FakeRealtimeAdapter)
+
+    process.build_process_agent(
+        model="openai realtime",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+        transcription_model="custom-transcribe",
+    )
+
+    assert created_adapters == [{"transcription_model": "custom-transcribe"}]
 
 
 def test_build_process_agent_groups_repeated_models_by_provider(
@@ -750,11 +800,13 @@ def test_build_process_agent_groups_repeated_models_by_provider(
             session_options=None,
             response_options=None,
             allowed_models=None,
+            transcription_model=None,
         ) -> None:
             del api_key
             del log_requests
             del session_options
             del response_options
+            del transcription_model
             created_adapters.append(
                 {
                     "provider": "openai-realtime",
@@ -2161,6 +2213,8 @@ async def test_process_use_tui_uses_chat_channel_session(
             self.has_thread_path = True
             self.thread_path = "/threads/remote.thread"
             self.local_participant_name = "local-user"
+            self.models_response = None
+            self.current_model = None
             self.sent_payloads: list[object] = []
             self.events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
             self.exit_calls = 0
@@ -2301,6 +2355,8 @@ async def test_process_chat_channel_session_uses_thread_status_messages() -> Non
             self.has_thread_path = True
             self.thread_path = "/threads/remote.thread"
             self.local_participant_name = None
+            self.models_response = None
+            self.current_model = None
             self.sent_payloads: list[object] = []
             self.events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
             self.accepted_input_callback = None
@@ -2423,7 +2479,7 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
             assert to is self.participant
             assert type == "agent-message"
             assert attachment is None
-            self.sent_payloads.append(message["payload"])
+            self.sent_payloads.append(message)
 
     class _Room:
         def __init__(self) -> None:
@@ -2570,7 +2626,7 @@ async def test_process_use_chat_channel_client_resolves_studio_thread_path(
             assert to is self.participant
             assert type == "agent-message"
             assert attachment is None
-            self.sent_payloads.append(message["payload"])
+            self.sent_payloads.append(message)
 
     class _Room:
         def __init__(self) -> None:
@@ -2644,7 +2700,7 @@ async def test_process_use_chat_channel_client_starts_default_new_thread_with_me
             assert to is self.participant
             assert type == "agent-message"
             assert attachment is None
-            self.sent_payloads.append(message["payload"])
+            self.sent_payloads.append(message)
 
     class _Room:
         def __init__(self) -> None:
@@ -2749,7 +2805,7 @@ async def test_process_use_chat_channel_client_uses_main_thread_for_default_new_
             assert to is self.participant
             assert type == "agent-message"
             assert attachment is None
-            self.sent_payloads.append(message["payload"])
+            self.sent_payloads.append(message)
 
     class _Room:
         def __init__(self) -> None:
@@ -2822,7 +2878,7 @@ async def test_process_use_chat_channel_client_reports_accepted_remote_inputs() 
             assert to is self.participant
             assert type == "agent-message"
             assert attachment is None
-            self.sent_payloads.append(message["payload"])
+            self.sent_payloads.append(message)
 
     class _Room:
         def __init__(self) -> None:
@@ -3042,10 +3098,18 @@ class _FakeProcessRoomClient(RoomClient):
 
 
 class _FakeProcessThreadAdapter:
-    def __init__(self, *, room, path: str, persist_deltas: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        room,
+        path: str,
+        persist_deltas: bool = False,
+        persist_audio_input: bool = False,
+    ) -> None:
         del room
         self.path = path
         self.persist_deltas = persist_deltas
+        self.persist_audio_input = persist_audio_input
 
     async def start(self) -> None:
         return None

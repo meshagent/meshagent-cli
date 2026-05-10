@@ -14,6 +14,7 @@ from meshagent.agents.messages import (
     AGENT_EVENT_TURN_START_ACCEPTED,
     AGENT_EVENT_TURN_STARTED,
     AGENT_EVENT_AUDIO_TRANSCRIPTION_DELTA,
+    AgentRealtimeAudioCommit,
     AgentRealtimeAudioChunk,
     AgentAudioGenerationDelta,
     AgentAudioTranscriptionDelta,
@@ -114,6 +115,38 @@ class _CapturingOpenAIRealtimeAdapter(OpenAIRealtimeAdapter):
             context=context,
             event_handler=capture_event,
             model=model,
+            options=options,
+        )
+
+    async def create_response(
+        self,
+        *,
+        context,
+        caller,
+        toolkits,
+        output_schema=None,
+        event_handler=None,
+        steering_callback=None,
+        model: str | None = None,
+        on_behalf_of=None,
+        tool_choice=None,
+        options: dict[str, Any] | None = None,
+    ):
+        def capture_event(event: dict[str, Any]) -> None:
+            self.received_events.append(event)
+            if event_handler is not None:
+                event_handler(event)
+
+        return await super().create_response(
+            context=context,
+            caller=caller,
+            toolkits=toolkits,
+            output_schema=output_schema,
+            event_handler=capture_event,
+            steering_callback=steering_callback,
+            model=model,
+            on_behalf_of=on_behalf_of,
+            tool_choice=tool_choice,
             options=options,
         )
 
@@ -261,25 +294,14 @@ async def test_live_llm_agent_process_sends_audio_input_to_realtime() -> None:
     phrase = "mesh agent audio test"
     audio = await asyncio.wait_for(_live_tts_wav(text=phrase), timeout=60)
     assert audio.startswith(b"RIFF")
+    session_options = process._openai_realtime_text_session_options()
+    session_options["instructions"] = "You are a live audio input test assistant."
 
     adapter = _CapturingOpenAIRealtimeAdapter(
         model=os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime"),
         base_url=os.getenv("OPENAI_REALTIME_BASE_URL", "https://api.openai.com/v1"),
         api_key=os.getenv("OPENAI_API_KEY"),
-        session_options={
-            "instructions": "You are a live audio input test assistant.",
-            "audio": {
-                "input": {
-                    "transcription": {
-                        "model": os.getenv(
-                            "OPENAI_TRANSCRIPTION_MODEL",
-                            "gpt-4o-mini-transcribe",
-                        ),
-                    },
-                },
-            },
-            "output_modalities": ["text"],
-        },
+        session_options=session_options,
         response_options={
             "instructions": "Listen to the user's audio input and reply only with the words you heard.",
             "output_modalities": ["text"],
@@ -303,7 +325,14 @@ async def test_live_llm_agent_process_sends_audio_input_to_realtime() -> None:
                     thread_id="thread-1",
                     data=audio,
                     mime_type="audio/wav",
-                    final=True,
+                )
+            )
+        )
+        process_instance.send(
+            Message(
+                data=AgentRealtimeAudioCommit(
+                    type="meshagent.agent.realtime_audio.commit",
+                    thread_id="thread-1",
                 )
             )
         )
@@ -332,28 +361,68 @@ async def test_live_llm_agent_process_sends_audio_input_to_realtime() -> None:
         )
         if isinstance(payload.get("text"), str)
     )
+    user_transcript_text = " ".join(
+        payload.get("text", "")
+        for payload in supervisor.payloads(
+            message_type=AGENT_EVENT_AUDIO_TRANSCRIPTION_DELTA
+        )
+        if payload.get("role") == "user" and isinstance(payload.get("text"), str)
+    )
+    assistant_transcript_text = " ".join(
+        payload.get("text", "")
+        for payload in supervisor.payloads(
+            message_type=AGENT_EVENT_AUDIO_TRANSCRIPTION_DELTA
+        )
+        if payload.get("role") == "assistant" and isinstance(payload.get("text"), str)
+    )
     received_event_types = [
         event_type
         for event in adapter.received_events
         if isinstance((event_type := event.get("type")), str)
     ]
+    response_created_events = [
+        event
+        for event in adapter.received_events
+        if event.get("type") == "response.created"
+    ]
+    turn_ended_payloads = supervisor.payloads(message_type=AGENT_EVENT_TURN_ENDED)
 
     assert "input_audio_buffer.append" in sent_event_types
     assert "input_audio_buffer.commit" in sent_event_types
     assert "response.create" in sent_event_types
     assert _contains_words(
-        text=transcript_text,
+        text=user_transcript_text,
         words=["mesh", "agent", "audio", "test"],
     ), {
         "assistant_text": assistant_text,
         "transcript_text": transcript_text,
+        "user_transcript_text": user_transcript_text,
+        "assistant_transcript_text": assistant_transcript_text,
         "received_event_types": received_event_types,
         "sent_event_types": sent_event_types,
         "message_types": [message.data.type for message in supervisor.sent],
-        "turn_errors": supervisor.payloads(message_type=AGENT_EVENT_TURN_ENDED),
+        "turn_errors": turn_ended_payloads,
         "supervisor_payloads": [
             message.data.model_dump(mode="json") for message in supervisor.sent
         ],
+    }
+    assert assistant_transcript_text.strip() == "", {
+        "assistant_text": assistant_text,
+        "user_transcript_text": user_transcript_text,
+        "assistant_transcript_text": assistant_transcript_text,
+        "received_event_types": received_event_types,
+        "sent_event_types": sent_event_types,
+        "response_created_events": response_created_events,
+        "turn_errors": turn_ended_payloads,
+        "supervisor_payloads": [
+            message.data.model_dump(mode="json") for message in supervisor.sent
+        ],
+    }
+    assert len(response_created_events) == 1, {
+        "received_event_types": received_event_types,
+        "sent_event_types": sent_event_types,
+        "response_created_events": response_created_events,
+        "turn_errors": turn_ended_payloads,
     }
 
 

@@ -87,6 +87,7 @@ from meshagent.cli.helper import (
 from meshagent.cli.preamble_rules import DEFAULT_PREAMBLE_RULE
 
 from meshagent.openai import (
+    DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL,
     OpenAIRealtimeAdapter,
     OpenAIResponsesAdapter,
     OpenAIResponsesMCPToolkit,
@@ -1129,7 +1130,11 @@ class _ProcessUseChatChannelClient:
         raw_message = message.message
         if not isinstance(raw_message, dict):
             return
-        raw_payload = raw_message.get("payload")
+        raw_payload = (
+            raw_message
+            if isinstance(raw_message.get("type"), str)
+            else raw_message.get("payload")
+        )
         if not isinstance(raw_payload, dict):
             return
         payload_type = raw_payload.get("type")
@@ -1367,7 +1372,7 @@ class _ProcessUseChatChannelClient:
         await self._room.messaging.send_message(
             to=self._participant,
             type="agent-message",
-            message={"payload": payload_json},
+            message=payload_json,
             attachment=None,
         )
 
@@ -1922,6 +1927,14 @@ DecisionModelOption = Annotated[
     ),
 ]
 
+TranscriptionModelOption = Annotated[
+    str,
+    typer.Option(
+        "--transcription-model",
+        help="Realtime input audio transcription model.",
+    ),
+]
+
 ChannelOption = Annotated[
     list[str],
     typer.Option(
@@ -2261,6 +2274,14 @@ _OPENAI_REALTIME_MODEL_ALIASES = {
 }
 _DEFAULT_OPENAI_REALTIME_MODEL = "gpt-realtime"
 _DEFAULT_OPENAI_REALTIME_DECISION_MODEL = "gpt-5.4-mini"
+
+
+def _openai_realtime_text_session_options() -> dict[str, Any]:
+    return {"output_modalities": ["text"]}
+
+
+def _openai_realtime_text_response_options() -> dict[str, Any]:
+    return {"output_modalities": ["text"]}
 
 
 def _resolve_openai_realtime_model(*, model: str) -> str | None:
@@ -2892,6 +2913,7 @@ def _build_runtime_agent(
     compaction_threshold: Optional[int],
     max_output_tokens: Optional[int],
     reasoning_effort: Optional[str],
+    transcription_model: str | None,
     working_dir: Optional[str],
     dataset_namespace: Optional[list[str]],
     skill_dirs: Optional[list[str]],
@@ -2905,6 +2927,7 @@ def _build_runtime_agent(
     allow_goto_url: bool,
     room_rules_path: Optional[list[str]],
     verbose_dataset: bool = False,
+    save_audio_input: bool = False,
     preamble_rule: bool = True,
 ):
     builder = _builder_for_runtime(runtime)
@@ -2964,6 +2987,7 @@ def _build_runtime_agent(
         "shell_set_env": shell_set_env,
         "log_llm_requests": log_llm_requests,
         "channels": channels,
+        "transcription_model": transcription_model,
     }
     if runtime == "process":
         builder_kwargs["thread_storage"] = thread_storage
@@ -2972,6 +2996,7 @@ def _build_runtime_agent(
         builder_kwargs["max_output_tokens"] = max_output_tokens
         builder_kwargs["reasoning_effort"] = reasoning_effort
         builder_kwargs["verbose_dataset"] = verbose_dataset
+        builder_kwargs["save_audio_input"] = save_audio_input
         builder_kwargs["preamble_rule"] = preamble_rule
     return builder(**builder_kwargs)
 
@@ -3110,6 +3135,7 @@ def build_chatbot(
     shell_copy_env: Optional[list[str]] = None,
     shell_set_env: Optional[list[str]] = None,
     channels: Optional[list[str]] = None,
+    transcription_model: str | None = DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL,
     preamble_rule: bool = True,
 ):
     del channels
@@ -3196,8 +3222,9 @@ def build_chatbot(
                 model=realtime_model,
                 api_key=api_key,
                 log_requests=log_llm_requests,
-                session_options={"output_modalities": ["text"]},
-                response_options={"output_modalities": ["text"]},
+                session_options=_openai_realtime_text_session_options(),
+                response_options=_openai_realtime_text_response_options(),
+                transcription_model=transcription_model,
             )
             if resolved_decision_model is None:
                 resolved_decision_model = _DEFAULT_OPENAI_REALTIME_DECISION_MODEL
@@ -3590,7 +3617,9 @@ def build_process_agent(
     shell_copy_env: Optional[list[str]] = None,
     shell_set_env: Optional[list[str]] = None,
     channels: Optional[list[str]] = None,
+    transcription_model: str | None = DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL,
     verbose_dataset: bool = False,
+    save_audio_input: bool = False,
     preamble_rule: bool = True,
 ):
     from meshagent.agents import (
@@ -3650,6 +3679,7 @@ def build_process_agent(
                 room=room,
                 path=thread_id,
                 persist_deltas=verbose_dataset,
+                persist_audio_input=save_audio_input,
             )
         return MeshDocumentThreadStorage(
             room=room,
@@ -3798,9 +3828,10 @@ def build_process_agent(
                         model=realtime_models[0],
                         api_key=api_key,
                         log_requests=log_llm_requests,
-                        session_options={"output_modalities": ["text"]},
-                        response_options={"output_modalities": ["text"]},
+                        session_options=_openai_realtime_text_session_options(),
+                        response_options=_openai_realtime_text_response_options(),
                         allowed_models=realtime_models,
+                        transcription_model=transcription_model,
                     ),
                 )
             if anthropic_models:
@@ -4799,6 +4830,9 @@ async def join(
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
     decision_model: DecisionModelOption = None,
+    transcription_model: TranscriptionModelOption = (
+        DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
+    ),
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -4843,6 +4877,13 @@ async def join(
         typer.Option(
             "--verbose-dataset",
             help="Persist streaming delta events to dataset thread storage for debugging",
+        ),
+    ] = False,
+    save_audio_input: Annotated[
+        bool,
+        typer.Option(
+            "--save-audio-input",
+            help="Persist realtime audio input chunks to dataset thread storage as binary attachments.",
         ),
     ] = False,
 ):
@@ -4971,6 +5012,7 @@ async def join(
             require_advanced_shell=require_advanced_shell,
             llm_participant=llm_participant,
             decision_model=decision_model,
+            transcription_model=transcription_model,
             always_reply=always_reply,
             threading_mode=resolved_threading_mode,
             thread_dir=resolved_thread_dir,
@@ -4992,6 +5034,7 @@ async def join(
             allow_goto_url=allow_goto_url,
             room_rules_path=room_rules,
             verbose_dataset=verbose_dataset,
+            save_audio_input=save_audio_input,
             preamble_rule=preamble_rule,
         )
 
@@ -5234,6 +5277,9 @@ async def service(
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
     decision_model: DecisionModelOption = None,
+    transcription_model: TranscriptionModelOption = (
+        DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
+    ),
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -5278,6 +5324,13 @@ async def service(
         typer.Option(
             "--verbose-dataset",
             help="Persist streaming delta events to dataset thread storage for debugging",
+        ),
+    ] = False,
+    save_audio_input: Annotated[
+        bool,
+        typer.Option(
+            "--save-audio-input",
+            help="Persist realtime audio input chunks to dataset thread storage as binary attachments.",
         ),
     ] = False,
 ):
@@ -5391,6 +5444,7 @@ async def service(
             require_advanced_shell=require_advanced_shell,
             llm_participant=llm_participant,
             decision_model=decision_model,
+            transcription_model=transcription_model,
             always_reply=always_reply,
             threading_mode=resolved_threading_mode,
             thread_dir=resolved_thread_dir,
@@ -5412,6 +5466,7 @@ async def service(
             allow_goto_url=allow_goto_url,
             room_rules_path=room_rules,
             verbose_dataset=verbose_dataset,
+            save_audio_input=save_audio_input,
         ),
     )
 
@@ -5629,6 +5684,9 @@ async def spec(
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
     decision_model: DecisionModelOption = None,
+    transcription_model: TranscriptionModelOption = (
+        DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
+    ),
     always_reply: Annotated[
         Optional[bool],
         typer.Option(..., help="Always reply"),
@@ -5769,6 +5827,7 @@ async def spec(
             require_advanced_shell=require_advanced_shell,
             llm_participant=llm_participant,
             decision_model=decision_model,
+            transcription_model=transcription_model,
             always_reply=always_reply,
             threading_mode=resolved_threading_mode,
             thread_dir=resolved_thread_dir,
@@ -6024,6 +6083,9 @@ async def deploy(
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
     decision_model: DecisionModelOption = None,
+    transcription_model: TranscriptionModelOption = (
+        DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
+    ),
     always_reply: Annotated[
         Optional[bool],
         typer.Option(..., help="Always reply"),
@@ -6171,6 +6233,7 @@ async def deploy(
             require_advanced_shell=require_advanced_shell,
             llm_participant=llm_participant,
             decision_model=decision_model,
+            transcription_model=transcription_model,
             always_reply=always_reply,
             threading_mode=resolved_threading_mode,
             thread_dir=resolved_thread_dir,
@@ -8037,6 +8100,9 @@ async def run(
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
     decision_model: DecisionModelOption = None,
+    transcription_model: TranscriptionModelOption = (
+        DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
+    ),
     always_reply: Annotated[
         Optional[bool],
         typer.Option(..., help="Always reply"),
@@ -8079,6 +8145,13 @@ async def run(
         typer.Option(
             "--verbose-dataset",
             help="Persist streaming delta events to dataset thread storage for debugging",
+        ),
+    ] = False,
+    save_audio_input: Annotated[
+        bool,
+        typer.Option(
+            "--save-audio-input",
+            help="Persist realtime audio input chunks to dataset thread storage as binary attachments.",
         ),
     ] = False,
     thread_path: Annotated[
@@ -8226,6 +8299,7 @@ async def run(
             require_advanced_shell=require_advanced_shell,
             llm_participant=llm_participant,
             decision_model=decision_model,
+            transcription_model=transcription_model,
             always_reply=always_reply,
             threading_mode=resolved_threading_mode,
             thread_dir=resolved_thread_dir,
@@ -8247,6 +8321,7 @@ async def run(
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
             room_rules_path=room_rules,
+            save_audio_input=save_audio_input,
             preamble_rule=preamble_rule,
         )
 

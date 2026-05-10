@@ -538,7 +538,11 @@ class _ProcessUseChatChannelClient:
         raw_message = message.message
         if not isinstance(raw_message, dict):
             return
-        raw_payload = raw_message.get("payload")
+        raw_payload = (
+            raw_message
+            if isinstance(raw_message.get("type"), str)
+            else raw_message.get("payload")
+        )
         if not isinstance(raw_payload, dict):
             return
         if raw_payload.get("thread_id") != self._thread_path:
@@ -551,7 +555,7 @@ class _ProcessUseChatChannelClient:
         await self._room.messaging.send_message(
             to=self._participant,
             type="agent-message",
-            message={"payload": payload.model_dump(mode="json")},
+            message=payload.model_dump(mode="json"),
             attachment=None,
         )
 
