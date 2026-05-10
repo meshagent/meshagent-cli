@@ -2,6 +2,7 @@ import asyncio
 import ast
 import inspect
 from pathlib import Path
+from typing import Literal
 
 import click
 import pytest
@@ -1594,6 +1595,11 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
         "/model openai-realtime/gpt-realtime",
         "/model openai/gpt-5.4",
     ]
+    modality_options = captured["command_options_provider"]("/output")
+    assert [option.command for option in modality_options] == [
+        "/output text",
+        "/output audio",
+    ]
     assert command_options[0].active is True
     assert captured["session"]._session._model is None
     assert captured["session"].current_working_directory == "/tmp"
@@ -1612,6 +1618,7 @@ async def test_process_model_command_lists_and_changes_models() -> None:
             )
             self.changes: list[tuple[str | None, str | None]] = []
             self.models_response: ModelsResponse | None = None
+            self.output_modalities: tuple[Literal["text", "audio"], ...] = ("text",)
 
         @property
         def thread_id(self) -> str:
@@ -1630,6 +1637,7 @@ async def test_process_model_command_lists_and_changes_models() -> None:
                             AgentModelInfo(
                                 name="gpt-realtime",
                                 friendly_name="GPT Realtime",
+                                modalities=["text", "audio"],
                             )
                         ],
                     ),
@@ -1648,6 +1656,17 @@ async def test_process_model_command_lists_and_changes_models() -> None:
 
         def select_model(self, model: AgentModelChanged) -> None:
             self.current_model = model
+
+        def set_output_modalities(
+            self, output_modalities: tuple[Literal["text", "audio"], ...]
+        ) -> None:
+            self.output_modalities = output_modalities
+
+        def toggle_output_modalities(self) -> tuple[Literal["text", "audio"], ...]:
+            self.output_modalities = (
+                ("audio",) if self.output_modalities == ("text",) else ("text",)
+            )
+            return self.output_modalities
 
         async def change_model(
             self,
@@ -1695,6 +1714,31 @@ async def test_process_model_command_lists_and_changes_models() -> None:
     assert session.current_model.provider == "openai-realtime"
     assert session.current_model.model == "gpt-realtime"
     assert session.changes == []
+
+    changed = await process._handle_process_model_command(
+        "/output audio",
+        session=session,
+    )
+    assert changed == "Using audio responses"
+    assert session.output_modalities == ("audio",)
+
+    changed = await process._handle_process_model_command(
+        "/output text,audio",
+        session=session,
+    )
+    assert changed == "Usage: /output [text|audio]"
+    assert session.output_modalities == ("audio",)
+
+    changed = await process._handle_process_model_command(
+        "/model openai/gpt-5.4",
+        session=session,
+    )
+    assert changed == "Using openai/gpt-5.4"
+    changed = await process._handle_process_model_command(
+        "/output audio",
+        session=session,
+    )
+    assert changed == "openai/gpt-5.4 does not support audio responses"
 
 
 @pytest.mark.asyncio

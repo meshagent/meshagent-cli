@@ -502,6 +502,7 @@ class _ProcessRunSession:
         self._channel_client = channel_client
         self._current_model: AgentModelChanged | None = initial_model
         self._models_response: ModelsResponse | None = None
+        self._output_modalities: tuple[Literal["text", "audio"], ...] = ("text",)
         self._timeout = 30
         self._session = ask_module._AgentMessageSession(
             client=channel_client,
@@ -509,6 +510,7 @@ class _ProcessRunSession:
             current_working_directory=current_working_directory,
             model_provider=lambda: self._current_model,
         )
+        self._sync_turn_output_modalities()
         self._started = False
 
     @property
@@ -522,6 +524,14 @@ class _ProcessRunSession:
     @property
     def current_model(self) -> AgentModelChanged | None:
         return self._current_model
+
+    @property
+    def output_modalities(self) -> tuple[Literal["text", "audio"], ...]:
+        return self._output_modalities
+
+    @property
+    def output_modalities_label(self) -> str:
+        return "+".join(self._output_modalities)
 
     @property
     def thread_id(self) -> str:
@@ -641,9 +651,79 @@ class _ProcessRunSession:
         )
         if active_model is not None:
             self._current_model = active_model
+        self._output_modalities = self._supported_selected_output_modalities(
+            self._output_modalities
+        )
+        self._sync_turn_output_modalities()
 
     def select_model(self, model: AgentModelChanged) -> None:
         self._current_model = model
+        self._output_modalities = tuple(model.output_modalities)
+        if self._selected_model_info() is None:
+            return
+        self._output_modalities = self._supported_selected_output_modalities(
+            self._output_modalities
+        )
+        self._sync_turn_output_modalities()
+
+    def set_output_modalities(
+        self, output_modalities: tuple[Literal["text", "audio"], ...]
+    ) -> None:
+        self._output_modalities = self._supported_selected_output_modalities(
+            output_modalities
+        )
+        self._sync_turn_output_modalities()
+
+    def toggle_output_modalities(self) -> tuple[Literal["text", "audio"], ...]:
+        modalities = self._selected_model_modalities()
+        if self._output_modalities == ("text",) and "audio" in modalities:
+            self._output_modalities = ("audio",)
+        else:
+            self._output_modalities = ("text",)
+        self._output_modalities = self._supported_selected_output_modalities(
+            self._output_modalities
+        )
+        self._sync_turn_output_modalities()
+        return self._output_modalities
+
+    def _sync_turn_output_modalities(self) -> None:
+        output_modalities = self._supported_selected_output_modalities(
+            self._output_modalities
+        )
+        if output_modalities == self._output_modalities:
+            self._session.set_output_modalities(output_modalities)
+            if self._current_model is not None:
+                self._current_model = self._current_model.model_copy(
+                    update={"output_modalities": list(self._output_modalities)}
+                )
+            return
+        self._session.set_output_modalities(None)
+
+    def _selected_model_info(self) -> AgentModelInfo | None:
+        if self._current_model is None or self._models_response is None:
+            return None
+        for provider in self._models_response.providers:
+            if provider.name != self._current_model.provider:
+                continue
+            for model in provider.models:
+                if model.name == self._current_model.model:
+                    return model
+        return None
+
+    def _selected_model_modalities(self) -> tuple[Literal["text", "audio"], ...]:
+        model_info = self._selected_model_info()
+        if model_info is None:
+            return ("text",)
+        return tuple(model_info.modalities)
+
+    def _supported_selected_output_modalities(
+        self, output_modalities: tuple[Literal["text", "audio"], ...]
+    ) -> tuple[Literal["text", "audio"], ...]:
+        supported = self._selected_model_modalities()
+        selected = tuple(output for output in output_modalities if output in supported)
+        if len(selected) == 0:
+            return ("text",)
+        return (selected[0],)
 
     async def change_model(
         self,
@@ -668,6 +748,13 @@ class _ProcessRunSession:
                     if changed.source_message_id != payload.message_id:
                         continue
                     self._current_model = changed
+                    self._output_modalities = tuple(changed.output_modalities)
+                    self._output_modalities = (
+                        self._supported_selected_output_modalities(
+                            self._output_modalities
+                        )
+                    )
+                    self._sync_turn_output_modalities()
                     return changed
         except asyncio.TimeoutError as exc:
             raise RoomException("timed out waiting for model change") from exc
@@ -751,6 +838,41 @@ async def _handle_process_model_command(
             "Using "
             f"{_provider_model_display_name(provider=changed.provider, model=changed.model)}"
         )
+    if command_name == "/output":
+        if len(parts) == 1:
+            changed_modalities = session.toggle_output_modalities()
+            return f"Using {','.join(changed_modalities)} responses"
+        if len(parts) != 2:
+            return "Usage: /output [text|audio]"
+        requested_output = parts[1].strip().lower()
+        if requested_output not in ("text", "audio"):
+            return "Usage: /output [text|audio]"
+        selected_modalities: tuple[Literal["text", "audio"], ...] = tuple(
+            output for output in ("text", "audio") if output == requested_output
+        )
+        current_model_info = _model_info_for_current_selection(
+            response=session.models_response,
+            current_model=session.current_model,
+        )
+        supported_modalities = (
+            tuple(current_model_info.modalities)
+            if current_model_info is not None
+            else ("text",)
+        )
+        unsupported_modalities = [
+            output
+            for output in selected_modalities
+            if output not in supported_modalities
+        ]
+        if len(unsupported_modalities) > 0:
+            model_label = _current_model_label(
+                current_model=session.current_model,
+                fallback="current model",
+            )
+            unsupported = ",".join(unsupported_modalities)
+            return f"{model_label} does not support {unsupported} responses"
+        session.set_output_modalities(selected_modalities)
+        return f"Using {','.join(selected_modalities)} responses"
     return None
 
 
@@ -847,7 +969,9 @@ async def _run_process_run_tui(
                 prompt,
                 response=session.models_response,
                 current_model=session.current_model,
+                current_output_modalities=session.output_modalities,
             ),
+            output_label_provider=lambda: session.output_modalities_label,
         )
     finally:
         await session.close()
@@ -1337,6 +1461,7 @@ class _ChatChannelUseSession:
         from meshagent.cli import ask as ask_module
 
         self._chat_client = chat_client
+        self._output_modalities: tuple[Literal["text", "audio"], ...] = ("text",)
         self._session = ask_module._AgentMessageSession(
             client=chat_client,
             model=None,
@@ -1344,6 +1469,7 @@ class _ChatChannelUseSession:
             local_participant_name=chat_client.local_participant_name,
             model_provider=lambda: self._chat_client.current_model,
         )
+        self._sync_turn_output_modalities()
         chat_client.set_accepted_input_callback(self._add_accepted_input)
         self._started = False
 
@@ -1366,6 +1492,14 @@ class _ChatChannelUseSession:
     @property
     def models_response(self) -> ModelsResponse | None:
         return self._chat_client.models_response
+
+    @property
+    def output_modalities(self) -> tuple[Literal["text", "audio"], ...]:
+        return self._output_modalities
+
+    @property
+    def output_modalities_label(self) -> str:
+        return "+".join(self._output_modalities)
 
     @property
     def queued_message_labels(self) -> tuple[str, ...]:
@@ -1429,10 +1563,71 @@ class _ChatChannelUseSession:
         return self._session.interrupt()
 
     async def request_models(self) -> ModelsResponse:
-        return await self._chat_client.request_models()
+        response = await self._chat_client.request_models()
+        self._sync_turn_output_modalities()
+        return response
 
     def select_model(self, model: AgentModelChanged) -> None:
         self._chat_client.select_model(model)
+        self._output_modalities = tuple(model.output_modalities)
+        self._output_modalities = self._supported_selected_output_modalities(
+            self._output_modalities
+        )
+        self._sync_turn_output_modalities()
+
+    def set_output_modalities(
+        self, output_modalities: tuple[Literal["text", "audio"], ...]
+    ) -> None:
+        self._output_modalities = self._supported_selected_output_modalities(
+            output_modalities
+        )
+        self._sync_turn_output_modalities()
+
+    def toggle_output_modalities(self) -> tuple[Literal["text", "audio"], ...]:
+        modalities = self._selected_model_modalities()
+        if self._output_modalities == ("text",) and "audio" in modalities:
+            self._output_modalities = ("audio",)
+        else:
+            self._output_modalities = ("text",)
+        self._output_modalities = self._supported_selected_output_modalities(
+            self._output_modalities
+        )
+        self._sync_turn_output_modalities()
+        return self._output_modalities
+
+    def _sync_turn_output_modalities(self) -> None:
+        output_modalities = self._supported_selected_output_modalities(
+            self._output_modalities
+        )
+        if output_modalities == self._output_modalities:
+            self._session.set_output_modalities(output_modalities)
+            current_model = self._chat_client.current_model
+            if current_model is not None:
+                self._chat_client.select_model(
+                    current_model.model_copy(
+                        update={"output_modalities": list(self._output_modalities)}
+                    )
+                )
+            return
+        self._session.set_output_modalities(None)
+
+    def _selected_model_modalities(self) -> tuple[Literal["text", "audio"], ...]:
+        model_info = _model_info_for_current_selection(
+            response=self.models_response,
+            current_model=self.current_model,
+        )
+        if model_info is None:
+            return ("text",)
+        return tuple(model_info.modalities)
+
+    def _supported_selected_output_modalities(
+        self, output_modalities: tuple[Literal["text", "audio"], ...]
+    ) -> tuple[Literal["text", "audio"], ...]:
+        supported = self._selected_model_modalities()
+        selected = tuple(output for output in output_modalities if output in supported)
+        if len(selected) == 0:
+            return ("text",)
+        return (selected[0],)
 
     async def change_model(
         self,
@@ -1440,7 +1635,13 @@ class _ChatChannelUseSession:
         provider: str | None,
         model: str | None,
     ) -> AgentModelChanged:
-        return await self._chat_client.change_model(provider=provider, model=model)
+        changed = await self._chat_client.change_model(provider=provider, model=model)
+        self._output_modalities = tuple(changed.output_modalities)
+        self._output_modalities = self._supported_selected_output_modalities(
+            self._output_modalities
+        )
+        self._sync_turn_output_modalities()
+        return changed
 
 
 async def _close_process_use_chat_client(
@@ -1555,6 +1756,12 @@ async def _run_process_use_tui(
                 prompt,
                 response=session.models_response if session is not None else None,
                 current_model=session.current_model if session is not None else None,
+                current_output_modalities=(
+                    session.output_modalities if session is not None else ("text",)
+                ),
+            ),
+            output_label_provider=lambda: (
+                session.output_modalities_label if session is not None else "text"
             ),
         )
     finally:
@@ -2110,6 +2317,7 @@ def _active_model_from_models_response(
                 source_message_id=response.source_message_id,
                 provider=provider.name,
                 model=model.name,
+                output_modalities=["text"],
             )
     return None
 
@@ -2131,6 +2339,7 @@ def _selected_model_from_models_response(
             thread_id=thread_id,
             provider=provider_info.name,
             model=model,
+            output_modalities=["text"],
         )
     return None
 
@@ -2154,6 +2363,7 @@ def _selected_default_model_for_provider(
             thread_id=thread_id,
             provider=provider.name,
             model=model_name,
+            output_modalities=["text"],
         )
     return None
 
@@ -2171,6 +2381,22 @@ def _current_model_label(
     )
 
 
+def _model_info_for_current_selection(
+    *,
+    response: ModelsResponse | None,
+    current_model: AgentModelChanged | None,
+) -> AgentModelInfo | None:
+    if response is None or current_model is None:
+        return None
+    for provider in response.providers:
+        if provider.name != current_model.provider:
+            continue
+        for model in provider.models:
+            if model.name == current_model.model:
+                return model
+    return None
+
+
 def _agent_model_changed_for_model(
     *,
     model: str,
@@ -2182,6 +2408,7 @@ def _agent_model_changed_for_model(
         thread_id=thread_id,
         provider=provider,
         model=model,
+        output_modalities=["text"],
     )
 
 
@@ -2226,6 +2453,9 @@ def _agent_model_info_for_configured_model(
     return AgentModelInfo(
         name=model,
         friendly_name=model,
+        modalities=(
+            ["text", "audio"] if provider_name == "openai-realtime" else ["text"]
+        ),
         active=(
             current_model is not None
             and current_model.provider == provider_name
@@ -2269,8 +2499,30 @@ def _process_command_options(
     *,
     response: ModelsResponse | None,
     current_model: AgentModelChanged | None,
+    current_output_modalities: tuple[Literal["text", "audio"], ...] = ("text",),
 ) -> tuple["AskCommandOption", ...]:
     stripped = prompt.strip()
+    if stripped.startswith("/output"):
+        model_info = _model_info_for_current_selection(
+            response=response,
+            current_model=current_model,
+        )
+        supported = (
+            tuple(model_info.modalities) if model_info is not None else ("text",)
+        )
+        return tuple(
+            AskCommandOption(
+                command=f"/output {output}",
+                label=output,
+                description=(
+                    "Voice responses" if output == "audio" else "Text responses"
+                ),
+                active=output in current_output_modalities,
+            )
+            for output in ("text", "audio")
+            if output in supported
+        )
+
     if not stripped.startswith("/model"):
         return ()
     parts = stripped.split(maxsplit=1)
@@ -2944,8 +3196,8 @@ def build_chatbot(
                 model=realtime_model,
                 api_key=api_key,
                 log_requests=log_llm_requests,
-                session_options={"modalities": ["text"]},
-                response_options={"modalities": ["text"]},
+                session_options={"output_modalities": ["text"]},
+                response_options={"output_modalities": ["text"]},
             )
             if resolved_decision_model is None:
                 resolved_decision_model = _DEFAULT_OPENAI_REALTIME_DECISION_MODEL
@@ -4239,21 +4491,44 @@ def build_process_agent(
 
             model = turn_start.model
             if model is None or model.strip() == "":
-                return None
+                resolved_model = provider.adapter.default_model()
+            else:
+                resolved_model = model
 
-            if not any(
-                model_info.name == model
-                for model_info in provider.adapter.list_models()
-            ):
+            model_info = next(
+                (
+                    candidate
+                    for candidate in provider.adapter.list_models()
+                    if candidate.name == resolved_model
+                ),
+                None,
+            )
+            if model_info is None:
                 names = ", ".join(
                     model_info.name for model_info in provider.adapter.list_models()
                 )
                 return AgentError(
                     message=(
-                        f"unknown model {model!r} for provider {provider.name!r}; "
+                        f"unknown model {resolved_model!r} for provider {provider.name!r}; "
                         f"available models: {names}"
                     ),
                     code="unknown_model",
+                )
+            unsupported_output_modalities = [
+                output
+                for output in (turn_start.output_modalities or [])
+                if output not in model_info.modalities
+            ]
+            if len(unsupported_output_modalities) > 0:
+                unsupported = ", ".join(
+                    repr(item) for item in unsupported_output_modalities
+                )
+                return AgentError(
+                    message=(
+                        f"model {model_info.name!r} does not support "
+                        f"{unsupported} output modalities"
+                    ),
+                    code="unsupported_modality",
                 )
             return None
 

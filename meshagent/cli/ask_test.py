@@ -404,6 +404,64 @@ async def test_agent_message_session_orders_inputs_by_accepted_events() -> None:
 
 
 @pytest.mark.asyncio
+async def test_agent_message_session_sends_selected_output_modalities() -> None:
+    class _FakeChannelClient:
+        has_thread_path = True
+        thread_path = "/threads/test.thread"
+        thread_status_text = None
+        queued_message_labels: tuple[str, ...] = ()
+
+        def __init__(self) -> None:
+            self.events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+            self.payload: TurnStart | None = None
+
+        async def send(self, payload) -> None:
+            assert isinstance(payload, TurnStart)
+            self.payload = payload
+            self.events.put_nowait(
+                {
+                    "type": AGENT_EVENT_TURN_STARTED,
+                    "thread_id": payload.thread_id,
+                    "turn_id": "turn-1",
+                    "source_message_id": payload.message_id,
+                }
+            )
+            self.events.put_nowait(
+                {
+                    "type": AGENT_EVENT_TURN_ENDED,
+                    "thread_id": payload.thread_id,
+                    "turn_id": "turn-1",
+                    "error": None,
+                }
+            )
+
+        async def start_thread(self, payload) -> None:
+            raise AssertionError("start_thread should not be called")
+
+        async def receive(self) -> dict[str, object]:
+            return await self.events.get()
+
+        def clear_applied_queued_agent_inputs(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    client = _FakeChannelClient()
+    session = ask_module._AgentMessageSession(
+        client=client,
+        model=None,
+    )
+    session.set_output_modalities(("audio",))
+
+    result = await session.ask(prompt="local second")
+
+    assert result == ""
+    assert client.payload is not None
+    assert client.payload.output_modalities == ["audio"]
+
+
+@pytest.mark.asyncio
 async def test_agent_message_session_eagerly_records_local_start_message() -> None:
     session: ask_module._AgentMessageSession | None = None
 

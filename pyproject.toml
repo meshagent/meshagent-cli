@@ -24,6 +24,7 @@ dependencies = [
   "zstandard~=0.25.0",
   "meshagent-llm-proxy==0.39.9",
   "rich~=14.3.0",
+  "sounddevice~=0.5",
   "textual>=8.2.3,<9.0",
   "prompt-toolkit~=3.0.52",
 ]
