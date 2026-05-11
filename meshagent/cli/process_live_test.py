@@ -18,6 +18,7 @@ from meshagent.agents.messages import (
     AGENT_EVENT_AUDIO_TRANSCRIPTION_DELTA,
     AGENT_MESSAGE_MODEL_CHANGE,
     AGENT_MESSAGE_TURN_START,
+    AgentAudioFormat,
     AgentRealtimeAudioCommit,
     AgentRealtimeAudioChunk,
     AgentAudioGenerationDelta,
@@ -366,7 +367,7 @@ async def test_live_llm_agent_process_sends_audio_input_to_realtime() -> None:
                     type="meshagent.agent.realtime_audio.chunk",
                     thread_id="thread-1",
                     data=audio,
-                    mime_type="audio/wav",
+                    format=AgentAudioFormat(type="audio/wav"),
                 )
             )
         )
@@ -375,6 +376,20 @@ async def test_live_llm_agent_process_sends_audio_input_to_realtime() -> None:
                 data=AgentRealtimeAudioCommit(
                     type="meshagent.agent.realtime_audio.commit",
                     thread_id="thread-1",
+                    turn_id="audio-turn-1",
+                )
+            )
+        )
+        process_instance.send(
+            Message(
+                data=TurnStart(
+                    type="meshagent.agent.turn.start",
+                    thread_id="thread-1",
+                    turn_id="audio-turn-1",
+                    content=[],
+                    model=adapter.default_model(),
+                    provider="openai-realtime",
+                    output_modalities=["text"],
                 )
             )
         )

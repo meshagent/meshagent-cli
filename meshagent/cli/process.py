@@ -95,6 +95,7 @@ from meshagent.openai import (
 from meshagent.openai.tools.realtime_adapter import (
     DEFAULT_OPENAI_REALTIME_INPUT_FORMAT,
     DEFAULT_OPENAI_REALTIME_OUTPUT_FORMAT,
+    DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
     DEFAULT_OPENAI_REALTIME_VOICE,
     OPENAI_REALTIME_VOICES,
 )
@@ -191,6 +192,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from meshagent.api.client import ConflictError
+
+OutputModality = Literal["text", "audio"]
 
 logger = logging.getLogger("process")
 
@@ -515,7 +518,11 @@ class _ProcessRunSession:
         self._channel_client = channel_client
         self._current_model: AgentModelChanged | None = initial_model
         self._models_response: ModelsResponse | None = None
-        self._output_modalities: tuple[Literal["text", "audio"], ...] = ("text",)
+        self._output_modalities: tuple[OutputModality, ...] = (
+            tuple(initial_model.output_modalities)
+            if initial_model is not None
+            else ("text",)
+        )
         self._timeout = 30
         self._session = ask_module._AgentMessageSession(
             client=channel_client,
@@ -940,6 +947,10 @@ async def _run_process_run_tui(
     bot: Any,
     model: str | list[str],
     voice: str | None = None,
+    turn_detection: Literal[
+        "none", "automatic"
+    ] = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    output_modality: OutputModality = "text",
     input_audio_format: str = "audio/pcm",
     input_audio_sample_rate: int | None = 24000,
     input_audio_bitrate: int | None = None,
@@ -969,6 +980,8 @@ async def _run_process_run_tui(
             model=configured_models[0],
             thread_id=thread_id,
             voice=voice,
+            turn_detection=turn_detection,
+            output_modality=output_modality,
             input_audio_format=input_audio_format,
             input_audio_sample_rate=input_audio_sample_rate,
             input_audio_bitrate=input_audio_bitrate,
@@ -1002,6 +1015,8 @@ async def _run_process_run_tui(
                     models=configured_models,
                     current_model=session.current_model,
                     voice=voice,
+                    turn_detection=turn_detection,
+                    output_modality=output_modality,
                     input_audio_format=input_audio_format,
                     input_audio_sample_rate=input_audio_sample_rate,
                     input_audio_bitrate=input_audio_bitrate,
@@ -1539,7 +1554,12 @@ class _ChatChannelUseSession:
         from meshagent.cli import ask as ask_module
 
         self._chat_client = chat_client
-        self._output_modalities: tuple[Literal["text", "audio"], ...] = ("text",)
+        current_model = chat_client.current_model
+        self._output_modalities: tuple[OutputModality, ...] = (
+            tuple(current_model.output_modalities)
+            if current_model is not None
+            else ("text",)
+        )
         self._session = ask_module._AgentMessageSession(
             client=chat_client,
             model=None,
@@ -2018,6 +2038,22 @@ VoiceOption = Annotated[
     typer.Option("--voice", help="Default OpenAI Realtime voice preset."),
 ]
 
+TurnDetectionOption = Annotated[
+    Literal["none", "automatic"],
+    typer.Option(
+        "--turn-detection",
+        help="OpenAI Realtime audio turn detection mode: none or automatic.",
+    ),
+]
+
+OutputModalityOption = Annotated[
+    OutputModality,
+    typer.Option(
+        "--output-modality",
+        help="Default response output modality: text or audio.",
+    ),
+]
+
 InputAudioFormatOption = Annotated[
     str,
     typer.Option("--input-audio-format", help="Realtime input audio MIME type."),
@@ -2395,12 +2431,18 @@ _DEFAULT_OPENAI_REALTIME_MODEL = "gpt-realtime"
 _DEFAULT_OPENAI_REALTIME_DECISION_MODEL = "gpt-5.4-mini"
 
 
-def _openai_realtime_text_session_options() -> dict[str, Any]:
-    return {"output_modalities": ["text"]}
+def _openai_realtime_session_options(
+    *,
+    output_modality: OutputModality,
+) -> dict[str, Any]:
+    return {"output_modalities": [output_modality]}
 
 
-def _openai_realtime_text_response_options() -> dict[str, Any]:
-    return {"output_modalities": ["text"]}
+def _openai_realtime_response_options(
+    *,
+    output_modality: OutputModality,
+) -> dict[str, Any]:
+    return {"output_modalities": [output_modality]}
 
 
 def _audio_format_option(
@@ -2504,6 +2546,7 @@ def _active_model_from_models_response(
                 voice=model.default_output_voice,
                 input_format=model.input_format,
                 output_format=model.output_format,
+                turn_detection=model.turn_detection,
                 output_modalities=["text"],
             )
     return None
@@ -2537,6 +2580,7 @@ def _selected_model_from_models_response(
             voice=selected_model.default_output_voice,
             input_format=selected_model.input_format,
             output_format=selected_model.output_format,
+            turn_detection=selected_model.turn_detection,
             output_modalities=["text"],
         )
     return None
@@ -2574,6 +2618,7 @@ def _selected_default_model_for_provider(
             voice=selected_model.default_output_voice,
             input_format=selected_model.input_format,
             output_format=selected_model.output_format,
+            turn_detection=selected_model.turn_detection,
             output_modalities=["text"],
         )
     return None
@@ -2619,6 +2664,10 @@ def _agent_model_changed_for_model(
     output_audio_format: str = "audio/pcm",
     output_audio_sample_rate: int | None = 24000,
     output_audio_bitrate: int | None = None,
+    turn_detection: Literal[
+        "none", "automatic"
+    ] = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    output_modality: OutputModality = "text",
 ) -> AgentModelChanged:
     provider = _provider_name_for_model(model)
     input_format, output_format = _configured_realtime_audio_formats(
@@ -2631,17 +2680,20 @@ def _agent_model_changed_for_model(
         output_audio_bitrate=output_audio_bitrate,
     )
     selected_voice = None
+    selected_output_modalities: list[OutputModality] = ["text"]
     if provider == "openai-realtime":
         selected_voice = voice or DEFAULT_OPENAI_REALTIME_VOICE
+        selected_output_modalities = [output_modality]
     return AgentModelChanged(
         type=AGENT_EVENT_MODEL_CHANGED,
         thread_id=thread_id,
         provider=provider,
         model=model,
-        output_modalities=["text"],
+        output_modalities=selected_output_modalities,
         voice=selected_voice,
         input_format=input_format,
         output_format=output_format,
+        turn_detection=turn_detection if provider == "openai-realtime" else None,
     )
 
 
@@ -2688,6 +2740,10 @@ def _configured_models_response(
     output_audio_format: str = "audio/pcm",
     output_audio_sample_rate: int | None = 24000,
     output_audio_bitrate: int | None = None,
+    turn_detection: Literal[
+        "none", "automatic"
+    ] = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    output_modality: OutputModality = "text",
 ) -> ModelsResponse:
     grouped: dict[str, list[str]] = {}
     for model in models:
@@ -2705,6 +2761,8 @@ def _configured_models_response(
                         model=model,
                         current_model=current_model,
                         voice=voice,
+                        turn_detection=turn_detection,
+                        output_modality=output_modality,
                         input_audio_format=input_audio_format,
                         input_audio_sample_rate=input_audio_sample_rate,
                         input_audio_bitrate=input_audio_bitrate,
@@ -2735,7 +2793,12 @@ def _agent_model_info_for_configured_model(
     output_audio_format: str = "audio/pcm",
     output_audio_sample_rate: int | None = 24000,
     output_audio_bitrate: int | None = None,
+    turn_detection: Literal[
+        "none", "automatic"
+    ] = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    output_modality: OutputModality = "text",
 ) -> AgentModelInfo:
+    del output_modality
     input_format, output_format = _configured_realtime_audio_formats(
         provider_name=provider_name,
         input_audio_format=input_audio_format,
@@ -2766,6 +2829,7 @@ def _agent_model_info_for_configured_model(
         ),
         input_format=input_format,
         output_format=output_format,
+        turn_detection=turn_detection if provider_name == "openai-realtime" else None,
     )
 
 
@@ -3246,6 +3310,10 @@ def _build_runtime_agent(
     log_llm_requests: Optional[bool],
     channels: Optional[list[str]],
     voice: str | None = None,
+    turn_detection: Literal[
+        "none", "automatic"
+    ] = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    output_modality: OutputModality = "text",
     input_audio_format: str = "audio/pcm",
     input_audio_sample_rate: int | None = 24000,
     input_audio_bitrate: int | None = None,
@@ -3318,6 +3386,8 @@ def _build_runtime_agent(
         "channels": channels,
         "transcription_model": transcription_model,
         "voice": voice,
+        "turn_detection": turn_detection,
+        "output_modality": output_modality,
         "input_audio_format": input_audio_format,
         "input_audio_sample_rate": input_audio_sample_rate,
         "input_audio_bitrate": input_audio_bitrate,
@@ -3473,6 +3543,10 @@ def build_chatbot(
     channels: Optional[list[str]] = None,
     transcription_model: str | None = DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL,
     voice: str | None = None,
+    turn_detection: Literal[
+        "none", "automatic"
+    ] = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    output_modality: OutputModality = "text",
     input_audio_format: str = "audio/pcm",
     input_audio_sample_rate: int | None = 24000,
     input_audio_bitrate: int | None = None,
@@ -3575,9 +3649,14 @@ def build_chatbot(
                 model=realtime_model,
                 api_key=api_key,
                 log_requests=log_llm_requests,
-                session_options=_openai_realtime_text_session_options(),
-                response_options=_openai_realtime_text_response_options(),
+                session_options=_openai_realtime_session_options(
+                    output_modality=output_modality
+                ),
+                response_options=_openai_realtime_response_options(
+                    output_modality=output_modality
+                ),
                 transcription_model=transcription_model,
+                turn_detection=turn_detection,
                 **_realtime_adapter_audio_kwargs(
                     voice=voice,
                     input_format=realtime_input_format,
@@ -3977,6 +4056,10 @@ def build_process_agent(
     channels: Optional[list[str]] = None,
     transcription_model: str | None = DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL,
     voice: str | None = None,
+    turn_detection: Literal[
+        "none", "automatic"
+    ] = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    output_modality: OutputModality = "text",
     input_audio_format: str = "audio/pcm",
     input_audio_sample_rate: int | None = 24000,
     input_audio_bitrate: int | None = None,
@@ -4203,10 +4286,15 @@ def build_process_agent(
                         model=realtime_models[0],
                         api_key=api_key,
                         log_requests=log_llm_requests,
-                        session_options=_openai_realtime_text_session_options(),
-                        response_options=_openai_realtime_text_response_options(),
+                        session_options=_openai_realtime_session_options(
+                            output_modality=output_modality
+                        ),
+                        response_options=_openai_realtime_response_options(
+                            output_modality=output_modality
+                        ),
                         allowed_models=realtime_models,
                         transcription_model=transcription_model,
+                        turn_detection=turn_detection,
                         **_realtime_adapter_audio_kwargs(
                             voice=voice,
                             input_format=realtime_input_format,
@@ -4791,7 +4879,6 @@ def build_process_agent(
                                 "width": width,
                                 "height": height,
                                 "status": "completed",
-                                "status_detail": "Screenshot saved",
                             },
                         )
                     )
@@ -5214,6 +5301,8 @@ async def join(
         DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
     ),
     voice: VoiceOption = None,
+    turn_detection: TurnDetectionOption = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    output_modality: OutputModalityOption = "text",
     input_audio_format: InputAudioFormatOption = "audio/pcm",
     input_audio_sample_rate: InputAudioSampleRateOption = 24000,
     input_audio_bitrate: InputAudioBitrateOption = None,
@@ -5401,6 +5490,8 @@ async def join(
             decision_model=decision_model,
             transcription_model=transcription_model,
             voice=voice,
+            turn_detection=turn_detection,
+            output_modality=output_modality,
             input_audio_format=input_audio_format,
             input_audio_sample_rate=input_audio_sample_rate,
             input_audio_bitrate=input_audio_bitrate,
@@ -5675,6 +5766,8 @@ async def service(
         DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
     ),
     voice: VoiceOption = None,
+    turn_detection: TurnDetectionOption = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    output_modality: OutputModalityOption = "text",
     input_audio_format: InputAudioFormatOption = "audio/pcm",
     input_audio_sample_rate: InputAudioSampleRateOption = 24000,
     input_audio_bitrate: InputAudioBitrateOption = None,
@@ -5847,6 +5940,8 @@ async def service(
             decision_model=decision_model,
             transcription_model=transcription_model,
             voice=voice,
+            turn_detection=turn_detection,
+            output_modality=output_modality,
             input_audio_format=input_audio_format,
             input_audio_sample_rate=input_audio_sample_rate,
             input_audio_bitrate=input_audio_bitrate,
@@ -6096,6 +6191,8 @@ async def spec(
         DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
     ),
     voice: VoiceOption = None,
+    turn_detection: TurnDetectionOption = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    output_modality: OutputModalityOption = "text",
     input_audio_format: InputAudioFormatOption = "audio/pcm",
     input_audio_sample_rate: InputAudioSampleRateOption = 24000,
     input_audio_bitrate: InputAudioBitrateOption = None,
@@ -6244,6 +6341,8 @@ async def spec(
             decision_model=decision_model,
             transcription_model=transcription_model,
             voice=voice,
+            turn_detection=turn_detection,
+            output_modality=output_modality,
             input_audio_format=input_audio_format,
             input_audio_sample_rate=input_audio_sample_rate,
             input_audio_bitrate=input_audio_bitrate,
@@ -6509,6 +6608,8 @@ async def deploy(
         DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
     ),
     voice: VoiceOption = None,
+    turn_detection: TurnDetectionOption = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    output_modality: OutputModalityOption = "text",
     input_audio_format: InputAudioFormatOption = "audio/pcm",
     input_audio_sample_rate: InputAudioSampleRateOption = 24000,
     input_audio_bitrate: InputAudioBitrateOption = None,
@@ -6664,6 +6765,8 @@ async def deploy(
             decision_model=decision_model,
             transcription_model=transcription_model,
             voice=voice,
+            turn_detection=turn_detection,
+            output_modality=output_modality,
             input_audio_format=input_audio_format,
             input_audio_sample_rate=input_audio_sample_rate,
             input_audio_bitrate=input_audio_bitrate,
@@ -8540,6 +8643,8 @@ async def run(
         DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
     ),
     voice: VoiceOption = None,
+    turn_detection: TurnDetectionOption = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    output_modality: OutputModalityOption = "text",
     input_audio_format: InputAudioFormatOption = "audio/pcm",
     input_audio_sample_rate: InputAudioSampleRateOption = 24000,
     input_audio_bitrate: InputAudioBitrateOption = None,
@@ -8744,6 +8849,8 @@ async def run(
             decision_model=decision_model,
             transcription_model=transcription_model,
             voice=voice,
+            turn_detection=turn_detection,
+            output_modality=output_modality,
             input_audio_format=input_audio_format,
             input_audio_sample_rate=input_audio_sample_rate,
             input_audio_bitrate=input_audio_bitrate,
@@ -8792,6 +8899,8 @@ async def run(
                 }
                 if voice is not None:
                     process_tui_kwargs["voice"] = voice
+                process_tui_kwargs["turn_detection"] = turn_detection
+                process_tui_kwargs["output_modality"] = output_modality
                 audio_format_kwargs = _realtime_adapter_audio_kwargs(
                     voice=None,
                     input_format=_audio_format_option(

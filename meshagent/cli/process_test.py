@@ -669,6 +669,7 @@ def test_build_process_agent_uses_realtime_adapter_for_openai_realtime_model(
             response_options=None,
             allowed_models=None,
             transcription_model=None,
+            turn_detection=None,
         ) -> None:
             created_adapters.append(
                 {
@@ -679,6 +680,7 @@ def test_build_process_agent_uses_realtime_adapter_for_openai_realtime_model(
                     "response_options": response_options,
                     "allowed_models": allowed_models,
                     "transcription_model": transcription_model,
+                    "turn_detection": turn_detection,
                 }
             )
 
@@ -707,13 +709,17 @@ def test_build_process_agent_uses_realtime_adapter_for_openai_realtime_model(
             "response_options": {"output_modalities": ["text"]},
             "allowed_models": ["gpt-realtime"],
             "transcription_model": process.DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL,
+            "turn_detection": process.DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
         }
     ]
 
 
-def test_openai_realtime_text_session_options_leave_transcription_to_adapter() -> None:
-    assert process._openai_realtime_text_session_options() == {
+def test_openai_realtime_session_options_leave_transcription_to_adapter() -> None:
+    assert process._openai_realtime_session_options(output_modality="text") == {
         "output_modalities": ["text"],
+    }
+    assert process._openai_realtime_response_options(output_modality="audio") == {
+        "output_modalities": ["audio"],
     }
 
 
@@ -733,6 +739,7 @@ def test_build_process_agent_passes_custom_realtime_transcription_model(
             response_options=None,
             allowed_models=None,
             transcription_model=None,
+            turn_detection=None,
         ) -> None:
             del model
             del api_key
@@ -740,6 +747,7 @@ def test_build_process_agent_passes_custom_realtime_transcription_model(
             del session_options
             del response_options
             del allowed_models
+            del turn_detection
             created_adapters.append({"transcription_model": transcription_model})
 
     monkeypatch.setattr(process, "OpenAIRealtimeAdapter", _FakeRealtimeAdapter)
@@ -801,12 +809,14 @@ def test_build_process_agent_groups_repeated_models_by_provider(
             response_options=None,
             allowed_models=None,
             transcription_model=None,
+            turn_detection=None,
         ) -> None:
             del api_key
             del log_requests
             del session_options
             del response_options
             del transcription_model
+            del turn_detection
             created_adapters.append(
                 {
                     "provider": "openai-realtime",
@@ -1478,6 +1488,8 @@ async def test_process_run_starts_room_agent_and_uses_ask_tui(
         "threading_mode": "default-new",
         "message": None,
         "working_dir": None,
+        "turn_detection": process.DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+        "output_modality": "text",
     }
     assert captured["account_closed"] is True
 

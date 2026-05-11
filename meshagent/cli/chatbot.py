@@ -2733,7 +2733,6 @@ def build_process_agent(
                                 "width": width,
                                 "height": height,
                                 "status": "completed",
-                                "status_detail": "Screenshot saved",
                             },
                         )
                     )
