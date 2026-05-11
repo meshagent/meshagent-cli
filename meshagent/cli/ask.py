@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import contextlib
 import inspect
 import logging
@@ -190,14 +189,9 @@ class _StreamingAudioPlayer:
         self._stream: Any | None = None
         self._disabled_error: str | None = None
 
-    async def play_delta(self, delta: str) -> str | None:
+    async def play_delta(self, data: bytes) -> str | None:
         if self._disabled_error is not None:
             return None
-        try:
-            data = base64.b64decode(delta)
-        except Exception as exc:
-            self._disabled_error = str(exc)
-            return f"Unable to decode voice response audio: {exc}"
         if len(data) == 0:
             return None
         try:
@@ -2404,7 +2398,7 @@ async def _run_ask_tui(
                     )
                 return
             if isinstance(message, AgentAudioGenerationDelta):
-                error = await self._audio_player.play_delta(message.delta)
+                error = await self._audio_player.play_delta(message.data)
                 if error is not None and not self._audio_error_reported:
                     self._audio_error_reported = True
                     self._append_event_entry(error)

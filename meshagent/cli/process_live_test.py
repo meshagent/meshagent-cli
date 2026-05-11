@@ -9,17 +9,23 @@ from openai import AsyncOpenAI
 
 from meshagent.agents.adapter import LLMProvider
 from meshagent.agents.messages import (
+    AGENT_EVENT_AUDIO_GENERATION_DELTA,
+    AGENT_EVENT_MODEL_CHANGED,
     AGENT_EVENT_TEXT_CONTENT_DELTA,
     AGENT_EVENT_TURN_ENDED,
     AGENT_EVENT_TURN_START_ACCEPTED,
     AGENT_EVENT_TURN_STARTED,
     AGENT_EVENT_AUDIO_TRANSCRIPTION_DELTA,
+    AGENT_MESSAGE_MODEL_CHANGE,
+    AGENT_MESSAGE_TURN_START,
     AgentRealtimeAudioCommit,
     AgentRealtimeAudioChunk,
     AgentAudioGenerationDelta,
     AgentAudioTranscriptionDelta,
+    AgentMessage,
     AgentError,
     AgentTextContentDelta,
+    ChangeModel,
     TurnEnded,
     TurnStart,
     TurnStartAccepted,
@@ -36,6 +42,7 @@ from meshagent.openai.tools.realtime_adapter import (
     OpenAIRealtimeAdapter,
     OpenAIRealtimeSessionContext,
 )
+from meshagent.openai.tools.responses_adapter import OpenAIResponsesAdapter
 
 
 def _should_run_live_openai_tests() -> bool:
@@ -269,6 +276,41 @@ class _RecordingAgentSupervisor(AgentSupervisor):
             if message.data.type == message_type
         ]
 
+    def messages(self, *, message_type: str) -> list[Message]:
+        return [message for message in self.sent if message.data.type == message_type]
+
+
+class _RestoringThreadStorage:
+    path = "thread-1"
+
+    def __init__(self) -> None:
+        self.messages: list[AgentMessage] = []
+
+    def push_message(
+        self,
+        *,
+        message: AgentMessage,
+        sender: object | None = None,
+    ) -> None:
+        del sender
+        self.messages.append(message)
+
+    def agent_messages(self) -> list[AgentMessage]:
+        return [*self.messages]
+
+    async def restore_session_context_async(self, *, context, llm_adapter) -> None:
+        restored_messages: list[dict[str, Any]] = []
+        reader = llm_adapter.make_agent_event_reader(
+            emit_message=restored_messages.append
+        )
+        for message in self.messages:
+            reader.consume(message)
+        reader.finalize()
+        llm_adapter.restore_context_messages(
+            context=context,
+            messages=restored_messages,
+        )
+
 
 async def _live_tts_wav(*, text: str) -> bytes:
     client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -431,6 +473,132 @@ async def _wait_for_turn_end(*, supervisor: _RecordingAgentSupervisor) -> None:
         await asyncio.sleep(0.05)
 
 
+async def _wait_for_message_count(
+    *,
+    supervisor: _RecordingAgentSupervisor,
+    message_type: str,
+    count: int,
+) -> None:
+    while len(supervisor.payloads(message_type=message_type)) < count:
+        await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_live_llm_agent_process_switches_from_realtime_audio_to_responses_text() -> (
+    None
+):
+    realtime_model = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime")
+    text_model = os.getenv("OPENAI_TEXT_MODEL", "gpt-5.4")
+    session_options = process._openai_realtime_text_session_options()
+    session_options["instructions"] = "You are a live model switch test assistant."
+    realtime_adapter = OpenAIRealtimeAdapter(
+        model=realtime_model,
+        base_url=os.getenv("OPENAI_REALTIME_BASE_URL", "https://api.openai.com/v1"),
+        api_key=os.getenv("OPENAI_API_KEY"),
+        session_options=session_options,
+        response_options={
+            "instructions": "Reply with exactly the lowercase word: pong",
+        },
+    )
+    responses_adapter = OpenAIResponsesAdapter(
+        model=text_model,
+        base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        api_key=os.getenv("OPENAI_API_KEY"),
+        response_options={
+            "instructions": "Reply with exactly the lowercase word: pong",
+        },
+        max_output_tokens=32,
+        mode="request",
+    )
+    storage = _RestoringThreadStorage()
+    supervisor = _RecordingAgentSupervisor()
+    process_instance = LLMAgentProcess(
+        thread_id="thread-1",
+        participant=_FakeParticipant(),
+        llm_providers=[
+            LLMProvider(name="openai-realtime", adapter=realtime_adapter),
+            LLMProvider(name="openai", adapter=responses_adapter),
+        ],
+        thread_storage=storage,
+    )
+
+    await process_instance.start(supervisor)
+    try:
+        process_instance.send(
+            Message(
+                data=TurnStart(
+                    type=AGENT_MESSAGE_TURN_START,
+                    thread_id="thread-1",
+                    content=[{"type": "text", "text": "Say pong once."}],
+                    output_modalities=["audio"],
+                )
+            )
+        )
+        await asyncio.wait_for(
+            _wait_for_message_count(
+                supervisor=supervisor,
+                message_type=AGENT_EVENT_TURN_ENDED,
+                count=1,
+            ),
+            timeout=90,
+        )
+        assert (
+            len(supervisor.messages(message_type=AGENT_EVENT_AUDIO_GENERATION_DELTA))
+            > 0
+        )
+
+        process_instance.send(
+            Message(
+                data=ChangeModel(
+                    type=AGENT_MESSAGE_MODEL_CHANGE,
+                    thread_id="thread-1",
+                    provider="openai",
+                    model=text_model,
+                )
+            )
+        )
+        await asyncio.wait_for(
+            _wait_for_message_count(
+                supervisor=supervisor,
+                message_type=AGENT_EVENT_MODEL_CHANGED,
+                count=2,
+            ),
+            timeout=30,
+        )
+        changed = supervisor.payloads(message_type=AGENT_EVENT_MODEL_CHANGED)[-1]
+        assert changed["provider"] == "openai"
+        assert changed["model"] == text_model
+        assert changed["voice"] is None
+        assert changed["output_modalities"] == ["text"]
+
+        process_instance.send(
+            Message(
+                data=TurnStart(
+                    type=AGENT_MESSAGE_TURN_START,
+                    thread_id="thread-1",
+                    content=[{"type": "text", "text": "Say pong once."}],
+                    output_modalities=["text"],
+                )
+            )
+        )
+        await asyncio.wait_for(
+            _wait_for_message_count(
+                supervisor=supervisor,
+                message_type=AGENT_EVENT_TURN_ENDED,
+                count=2,
+            ),
+            timeout=90,
+        )
+    finally:
+        await process_instance.stop(supervisor)
+
+    turn_errors = [
+        payload.get("error")
+        for payload in supervisor.payloads(message_type=AGENT_EVENT_TURN_ENDED)
+    ]
+    assert turn_errors == [None, None]
+
+
 @pytest.mark.asyncio
 async def test_live_process_run_voice_modality_plays_realtime_audio(
     monkeypatch: pytest.MonkeyPatch,
@@ -483,7 +651,7 @@ async def test_live_process_run_voice_modality_plays_realtime_audio(
         nonlocal audio_delta_count
         if isinstance(message, AgentAudioGenerationDelta):
             audio_delta_count += 1
-            error = await player.play_delta(message.delta)
+            error = await player.play_delta(message.data)
             assert error is None
         if isinstance(message, AgentAudioTranscriptionDelta):
             transcript_deltas.append(message.text)

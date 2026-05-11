@@ -92,6 +92,12 @@ from meshagent.openai import (
     OpenAIResponsesAdapter,
     OpenAIResponsesMCPToolkit,
 )
+from meshagent.openai.tools.realtime_adapter import (
+    DEFAULT_OPENAI_REALTIME_INPUT_FORMAT,
+    DEFAULT_OPENAI_REALTIME_OUTPUT_FORMAT,
+    DEFAULT_OPENAI_REALTIME_VOICE,
+    OPENAI_REALTIME_VOICES,
+)
 from meshagent.anthropic import (
     AnthropicMessagesMCPToolkit,
     AnthropicOpenAIResponsesStreamAdapter,
@@ -113,7 +119,12 @@ from meshagent.openai.tools.responses_adapter import (
 )
 
 from meshagent.tools.dataset import make_dataset_toolkit
-from meshagent.agents.adapter import LLMAdapter, LLMProvider, MessageStreamLLMAdapter
+from meshagent.agents.adapter import (
+    LLMAdapter,
+    LLMAudioFormat,
+    LLMProvider,
+    MessageStreamLLMAdapter,
+)
 from meshagent.agents.messages import (
     AGENT_EVENT_FILE_CONTENT_DELTA,
     AGENT_EVENT_MODEL_CHANGED,
@@ -136,6 +147,7 @@ from meshagent.agents.messages import (
     AgentFileContent,
     AgentFileContentDelta,
     AgentError,
+    AgentAudioFormat,
     AgentMessage,
     AgentModelInfo,
     AgentModelChanged,
@@ -731,12 +743,14 @@ class _ProcessRunSession:
         *,
         provider: str | None,
         model: str | None,
+        voice: str | None = None,
     ) -> AgentModelChanged:
         payload = ChangeModel(
             type=AGENT_MESSAGE_MODEL_CHANGE,
             thread_id=self._thread_id,
             provider=provider,
             model=model,
+            voice=voice,
         )
         await self._channel_client.send(payload)
         try:
@@ -874,6 +888,42 @@ async def _handle_process_model_command(
             return f"{model_label} does not support {unsupported} responses"
         session.set_output_modalities(selected_modalities)
         return f"Using {','.join(selected_modalities)} responses"
+    if command_name == "/voice":
+        response = session.models_response
+        if response is None:
+            response = await session.request_models()
+        model_info = _model_info_for_current_selection(
+            response=response,
+            current_model=session.current_model,
+        )
+        if model_info is None or len(model_info.available_voices) == 0:
+            return "Current model does not advertise output voices"
+        current_voice = (
+            session.current_model.voice if session.current_model is not None else None
+        )
+        if current_voice is None:
+            current_voice = model_info.default_output_voice
+        if len(parts) == 1:
+            lines = ["Voices:"]
+            for voice in model_info.available_voices:
+                marker = "*" if voice == current_voice else " "
+                lines.append(f"{marker} {voice}")
+            return "\n".join(lines)
+        if len(parts) != 2:
+            return "Usage: /voice [voice]"
+        requested_voice = parts[1].strip()
+        if requested_voice not in model_info.available_voices:
+            voices = ", ".join(model_info.available_voices)
+            return f"Unknown voice: {requested_voice}. Available voices: {voices}"
+        current_model = session.current_model
+        if current_model is None:
+            return "No current model selected"
+        changed = await session.change_model(
+            provider=current_model.provider,
+            model=current_model.model,
+            voice=requested_voice,
+        )
+        return f"Using voice {changed.voice or requested_voice}"
     return None
 
 
@@ -889,6 +939,13 @@ async def _run_process_run_tui(
     *,
     bot: Any,
     model: str | list[str],
+    voice: str | None = None,
+    input_audio_format: str = "audio/pcm",
+    input_audio_sample_rate: int | None = 24000,
+    input_audio_bitrate: int | None = None,
+    output_audio_format: str = "audio/pcm",
+    output_audio_sample_rate: int | None = 24000,
+    output_audio_bitrate: int | None = None,
     thread_path: str | None,
     thread_storage: "ThreadStorageBackend",
     agent_name: str | None,
@@ -911,6 +968,13 @@ async def _run_process_run_tui(
         _agent_model_changed_for_model(
             model=configured_models[0],
             thread_id=thread_id,
+            voice=voice,
+            input_audio_format=input_audio_format,
+            input_audio_sample_rate=input_audio_sample_rate,
+            input_audio_bitrate=input_audio_bitrate,
+            output_audio_format=output_audio_format,
+            output_audio_sample_rate=output_audio_sample_rate,
+            output_audio_bitrate=output_audio_bitrate,
         )
         if len(configured_models) > 0
         else None
@@ -937,6 +1001,13 @@ async def _run_process_run_tui(
                 _configured_models_response(
                     models=configured_models,
                     current_model=session.current_model,
+                    voice=voice,
+                    input_audio_format=input_audio_format,
+                    input_audio_sample_rate=input_audio_sample_rate,
+                    input_audio_bitrate=input_audio_bitrate,
+                    output_audio_format=output_audio_format,
+                    output_audio_sample_rate=output_audio_sample_rate,
+                    output_audio_bitrate=output_audio_bitrate,
                 )
             )
         if session.can_request_initial_models:
@@ -1412,12 +1483,14 @@ class _ProcessUseChatChannelClient:
         *,
         provider: str | None,
         model: str | None,
+        voice: str | None = None,
     ) -> AgentModelChanged:
         payload = ChangeModel(
             type=AGENT_MESSAGE_MODEL_CHANGE,
             thread_id=self.thread_path,
             provider=provider,
             model=model,
+            voice=voice,
         )
         await self.send(payload)
         try:
@@ -1639,8 +1712,13 @@ class _ChatChannelUseSession:
         *,
         provider: str | None,
         model: str | None,
+        voice: str | None = None,
     ) -> AgentModelChanged:
-        changed = await self._chat_client.change_model(provider=provider, model=model)
+        changed = await self._chat_client.change_model(
+            provider=provider,
+            model=model,
+            voice=voice,
+        )
         self._output_modalities = tuple(changed.output_modalities)
         self._output_modalities = self._supported_selected_output_modalities(
             self._output_modalities
@@ -1933,6 +2011,47 @@ TranscriptionModelOption = Annotated[
         "--transcription-model",
         help="Realtime input audio transcription model.",
     ),
+]
+
+VoiceOption = Annotated[
+    Optional[str],
+    typer.Option("--voice", help="Default OpenAI Realtime voice preset."),
+]
+
+InputAudioFormatOption = Annotated[
+    str,
+    typer.Option("--input-audio-format", help="Realtime input audio MIME type."),
+]
+
+InputAudioSampleRateOption = Annotated[
+    Optional[int],
+    typer.Option(
+        "--input-audio-sample-rate",
+        help="Realtime input audio sample rate.",
+    ),
+]
+
+InputAudioBitrateOption = Annotated[
+    Optional[int],
+    typer.Option("--input-audio-bitrate", help="Realtime input audio bitrate."),
+]
+
+OutputAudioFormatOption = Annotated[
+    str,
+    typer.Option("--output-audio-format", help="Realtime output audio MIME type."),
+]
+
+OutputAudioSampleRateOption = Annotated[
+    Optional[int],
+    typer.Option(
+        "--output-audio-sample-rate",
+        help="Realtime output audio sample rate.",
+    ),
+]
+
+OutputAudioBitrateOption = Annotated[
+    Optional[int],
+    typer.Option("--output-audio-bitrate", help="Realtime output audio bitrate."),
 ]
 
 ChannelOption = Annotated[
@@ -2284,6 +2403,50 @@ def _openai_realtime_text_response_options() -> dict[str, Any]:
     return {"output_modalities": ["text"]}
 
 
+def _audio_format_option(
+    *,
+    audio_format: str,
+    sample_rate: int | None,
+    bitrate: int | None,
+) -> LLMAudioFormat:
+    normalized_format = audio_format.strip()
+    if normalized_format == "":
+        normalized_format = "audio/pcm"
+    return LLMAudioFormat(
+        type=normalized_format,
+        sample_rate=sample_rate,
+        bitrate=bitrate,
+    )
+
+
+def _realtime_adapter_audio_kwargs(
+    *,
+    voice: str | None,
+    input_format: LLMAudioFormat,
+    output_format: LLMAudioFormat,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {}
+    if voice is not None:
+        kwargs["voice"] = voice
+    if input_format != DEFAULT_OPENAI_REALTIME_INPUT_FORMAT:
+        kwargs["input_format"] = input_format
+    if output_format != DEFAULT_OPENAI_REALTIME_OUTPUT_FORMAT:
+        kwargs["output_format"] = output_format
+    return kwargs
+
+
+def _agent_audio_format_from_llm(
+    format: LLMAudioFormat | None,
+) -> AgentAudioFormat | None:
+    if format is None:
+        return None
+    return AgentAudioFormat(
+        type=format.type,
+        sample_rate=format.sample_rate,
+        bitrate=format.bitrate,
+    )
+
+
 def _resolve_openai_realtime_model(*, model: str) -> str | None:
     normalized = model.strip()
     if normalized == "":
@@ -2338,6 +2501,9 @@ def _active_model_from_models_response(
                 source_message_id=response.source_message_id,
                 provider=provider.name,
                 model=model.name,
+                voice=model.default_output_voice,
+                input_format=model.input_format,
+                output_format=model.output_format,
                 output_modalities=["text"],
             )
     return None
@@ -2353,13 +2519,24 @@ def _selected_model_from_models_response(
     for provider_info in response.providers:
         if provider is not None and provider_info.name != provider:
             continue
-        if not any(model_info.name == model for model_info in provider_info.models):
+        selected_model = next(
+            (
+                model_info
+                for model_info in provider_info.models
+                if model_info.name == model
+            ),
+            None,
+        )
+        if selected_model is None:
             continue
         return AgentModelChanged(
             type=AGENT_EVENT_MODEL_CHANGED,
             thread_id=thread_id,
             provider=provider_info.name,
             model=model,
+            voice=selected_model.default_output_voice,
+            input_format=selected_model.input_format,
+            output_format=selected_model.output_format,
             output_modalities=["text"],
         )
     return None
@@ -2379,11 +2556,24 @@ def _selected_default_model_for_provider(
             model_name = provider.models[0].name
         if model_name is None:
             return None
+        selected_model = next(
+            (
+                model_info
+                for model_info in provider.models
+                if model_info.name == model_name
+            ),
+            None,
+        )
+        if selected_model is None:
+            return None
         return AgentModelChanged(
             type=AGENT_EVENT_MODEL_CHANGED,
             thread_id=thread_id,
             provider=provider.name,
             model=model_name,
+            voice=selected_model.default_output_voice,
+            input_format=selected_model.input_format,
+            output_format=selected_model.output_format,
             output_modalities=["text"],
         )
     return None
@@ -2422,14 +2612,68 @@ def _agent_model_changed_for_model(
     *,
     model: str,
     thread_id: str,
+    voice: str | None = None,
+    input_audio_format: str = "audio/pcm",
+    input_audio_sample_rate: int | None = 24000,
+    input_audio_bitrate: int | None = None,
+    output_audio_format: str = "audio/pcm",
+    output_audio_sample_rate: int | None = 24000,
+    output_audio_bitrate: int | None = None,
 ) -> AgentModelChanged:
     provider = _provider_name_for_model(model)
+    input_format, output_format = _configured_realtime_audio_formats(
+        provider_name=provider,
+        input_audio_format=input_audio_format,
+        input_audio_sample_rate=input_audio_sample_rate,
+        input_audio_bitrate=input_audio_bitrate,
+        output_audio_format=output_audio_format,
+        output_audio_sample_rate=output_audio_sample_rate,
+        output_audio_bitrate=output_audio_bitrate,
+    )
+    selected_voice = None
+    if provider == "openai-realtime":
+        selected_voice = voice or DEFAULT_OPENAI_REALTIME_VOICE
     return AgentModelChanged(
         type=AGENT_EVENT_MODEL_CHANGED,
         thread_id=thread_id,
         provider=provider,
         model=model,
         output_modalities=["text"],
+        voice=selected_voice,
+        input_format=input_format,
+        output_format=output_format,
+    )
+
+
+def _configured_realtime_audio_formats(
+    *,
+    provider_name: str,
+    input_audio_format: str,
+    input_audio_sample_rate: int | None,
+    input_audio_bitrate: int | None,
+    output_audio_format: str,
+    output_audio_sample_rate: int | None,
+    output_audio_bitrate: int | None,
+) -> tuple[AgentAudioFormat | None, AgentAudioFormat | None]:
+    if provider_name != "openai-realtime":
+        return None, None
+    input_format = _audio_format_option(
+        audio_format=input_audio_format,
+        sample_rate=input_audio_sample_rate,
+        bitrate=input_audio_bitrate,
+    )
+    output_format = _audio_format_option(
+        audio_format=output_audio_format,
+        sample_rate=output_audio_sample_rate,
+        bitrate=output_audio_bitrate,
+    )
+    return (
+        _agent_audio_format_from_llm(
+            input_format or DEFAULT_OPENAI_REALTIME_INPUT_FORMAT
+        ),
+        _agent_audio_format_from_llm(
+            output_format or DEFAULT_OPENAI_REALTIME_OUTPUT_FORMAT
+        ),
     )
 
 
@@ -2437,6 +2681,13 @@ def _configured_models_response(
     *,
     models: list[str],
     current_model: AgentModelChanged | None,
+    voice: str | None = None,
+    input_audio_format: str = "audio/pcm",
+    input_audio_sample_rate: int | None = 24000,
+    input_audio_bitrate: int | None = None,
+    output_audio_format: str = "audio/pcm",
+    output_audio_sample_rate: int | None = 24000,
+    output_audio_bitrate: int | None = None,
 ) -> ModelsResponse:
     grouped: dict[str, list[str]] = {}
     for model in models:
@@ -2453,6 +2704,13 @@ def _configured_models_response(
                         provider_name=provider_name,
                         model=model,
                         current_model=current_model,
+                        voice=voice,
+                        input_audio_format=input_audio_format,
+                        input_audio_sample_rate=input_audio_sample_rate,
+                        input_audio_bitrate=input_audio_bitrate,
+                        output_audio_format=output_audio_format,
+                        output_audio_sample_rate=output_audio_sample_rate,
+                        output_audio_bitrate=output_audio_bitrate,
                     )
                     for model in provider_models
                 ],
@@ -2470,7 +2728,23 @@ def _agent_model_info_for_configured_model(
     provider_name: str,
     model: str,
     current_model: AgentModelChanged | None,
+    voice: str | None = None,
+    input_audio_format: str = "audio/pcm",
+    input_audio_sample_rate: int | None = 24000,
+    input_audio_bitrate: int | None = None,
+    output_audio_format: str = "audio/pcm",
+    output_audio_sample_rate: int | None = 24000,
+    output_audio_bitrate: int | None = None,
 ) -> AgentModelInfo:
+    input_format, output_format = _configured_realtime_audio_formats(
+        provider_name=provider_name,
+        input_audio_format=input_audio_format,
+        input_audio_sample_rate=input_audio_sample_rate,
+        input_audio_bitrate=input_audio_bitrate,
+        output_audio_format=output_audio_format,
+        output_audio_sample_rate=output_audio_sample_rate,
+        output_audio_bitrate=output_audio_bitrate,
+    )
     return AgentModelInfo(
         name=model,
         friendly_name=model,
@@ -2482,6 +2756,16 @@ def _agent_model_info_for_configured_model(
             and current_model.provider == provider_name
             and current_model.model == model
         ),
+        available_voices=(
+            list(OPENAI_REALTIME_VOICES) if provider_name == "openai-realtime" else []
+        ),
+        default_output_voice=(
+            voice or DEFAULT_OPENAI_REALTIME_VOICE
+            if provider_name == "openai-realtime"
+            else None
+        ),
+        input_format=input_format,
+        output_format=output_format,
     )
 
 
@@ -2515,6 +2799,31 @@ def _model_command_options(
     return tuple(sorted(options, key=lambda option: (not option.active, option.label)))
 
 
+def _voice_command_options(
+    *,
+    response: ModelsResponse | None,
+    current_model: AgentModelChanged | None,
+) -> tuple["AskCommandOption", ...]:
+    model_info = _model_info_for_current_selection(
+        response=response,
+        current_model=current_model,
+    )
+    if model_info is None or len(model_info.available_voices) == 0:
+        return ()
+    current_voice = current_model.voice if current_model is not None else None
+    if current_voice is None:
+        current_voice = model_info.default_output_voice
+    return tuple(
+        AskCommandOption(
+            command=f"/voice {voice}",
+            label=voice,
+            description="Output voice",
+            active=voice == current_voice,
+        )
+        for voice in model_info.available_voices
+    )
+
+
 def _process_command_options(
     prompt: str,
     *,
@@ -2542,6 +2851,19 @@ def _process_command_options(
             )
             for output in ("text", "audio")
             if output in supported
+        )
+
+    if stripped.startswith("/voice"):
+        parts = stripped.split(maxsplit=1)
+        filter_text = parts[1].lower() if len(parts) > 1 else ""
+        options = _voice_command_options(
+            response=response,
+            current_model=current_model,
+        )
+        if filter_text == "":
+            return options
+        return tuple(
+            option for option in options if filter_text in option.label.lower()
         )
 
     if not stripped.startswith("/model"):
@@ -2923,9 +3245,16 @@ def _build_runtime_agent(
     shell_set_env: Optional[list[str]],
     log_llm_requests: Optional[bool],
     channels: Optional[list[str]],
-    starting_url: Optional[str],
-    allow_goto_url: bool,
-    room_rules_path: Optional[list[str]],
+    voice: str | None = None,
+    input_audio_format: str = "audio/pcm",
+    input_audio_sample_rate: int | None = 24000,
+    input_audio_bitrate: int | None = None,
+    output_audio_format: str = "audio/pcm",
+    output_audio_sample_rate: int | None = 24000,
+    output_audio_bitrate: int | None = None,
+    starting_url: Optional[str] = None,
+    allow_goto_url: bool = False,
+    room_rules_path: Optional[list[str]] = None,
     verbose_dataset: bool = False,
     save_audio_input: bool = False,
     preamble_rule: bool = True,
@@ -2988,6 +3317,13 @@ def _build_runtime_agent(
         "log_llm_requests": log_llm_requests,
         "channels": channels,
         "transcription_model": transcription_model,
+        "voice": voice,
+        "input_audio_format": input_audio_format,
+        "input_audio_sample_rate": input_audio_sample_rate,
+        "input_audio_bitrate": input_audio_bitrate,
+        "output_audio_format": output_audio_format,
+        "output_audio_sample_rate": output_audio_sample_rate,
+        "output_audio_bitrate": output_audio_bitrate,
     }
     if runtime == "process":
         builder_kwargs["thread_storage"] = thread_storage
@@ -3136,6 +3472,13 @@ def build_chatbot(
     shell_set_env: Optional[list[str]] = None,
     channels: Optional[list[str]] = None,
     transcription_model: str | None = DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL,
+    voice: str | None = None,
+    input_audio_format: str = "audio/pcm",
+    input_audio_sample_rate: int | None = 24000,
+    input_audio_bitrate: int | None = None,
+    output_audio_format: str = "audio/pcm",
+    output_audio_sample_rate: int | None = 24000,
+    output_audio_bitrate: int | None = None,
     preamble_rule: bool = True,
 ):
     del channels
@@ -3204,6 +3547,16 @@ def build_chatbot(
 
     BaseClass = ChatBot
     resolved_decision_model = _normalized_decision_model(decision_model=decision_model)
+    realtime_input_format = _audio_format_option(
+        audio_format=input_audio_format,
+        sample_rate=input_audio_sample_rate,
+        bitrate=input_audio_bitrate,
+    )
+    realtime_output_format = _audio_format_option(
+        audio_format=output_audio_format,
+        sample_rate=output_audio_sample_rate,
+        bitrate=output_audio_bitrate,
+    )
     if llm_participant:
         llm_adapter = MessageStreamLLMAdapter(
             participant_name=llm_participant,
@@ -3225,6 +3578,11 @@ def build_chatbot(
                 session_options=_openai_realtime_text_session_options(),
                 response_options=_openai_realtime_text_response_options(),
                 transcription_model=transcription_model,
+                **_realtime_adapter_audio_kwargs(
+                    voice=voice,
+                    input_format=realtime_input_format,
+                    output_format=realtime_output_format,
+                ),
             )
             if resolved_decision_model is None:
                 resolved_decision_model = _DEFAULT_OPENAI_REALTIME_DECISION_MODEL
@@ -3618,6 +3976,13 @@ def build_process_agent(
     shell_set_env: Optional[list[str]] = None,
     channels: Optional[list[str]] = None,
     transcription_model: str | None = DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL,
+    voice: str | None = None,
+    input_audio_format: str = "audio/pcm",
+    input_audio_sample_rate: int | None = 24000,
+    input_audio_bitrate: int | None = None,
+    output_audio_format: str = "audio/pcm",
+    output_audio_sample_rate: int | None = 24000,
+    output_audio_bitrate: int | None = None,
     verbose_dataset: bool = False,
     save_audio_input: bool = False,
     preamble_rule: bool = True,
@@ -3709,6 +4074,16 @@ def build_process_agent(
                 print(f"[yellow]rules file not found at {rules_path}[/yellow]")
 
     selected_models = _normalize_model_options(model)
+    realtime_input_format = _audio_format_option(
+        audio_format=input_audio_format,
+        sample_rate=input_audio_sample_rate,
+        bitrate=input_audio_bitrate,
+    )
+    realtime_output_format = _audio_format_option(
+        audio_format=output_audio_format,
+        sample_rate=output_audio_sample_rate,
+        bitrate=output_audio_bitrate,
+    )
     supports_openai_responses_tools = _has_openai_responses_provider(
         models=selected_models,
         llm_participant=llm_participant,
@@ -3832,6 +4207,11 @@ def build_process_agent(
                         response_options=_openai_realtime_text_response_options(),
                         allowed_models=realtime_models,
                         transcription_model=transcription_model,
+                        **_realtime_adapter_audio_kwargs(
+                            voice=voice,
+                            input_format=realtime_input_format,
+                            output_format=realtime_output_format,
+                        ),
                     ),
                 )
             if anthropic_models:
@@ -4833,6 +5213,13 @@ async def join(
     transcription_model: TranscriptionModelOption = (
         DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
     ),
+    voice: VoiceOption = None,
+    input_audio_format: InputAudioFormatOption = "audio/pcm",
+    input_audio_sample_rate: InputAudioSampleRateOption = 24000,
+    input_audio_bitrate: InputAudioBitrateOption = None,
+    output_audio_format: OutputAudioFormatOption = "audio/pcm",
+    output_audio_sample_rate: OutputAudioSampleRateOption = 24000,
+    output_audio_bitrate: OutputAudioBitrateOption = None,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -5013,6 +5400,13 @@ async def join(
             llm_participant=llm_participant,
             decision_model=decision_model,
             transcription_model=transcription_model,
+            voice=voice,
+            input_audio_format=input_audio_format,
+            input_audio_sample_rate=input_audio_sample_rate,
+            input_audio_bitrate=input_audio_bitrate,
+            output_audio_format=output_audio_format,
+            output_audio_sample_rate=output_audio_sample_rate,
+            output_audio_bitrate=output_audio_bitrate,
             always_reply=always_reply,
             threading_mode=resolved_threading_mode,
             thread_dir=resolved_thread_dir,
@@ -5280,6 +5674,13 @@ async def service(
     transcription_model: TranscriptionModelOption = (
         DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
     ),
+    voice: VoiceOption = None,
+    input_audio_format: InputAudioFormatOption = "audio/pcm",
+    input_audio_sample_rate: InputAudioSampleRateOption = 24000,
+    input_audio_bitrate: InputAudioBitrateOption = None,
+    output_audio_format: OutputAudioFormatOption = "audio/pcm",
+    output_audio_sample_rate: OutputAudioSampleRateOption = 24000,
+    output_audio_bitrate: OutputAudioBitrateOption = None,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -5445,6 +5846,13 @@ async def service(
             llm_participant=llm_participant,
             decision_model=decision_model,
             transcription_model=transcription_model,
+            voice=voice,
+            input_audio_format=input_audio_format,
+            input_audio_sample_rate=input_audio_sample_rate,
+            input_audio_bitrate=input_audio_bitrate,
+            output_audio_format=output_audio_format,
+            output_audio_sample_rate=output_audio_sample_rate,
+            output_audio_bitrate=output_audio_bitrate,
             always_reply=always_reply,
             threading_mode=resolved_threading_mode,
             thread_dir=resolved_thread_dir,
@@ -5687,6 +6095,13 @@ async def spec(
     transcription_model: TranscriptionModelOption = (
         DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
     ),
+    voice: VoiceOption = None,
+    input_audio_format: InputAudioFormatOption = "audio/pcm",
+    input_audio_sample_rate: InputAudioSampleRateOption = 24000,
+    input_audio_bitrate: InputAudioBitrateOption = None,
+    output_audio_format: OutputAudioFormatOption = "audio/pcm",
+    output_audio_sample_rate: OutputAudioSampleRateOption = 24000,
+    output_audio_bitrate: OutputAudioBitrateOption = None,
     always_reply: Annotated[
         Optional[bool],
         typer.Option(..., help="Always reply"),
@@ -5828,6 +6243,13 @@ async def spec(
             llm_participant=llm_participant,
             decision_model=decision_model,
             transcription_model=transcription_model,
+            voice=voice,
+            input_audio_format=input_audio_format,
+            input_audio_sample_rate=input_audio_sample_rate,
+            input_audio_bitrate=input_audio_bitrate,
+            output_audio_format=output_audio_format,
+            output_audio_sample_rate=output_audio_sample_rate,
+            output_audio_bitrate=output_audio_bitrate,
             always_reply=always_reply,
             threading_mode=resolved_threading_mode,
             thread_dir=resolved_thread_dir,
@@ -6086,6 +6508,13 @@ async def deploy(
     transcription_model: TranscriptionModelOption = (
         DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
     ),
+    voice: VoiceOption = None,
+    input_audio_format: InputAudioFormatOption = "audio/pcm",
+    input_audio_sample_rate: InputAudioSampleRateOption = 24000,
+    input_audio_bitrate: InputAudioBitrateOption = None,
+    output_audio_format: OutputAudioFormatOption = "audio/pcm",
+    output_audio_sample_rate: OutputAudioSampleRateOption = 24000,
+    output_audio_bitrate: OutputAudioBitrateOption = None,
     always_reply: Annotated[
         Optional[bool],
         typer.Option(..., help="Always reply"),
@@ -6234,6 +6663,13 @@ async def deploy(
             llm_participant=llm_participant,
             decision_model=decision_model,
             transcription_model=transcription_model,
+            voice=voice,
+            input_audio_format=input_audio_format,
+            input_audio_sample_rate=input_audio_sample_rate,
+            input_audio_bitrate=input_audio_bitrate,
+            output_audio_format=output_audio_format,
+            output_audio_sample_rate=output_audio_sample_rate,
+            output_audio_bitrate=output_audio_bitrate,
             always_reply=always_reply,
             threading_mode=resolved_threading_mode,
             thread_dir=resolved_thread_dir,
@@ -8103,6 +8539,13 @@ async def run(
     transcription_model: TranscriptionModelOption = (
         DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
     ),
+    voice: VoiceOption = None,
+    input_audio_format: InputAudioFormatOption = "audio/pcm",
+    input_audio_sample_rate: InputAudioSampleRateOption = 24000,
+    input_audio_bitrate: InputAudioBitrateOption = None,
+    output_audio_format: OutputAudioFormatOption = "audio/pcm",
+    output_audio_sample_rate: OutputAudioSampleRateOption = 24000,
+    output_audio_bitrate: OutputAudioBitrateOption = None,
     always_reply: Annotated[
         Optional[bool],
         typer.Option(..., help="Always reply"),
@@ -8300,6 +8743,13 @@ async def run(
             llm_participant=llm_participant,
             decision_model=decision_model,
             transcription_model=transcription_model,
+            voice=voice,
+            input_audio_format=input_audio_format,
+            input_audio_sample_rate=input_audio_sample_rate,
+            input_audio_bitrate=input_audio_bitrate,
+            output_audio_format=output_audio_format,
+            output_audio_sample_rate=output_audio_sample_rate,
+            output_audio_bitrate=output_audio_bitrate,
             always_reply=always_reply,
             threading_mode=resolved_threading_mode,
             thread_dir=resolved_thread_dir,
@@ -8329,18 +8779,46 @@ async def run(
 
         async def run_interactive_session(client: RoomClient) -> None:
             if runtime == "process":
-                interaction_task = asyncio.create_task(
-                    _run_process_run_tui(
-                        bot=bot,
-                        model=model,
-                        thread_path=thread_path,
-                        thread_storage=thread_storage,
-                        agent_name=agent_name,
-                        thread_dir=resolved_thread_dir,
-                        threading_mode=resolved_threading_mode,
-                        message=message,
-                        working_dir=working_dir,
+                process_tui_kwargs: dict[str, Any] = {
+                    "bot": bot,
+                    "model": model,
+                    "thread_path": thread_path,
+                    "thread_storage": thread_storage,
+                    "agent_name": agent_name,
+                    "thread_dir": resolved_thread_dir,
+                    "threading_mode": resolved_threading_mode,
+                    "message": message,
+                    "working_dir": working_dir,
+                }
+                if voice is not None:
+                    process_tui_kwargs["voice"] = voice
+                audio_format_kwargs = _realtime_adapter_audio_kwargs(
+                    voice=None,
+                    input_format=_audio_format_option(
+                        audio_format=input_audio_format,
+                        sample_rate=input_audio_sample_rate,
+                        bitrate=input_audio_bitrate,
+                    ),
+                    output_format=_audio_format_option(
+                        audio_format=output_audio_format,
+                        sample_rate=output_audio_sample_rate,
+                        bitrate=output_audio_bitrate,
+                    ),
+                )
+                if "input_format" in audio_format_kwargs:
+                    process_tui_kwargs["input_audio_format"] = input_audio_format
+                    process_tui_kwargs["input_audio_sample_rate"] = (
+                        input_audio_sample_rate
                     )
+                    process_tui_kwargs["input_audio_bitrate"] = input_audio_bitrate
+                if "output_format" in audio_format_kwargs:
+                    process_tui_kwargs["output_audio_format"] = output_audio_format
+                    process_tui_kwargs["output_audio_sample_rate"] = (
+                        output_audio_sample_rate
+                    )
+                    process_tui_kwargs["output_audio_bitrate"] = output_audio_bitrate
+                interaction_task = asyncio.create_task(
+                    _run_process_run_tui(**process_tui_kwargs)
                 )
             else:
                 interaction_task = asyncio.create_task(
