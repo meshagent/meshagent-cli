@@ -670,6 +670,7 @@ def test_build_process_agent_uses_realtime_adapter_for_openai_realtime_model(
             allowed_models=None,
             transcription_model=None,
             turn_detection=None,
+            supported_output_modalities=None,
             realtime_protocols=None,
         ) -> None:
             created_adapters.append(
@@ -682,6 +683,7 @@ def test_build_process_agent_uses_realtime_adapter_for_openai_realtime_model(
                     "allowed_models": allowed_models,
                     "transcription_model": transcription_model,
                     "turn_detection": turn_detection,
+                    "supported_output_modalities": supported_output_modalities,
                     "realtime_protocols": realtime_protocols,
                 }
             )
@@ -712,18 +714,36 @@ def test_build_process_agent_uses_realtime_adapter_for_openai_realtime_model(
             "allowed_models": ["gpt-realtime"],
             "transcription_model": process.DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL,
             "turn_detection": process.DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+            "supported_output_modalities": ("text", "audio"),
             "realtime_protocols": process.DEFAULT_OPENAI_REALTIME_PROTOCOLS,
         }
     ]
 
 
 def test_openai_realtime_session_options_leave_transcription_to_adapter() -> None:
-    assert process._openai_realtime_session_options(output_modality="text") == {
+    assert process._openai_realtime_session_options(output_modalities=("text",)) == {
         "output_modalities": ["text"],
     }
-    assert process._openai_realtime_response_options(output_modality="audio") == {
+    assert process._openai_realtime_response_options(output_modalities=("audio",)) == {
         "output_modalities": ["audio"],
     }
+
+
+def test_configured_realtime_models_use_output_modality_filter() -> None:
+    current_model = process._agent_model_changed_for_model(
+        model="gpt-realtime",
+        thread_id="/threads/test.thread",
+        output_modalities=("audio",),
+    )
+
+    response = process._configured_models_response(
+        models=["gpt-realtime"],
+        current_model=current_model,
+        output_modalities=("audio",),
+    )
+
+    assert response.providers[0].models[0].modalities == ["audio"]
+    assert current_model.output_modalities == ["audio"]
 
 
 def test_build_process_agent_passes_custom_realtime_transcription_model(
@@ -743,6 +763,7 @@ def test_build_process_agent_passes_custom_realtime_transcription_model(
             allowed_models=None,
             transcription_model=None,
             turn_detection=None,
+            supported_output_modalities=None,
             realtime_protocols=None,
         ) -> None:
             del model
@@ -752,6 +773,7 @@ def test_build_process_agent_passes_custom_realtime_transcription_model(
             del response_options
             del allowed_models
             del turn_detection
+            del supported_output_modalities
             del realtime_protocols
             created_adapters.append({"transcription_model": transcription_model})
 
@@ -815,6 +837,7 @@ def test_build_process_agent_groups_repeated_models_by_provider(
             allowed_models=None,
             transcription_model=None,
             turn_detection=None,
+            supported_output_modalities=None,
             realtime_protocols=None,
         ) -> None:
             del api_key
@@ -823,6 +846,7 @@ def test_build_process_agent_groups_repeated_models_by_provider(
             del response_options
             del transcription_model
             del turn_detection
+            del supported_output_modalities
             del realtime_protocols
             created_adapters.append(
                 {
@@ -1497,7 +1521,7 @@ async def test_process_run_starts_room_agent_and_uses_ask_tui(
         "working_dir": None,
         "turn_detection": process.DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
         "realtime_protocols": process.DEFAULT_OPENAI_REALTIME_PROTOCOLS,
-        "output_modality": "text",
+        "output_modalities": [],
     }
     assert captured["account_closed"] is True
 
