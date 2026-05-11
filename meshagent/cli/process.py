@@ -2484,6 +2484,16 @@ def _normalize_output_modalities(
     return tuple(selected)
 
 
+def _default_realtime_output_modalities(
+    output_modalities: tuple[OutputModality, ...],
+) -> tuple[OutputModality, ...]:
+    if "text" in output_modalities:
+        return ("text",)
+    if len(output_modalities) > 0:
+        return (output_modalities[0],)
+    return ("text",)
+
+
 def _audio_format_option(
     *,
     audio_format: str,
@@ -3718,6 +3728,9 @@ def build_chatbot(
     BaseClass = ChatBot
     resolved_decision_model = _normalized_decision_model(decision_model=decision_model)
     selected_output_modalities = _normalize_output_modalities(output_modalities)
+    default_realtime_output_modalities = _default_realtime_output_modalities(
+        selected_output_modalities
+    )
     realtime_input_format = _audio_format_option(
         audio_format=input_audio_format,
         sample_rate=input_audio_sample_rate,
@@ -3747,11 +3760,12 @@ def build_chatbot(
                 api_key=api_key,
                 log_requests=log_llm_requests,
                 session_options=_openai_realtime_session_options(
-                    output_modalities=selected_output_modalities
+                    output_modalities=default_realtime_output_modalities
                 ),
                 response_options=_openai_realtime_response_options(
-                    output_modalities=selected_output_modalities
+                    output_modalities=default_realtime_output_modalities
                 ),
+                supported_output_modalities=selected_output_modalities,
                 transcription_model=transcription_model,
                 turn_detection=turn_detection,
                 realtime_protocols=realtime_protocols,
@@ -4269,6 +4283,9 @@ def build_process_agent(
         bitrate=output_audio_bitrate,
     )
     selected_output_modalities = _normalize_output_modalities(output_modalities)
+    default_realtime_output_modalities = _default_realtime_output_modalities(
+        selected_output_modalities
+    )
     supports_openai_responses_tools = _has_openai_responses_provider(
         models=selected_models,
         llm_participant=llm_participant,
@@ -4389,11 +4406,12 @@ def build_process_agent(
                         api_key=api_key,
                         log_requests=log_llm_requests,
                         session_options=_openai_realtime_session_options(
-                            output_modalities=selected_output_modalities
+                            output_modalities=default_realtime_output_modalities
                         ),
                         response_options=_openai_realtime_response_options(
-                            output_modalities=selected_output_modalities
+                            output_modalities=default_realtime_output_modalities
                         ),
+                        supported_output_modalities=selected_output_modalities,
                         allowed_models=realtime_models,
                         transcription_model=transcription_model,
                         turn_detection=turn_detection,

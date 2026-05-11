@@ -670,6 +670,7 @@ def test_build_process_agent_uses_realtime_adapter_for_openai_realtime_model(
             allowed_models=None,
             transcription_model=None,
             turn_detection=None,
+            supported_output_modalities=None,
             realtime_protocols=None,
         ) -> None:
             created_adapters.append(
@@ -682,6 +683,7 @@ def test_build_process_agent_uses_realtime_adapter_for_openai_realtime_model(
                     "allowed_models": allowed_models,
                     "transcription_model": transcription_model,
                     "turn_detection": turn_detection,
+                    "supported_output_modalities": supported_output_modalities,
                     "realtime_protocols": realtime_protocols,
                 }
             )
@@ -707,11 +709,12 @@ def test_build_process_agent_uses_realtime_adapter_for_openai_realtime_model(
             "model": "gpt-realtime",
             "api_key": None,
             "log_requests": None,
-            "session_options": {"output_modalities": ["text", "audio"]},
-            "response_options": {"output_modalities": ["text", "audio"]},
+            "session_options": {"output_modalities": ["text"]},
+            "response_options": {"output_modalities": ["text"]},
             "allowed_models": ["gpt-realtime"],
             "transcription_model": process.DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL,
             "turn_detection": process.DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+            "supported_output_modalities": ("text", "audio"),
             "realtime_protocols": process.DEFAULT_OPENAI_REALTIME_PROTOCOLS,
         }
     ]
@@ -760,6 +763,7 @@ def test_build_process_agent_passes_custom_realtime_transcription_model(
             allowed_models=None,
             transcription_model=None,
             turn_detection=None,
+            supported_output_modalities=None,
             realtime_protocols=None,
         ) -> None:
             del model
@@ -769,6 +773,7 @@ def test_build_process_agent_passes_custom_realtime_transcription_model(
             del response_options
             del allowed_models
             del turn_detection
+            del supported_output_modalities
             del realtime_protocols
             created_adapters.append({"transcription_model": transcription_model})
 
@@ -832,6 +837,7 @@ def test_build_process_agent_groups_repeated_models_by_provider(
             allowed_models=None,
             transcription_model=None,
             turn_detection=None,
+            supported_output_modalities=None,
             realtime_protocols=None,
         ) -> None:
             del api_key
@@ -840,6 +846,7 @@ def test_build_process_agent_groups_repeated_models_by_provider(
             del response_options
             del transcription_model
             del turn_detection
+            del supported_output_modalities
             del realtime_protocols
             created_adapters.append(
                 {
