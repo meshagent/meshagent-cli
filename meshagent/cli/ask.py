@@ -10,7 +10,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import Annotated, Any, Protocol, runtime_checkable
+from typing import Annotated, Any, Literal, Protocol, runtime_checkable
 
 import click
 import typer
@@ -19,6 +19,14 @@ from rich.markdown import Markdown
 from rich.table import Table
 from meshagent.agents.adapter import LLMAdapter
 from meshagent.agents.messages import (
+    AGENT_EVENT_AUDIO_GENERATION_COMPLETED,
+    AGENT_EVENT_AUDIO_GENERATION_DELTA,
+    AGENT_EVENT_AUDIO_GENERATION_FAILED,
+    AGENT_EVENT_AUDIO_GENERATION_STARTED,
+    AGENT_EVENT_AUDIO_TRANSCRIPTION_COMPLETED,
+    AGENT_EVENT_AUDIO_TRANSCRIPTION_DELTA,
+    AGENT_EVENT_AUDIO_TRANSCRIPTION_FAILED,
+    AGENT_EVENT_AUDIO_TRANSCRIPTION_STARTED,
     AGENT_EVENT_CONTEXT_COMPACTED,
     AGENT_EVENT_FILE_CONTENT_DELTA,
     AGENT_EVENT_FILE_CONTENT_ENDED,
@@ -53,6 +61,14 @@ from meshagent.agents.messages import (
     AGENT_MESSAGE_THREAD_START,
     AGENT_MESSAGE_TURN_START,
     AGENT_MESSAGE_TURN_STEER,
+    AgentAudioGenerationCompleted,
+    AgentAudioGenerationDelta,
+    AgentAudioGenerationFailed,
+    AgentAudioGenerationStarted,
+    AgentAudioTranscriptionCompleted,
+    AgentAudioTranscriptionDelta,
+    AgentAudioTranscriptionFailed,
+    AgentAudioTranscriptionStarted,
     AgentContextCompacted,
     AgentFileContent,
     AgentFileContentDelta,
@@ -63,6 +79,7 @@ from meshagent.agents.messages import (
     AgentImageGenerationPartial,
     AgentImageGenerationStarted,
     AgentMessage,
+    AgentModelChanged,
     AgentReasoningContentDelta,
     AgentReasoningContentEnded,
     AgentReasoningContentStarted,
@@ -122,6 +139,14 @@ _ASK_TERMINAL_STATUS_STATES = {
 }
 _ASK_TOOL_LOG_RENDER_LIMIT = 4
 _ASK_PASS_THROUGH_AGENT_EVENT_TYPES = {
+    AGENT_EVENT_AUDIO_GENERATION_COMPLETED,
+    AGENT_EVENT_AUDIO_GENERATION_DELTA,
+    AGENT_EVENT_AUDIO_GENERATION_FAILED,
+    AGENT_EVENT_AUDIO_GENERATION_STARTED,
+    AGENT_EVENT_AUDIO_TRANSCRIPTION_COMPLETED,
+    AGENT_EVENT_AUDIO_TRANSCRIPTION_DELTA,
+    AGENT_EVENT_AUDIO_TRANSCRIPTION_FAILED,
+    AGENT_EVENT_AUDIO_TRANSCRIPTION_STARTED,
     AGENT_EVENT_CONTEXT_COMPACTED,
     AGENT_EVENT_FILE_CONTENT_DELTA,
     AGENT_EVENT_FILE_CONTENT_ENDED,
@@ -143,6 +168,70 @@ _ASK_PASS_THROUGH_AGENT_EVENT_TYPES = {
     AGENT_EVENT_TOOL_CALL_PENDING,
     AGENT_EVENT_TOOL_CALL_STARTED,
 }
+_ASK_SLASH_COMMANDS = (
+    ("/model", "List or change the active model"),
+    ("/output", "Change text or audio outputs"),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class AskCommandOption:
+    command: str
+    label: str
+    description: str | None = None
+    active: bool = False
+
+
+class _StreamingAudioPlayer:
+    def __init__(self, *, sample_rate: int = 24000, channels: int = 1) -> None:
+        self._sample_rate = sample_rate
+        self._channels = channels
+        self._stream: Any | None = None
+        self._disabled_error: str | None = None
+
+    async def play_delta(self, data: bytes) -> str | None:
+        if self._disabled_error is not None:
+            return None
+        if len(data) == 0:
+            return None
+        try:
+            await asyncio.to_thread(self._write, data)
+        except Exception as exc:
+            self._disabled_error = str(exc)
+            await self.close()
+            return (
+                "Unable to play voice response audio. "
+                "Install or configure the sounddevice package/audio device. "
+                f"({exc})"
+            )
+        return None
+
+    def _write(self, data: bytes) -> None:
+        if self._stream is None:
+            import sounddevice as sd
+
+            self._stream = sd.RawOutputStream(
+                samplerate=self._sample_rate,
+                channels=self._channels,
+                dtype="int16",
+                blocksize=0,
+            )
+            self._stream.start()
+        self._stream.write(data)
+
+    async def close(self) -> None:
+        stream = self._stream
+        self._stream = None
+        if stream is None:
+            return
+        await asyncio.to_thread(self._close_stream, stream)
+
+    @staticmethod
+    def _close_stream(stream: Any) -> None:
+        with contextlib.suppress(Exception):
+            stream.stop()
+        with contextlib.suppress(Exception):
+            stream.close()
 
 
 def _ask_tool_raw_label(*, toolkit: str, tool: str) -> str:
@@ -476,7 +565,7 @@ class _StatusAwareLLMAdapter(LLMAdapter[Any]):
             custom_event_callback=_handle_custom_event,
         )
 
-    async def next(
+    async def create_response(
         self,
         *,
         context,
@@ -490,7 +579,7 @@ class _StatusAwareLLMAdapter(LLMAdapter[Any]):
         tool_choice=None,
         options: dict | None = None,
     ) -> Any:
-        return await self._delegate.next(
+        return await self._delegate.create_response(
             context=context,
             caller=caller,
             toolkits=toolkits,
@@ -559,11 +648,14 @@ class _AgentMessageSession:
         *,
         client: _AgentMessageChannelClient,
         model: str | None,
+        model_provider: Callable[[], AgentModelChanged | None] | None = None,
         current_working_directory: str | None = None,
         local_participant_name: str | None = None,
     ) -> None:
         self._client = client
         self._model = model
+        self._model_provider = model_provider
+        self._output_modalities: tuple[Literal["text", "audio"], ...] | None = None
         self._current_working_directory = os.path.abspath(
             current_working_directory or os.getcwd()
         )
@@ -593,6 +685,11 @@ class _AgentMessageSession:
     @property
     def queued_message_labels(self) -> tuple[str, ...]:
         return self._client.queued_message_labels
+
+    def set_output_modalities(
+        self, output_modalities: tuple[Literal["text", "audio"], ...] | None
+    ) -> None:
+        self._output_modalities = output_modalities
 
     @property
     def messages(self) -> tuple[_AskConversationMessage, ...]:
@@ -637,6 +734,18 @@ class _AgentMessageSession:
 
         if isinstance(message, AgentTextContentDelta):
             role = self._role_for_sender(message.sender_name, default="assistant")
+            self.add_message(
+                message_id=message.item_id,
+                role=role,
+                text=message.text,
+            )
+            return
+
+        if isinstance(message, AgentAudioTranscriptionDelta):
+            role = message.role or self._role_for_sender(
+                message.sender_name,
+                default="assistant",
+            )
             self.add_message(
                 message_id=message.item_id,
                 role=role,
@@ -693,22 +802,36 @@ class _AgentMessageSession:
                 text=prompt,
             )
         ]
+        current_model = (
+            self._model_provider() if self._model_provider is not None else None
+        )
+        provider_name = current_model.provider if current_model is not None else None
+        model_name = current_model.model if current_model is not None else self._model
+        output_modalities = self._output_modalities
         if self._client.has_thread_path:
             turn_start_args: dict[str, Any] = {
                 "type": AGENT_MESSAGE_TURN_START,
                 "thread_id": self._client.thread_path,
                 "content": content,
             }
-            if self._model is not None:
-                turn_start_args["model"] = self._model
+            if provider_name is not None:
+                turn_start_args["provider"] = provider_name
+            if model_name is not None:
+                turn_start_args["model"] = model_name
+            if output_modalities is not None:
+                turn_start_args["output_modalities"] = list(output_modalities)
             input_message = TurnStart.model_validate(turn_start_args)
         else:
             start_thread_args: dict[str, Any] = {
                 "type": AGENT_MESSAGE_THREAD_START,
                 "content": content,
             }
-            if self._model is not None:
-                start_thread_args["model"] = self._model
+            if provider_name is not None:
+                start_thread_args["provider"] = provider_name
+            if model_name is not None:
+                start_thread_args["model"] = model_name
+            if output_modalities is not None:
+                start_thread_args["output_modalities"] = list(output_modalities)
             input_message = StartThread.model_validate(start_thread_args)
 
         self._pending_input_messages[input_message.message_id] = (
@@ -843,6 +966,20 @@ class _AgentMessageSession:
                     await _emit_agent_message(on_message, text_delta)
                     continue
 
+                if event_type == AGENT_EVENT_AUDIO_TRANSCRIPTION_DELTA:
+                    transcript_delta = AgentAudioTranscriptionDelta.model_validate(
+                        payload
+                    )
+                    if (
+                        active_turn_id is not None
+                        and transcript_delta.turn_id != active_turn_id
+                    ):
+                        continue
+                    if transcript_delta.role in {None, "assistant"}:
+                        output_parts.append(transcript_delta.text)
+                    await _emit_agent_message(on_message, transcript_delta)
+                    continue
+
                 if event_type == AGENT_EVENT_USAGE_UPDATED:
                     usage_update = AgentUsageUpdated.model_validate(payload)
                     if active_turn_id is not None and usage_update.turn_id not in (
@@ -863,6 +1000,13 @@ class _AgentMessageSession:
                                 AgentFileContentDelta,
                                 AgentFileContentEnded,
                                 AgentFileContentStarted,
+                                AgentAudioGenerationCompleted,
+                                AgentAudioGenerationDelta,
+                                AgentAudioGenerationFailed,
+                                AgentAudioGenerationStarted,
+                                AgentAudioTranscriptionCompleted,
+                                AgentAudioTranscriptionFailed,
+                                AgentAudioTranscriptionStarted,
                                 AgentImageGenerationCompleted,
                                 AgentImageGenerationFailed,
                                 AgentImageGenerationPartial,
@@ -1349,6 +1493,10 @@ async def _run_ask_tui(
     title: str = "meshagent ask",
     assistant_name: str = "assistant",
     preamble_rule: bool = True,
+    command_handler: Callable[[str], Awaitable[str | None] | str | None] | None = None,
+    model_label_provider: Callable[[], str | None] | None = None,
+    output_label_provider: Callable[[], str | None] | None = None,
+    command_options_provider: Callable[[str], Sequence[AskCommandOption]] | None = None,
 ) -> None:
     try:
         from rich.text import Text
@@ -1393,12 +1541,18 @@ async def _run_ask_tui(
         accepted: bool = False
         message_id: str | None = None
 
+    @dataclass(slots=True)
+    class _CommandSelectorState:
+        prompt: str
+        options: list[AskCommandOption]
+        selected_index: int = 0
+
     class _AskTextualApp(App[None]):
         CSS = """
         Screen {
             layout: grid;
-            grid-size: 1 6;
-            grid-rows: auto 1fr 3 auto auto auto;
+            grid-size: 1 7;
+            grid-rows: auto 1fr 3 auto auto auto auto;
             padding: 0;
             background: #101114;
             color: white;
@@ -1498,6 +1652,13 @@ async def _run_ask_tui(
             padding: 0 2 1 2;
             color: #9aa5b8;
         }
+        #command-menu {
+            display: none;
+            width: 100%;
+            padding: 0 2 1 2;
+            color: #cfd3dc;
+            background: #101114;
+        }
         #input-row {
             margin: 0;
             background: #1a1d22;
@@ -1552,11 +1713,26 @@ async def _run_ask_tui(
             Binding("enter", "submit_prompt", "Send", priority=True),
         ]
 
-        def __init__(self, *, session: Any, title: str, assistant_name: str) -> None:
+        def __init__(
+            self,
+            *,
+            session: Any,
+            title: str,
+            assistant_name: str,
+            command_handler: Callable[[str], Awaitable[str | None] | str | None] | None,
+            model_label_provider: Callable[[], str | None] | None,
+            output_label_provider: Callable[[], str | None] | None,
+            command_options_provider: Callable[[str], Sequence[AskCommandOption]]
+            | None,
+        ) -> None:
             super().__init__()
             self._session = session
             self._title = title
             self._assistant_name = assistant_name
+            self._command_handler = command_handler
+            self._model_label_provider = model_label_provider
+            self._output_label_provider = output_label_provider
+            self._command_options_provider = command_options_provider
             self._entries: list[_AskFeedEntry] = []
             self._feed_view: Vertical | None = None
             self._feed_scroll: VerticalScroll | None = None
@@ -1570,6 +1746,7 @@ async def _run_ask_tui(
             self._active_assistant_item_id: str | None = None
             self._status_view: Static | None = None
             self._queue_view: Static | None = None
+            self._command_menu_view: Static | None = None
             self._input_row: Horizontal | None = None
             self._input_view: TextArea | None = None
             self._session_meta_view: Static | None = None
@@ -1589,6 +1766,10 @@ async def _run_ask_tui(
             self._status_started_at: float | None = None
             self._status_gradient_offset = 0
             self._spinner_timer = None
+            self._active_command_option: AskCommandOption | None = None
+            self._command_selector: _CommandSelectorState | None = None
+            self._audio_player = _StreamingAudioPlayer()
+            self._audio_error_reported = False
 
         def compose(self) -> ComposeResult:
             yield Static(
@@ -1610,6 +1791,7 @@ async def _run_ask_tui(
                     )
             yield Static("", id="status-line")
             yield Static("", id="turn-queue")
+            yield Static("", id="command-menu")
             with Horizontal(id="input-row"):
                 yield Static("›", id="input-prompt")
                 yield TextArea(
@@ -1637,6 +1819,7 @@ async def _run_ask_tui(
             )
             self._status_view = self.query_one("#status-line", Static)
             self._queue_view = self.query_one("#turn-queue", Static)
+            self._command_menu_view = self.query_one("#command-menu", Static)
             self._input_row = self.query_one("#input-row", Horizontal)
             self._input_view = self.query_one("#ask-input", TextArea)
             self._session_meta_view = self.query_one("#session-meta", Static)
@@ -1647,9 +1830,11 @@ async def _run_ask_tui(
             self._render_feed()
             self._render_status_line()
             self._render_turn_queue()
+            self._render_command_menu()
             self._render_session_meta()
 
         async def on_unmount(self) -> None:
+            await self._audio_player.close()
             await self._stop_active_assistant_stream()
             if self._spinner_timer is not None:
                 self._spinner_timer.stop()
@@ -1663,10 +1848,40 @@ async def _run_ask_tui(
             self.exit()
 
         async def action_interrupt_turn(self) -> None:
+            if self._command_selector is not None:
+                self._close_command_selector()
+                return
             if not self._pending:
                 return
             if self._session.interrupt():
                 self._set_status_text("Interrupting")
+
+        def on_key(self, event: Any) -> None:
+            if self._command_selector is None:
+                return
+            if event.key == "up":
+                event.stop()
+                self._select_previous_command_option()
+            elif event.key == "down":
+                event.stop()
+                self._select_next_command_option()
+
+        def _select_previous_command_option(self) -> None:
+            selector = self._command_selector
+            if selector is None:
+                return
+            selector.selected_index = max(0, selector.selected_index - 1)
+            self._render_command_menu()
+
+        def _select_next_command_option(self) -> None:
+            selector = self._command_selector
+            if selector is None:
+                return
+            selector.selected_index = min(
+                len(selector.options) - 1,
+                selector.selected_index + 1,
+            )
+            self._render_command_menu()
 
         async def action_insert_newline(self) -> None:
             if self._input_view is None or self.focused is not self._input_view:
@@ -1678,15 +1893,41 @@ async def _run_ask_tui(
             if self._input_view is None:
                 return
 
+            if self._command_selector is not None:
+                await self._submit_command_selector_selection()
+                return
+
             prompt = self._input_view.text.rstrip()
+            if self._should_open_command_selector(prompt.strip()):
+                self._open_command_selector(prompt=prompt.strip())
+                return
+
             self._input_view.load_text("")
             self._resize_input(self._input_view)
+            self._render_command_menu()
             self._input_view.focus()
 
             if prompt.strip() == "":
                 return
             if prompt.strip() in {"/quit", "/exit"}:
                 self.exit()
+                return
+
+            resolved_command = self._resolve_command_submission(prompt.strip())
+            if resolved_command is not None and self._command_handler is not None:
+                if self._pending:
+                    self._entries.append(
+                        _AskFeedEntry(
+                            role="error",
+                            text="Wait for the current turn to finish before running commands.",
+                        )
+                    )
+                    self._render_feed()
+                    self._scroll_to_end()
+                    return
+                self._submit_task = asyncio.create_task(
+                    self._run_command(command=resolved_command)
+                )
                 return
 
             if self._pending:
@@ -1712,6 +1953,92 @@ async def _run_ask_tui(
                 )
             )
 
+        async def _run_command(self, *, command: str) -> None:
+            self._pending = True
+            self._status_started_at = time.monotonic()
+            self._set_status_text("Running command")
+            self._render_status_line()
+            try:
+                handler = self._command_handler
+                if handler is None:
+                    return
+                result = handler(command)
+                if inspect.isawaitable(result):
+                    result = await result
+                if isinstance(result, str) and result.strip() != "":
+                    self._entries.append(
+                        _AskFeedEntry(role="event", text=result.strip())
+                    )
+            except Exception as exc:
+                self._entries.append(_AskFeedEntry(role="error", text=str(exc)))
+            finally:
+                self._pending = False
+                self._status_started_at = None
+                self._status_text = None
+                self._submit_task = None
+                self._render_status_line()
+                self._render_feed()
+                self._render_command_menu()
+                self._render_session_meta()
+                self._scroll_to_end()
+                if self._input_view is not None:
+                    self._input_view.focus()
+
+        def _should_open_command_selector(self, prompt: str) -> bool:
+            return (
+                prompt in {"/model", "/output"}
+                and self._command_handler is not None
+                and len(self._command_options(prompt)) > 0
+            )
+
+        def _open_command_selector(self, *, prompt: str) -> None:
+            if self._input_view is None:
+                return
+            options = self._command_options(prompt)
+            if len(options) == 0:
+                return
+            selected_index = next(
+                (index for index, option in enumerate(options) if option.active),
+                0,
+            )
+            self._command_selector = _CommandSelectorState(
+                prompt=prompt,
+                options=options,
+                selected_index=selected_index,
+            )
+            self._input_view.load_text("")
+            self._resize_input(self._input_view)
+            if self._input_row is not None:
+                self._input_row.styles.display = "none"
+            self._render_command_menu()
+
+        def _close_command_selector(self) -> None:
+            self._command_selector = None
+            if self._input_row is not None:
+                self._input_row.styles.display = "block"
+            self._render_command_menu()
+            if self._input_view is not None:
+                self._input_view.focus()
+
+        async def _submit_command_selector_selection(self) -> None:
+            selector = self._command_selector
+            if selector is None:
+                return
+            selected_option = selector.options[selector.selected_index]
+            command = selected_option.command
+            self._close_command_selector()
+            if self._pending:
+                self._entries.append(
+                    _AskFeedEntry(
+                        role="error",
+                        text="Wait for the current turn to finish before changing settings.",
+                    )
+                )
+                self._render_feed()
+                self._scroll_to_end()
+                return
+            self._submit_task = asyncio.create_task(self._run_command(command=command))
+
         def _begin_active_assistant(self) -> None:
             self._active_assistant_text = ""
             self._active_assistant_name = None
@@ -1728,6 +2055,23 @@ async def _run_ask_tui(
                     self._active_assistant_body
                 )
             self._render_active_assistant_header()
+
+        def _resolve_command_submission(self, prompt: str) -> str | None:
+            if not prompt.startswith("/") or self._command_handler is None:
+                return None
+            if self._active_command_option is not None:
+                if prompt == self._active_command_option.command:
+                    return self._active_command_option.command
+            if " " in prompt:
+                return prompt
+            matches = [
+                command
+                for command, _description in _ASK_SLASH_COMMANDS
+                if command.startswith(prompt)
+            ]
+            if len(matches) == 1:
+                return matches[0]
+            return prompt
 
         async def _stop_active_assistant_stream(self) -> None:
             if self._active_assistant_stream is not None:
@@ -1752,6 +2096,7 @@ async def _run_ask_tui(
             except Exception as ex:
                 self._entries.append(_AskFeedEntry(role="error", text=str(ex)))
             finally:
+                await self._audio_player.close()
                 await self._finalize_active_assistant()
                 with self.batch_update():
                     self._active_assistant_entry = None
@@ -1762,6 +2107,7 @@ async def _run_ask_tui(
                     self._render_status_line()
                     self._render_feed()
                     self._render_turn_queue()
+                    self._render_session_meta()
                 await self._stop_active_assistant_stream()
                 self._scroll_to_end()
                 if self._input_view is not None:
@@ -1902,6 +2248,102 @@ async def _run_ask_tui(
             if self._input_view is None or event.text_area is not self._input_view:
                 return
             self._resize_input(event.text_area)
+            self._render_command_menu()
+
+        def _render_command_menu(self) -> None:
+            if self._command_menu_view is None:
+                return
+            self._active_command_option = None
+            if self._command_selector is not None:
+                self._render_command_selector()
+                return
+            if self._input_view is None or self._command_handler is None:
+                self._command_menu_view.styles.display = "none"
+                self._command_menu_view.update("")
+                return
+
+            prompt = self._input_view.text.strip()
+            if not prompt.startswith("/"):
+                self._command_menu_view.styles.display = "none"
+                self._command_menu_view.update("")
+                return
+
+            command_options = self._command_options(prompt)
+            if len(command_options) > 0:
+                self._active_command_option = command_options[0]
+                lines = Text()
+                for index, option in enumerate(command_options[:8]):
+                    if index > 0:
+                        lines.append("\n")
+                    prefix = "›" if index == 0 else " "
+                    lines.append(prefix, style="bold #9aa5b8")
+                    lines.append(f" {option.label}", style="bold #e5e7eb")
+                    if option.active:
+                        lines.append("  current", style="#7dd3fc")
+                    if option.description is not None:
+                        lines.append(f"  {option.description}", style="#9aa5b8")
+                self._command_menu_view.styles.display = "block"
+                self._command_menu_view.update(lines)
+                return
+
+            if " " in prompt:
+                self._command_menu_view.styles.display = "none"
+                self._command_menu_view.update("")
+                return
+
+            matches = [
+                (command, description)
+                for command, description in _ASK_SLASH_COMMANDS
+                if command.startswith(prompt)
+            ]
+            if len(matches) == 0:
+                self._command_menu_view.styles.display = "none"
+                self._command_menu_view.update("")
+                return
+
+            lines = Text()
+            for index, (command, description) in enumerate(matches):
+                if index > 0:
+                    lines.append("\n")
+                prefix = "›" if index == 0 else " "
+                lines.append(prefix, style="bold #9aa5b8")
+                lines.append(f" {command}", style="bold #e5e7eb")
+                lines.append(f"  {description}", style="#9aa5b8")
+            self._command_menu_view.styles.display = "block"
+            self._command_menu_view.update(lines)
+
+        def _render_command_selector(self) -> None:
+            if self._command_menu_view is None:
+                return
+            selector = self._command_selector
+            if selector is None:
+                return
+            lines = Text()
+            title = "Select output" if selector.prompt == "/output" else "Select model"
+            lines.append(title, style="bold #e5e7eb")
+            lines.append("  Enter applies  Esc cancels", style="#9aa5b8")
+            for index, option in enumerate(selector.options):
+                lines.append("\n")
+                selected = index == selector.selected_index
+                prefix = "›" if selected else " "
+                style = "bold #e5e7eb" if selected else "#cfd3dc"
+                lines.append(prefix, style="bold #7dd3fc" if selected else "#9aa5b8")
+                lines.append(f" {option.label}", style=style)
+                if option.active:
+                    lines.append("  current", style="#7dd3fc")
+                if option.description is not None:
+                    lines.append(f"  {option.description}", style="#9aa5b8")
+            self._command_menu_view.styles.display = "block"
+            self._command_menu_view.update(lines)
+
+        def _command_options(self, prompt: str) -> list[AskCommandOption]:
+            provider = self._command_options_provider
+            if provider is None:
+                return []
+            try:
+                return list(provider(prompt))
+            except Exception:
+                return []
 
         async def _append_delta(self, text: str) -> None:
             self._active_assistant_text += text
@@ -1927,12 +2369,52 @@ async def _run_ask_tui(
                 )
                 await self._append_delta(message.text)
                 return
+            if isinstance(message, AgentAudioTranscriptionDelta):
+                if message.role in {None, "assistant"}:
+                    await self._prepare_active_assistant_text_item(
+                        item_id=message.item_id,
+                        sender_name=message.sender_name,
+                    )
+                    await self._append_delta(message.text)
+                return
             if isinstance(message, AgentTextContentEnded):
                 if (
                     self._active_assistant_item_id is None
                     or self._active_assistant_item_id == message.item_id
                 ):
                     await self._finalize_active_assistant()
+                return
+            if isinstance(message, AgentAudioTranscriptionCompleted):
+                if message.role in {None, "assistant"} and (
+                    self._active_assistant_item_id is None
+                    or self._active_assistant_item_id == message.item_id
+                ):
+                    await self._finalize_active_assistant()
+                return
+            if isinstance(message, AgentAudioTranscriptionFailed):
+                if message.error is not None:
+                    self._append_event_entry(
+                        f"Voice transcript failed: {message.error.message}"
+                    )
+                return
+            if isinstance(message, AgentAudioGenerationDelta):
+                error = await self._audio_player.play_delta(message.data)
+                if error is not None and not self._audio_error_reported:
+                    self._audio_error_reported = True
+                    self._append_event_entry(error)
+                return
+            if isinstance(message, AgentAudioGenerationCompleted):
+                await self._audio_player.close()
+                return
+            if isinstance(message, AgentAudioGenerationFailed):
+                await self._audio_player.close()
+                if message.error is not None:
+                    self._append_event_entry(
+                        f"Voice response failed: {message.error.message}"
+                    )
+                return
+            if isinstance(message, AgentAudioGenerationStarted):
+                self._audio_error_reported = False
                 return
             if isinstance(message, AgentReasoningContentStarted):
                 await self._finalize_active_assistant()
@@ -2218,17 +2700,37 @@ async def _run_ask_tui(
         def _render_session_meta(self) -> None:
             if self._session_meta_view is None:
                 return
+            model_label = model
+            if self._model_label_provider is not None:
+                provided_model_label = self._model_label_provider()
+                if (
+                    provided_model_label is not None
+                    and provided_model_label.strip() != ""
+                ):
+                    model_label = provided_model_label.strip()
+            modality_label = None
+            if self._output_label_provider is not None:
+                provided_output_label = self._output_label_provider()
+                if (
+                    provided_output_label is not None
+                    and provided_output_label.strip() != ""
+                ):
+                    modality_label = provided_output_label.strip()
+            meta_text = Text.assemble(
+                ("model ", "bold #9aa5b8"), (model_label, "#cfd3dc")
+            )
+            if modality_label is not None:
+                meta_text.append("  •  ", style="#5f6778")
+                meta_text.append("output ", style="bold #9aa5b8")
+                meta_text.append(modality_label, style="#cfd3dc")
+            meta_text.append("  •  ", style="#5f6778")
+            meta_text.append("cwd ", style="bold #9aa5b8")
+            meta_text.append(self._session.current_working_directory, style="#cfd3dc")
             table = Table.grid(expand=True)
             table.add_column(ratio=1)
             table.add_column(justify="right", no_wrap=True)
             table.add_row(
-                Text.assemble(
-                    ("model ", "bold #9aa5b8"),
-                    (model, "#cfd3dc"),
-                    ("  •  ", "#5f6778"),
-                    ("cwd ", "bold #9aa5b8"),
-                    (self._session.current_working_directory, "#cfd3dc"),
-                ),
+                meta_text,
                 self._usage_footer_text(),
             )
             self._session_meta_view.update(table)
@@ -2483,6 +2985,10 @@ async def _run_ask_tui(
             session=session_arg,
             title=title,
             assistant_name=assistant_name,
+            command_handler=command_handler,
+            model_label_provider=model_label_provider,
+            output_label_provider=output_label_provider,
+            command_options_provider=command_options_provider,
         )
         token = active_app.set(app)
         try:

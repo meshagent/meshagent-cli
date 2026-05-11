@@ -2,6 +2,7 @@ import asyncio
 import ast
 import inspect
 from pathlib import Path
+from typing import Literal
 
 import click
 import pytest
@@ -19,11 +20,15 @@ from meshagent.agents.messages import (
     AGENT_MESSAGE_THREAD_START,
     AGENT_MESSAGE_TURN_START,
     AGENT_MESSAGE_TURN_STEER,
+    AgentModelChanged,
+    AgentModelInfo,
+    AgentProviderInfo,
     AgentTextContent,
     AgentTextContentDelta,
     AgentThreadStatus,
     CloseThread,
     OpenThread,
+    ModelsResponse,
     StartThread,
     TurnEnded,
     TurnStart,
@@ -88,6 +93,51 @@ def _assert_builder_kwargs_match_signature(
 def test_root_cli_registers_process_group() -> None:
     command = get_command(root_cli.app)
     assert "process" in command.commands
+
+
+async def test_chatbot_await_cleanup_cancels_hung_cleanup() -> None:
+    cancelled = asyncio.Event()
+
+    async def hung_cleanup() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    await chatbot._await_cleanup(
+        hung_cleanup(),
+        timeout=0.01,
+        label="test cleanup",
+    )
+
+    await asyncio.wait_for(cancelled.wait(), timeout=1)
+
+
+async def test_chatbot_await_cleanup_respects_outer_cancellation() -> None:
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def hung_cleanup() -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    task = asyncio.create_task(
+        chatbot._await_cleanup(
+            hung_cleanup(),
+            timeout=10,
+            label="test cleanup",
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.wait_for(cancelled.wait(), timeout=1)
 
 
 @pytest.mark.parametrize(
@@ -448,7 +498,7 @@ async def test_process_agent_uses_shared_decision_adapter_for_threaded_channels(
         def create_session(self) -> AgentSessionContext:
             return AgentSessionContext()
 
-        async def next(self, **kwargs):
+        async def create_response(self, **kwargs):
             del kwargs
             raise AssertionError("decision adapter should not be used in this test")
 
@@ -576,6 +626,267 @@ def test_resolved_channels_accept_toolkit_channel() -> None:
         runtime="process",
         channel=["toolkit:assistant"],
     ) == ["toolkit:assistant"]
+
+
+def test_resolve_openai_realtime_model_accepts_aliases_and_model_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_REALTIME_MODEL", raising=False)
+
+    assert process._resolve_openai_realtime_model(model="openai realtime") == (
+        "gpt-realtime"
+    )
+    assert process._resolve_openai_realtime_model(model="openai:realtime") == (
+        "gpt-realtime"
+    )
+    assert process._resolve_openai_realtime_model(model="gpt-realtime") == (
+        "gpt-realtime"
+    )
+    assert process._resolve_openai_realtime_model(model="gpt-realtime-2") == (
+        "gpt-realtime-2"
+    )
+    assert process._resolve_openai_realtime_model(model="gpt-5.5") is None
+
+    monkeypatch.setenv("OPENAI_REALTIME_MODEL", "gpt-realtime-preview")
+    assert process._resolve_openai_realtime_model(model="openai realtime") == (
+        "gpt-realtime-preview"
+    )
+
+
+def test_build_process_agent_uses_realtime_adapter_for_openai_realtime_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_adapters: list[dict[str, object]] = []
+
+    class _FakeRealtimeAdapter:
+        def __init__(
+            self,
+            *,
+            model: str,
+            api_key=None,
+            log_requests=None,
+            session_options=None,
+            response_options=None,
+            allowed_models=None,
+            transcription_model=None,
+            turn_detection=None,
+            realtime_protocols=None,
+        ) -> None:
+            created_adapters.append(
+                {
+                    "model": model,
+                    "api_key": api_key,
+                    "log_requests": log_requests,
+                    "session_options": session_options,
+                    "response_options": response_options,
+                    "allowed_models": allowed_models,
+                    "transcription_model": transcription_model,
+                    "turn_detection": turn_detection,
+                    "realtime_protocols": realtime_protocols,
+                }
+            )
+
+        def default_model(self) -> str:
+            return "gpt-realtime"
+
+    monkeypatch.setattr(process, "OpenAIRealtimeAdapter", _FakeRealtimeAdapter)
+
+    agent_cls = process.build_process_agent(
+        model="openai realtime",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+    )
+
+    assert agent_cls is not None
+    assert created_adapters == [
+        {
+            "model": "gpt-realtime",
+            "api_key": None,
+            "log_requests": None,
+            "session_options": {"output_modalities": ["text"]},
+            "response_options": {"output_modalities": ["text"]},
+            "allowed_models": ["gpt-realtime"],
+            "transcription_model": process.DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL,
+            "turn_detection": process.DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+            "realtime_protocols": process.DEFAULT_OPENAI_REALTIME_PROTOCOLS,
+        }
+    ]
+
+
+def test_openai_realtime_session_options_leave_transcription_to_adapter() -> None:
+    assert process._openai_realtime_session_options(output_modality="text") == {
+        "output_modalities": ["text"],
+    }
+    assert process._openai_realtime_response_options(output_modality="audio") == {
+        "output_modalities": ["audio"],
+    }
+
+
+def test_build_process_agent_passes_custom_realtime_transcription_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_adapters: list[dict[str, object]] = []
+
+    class _FakeRealtimeAdapter:
+        def __init__(
+            self,
+            *,
+            model: str,
+            api_key=None,
+            log_requests=None,
+            session_options=None,
+            response_options=None,
+            allowed_models=None,
+            transcription_model=None,
+            turn_detection=None,
+            realtime_protocols=None,
+        ) -> None:
+            del model
+            del api_key
+            del log_requests
+            del session_options
+            del response_options
+            del allowed_models
+            del turn_detection
+            del realtime_protocols
+            created_adapters.append({"transcription_model": transcription_model})
+
+    monkeypatch.setattr(process, "OpenAIRealtimeAdapter", _FakeRealtimeAdapter)
+
+    process.build_process_agent(
+        model="openai realtime",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+        transcription_model="custom-transcribe",
+    )
+
+    assert created_adapters == [{"transcription_model": "custom-transcribe"}]
+
+
+def test_build_process_agent_groups_repeated_models_by_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_adapters: list[dict[str, object]] = []
+
+    class _FakeOpenAIAdapter:
+        def __init__(
+            self,
+            *,
+            model: str,
+            api_key=None,
+            log_requests=None,
+            context_management=None,
+            compaction_threshold=None,
+            max_output_tokens=None,
+            reasoning_effort=None,
+            allowed_models=None,
+        ) -> None:
+            del api_key
+            del log_requests
+            del context_management
+            del compaction_threshold
+            del max_output_tokens
+            del reasoning_effort
+            created_adapters.append(
+                {
+                    "provider": "openai",
+                    "model": model,
+                    "allowed_models": allowed_models,
+                }
+            )
+
+    class _FakeRealtimeAdapter:
+        def __init__(
+            self,
+            *,
+            model: str,
+            api_key=None,
+            log_requests=None,
+            session_options=None,
+            response_options=None,
+            allowed_models=None,
+            transcription_model=None,
+            turn_detection=None,
+            realtime_protocols=None,
+        ) -> None:
+            del api_key
+            del log_requests
+            del session_options
+            del response_options
+            del transcription_model
+            del turn_detection
+            del realtime_protocols
+            created_adapters.append(
+                {
+                    "provider": "openai-realtime",
+                    "model": model,
+                    "allowed_models": allowed_models,
+                }
+            )
+
+    class _FakeAnthropicAdapter:
+        def __init__(
+            self,
+            *,
+            model: str,
+            api_key=None,
+            log_requests=None,
+            allowed_models=None,
+        ) -> None:
+            del api_key
+            del log_requests
+            created_adapters.append(
+                {
+                    "provider": "anthropic",
+                    "model": model,
+                    "allowed_models": allowed_models,
+                }
+            )
+
+    monkeypatch.setattr(process, "OpenAIResponsesAdapter", _FakeOpenAIAdapter)
+    monkeypatch.setattr(process, "OpenAIRealtimeAdapter", _FakeRealtimeAdapter)
+    monkeypatch.setattr(
+        process,
+        "AnthropicOpenAIResponsesStreamAdapter",
+        _FakeAnthropicAdapter,
+    )
+
+    agent_cls = process.build_process_agent(
+        model=["gpt-5.5", "gpt-5.4", "claude-opus-4-7", "gpt-realtime"],
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+    )
+
+    assert agent_cls is not None
+    assert created_adapters[1:] == [
+        {
+            "provider": "openai",
+            "model": "gpt-5.5",
+            "allowed_models": ["gpt-5.5", "gpt-5.4"],
+        },
+        {
+            "provider": "openai-realtime",
+            "model": "gpt-realtime",
+            "allowed_models": ["gpt-realtime"],
+        },
+        {
+            "provider": "anthropic",
+            "model": "claude-opus-4-7",
+            "allowed_models": ["claude-opus-4-7"],
+        },
+    ]
 
 
 def test_chatbot_agent_annotations_include_thread_dir() -> None:
@@ -971,6 +1282,47 @@ def test_process_join_requires_at_least_one_channel(monkeypatch) -> None:
     ]
 
 
+def test_process_join_requires_room(monkeypatch) -> None:
+    printed: list[str] = []
+    monkeypatch.delenv("MESHAGENT_ROOM", raising=False)
+    monkeypatch.setattr(
+        process,
+        "print",
+        lambda *args, **kwargs: printed.append(" ".join(str(arg) for arg in args)),
+    )
+    monkeypatch.setattr(process, "resolve_room", lambda room_name=None: None)
+
+    async def invoke_join() -> None:
+        await process.join(
+            project_id=None,
+            room=None,
+            agent_name="helper",
+            channel=["chat"],
+        )
+
+    root_command = click.Command("meshagent")
+    process_command = click.Command("process")
+    join_command = click.Command("join")
+    with click.Context(root_command, info_name="meshagent") as root_context:
+        with click.Context(
+            process_command,
+            info_name="process",
+            parent=root_context,
+        ) as process_context:
+            with click.Context(
+                join_command,
+                info_name="join",
+                parent=process_context,
+            ):
+                with pytest.raises(click.exceptions.Exit) as exc_info:
+                    asyncio.run(invoke_join())
+
+    assert exc_info.value.exit_code == 1
+    assert printed == [
+        "[bold red]--room is required (or set MESHAGENT_ROOM)[/bold red]"
+    ]
+
+
 def test_process_service_requires_at_least_one_channel(monkeypatch) -> None:
     printed: list[str] = []
     monkeypatch.setattr(
@@ -1135,7 +1487,7 @@ async def test_process_run_starts_room_agent_and_uses_ask_tui(
     assert process_agent.started_room is room_client
     assert captured["process_tui_kwargs"] == {
         "bot": process_agent,
-        "model": "gpt-5.5",
+        "model": ["gpt-5.5"],
         "thread_path": None,
         "thread_storage": "meshdocument",
         "agent_name": "helper",
@@ -1143,6 +1495,9 @@ async def test_process_run_starts_room_agent_and_uses_ask_tui(
         "threading_mode": "default-new",
         "message": None,
         "working_dir": None,
+        "turn_detection": process.DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+        "realtime_protocols": process.DEFAULT_OPENAI_REALTIME_PROTOCOLS,
+        "output_modality": "text",
     }
     assert captured["account_closed"] is True
 
@@ -1293,7 +1648,7 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
 
     await process._run_process_run_tui(
         bot=bot,
-        model="gpt-5.5",
+        model=["gpt-realtime", "gpt-5.4"],
         thread_path="/threads/process-run.thread",
         thread_storage="meshdocument",
         agent_name="helper",
@@ -1303,10 +1658,159 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
         working_dir="/tmp",
     )
 
-    assert captured["model"] == "gpt-5.5"
+    assert captured["model"] == "openai-realtime/gpt-realtime"
     assert captured["title"] == "meshagent process run"
+    assert captured["command_handler"] is not None
+    assert captured["model_label_provider"]() == "openai-realtime/gpt-realtime"
+    command_options = captured["command_options_provider"]("/model")
+    assert [option.command for option in command_options] == [
+        "/model openai-realtime/gpt-realtime",
+        "/model openai/gpt-5.4",
+    ]
+    modality_options = captured["command_options_provider"]("/output")
+    assert [option.command for option in modality_options] == [
+        "/output text",
+        "/output audio",
+    ]
+    assert command_options[0].active is True
+    assert captured["session"]._session._model is None
     assert captured["session"].current_working_directory == "/tmp"
     assert bot._supervisor.unsubscribed_queue is bot._supervisor.subscribed_queue
+
+
+@pytest.mark.asyncio
+async def test_process_model_command_lists_and_changes_models() -> None:
+    class _FakeModelSession:
+        def __init__(self) -> None:
+            self.current_model = AgentModelChanged(
+                type=process.AGENT_EVENT_MODEL_CHANGED,
+                thread_id="/threads/process-run.thread",
+                provider="openai-realtime",
+                model="gpt-realtime",
+            )
+            self.changes: list[tuple[str | None, str | None]] = []
+            self.models_response: ModelsResponse | None = None
+            self.output_modalities: tuple[Literal["text", "audio"], ...] = ("text",)
+
+        @property
+        def thread_id(self) -> str:
+            return "/threads/process-run.thread"
+
+        async def request_models(self) -> ModelsResponse:
+            self.models_response = ModelsResponse(
+                type=process.AGENT_MESSAGE_MODELS_RESPONSE,
+                source_message_id="models-request",
+                providers=[
+                    AgentProviderInfo(
+                        name="openai-realtime",
+                        friendly_name="OpenAI Realtime",
+                        default_model="gpt-realtime",
+                        models=[
+                            AgentModelInfo(
+                                name="gpt-realtime",
+                                friendly_name="GPT Realtime",
+                                modalities=["text", "audio"],
+                            )
+                        ],
+                    ),
+                    AgentProviderInfo(
+                        name="openai",
+                        friendly_name="OpenAI",
+                        default_model="gpt-5.4",
+                        models=[
+                            AgentModelInfo(name="gpt-5.4"),
+                            AgentModelInfo(name="gpt-5.5"),
+                        ],
+                    ),
+                ],
+            )
+            return self.models_response
+
+        def select_model(self, model: AgentModelChanged) -> None:
+            self.current_model = model
+
+        def set_output_modalities(
+            self, output_modalities: tuple[Literal["text", "audio"], ...]
+        ) -> None:
+            self.output_modalities = output_modalities
+
+        def toggle_output_modalities(self) -> tuple[Literal["text", "audio"], ...]:
+            self.output_modalities = (
+                ("audio",) if self.output_modalities == ("text",) else ("text",)
+            )
+            return self.output_modalities
+
+        async def change_model(
+            self,
+            *,
+            provider: str | None,
+            model: str | None,
+        ) -> AgentModelChanged:
+            self.changes.append((provider, model))
+            return AgentModelChanged(
+                type=process.AGENT_EVENT_MODEL_CHANGED,
+                thread_id="/threads/process-run.thread",
+                provider=provider or "openai",
+                model=model or "gpt-5.4",
+            )
+
+    session = _FakeModelSession()
+
+    model_list = await process._handle_process_model_command("/model", session=session)
+    assert model_list is not None
+    assert "* openai-realtime/gpt-realtime" in model_list
+    assert "  openai/gpt-5.4" in model_list
+
+    provider_list = await process._handle_process_model_command(
+        "/provider",
+        session=session,
+    )
+    assert provider_list is not None
+    assert "* openai-realtime" in provider_list
+    assert "  openai" in provider_list
+
+    changed = await process._handle_process_model_command(
+        "/model openai/gpt-5.4",
+        session=session,
+    )
+    assert changed == "Using openai/gpt-5.4"
+    assert session.current_model.provider == "openai"
+    assert session.current_model.model == "gpt-5.4"
+    assert session.changes == []
+
+    changed = await process._handle_process_model_command(
+        "/provider openai-realtime",
+        session=session,
+    )
+    assert changed == "Using openai-realtime/gpt-realtime"
+    assert session.current_model.provider == "openai-realtime"
+    assert session.current_model.model == "gpt-realtime"
+    assert session.changes == []
+
+    changed = await process._handle_process_model_command(
+        "/output audio",
+        session=session,
+    )
+    assert changed == "Using audio responses"
+    assert session.output_modalities == ("audio",)
+
+    changed = await process._handle_process_model_command(
+        "/output text,audio",
+        session=session,
+    )
+    assert changed == "Usage: /output [text|audio]"
+    assert session.output_modalities == ("audio",)
+
+    changed = await process._handle_process_model_command(
+        "/model openai/gpt-5.4",
+        session=session,
+    )
+    assert changed == "Using openai/gpt-5.4"
+    changed = await process._handle_process_model_command(
+        "/output audio",
+        session=session,
+    )
+    assert changed == "openai/gpt-5.4 does not support audio responses"
 
 
 @pytest.mark.asyncio
@@ -1599,6 +2103,51 @@ async def test_process_use_routes_to_chat_channel_ask_tui(
 
 
 @pytest.mark.asyncio
+async def test_process_use_requires_room(monkeypatch: pytest.MonkeyPatch) -> None:
+    printed: list[str] = []
+    monkeypatch.delenv("MESHAGENT_ROOM", raising=False)
+    monkeypatch.setattr(
+        process,
+        "print",
+        lambda *args, **kwargs: printed.append(" ".join(str(arg) for arg in args)),
+    )
+    monkeypatch.setattr(process, "resolve_room", lambda room_name=None: None)
+
+    async def fail_get_client():
+        raise AssertionError("process use should fail before opening an API client")
+
+    monkeypatch.setattr(process, "get_client", fail_get_client)
+
+    root_command = click.Command("meshagent")
+    process_command = click.Command("process")
+    use_command = click.Command("use")
+    with click.Context(root_command, info_name="meshagent") as root_context:
+        with click.Context(
+            process_command,
+            info_name="process",
+            parent=root_context,
+        ) as process_context:
+            with click.Context(
+                use_command,
+                info_name="use",
+                parent=process_context,
+            ):
+                with pytest.raises(click.exceptions.Exit) as exc_info:
+                    await process.use(
+                        project_id=None,
+                        room=None,
+                        agent_name="remote-helper",
+                        thread_path=None,
+                        message="hello",
+                    )
+
+    assert exc_info.value.exit_code == 1
+    assert printed == [
+        "[bold red]--room is required (or set MESHAGENT_ROOM)[/bold red]"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_chatbot_use_keeps_legacy_chat_with_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1684,6 +2233,8 @@ async def test_process_use_tui_uses_chat_channel_session(
             self.has_thread_path = True
             self.thread_path = "/threads/remote.thread"
             self.local_participant_name = "local-user"
+            self.models_response = None
+            self.current_model = None
             self.sent_payloads: list[object] = []
             self.events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
             self.exit_calls = 0
@@ -1824,6 +2375,8 @@ async def test_process_chat_channel_session_uses_thread_status_messages() -> Non
             self.has_thread_path = True
             self.thread_path = "/threads/remote.thread"
             self.local_participant_name = None
+            self.models_response = None
+            self.current_model = None
             self.sent_payloads: list[object] = []
             self.events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
             self.accepted_input_callback = None
@@ -1910,6 +2463,8 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
         def get_attribute(self, name: str):
             if name == "name":
                 return "remote-helper"
+            if name == "thread.status.text./threads/remote.thread":
+                return "stale attribute status"
             return None
 
     class _Messaging:
@@ -1944,7 +2499,7 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
             assert to is self.participant
             assert type == "agent-message"
             assert attachment is None
-            self.sent_payloads.append(message["payload"])
+            self.sent_payloads.append(message)
 
     class _Room:
         def __init__(self) -> None:
@@ -1970,6 +2525,7 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
         OpenThread.model_validate(room.messaging.sent_payloads[0]), OpenThread
     )
     assert room.messaging.sent_payloads[0]["type"] == AGENT_MESSAGE_THREAD_OPEN
+    assert client.thread_status_text is None
 
     status_payload = AgentThreadStatus(
         type=AGENT_EVENT_THREAD_STATUS,
@@ -2020,6 +2576,7 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
     room.messaging.handlers[0](_RoomMessage(ended_payload))
 
     assert client.queued_message_labels == ()
+    assert client.thread_status_text is None
     assert await client.receive() == ended_payload
 
     await client.stop()
@@ -2089,7 +2646,7 @@ async def test_process_use_chat_channel_client_resolves_studio_thread_path(
             assert to is self.participant
             assert type == "agent-message"
             assert attachment is None
-            self.sent_payloads.append(message["payload"])
+            self.sent_payloads.append(message)
 
     class _Room:
         def __init__(self) -> None:
@@ -2163,7 +2720,7 @@ async def test_process_use_chat_channel_client_starts_default_new_thread_with_me
             assert to is self.participant
             assert type == "agent-message"
             assert attachment is None
-            self.sent_payloads.append(message["payload"])
+            self.sent_payloads.append(message)
 
     class _Room:
         def __init__(self) -> None:
@@ -2268,7 +2825,7 @@ async def test_process_use_chat_channel_client_uses_main_thread_for_default_new_
             assert to is self.participant
             assert type == "agent-message"
             assert attachment is None
-            self.sent_payloads.append(message["payload"])
+            self.sent_payloads.append(message)
 
     class _Room:
         def __init__(self) -> None:
@@ -2341,7 +2898,7 @@ async def test_process_use_chat_channel_client_reports_accepted_remote_inputs() 
             assert to is self.participant
             assert type == "agent-message"
             assert attachment is None
-            self.sent_payloads.append(message["payload"])
+            self.sent_payloads.append(message)
 
     class _Room:
         def __init__(self) -> None:
@@ -2561,9 +3118,18 @@ class _FakeProcessRoomClient(RoomClient):
 
 
 class _FakeProcessThreadAdapter:
-    def __init__(self, *, room, path: str) -> None:
+    def __init__(
+        self,
+        *,
+        room,
+        path: str,
+        persist_deltas: bool = False,
+        persist_audio_input: bool = False,
+    ) -> None:
         del room
         self.path = path
+        self.persist_deltas = persist_deltas
+        self.persist_audio_input = persist_audio_input
 
     async def start(self) -> None:
         return None
@@ -2585,6 +3151,9 @@ class _FakeProcessThreadAdapter:
         del context
         del llm_adapter
 
+    async def restore_session_context_async(self, *, context, llm_adapter=None) -> None:
+        self.restore_session_context(context=context, llm_adapter=llm_adapter)
+
     def make_toolkit(self):
         return Toolkit(name="thread", tools=[])
 
@@ -2604,8 +3173,23 @@ class _SteeringRecordingAdapter:
     def default_model(self) -> str:
         return "gpt-5.5"
 
+    def provider_name(self) -> str:
+        return "openai"
+
     def create_session(self) -> AgentSessionContext:
         return self.session
+
+    async def start_session(
+        self,
+        *,
+        context: AgentSessionContext,
+        event_handler=None,
+    ) -> None:
+        del context
+        del event_handler
+
+    async def stop_session(self, *, context: AgentSessionContext) -> None:
+        del context
 
     def set_tool_call_approval_handler(self, handler) -> None:
         self.tool_call_approval_handler = handler
@@ -2628,7 +3212,7 @@ class _SteeringRecordingAdapter:
         del custom_event_callback
         return lambda message: None
 
-    async def next(
+    async def create_response(
         self,
         *,
         context: AgentSessionContext,
@@ -2846,12 +3430,57 @@ async def test_build_process_agent_uses_selected_dataset_thread_storage(
         process_state = supervisor.create_thread_process("dataset://threads/example")
         assert isinstance(process_state.thread_storage, _FakeDatasetThreadStorage)
         assert process_state.thread_storage.path == "dataset://threads/example"
+        assert process_state.thread_storage.persist_deltas is False
         assert process_state.thread_id == "dataset://threads/example"
         status_publisher = process_state.thread_status_publisher
         assert isinstance(
             status_publisher,
             AgentMessageThreadStatusPublisher,
         )
+    finally:
+        await agent.stop()
+
+
+@pytest.mark.asyncio
+async def test_build_process_agent_enables_verbose_dataset_thread_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import meshagent.agents as agents_module
+
+    monkeypatch.setattr(
+        agents_module,
+        "MeshDocumentThreadStorage",
+        _FakeProcessThreadAdapter,
+    )
+    monkeypatch.setattr(
+        agents_module,
+        "DatasetThreadStorage",
+        _FakeDatasetThreadStorage,
+    )
+    agent_cls = process.build_process_agent(
+        model="gpt-5.5",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+        thread_storage="dataset",
+        verbose_dataset=True,
+    )
+    agent = agent_cls()
+    monkeypatch.setattr(agent, "install_requirements", lambda: asyncio.sleep(0))
+    monkeypatch.setattr(agent, "get_exposed_toolkits", lambda: asyncio.sleep(0, []))
+
+    room = _FakeProcessRoomClient()
+    await agent.start(room=room)  # type: ignore[arg-type]
+    try:
+        supervisor = agent._supervisor
+        assert supervisor is not None
+
+        process_state = supervisor.create_thread_process("dataset://threads/example")
+        assert isinstance(process_state.thread_storage, _FakeDatasetThreadStorage)
+        assert process_state.thread_storage.persist_deltas is True
     finally:
         await agent.stop()
 

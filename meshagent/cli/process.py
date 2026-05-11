@@ -1,7 +1,15 @@
 import typer
 import click
 from rich import print
-from typing import Annotated, Any, Optional, List, Literal, Awaitable, Callable
+from typing import (
+    Annotated,
+    Any,
+    Optional,
+    List,
+    Literal,
+    Awaitable,
+    Callable,
+)
 import uuid
 from meshagent.tools import (
     BaseTool,
@@ -53,6 +61,7 @@ from meshagent.api import (
 )
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.cli import async_typer
+from meshagent.cli.ask import AskCommandOption
 from meshagent.cli.helper import (
     NormalizedRequiredToolOptions,
     build_shell_tool,
@@ -77,7 +86,20 @@ from meshagent.cli.helper import (
 )
 from meshagent.cli.preamble_rules import DEFAULT_PREAMBLE_RULE
 
-from meshagent.openai import OpenAIResponsesAdapter, OpenAIResponsesMCPToolkit
+from meshagent.openai import (
+    DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL,
+    OpenAIRealtimeAdapter,
+    OpenAIResponsesAdapter,
+    OpenAIResponsesMCPToolkit,
+)
+from meshagent.openai.tools.realtime_adapter import (
+    DEFAULT_OPENAI_REALTIME_INPUT_FORMAT,
+    DEFAULT_OPENAI_REALTIME_OUTPUT_FORMAT,
+    DEFAULT_OPENAI_REALTIME_PROTOCOLS,
+    DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    DEFAULT_OPENAI_REALTIME_VOICE,
+    OPENAI_REALTIME_VOICES,
+)
 from meshagent.anthropic import (
     AnthropicMessagesMCPToolkit,
     AnthropicOpenAIResponsesStreamAdapter,
@@ -99,9 +121,15 @@ from meshagent.openai.tools.responses_adapter import (
 )
 
 from meshagent.tools.dataset import make_dataset_toolkit
-from meshagent.agents.adapter import LLMAdapter, MessageStreamLLMAdapter
+from meshagent.agents.adapter import (
+    LLMAdapter,
+    LLMAudioFormat,
+    LLMProvider,
+    MessageStreamLLMAdapter,
+)
 from meshagent.agents.messages import (
     AGENT_EVENT_FILE_CONTENT_DELTA,
+    AGENT_EVENT_MODEL_CHANGED,
     AGENT_EVENT_THREAD_STARTED,
     AGENT_EVENT_THREAD_STATUS,
     AGENT_EVENT_TEXT_CONTENT_DELTA,
@@ -112,15 +140,27 @@ from meshagent.agents.messages import (
     AGENT_EVENT_TURN_STEER_ACCEPTED,
     AGENT_EVENT_TURN_STEER_REJECTED,
     AGENT_EVENT_TURN_STEERED,
+    AGENT_MESSAGE_MODEL_CHANGE,
+    AGENT_MESSAGE_MODELS_REQUEST,
+    AGENT_MESSAGE_MODELS_RESPONSE,
     AGENT_MESSAGE_THREAD_CLOSE,
     AGENT_MESSAGE_THREAD_OPEN,
     AGENT_MESSAGE_TURN_START,
     AgentFileContent,
     AgentFileContentDelta,
+    AgentError,
+    AgentAudioFormat,
     AgentMessage,
+    AgentModelInfo,
+    AgentModelChanged,
+    AgentProviderInfo,
+    AgentRealtimeConnectionInfo,
     AgentTextContent,
     AgentTextContentDelta,
+    ChangeModel,
     CloseThread,
+    ModelsRequest,
+    ModelsResponse,
     OpenThread,
     StartThread,
     ThreadStarted,
@@ -147,13 +187,15 @@ import yaml
 
 import shlex
 import sys
+import re
 
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-
 from meshagent.api.client import ConflictError
+
+OutputModality = Literal["text", "audio"]
 
 logger = logging.getLogger("process")
 
@@ -270,16 +312,24 @@ class _AcceptedAgentInput:
     text: str
 
 
-async def _await_cleanup(awaitable: Awaitable[Any]) -> Any:
+async def _await_cleanup(
+    awaitable: Awaitable[Any],
+    *,
+    timeout: float = 2,
+    label: str = "cleanup",
+) -> Any:
     task = asyncio.ensure_future(awaitable)
     try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError as cancel_exc:
-        try:
-            return await task
-        except Exception:
-            raise
-        raise cancel_exc
+        return await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning("%s did not finish during shutdown; cancelling", label)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return None
+    except asyncio.CancelledError:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        raise
 
 
 async def _run_agent_room_session(
@@ -298,9 +348,12 @@ async def _run_agent_room_session(
         await runner(client)
     finally:
         if bot_started:
-            await _await_cleanup(bot.stop())
+            await _await_cleanup(bot.stop(), label="agent stop")
         if client_entered:
-            await _await_cleanup(client.__aexit__(None, None, None))
+            await _await_cleanup(
+                client.__aexit__(None, None, None),
+                label="room client close",
+            )
 
 
 def _mesh_document_attribute(element: Element, name: str) -> str:
@@ -433,13 +486,14 @@ class _ProcessRunSession:
         self,
         *,
         bot: Any,
-        model: str,
+        model: str | None,
         thread_path: str | None,
         thread_storage: "ThreadStorageBackend",
         agent_name: str | None,
         thread_dir: str | None,
         threading_mode: "ThreadingMode",
         current_working_directory: str | None,
+        initial_model: AgentModelChanged | None = None,
     ) -> None:
         from meshagent.cli import ask as ask_module
 
@@ -463,11 +517,22 @@ class _ProcessRunSession:
             events=events,
             on_close=lambda: bot._supervisor.unsubscribe_local_events(events),
         )
+        self._channel_client = channel_client
+        self._current_model: AgentModelChanged | None = initial_model
+        self._models_response: ModelsResponse | None = None
+        self._output_modalities: tuple[OutputModality, ...] = (
+            tuple(initial_model.output_modalities)
+            if initial_model is not None
+            else ("text",)
+        )
+        self._timeout = 30
         self._session = ask_module._AgentMessageSession(
             client=channel_client,
             model=model,
             current_working_directory=current_working_directory,
+            model_provider=lambda: self._current_model,
         )
+        self._sync_turn_output_modalities()
         self._started = False
 
     @property
@@ -477,6 +542,30 @@ class _ProcessRunSession:
     @property
     def thread_status_text(self) -> str | None:
         return self._session.thread_status_text
+
+    @property
+    def current_model(self) -> AgentModelChanged | None:
+        return self._current_model
+
+    @property
+    def output_modalities(self) -> tuple[Literal["text", "audio"], ...]:
+        return self._output_modalities
+
+    @property
+    def output_modalities_label(self) -> str:
+        return "+".join(self._output_modalities)
+
+    @property
+    def thread_id(self) -> str:
+        return self._thread_id
+
+    @property
+    def models_response(self) -> ModelsResponse | None:
+        return self._models_response
+
+    @property
+    def can_request_initial_models(self) -> bool:
+        return self._open_on_start
 
     @property
     def queued_message_labels(self) -> tuple[str, ...]:
@@ -557,11 +646,322 @@ class _ProcessRunSession:
     def interrupt(self) -> bool:
         return self._session.interrupt()
 
+    async def request_models(self) -> ModelsResponse:
+        payload = ModelsRequest(
+            type=AGENT_MESSAGE_MODELS_REQUEST,
+        )
+        await self._channel_client.send(payload)
+        try:
+            async with asyncio.timeout(self._timeout):
+                while True:
+                    event = await self._channel_client.receive()
+                    if event.get("type") != AGENT_MESSAGE_MODELS_RESPONSE:
+                        continue
+                    response = ModelsResponse.model_validate(event)
+                    if response.source_message_id != payload.message_id:
+                        continue
+                    self._apply_models_response(response)
+                    return response
+        except asyncio.TimeoutError as exc:
+            raise RoomException("timed out waiting for model list") from exc
+
+    def _apply_models_response(self, response: ModelsResponse) -> None:
+        self._models_response = response
+        active_model = _active_model_from_models_response(
+            response,
+            thread_id=self._thread_id,
+        )
+        if active_model is not None:
+            self._current_model = active_model
+        self._output_modalities = self._supported_selected_output_modalities(
+            self._output_modalities
+        )
+        self._sync_turn_output_modalities()
+
+    def select_model(self, model: AgentModelChanged) -> None:
+        self._current_model = model
+        self._output_modalities = tuple(model.output_modalities)
+        if self._selected_model_info() is None:
+            return
+        self._output_modalities = self._supported_selected_output_modalities(
+            self._output_modalities
+        )
+        self._sync_turn_output_modalities()
+
+    def set_output_modalities(
+        self, output_modalities: tuple[Literal["text", "audio"], ...]
+    ) -> None:
+        self._output_modalities = self._supported_selected_output_modalities(
+            output_modalities
+        )
+        self._sync_turn_output_modalities()
+
+    def toggle_output_modalities(self) -> tuple[Literal["text", "audio"], ...]:
+        modalities = self._selected_model_modalities()
+        if self._output_modalities == ("text",) and "audio" in modalities:
+            self._output_modalities = ("audio",)
+        else:
+            self._output_modalities = ("text",)
+        self._output_modalities = self._supported_selected_output_modalities(
+            self._output_modalities
+        )
+        self._sync_turn_output_modalities()
+        return self._output_modalities
+
+    def _sync_turn_output_modalities(self) -> None:
+        output_modalities = self._supported_selected_output_modalities(
+            self._output_modalities
+        )
+        if output_modalities == self._output_modalities:
+            self._session.set_output_modalities(output_modalities)
+            if self._current_model is not None:
+                self._current_model = self._current_model.model_copy(
+                    update={"output_modalities": list(self._output_modalities)}
+                )
+            return
+        self._session.set_output_modalities(None)
+
+    def _selected_model_info(self) -> AgentModelInfo | None:
+        if self._current_model is None or self._models_response is None:
+            return None
+        for provider in self._models_response.providers:
+            if provider.name != self._current_model.provider:
+                continue
+            for model in provider.models:
+                if model.name == self._current_model.model:
+                    return model
+        return None
+
+    def _selected_model_modalities(self) -> tuple[Literal["text", "audio"], ...]:
+        model_info = self._selected_model_info()
+        if model_info is None:
+            return ("text",)
+        return tuple(model_info.modalities)
+
+    def _supported_selected_output_modalities(
+        self, output_modalities: tuple[Literal["text", "audio"], ...]
+    ) -> tuple[Literal["text", "audio"], ...]:
+        supported = self._selected_model_modalities()
+        selected = tuple(output for output in output_modalities if output in supported)
+        if len(selected) == 0:
+            return ("text",)
+        return (selected[0],)
+
+    async def change_model(
+        self,
+        *,
+        provider: str | None,
+        model: str | None,
+        voice: str | None = None,
+    ) -> AgentModelChanged:
+        payload = ChangeModel(
+            type=AGENT_MESSAGE_MODEL_CHANGE,
+            thread_id=self._thread_id,
+            provider=provider,
+            model=model,
+            voice=voice,
+        )
+        await self._channel_client.send(payload)
+        try:
+            async with asyncio.timeout(self._timeout):
+                while True:
+                    event = await self._channel_client.receive()
+                    if event.get("type") != AGENT_EVENT_MODEL_CHANGED:
+                        continue
+                    changed = AgentModelChanged.model_validate(event)
+                    if changed.source_message_id != payload.message_id:
+                        continue
+                    self._current_model = changed
+                    self._output_modalities = tuple(changed.output_modalities)
+                    self._output_modalities = (
+                        self._supported_selected_output_modalities(
+                            self._output_modalities
+                        )
+                    )
+                    self._sync_turn_output_modalities()
+                    return changed
+        except asyncio.TimeoutError as exc:
+            raise RoomException("timed out waiting for model change") from exc
+
+
+async def _handle_process_model_command(
+    command: str,
+    *,
+    session: Any,
+) -> str | None:
+    parts = command.strip().split()
+    command_name = parts[0] if parts else ""
+    if command_name == "/provider":
+        response = session.models_response
+        if response is None:
+            response = await session.request_models()
+        if len(parts) == 1:
+            return _format_provider_list(
+                providers=response.providers,
+                current_model=session.current_model,
+            )
+        if len(parts) == 2:
+            changed = _selected_default_model_for_provider(
+                response=response,
+                thread_id=session.thread_id,
+                provider_name=parts[1],
+            )
+            if changed is None:
+                return f"Unknown provider: {parts[1]}"
+            session.select_model(changed)
+            return (
+                "Using "
+                f"{_provider_model_display_name(provider=changed.provider, model=changed.model)}"
+            )
+        return "Usage: /provider [provider]"
+    if command_name == "/model":
+        response = session.models_response
+        if response is None:
+            response = await session.request_models()
+        if len(parts) == 1:
+            return _format_model_list(
+                providers=response.providers,
+                current_model=session.current_model,
+            )
+        if len(parts) != 2:
+            return "Usage: /model [model|provider/model]"
+
+        requested = parts[1]
+        provider_name: str | None = None
+        model_name = requested
+        if "/" in requested:
+            provider_name, model_name = requested.split("/", 1)
+        else:
+            matching_providers = [
+                provider
+                for provider in response.providers
+                if any(model.name == requested for model in provider.models)
+            ]
+            if len(matching_providers) > 1:
+                names = ", ".join(
+                    _provider_model_display_name(
+                        provider=provider.name,
+                        model=requested,
+                    )
+                    for provider in matching_providers
+                )
+                return f"Model name is ambiguous. Use one of: {names}"
+            if len(matching_providers) == 1:
+                provider_name = matching_providers[0].name
+
+        changed = _selected_model_from_models_response(
+            response=response,
+            thread_id=session.thread_id,
+            provider=provider_name,
+            model=model_name,
+        )
+        if changed is None:
+            return f"Unknown model: {requested}"
+        session.select_model(changed)
+        return (
+            "Using "
+            f"{_provider_model_display_name(provider=changed.provider, model=changed.model)}"
+        )
+    if command_name == "/output":
+        if len(parts) == 1:
+            changed_modalities = session.toggle_output_modalities()
+            return f"Using {','.join(changed_modalities)} responses"
+        if len(parts) != 2:
+            return "Usage: /output [text|audio]"
+        requested_output = parts[1].strip().lower()
+        if requested_output not in ("text", "audio"):
+            return "Usage: /output [text|audio]"
+        selected_modalities: tuple[Literal["text", "audio"], ...] = tuple(
+            output for output in ("text", "audio") if output == requested_output
+        )
+        current_model_info = _model_info_for_current_selection(
+            response=session.models_response,
+            current_model=session.current_model,
+        )
+        supported_modalities = (
+            tuple(current_model_info.modalities)
+            if current_model_info is not None
+            else ("text",)
+        )
+        unsupported_modalities = [
+            output
+            for output in selected_modalities
+            if output not in supported_modalities
+        ]
+        if len(unsupported_modalities) > 0:
+            model_label = _current_model_label(
+                current_model=session.current_model,
+                fallback="current model",
+            )
+            unsupported = ",".join(unsupported_modalities)
+            return f"{model_label} does not support {unsupported} responses"
+        session.set_output_modalities(selected_modalities)
+        return f"Using {','.join(selected_modalities)} responses"
+    if command_name == "/voice":
+        response = session.models_response
+        if response is None:
+            response = await session.request_models()
+        model_info = _model_info_for_current_selection(
+            response=response,
+            current_model=session.current_model,
+        )
+        if model_info is None or len(model_info.available_voices) == 0:
+            return "Current model does not advertise output voices"
+        current_voice = (
+            session.current_model.voice if session.current_model is not None else None
+        )
+        if current_voice is None:
+            current_voice = model_info.default_output_voice
+        if len(parts) == 1:
+            lines = ["Voices:"]
+            for voice in model_info.available_voices:
+                marker = "*" if voice == current_voice else " "
+                lines.append(f"{marker} {voice}")
+            return "\n".join(lines)
+        if len(parts) != 2:
+            return "Usage: /voice [voice]"
+        requested_voice = parts[1].strip()
+        if requested_voice not in model_info.available_voices:
+            voices = ", ".join(model_info.available_voices)
+            return f"Unknown voice: {requested_voice}. Available voices: {voices}"
+        current_model = session.current_model
+        if current_model is None:
+            return "No current model selected"
+        changed = await session.change_model(
+            provider=current_model.provider,
+            model=current_model.model,
+            voice=requested_voice,
+        )
+        return f"Using voice {changed.voice or requested_voice}"
+    return None
+
+
+async def _request_initial_models(*, session: Any) -> None:
+    try:
+        async with asyncio.timeout(0.5):
+            await session.request_models()
+    except Exception:
+        return
+
 
 async def _run_process_run_tui(
     *,
     bot: Any,
-    model: str,
+    model: str | list[str],
+    voice: str | None = None,
+    turn_detection: Literal[
+        "none", "automatic"
+    ] = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    realtime_protocols: tuple[
+        Literal["websocket", "webrtc"], ...
+    ] = DEFAULT_OPENAI_REALTIME_PROTOCOLS,
+    output_modality: OutputModality = "text",
+    input_audio_format: str = "audio/pcm",
+    input_audio_sample_rate: int | None = 24000,
+    input_audio_bitrate: int | None = None,
+    output_audio_format: str = "audio/pcm",
+    output_audio_sample_rate: int | None = 24000,
+    output_audio_bitrate: int | None = None,
     thread_path: str | None,
     thread_storage: "ThreadStorageBackend",
     agent_name: str | None,
@@ -572,18 +972,68 @@ async def _run_process_run_tui(
 ) -> None:
     from meshagent.cli import ask as ask_module
 
+    configured_models = _normalize_model_options(model)
+    thread_id = _process_run_thread_id(
+        thread_path=thread_path,
+        thread_storage=thread_storage,
+        agent_name=agent_name,
+        thread_dir=thread_dir,
+        threading_mode=threading_mode,
+    )
+    initial_model = (
+        _agent_model_changed_for_model(
+            model=configured_models[0],
+            thread_id=thread_id,
+            voice=voice,
+            turn_detection=turn_detection,
+            realtime_protocols=realtime_protocols,
+            output_modality=output_modality,
+            input_audio_format=input_audio_format,
+            input_audio_sample_rate=input_audio_sample_rate,
+            input_audio_bitrate=input_audio_bitrate,
+            output_audio_format=output_audio_format,
+            output_audio_sample_rate=output_audio_sample_rate,
+            output_audio_bitrate=output_audio_bitrate,
+        )
+        if len(configured_models) > 0
+        else None
+    )
+    display_model = _current_model_label(
+        current_model=initial_model,
+        fallback=", ".join(configured_models),
+    )
     session = _ProcessRunSession(
         bot=bot,
-        model=model,
+        model=None,
         thread_path=thread_path,
         thread_storage=thread_storage,
         agent_name=agent_name,
         thread_dir=thread_dir,
         threading_mode=threading_mode,
         current_working_directory=working_dir,
+        initial_model=initial_model,
     )
     try:
         await session.start()
+        if len(configured_models) > 0:
+            session._apply_models_response(
+                _configured_models_response(
+                    models=configured_models,
+                    current_model=session.current_model,
+                    voice=voice,
+                    turn_detection=turn_detection,
+                    realtime_protocols=realtime_protocols,
+                    output_modality=output_modality,
+                    input_audio_format=input_audio_format,
+                    input_audio_sample_rate=input_audio_sample_rate,
+                    input_audio_bitrate=input_audio_bitrate,
+                    output_audio_format=output_audio_format,
+                    output_audio_sample_rate=output_audio_sample_rate,
+                    output_audio_bitrate=output_audio_bitrate,
+                )
+            )
+        if session.can_request_initial_models:
+            await _request_initial_models(session=session)
         if message is not None:
 
             def _write_message(agent_message: AgentMessage) -> None:
@@ -598,9 +1048,24 @@ async def _run_process_run_tui(
             return
 
         await ask_module._run_ask_tui(
-            model=model,
+            model=display_model,
             session=session,
             title="meshagent process run",
+            command_handler=lambda command: _handle_process_model_command(
+                command,
+                session=session,
+            ),
+            model_label_provider=lambda: _current_model_label(
+                current_model=session.current_model,
+                fallback=display_model,
+            ),
+            command_options_provider=lambda prompt: _process_command_options(
+                prompt,
+                response=session.models_response,
+                current_model=session.current_model,
+                current_output_modalities=session.output_modalities,
+            ),
+            output_label_provider=lambda: session.output_modalities_label,
         )
     finally:
         await session.close()
@@ -634,6 +1099,8 @@ class _ProcessUseChatChannelClient:
         self._local_turn_ids: set[str] = set()
         self._remote_source_message_ids: set[str] = set()
         self._remote_turn_output_parts: dict[str, list[str]] = {}
+        self._current_model: AgentModelChanged | None = None
+        self._models_response: ModelsResponse | None = None
 
     @property
     def room(self) -> RoomClient:
@@ -652,6 +1119,14 @@ class _ProcessUseChatChannelClient:
     @property
     def thread_status_text(self) -> str | None:
         return self._thread_status_text
+
+    @property
+    def current_model(self) -> AgentModelChanged | None:
+        return self._current_model
+
+    @property
+    def models_response(self) -> ModelsResponse | None:
+        return self._models_response
 
     @property
     def local_participant_name(self) -> str | None:
@@ -748,7 +1223,11 @@ class _ProcessUseChatChannelClient:
         raw_message = message.message
         if not isinstance(raw_message, dict):
             return
-        raw_payload = raw_message.get("payload")
+        raw_payload = (
+            raw_message
+            if isinstance(raw_message.get("type"), str)
+            else raw_message.get("payload")
+        )
         if not isinstance(raw_payload, dict):
             return
         payload_type = raw_payload.get("type")
@@ -771,12 +1250,22 @@ class _ProcessUseChatChannelClient:
             )
             task.add_done_callback(_consume_task_exception)
             return
+        if payload_type == AGENT_MESSAGE_MODELS_RESPONSE:
+            if not self._is_local_source_message(raw_payload.get("source_message_id")):
+                return
+            self._events.put_nowait(raw_payload)
+            return
         if self._thread_path is None:
             return
         if raw_payload.get("thread_id") != self._thread_path:
             return
         if payload_type == AGENT_EVENT_THREAD_STATUS:
             self._thread_status_text = _thread_status_text(raw_payload.get("status"))
+        elif payload_type == AGENT_EVENT_MODEL_CHANGED:
+            try:
+                self._current_model = AgentModelChanged.model_validate(raw_payload)
+            except Exception:
+                return
         elif payload_type == AGENT_EVENT_TURN_START_ACCEPTED:
             if self._is_remote_agent_input(raw_payload):
                 self._track_accepted_input(raw_payload)
@@ -976,9 +1465,69 @@ class _ProcessUseChatChannelClient:
         await self._room.messaging.send_message(
             to=self._participant,
             type="agent-message",
-            message={"payload": payload_json},
+            message=payload_json,
             attachment=None,
         )
+
+    async def request_models(self) -> ModelsResponse:
+        payload = ModelsRequest(
+            type=AGENT_MESSAGE_MODELS_REQUEST,
+        )
+        await self.send(payload)
+        try:
+            async with asyncio.timeout(self._timeout):
+                while True:
+                    event = await self.receive()
+                    if event.get("type") != AGENT_MESSAGE_MODELS_RESPONSE:
+                        continue
+                    response = ModelsResponse.model_validate(event)
+                    if response.source_message_id != payload.message_id:
+                        continue
+                    self._apply_models_response(response)
+                    return response
+        except asyncio.TimeoutError as exc:
+            raise RoomException("timed out waiting for model list") from exc
+
+    def _apply_models_response(self, response: ModelsResponse) -> None:
+        self._models_response = response
+        active_model = _active_model_from_models_response(
+            response,
+            thread_id=self.thread_path,
+        )
+        if active_model is not None:
+            self._current_model = active_model
+
+    def select_model(self, model: AgentModelChanged) -> None:
+        self._current_model = model
+
+    async def change_model(
+        self,
+        *,
+        provider: str | None,
+        model: str | None,
+        voice: str | None = None,
+    ) -> AgentModelChanged:
+        payload = ChangeModel(
+            type=AGENT_MESSAGE_MODEL_CHANGE,
+            thread_id=self.thread_path,
+            provider=provider,
+            model=model,
+            voice=voice,
+        )
+        await self.send(payload)
+        try:
+            async with asyncio.timeout(self._timeout):
+                while True:
+                    event = await self.receive()
+                    if event.get("type") != AGENT_EVENT_MODEL_CHANGED:
+                        continue
+                    changed = AgentModelChanged.model_validate(event)
+                    if changed.source_message_id != payload.message_id:
+                        continue
+                    self._current_model = changed
+                    return changed
+        except asyncio.TimeoutError as exc:
+            raise RoomException("timed out waiting for model change") from exc
 
     async def start_thread(self, payload) -> None:
         if not isinstance(payload, StartThread):
@@ -1012,12 +1561,20 @@ class _ChatChannelUseSession:
         from meshagent.cli import ask as ask_module
 
         self._chat_client = chat_client
+        current_model = chat_client.current_model
+        self._output_modalities: tuple[OutputModality, ...] = (
+            tuple(current_model.output_modalities)
+            if current_model is not None
+            else ("text",)
+        )
         self._session = ask_module._AgentMessageSession(
             client=chat_client,
             model=None,
             current_working_directory=current_working_directory,
             local_participant_name=chat_client.local_participant_name,
+            model_provider=lambda: self._chat_client.current_model,
         )
+        self._sync_turn_output_modalities()
         chat_client.set_accepted_input_callback(self._add_accepted_input)
         self._started = False
 
@@ -1028,6 +1585,26 @@ class _ChatChannelUseSession:
     @property
     def thread_status_text(self) -> str | None:
         return self._session.thread_status_text
+
+    @property
+    def current_model(self) -> AgentModelChanged | None:
+        return self._chat_client.current_model
+
+    @property
+    def thread_id(self) -> str:
+        return self._chat_client.thread_path
+
+    @property
+    def models_response(self) -> ModelsResponse | None:
+        return self._chat_client.models_response
+
+    @property
+    def output_modalities(self) -> tuple[Literal["text", "audio"], ...]:
+        return self._output_modalities
+
+    @property
+    def output_modalities_label(self) -> str:
+        return "+".join(self._output_modalities)
 
     @property
     def queued_message_labels(self) -> tuple[str, ...]:
@@ -1089,6 +1666,92 @@ class _ChatChannelUseSession:
 
     def interrupt(self) -> bool:
         return self._session.interrupt()
+
+    async def request_models(self) -> ModelsResponse:
+        response = await self._chat_client.request_models()
+        self._sync_turn_output_modalities()
+        return response
+
+    def select_model(self, model: AgentModelChanged) -> None:
+        self._chat_client.select_model(model)
+        self._output_modalities = tuple(model.output_modalities)
+        self._output_modalities = self._supported_selected_output_modalities(
+            self._output_modalities
+        )
+        self._sync_turn_output_modalities()
+
+    def set_output_modalities(
+        self, output_modalities: tuple[Literal["text", "audio"], ...]
+    ) -> None:
+        self._output_modalities = self._supported_selected_output_modalities(
+            output_modalities
+        )
+        self._sync_turn_output_modalities()
+
+    def toggle_output_modalities(self) -> tuple[Literal["text", "audio"], ...]:
+        modalities = self._selected_model_modalities()
+        if self._output_modalities == ("text",) and "audio" in modalities:
+            self._output_modalities = ("audio",)
+        else:
+            self._output_modalities = ("text",)
+        self._output_modalities = self._supported_selected_output_modalities(
+            self._output_modalities
+        )
+        self._sync_turn_output_modalities()
+        return self._output_modalities
+
+    def _sync_turn_output_modalities(self) -> None:
+        output_modalities = self._supported_selected_output_modalities(
+            self._output_modalities
+        )
+        if output_modalities == self._output_modalities:
+            self._session.set_output_modalities(output_modalities)
+            current_model = self._chat_client.current_model
+            if current_model is not None:
+                self._chat_client.select_model(
+                    current_model.model_copy(
+                        update={"output_modalities": list(self._output_modalities)}
+                    )
+                )
+            return
+        self._session.set_output_modalities(None)
+
+    def _selected_model_modalities(self) -> tuple[Literal["text", "audio"], ...]:
+        model_info = _model_info_for_current_selection(
+            response=self.models_response,
+            current_model=self.current_model,
+        )
+        if model_info is None:
+            return ("text",)
+        return tuple(model_info.modalities)
+
+    def _supported_selected_output_modalities(
+        self, output_modalities: tuple[Literal["text", "audio"], ...]
+    ) -> tuple[Literal["text", "audio"], ...]:
+        supported = self._selected_model_modalities()
+        selected = tuple(output for output in output_modalities if output in supported)
+        if len(selected) == 0:
+            return ("text",)
+        return (selected[0],)
+
+    async def change_model(
+        self,
+        *,
+        provider: str | None,
+        model: str | None,
+        voice: str | None = None,
+    ) -> AgentModelChanged:
+        changed = await self._chat_client.change_model(
+            provider=provider,
+            model=model,
+            voice=voice,
+        )
+        self._output_modalities = tuple(changed.output_modalities)
+        self._output_modalities = self._supported_selected_output_modalities(
+            self._output_modalities
+        )
+        self._sync_turn_output_modalities()
+        return changed
 
 
 async def _close_process_use_chat_client(
@@ -1155,6 +1818,11 @@ async def _run_process_use_tui(
 ) -> None:
     from meshagent.cli import ask as ask_module
 
+    async def _handle_model_command(command: str) -> str | None:
+        if session is None:
+            raise RoomException("process use session not started")
+        return await _handle_process_model_command(command, session=session)
+
     user_client: RoomClient | None = None
     chat_client: _ProcessUseChatChannelClient | None = None
     session: _ChatChannelUseSession | None = None
@@ -1168,6 +1836,8 @@ async def _run_process_use_tui(
         )
         session = _ChatChannelUseSession(chat_client=chat_client)
         await session.start()
+        if chat_client.has_thread_path:
+            await _request_initial_models(session=session)
 
         if message is not None:
 
@@ -1187,6 +1857,22 @@ async def _run_process_use_tui(
             session=session,
             title=f"meshagent process use: {agent_name}",
             assistant_name=agent_name,
+            command_handler=_handle_model_command,
+            model_label_provider=lambda: _current_model_label(
+                current_model=session.current_model if session is not None else None,
+                fallback="remote",
+            ),
+            command_options_provider=lambda prompt: _process_command_options(
+                prompt,
+                response=session.models_response if session is not None else None,
+                current_model=session.current_model if session is not None else None,
+                current_output_modalities=(
+                    session.output_modalities if session is not None else ("text",)
+                ),
+            ),
+            output_label_provider=lambda: (
+                session.output_modalities_label if session is not None else "text"
+            ),
         )
     finally:
         if session is not None:
@@ -1344,6 +2030,82 @@ DecisionModelOption = Annotated[
         "--decision-model",
         help="Model used for thread naming and other secondary LLM decisions",
     ),
+]
+
+TranscriptionModelOption = Annotated[
+    str,
+    typer.Option(
+        "--transcription-model",
+        help="Realtime input audio transcription model.",
+    ),
+]
+
+VoiceOption = Annotated[
+    Optional[str],
+    typer.Option("--voice", help="Default OpenAI Realtime voice preset."),
+]
+
+TurnDetectionOption = Annotated[
+    Literal["none", "automatic"],
+    typer.Option(
+        "--turn-detection",
+        help="OpenAI Realtime audio turn detection mode: none or automatic.",
+    ),
+]
+
+RealtimeProtocolOption = Annotated[
+    list[str],
+    typer.Option(
+        "--realtime-protocol",
+        help=(
+            "Realtime connection protocol to advertise for OpenAI Realtime. "
+            "Pass multiple times to set an ordered preference list."
+        ),
+    ),
+]
+
+OutputModalityOption = Annotated[
+    OutputModality,
+    typer.Option(
+        "--output-modality",
+        help="Default response output modality: text or audio.",
+    ),
+]
+
+InputAudioFormatOption = Annotated[
+    str,
+    typer.Option("--input-audio-format", help="Realtime input audio MIME type."),
+]
+
+InputAudioSampleRateOption = Annotated[
+    Optional[int],
+    typer.Option(
+        "--input-audio-sample-rate",
+        help="Realtime input audio sample rate.",
+    ),
+]
+
+InputAudioBitrateOption = Annotated[
+    Optional[int],
+    typer.Option("--input-audio-bitrate", help="Realtime input audio bitrate."),
+]
+
+OutputAudioFormatOption = Annotated[
+    str,
+    typer.Option("--output-audio-format", help="Realtime output audio MIME type."),
+]
+
+OutputAudioSampleRateOption = Annotated[
+    Optional[int],
+    typer.Option(
+        "--output-audio-sample-rate",
+        help="Realtime output audio sample rate.",
+    ),
+]
+
+OutputAudioBitrateOption = Annotated[
+    Optional[int],
+    typer.Option("--output-audio-bitrate", help="Realtime output audio bitrate."),
 ]
 
 ChannelOption = Annotated[
@@ -1534,6 +2296,13 @@ def _has_chat_channel(*, channels: list[str]) -> bool:
     return "chat" in channels
 
 
+def _require_resolved_room(room: str | None) -> str:
+    if room is None or room.strip() == "":
+        print("[bold red]--room is required (or set MESHAGENT_ROOM)[/bold red]")
+        raise typer.Exit(1)
+    return room.strip()
+
+
 def _normalized_thread_dir(*, thread_dir: Optional[str]) -> Optional[str]:
     if thread_dir is None:
         return None
@@ -1668,6 +2437,639 @@ def _normalized_decision_model(*, decision_model: Optional[str]) -> Optional[str
         return None
 
     return normalized
+
+
+_OPENAI_REALTIME_MODEL_ALIASES = {
+    "openai realtime",
+    "openai-realtime",
+    "openai:realtime",
+    "openai/realtime",
+}
+_DEFAULT_OPENAI_REALTIME_MODEL = "gpt-realtime"
+_DEFAULT_OPENAI_REALTIME_DECISION_MODEL = "gpt-5.4-mini"
+
+
+def _openai_realtime_session_options(
+    *,
+    output_modality: OutputModality,
+) -> dict[str, Any]:
+    return {"output_modalities": [output_modality]}
+
+
+def _openai_realtime_response_options(
+    *,
+    output_modality: OutputModality,
+) -> dict[str, Any]:
+    return {"output_modalities": [output_modality]}
+
+
+def _audio_format_option(
+    *,
+    audio_format: str,
+    sample_rate: int | None,
+    bitrate: int | None,
+) -> LLMAudioFormat:
+    normalized_format = audio_format.strip()
+    if normalized_format == "":
+        normalized_format = "audio/pcm"
+    return LLMAudioFormat(
+        type=normalized_format,
+        sample_rate=sample_rate,
+        bitrate=bitrate,
+    )
+
+
+def _normalize_realtime_protocols(
+    protocols: list[str] | tuple[str, ...] | None,
+) -> tuple[Literal["websocket", "webrtc"], ...]:
+    values = protocols or DEFAULT_OPENAI_REALTIME_PROTOCOLS
+    normalized: list[Literal["websocket", "webrtc"]] = []
+    for raw_protocol in values:
+        protocol = raw_protocol.strip().lower()
+        if protocol not in {"websocket", "webrtc"}:
+            raise typer.BadParameter(
+                "realtime protocol must be one of: websocket, webrtc"
+            )
+        typed_protocol: Literal["websocket", "webrtc"] = (
+            "webrtc" if protocol == "webrtc" else "websocket"
+        )
+        if typed_protocol not in normalized:
+            normalized.append(typed_protocol)
+    return tuple(normalized) or DEFAULT_OPENAI_REALTIME_PROTOCOLS
+
+
+def _realtime_adapter_audio_kwargs(
+    *,
+    voice: str | None,
+    input_format: LLMAudioFormat,
+    output_format: LLMAudioFormat,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {}
+    if voice is not None:
+        kwargs["voice"] = voice
+    if input_format != DEFAULT_OPENAI_REALTIME_INPUT_FORMAT:
+        kwargs["input_format"] = input_format
+    if output_format != DEFAULT_OPENAI_REALTIME_OUTPUT_FORMAT:
+        kwargs["output_format"] = output_format
+    return kwargs
+
+
+def _agent_audio_format_from_llm(
+    format: LLMAudioFormat | None,
+) -> AgentAudioFormat | None:
+    if format is None:
+        return None
+    return AgentAudioFormat(
+        type=format.type,
+        sample_rate=format.sample_rate,
+        bitrate=format.bitrate,
+    )
+
+
+def _resolve_openai_realtime_model(*, model: str) -> str | None:
+    normalized = model.strip()
+    if normalized == "":
+        return None
+
+    normalized_lower = normalized.lower()
+    if normalized_lower in _OPENAI_REALTIME_MODEL_ALIASES:
+        return os.getenv("OPENAI_REALTIME_MODEL") or _DEFAULT_OPENAI_REALTIME_MODEL
+
+    if normalized_lower.startswith(("gpt-realtime", "gpt-4o-realtime")):
+        return normalized
+
+    return None
+
+
+def _normalize_model_options(model: str | list[str]) -> list[str]:
+    if isinstance(model, str):
+        models = [model]
+    else:
+        models = model
+
+    normalized = [item.strip() for item in models if item.strip() != ""]
+    if len(normalized) == 0:
+        return ["gpt-5.5"]
+    return normalized
+
+
+def _provider_name_for_model(model: str) -> str:
+    if _resolve_openai_realtime_model(model=model) is not None:
+        return "openai-realtime"
+    if model.startswith("claude-"):
+        return "anthropic"
+    return "openai"
+
+
+def _provider_model_display_name(*, provider: str, model: str) -> str:
+    return f"{provider}/{model}"
+
+
+def _active_model_from_models_response(
+    response: ModelsResponse,
+    *,
+    thread_id: str,
+) -> AgentModelChanged | None:
+    for provider in response.providers:
+        for model in provider.models:
+            if not model.active:
+                continue
+            return AgentModelChanged(
+                type=AGENT_EVENT_MODEL_CHANGED,
+                thread_id=thread_id,
+                source_message_id=response.source_message_id,
+                provider=provider.name,
+                model=model.name,
+                voice=model.default_output_voice,
+                input_format=model.input_format,
+                output_format=model.output_format,
+                turn_detection=model.turn_detection,
+                realtime_protocols=model.realtime_protocols,
+                output_modalities=["text"],
+            )
+    return None
+
+
+def _selected_model_from_models_response(
+    *,
+    response: ModelsResponse,
+    thread_id: str,
+    provider: str | None,
+    model: str,
+) -> AgentModelChanged | None:
+    for provider_info in response.providers:
+        if provider is not None and provider_info.name != provider:
+            continue
+        selected_model = next(
+            (
+                model_info
+                for model_info in provider_info.models
+                if model_info.name == model
+            ),
+            None,
+        )
+        if selected_model is None:
+            continue
+        return AgentModelChanged(
+            type=AGENT_EVENT_MODEL_CHANGED,
+            thread_id=thread_id,
+            provider=provider_info.name,
+            model=model,
+            voice=selected_model.default_output_voice,
+            input_format=selected_model.input_format,
+            output_format=selected_model.output_format,
+            turn_detection=selected_model.turn_detection,
+            realtime_protocols=selected_model.realtime_protocols,
+            output_modalities=["text"],
+        )
+    return None
+
+
+def _selected_default_model_for_provider(
+    *,
+    response: ModelsResponse,
+    thread_id: str,
+    provider_name: str,
+) -> AgentModelChanged | None:
+    for provider in response.providers:
+        if provider.name != provider_name:
+            continue
+        model_name = provider.default_model
+        if model_name is None and len(provider.models) > 0:
+            model_name = provider.models[0].name
+        if model_name is None:
+            return None
+        selected_model = next(
+            (
+                model_info
+                for model_info in provider.models
+                if model_info.name == model_name
+            ),
+            None,
+        )
+        if selected_model is None:
+            return None
+        return AgentModelChanged(
+            type=AGENT_EVENT_MODEL_CHANGED,
+            thread_id=thread_id,
+            provider=provider.name,
+            model=model_name,
+            voice=selected_model.default_output_voice,
+            input_format=selected_model.input_format,
+            output_format=selected_model.output_format,
+            turn_detection=selected_model.turn_detection,
+            realtime_protocols=selected_model.realtime_protocols,
+            output_modalities=["text"],
+        )
+    return None
+
+
+def _current_model_label(
+    *,
+    current_model: AgentModelChanged | None,
+    fallback: str,
+) -> str:
+    if current_model is None:
+        return fallback
+    return _provider_model_display_name(
+        provider=current_model.provider,
+        model=current_model.model,
+    )
+
+
+def _model_info_for_current_selection(
+    *,
+    response: ModelsResponse | None,
+    current_model: AgentModelChanged | None,
+) -> AgentModelInfo | None:
+    if response is None or current_model is None:
+        return None
+    for provider in response.providers:
+        if provider.name != current_model.provider:
+            continue
+        for model in provider.models:
+            if model.name == current_model.model:
+                return model
+    return None
+
+
+def _agent_model_changed_for_model(
+    *,
+    model: str,
+    thread_id: str,
+    voice: str | None = None,
+    input_audio_format: str = "audio/pcm",
+    input_audio_sample_rate: int | None = 24000,
+    input_audio_bitrate: int | None = None,
+    output_audio_format: str = "audio/pcm",
+    output_audio_sample_rate: int | None = 24000,
+    output_audio_bitrate: int | None = None,
+    turn_detection: Literal[
+        "none", "automatic"
+    ] = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    realtime_protocols: tuple[
+        Literal["websocket", "webrtc"], ...
+    ] = DEFAULT_OPENAI_REALTIME_PROTOCOLS,
+    output_modality: OutputModality = "text",
+) -> AgentModelChanged:
+    provider = _provider_name_for_model(model)
+    input_format, output_format = _configured_realtime_audio_formats(
+        provider_name=provider,
+        input_audio_format=input_audio_format,
+        input_audio_sample_rate=input_audio_sample_rate,
+        input_audio_bitrate=input_audio_bitrate,
+        output_audio_format=output_audio_format,
+        output_audio_sample_rate=output_audio_sample_rate,
+        output_audio_bitrate=output_audio_bitrate,
+    )
+    selected_voice = None
+    selected_output_modalities: list[OutputModality] = ["text"]
+    if provider == "openai-realtime":
+        selected_voice = voice or DEFAULT_OPENAI_REALTIME_VOICE
+        selected_output_modalities = [output_modality]
+    return AgentModelChanged(
+        type=AGENT_EVENT_MODEL_CHANGED,
+        thread_id=thread_id,
+        provider=provider,
+        model=model,
+        output_modalities=selected_output_modalities,
+        voice=selected_voice,
+        input_format=input_format,
+        output_format=output_format,
+        turn_detection=turn_detection if provider == "openai-realtime" else None,
+        realtime_protocols=(
+            list(realtime_protocols) if provider == "openai-realtime" else []
+        ),
+    )
+
+
+def _configured_realtime_audio_formats(
+    *,
+    provider_name: str,
+    input_audio_format: str,
+    input_audio_sample_rate: int | None,
+    input_audio_bitrate: int | None,
+    output_audio_format: str,
+    output_audio_sample_rate: int | None,
+    output_audio_bitrate: int | None,
+) -> tuple[AgentAudioFormat | None, AgentAudioFormat | None]:
+    if provider_name != "openai-realtime":
+        return None, None
+    input_format = _audio_format_option(
+        audio_format=input_audio_format,
+        sample_rate=input_audio_sample_rate,
+        bitrate=input_audio_bitrate,
+    )
+    output_format = _audio_format_option(
+        audio_format=output_audio_format,
+        sample_rate=output_audio_sample_rate,
+        bitrate=output_audio_bitrate,
+    )
+    return (
+        _agent_audio_format_from_llm(
+            input_format or DEFAULT_OPENAI_REALTIME_INPUT_FORMAT
+        ),
+        _agent_audio_format_from_llm(
+            output_format or DEFAULT_OPENAI_REALTIME_OUTPUT_FORMAT
+        ),
+    )
+
+
+def _configured_models_response(
+    *,
+    models: list[str],
+    current_model: AgentModelChanged | None,
+    voice: str | None = None,
+    input_audio_format: str = "audio/pcm",
+    input_audio_sample_rate: int | None = 24000,
+    input_audio_bitrate: int | None = None,
+    output_audio_format: str = "audio/pcm",
+    output_audio_sample_rate: int | None = 24000,
+    output_audio_bitrate: int | None = None,
+    turn_detection: Literal[
+        "none", "automatic"
+    ] = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    realtime_protocols: tuple[
+        Literal["websocket", "webrtc"], ...
+    ] = DEFAULT_OPENAI_REALTIME_PROTOCOLS,
+    output_modality: OutputModality = "text",
+) -> ModelsResponse:
+    grouped: dict[str, list[str]] = {}
+    for model in models:
+        grouped.setdefault(_provider_name_for_model(model), []).append(model)
+    providers: list[AgentProviderInfo] = []
+    for provider_name, provider_models in grouped.items():
+        providers.append(
+            AgentProviderInfo(
+                name=provider_name,
+                friendly_name=provider_name,
+                default_model=provider_models[0],
+                models=[
+                    _agent_model_info_for_configured_model(
+                        provider_name=provider_name,
+                        model=model,
+                        current_model=current_model,
+                        voice=voice,
+                        turn_detection=turn_detection,
+                        realtime_protocols=realtime_protocols,
+                        output_modality=output_modality,
+                        input_audio_format=input_audio_format,
+                        input_audio_sample_rate=input_audio_sample_rate,
+                        input_audio_bitrate=input_audio_bitrate,
+                        output_audio_format=output_audio_format,
+                        output_audio_sample_rate=output_audio_sample_rate,
+                        output_audio_bitrate=output_audio_bitrate,
+                    )
+                    for model in provider_models
+                ],
+            )
+        )
+    return ModelsResponse(
+        type=AGENT_MESSAGE_MODELS_RESPONSE,
+        source_message_id="configured-models",
+        providers=providers,
+    )
+
+
+def _agent_model_info_for_configured_model(
+    *,
+    provider_name: str,
+    model: str,
+    current_model: AgentModelChanged | None,
+    voice: str | None = None,
+    input_audio_format: str = "audio/pcm",
+    input_audio_sample_rate: int | None = 24000,
+    input_audio_bitrate: int | None = None,
+    output_audio_format: str = "audio/pcm",
+    output_audio_sample_rate: int | None = 24000,
+    output_audio_bitrate: int | None = None,
+    turn_detection: Literal[
+        "none", "automatic"
+    ] = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    realtime_protocols: tuple[
+        Literal["websocket", "webrtc"], ...
+    ] = DEFAULT_OPENAI_REALTIME_PROTOCOLS,
+    output_modality: OutputModality = "text",
+) -> AgentModelInfo:
+    del output_modality
+    input_format, output_format = _configured_realtime_audio_formats(
+        provider_name=provider_name,
+        input_audio_format=input_audio_format,
+        input_audio_sample_rate=input_audio_sample_rate,
+        input_audio_bitrate=input_audio_bitrate,
+        output_audio_format=output_audio_format,
+        output_audio_sample_rate=output_audio_sample_rate,
+        output_audio_bitrate=output_audio_bitrate,
+    )
+    return AgentModelInfo(
+        name=model,
+        friendly_name=model,
+        modalities=(
+            ["text", "audio"] if provider_name == "openai-realtime" else ["text"]
+        ),
+        active=(
+            current_model is not None
+            and current_model.provider == provider_name
+            and current_model.model == model
+        ),
+        available_voices=(
+            list(OPENAI_REALTIME_VOICES) if provider_name == "openai-realtime" else []
+        ),
+        default_output_voice=(
+            voice or DEFAULT_OPENAI_REALTIME_VOICE
+            if provider_name == "openai-realtime"
+            else None
+        ),
+        input_format=input_format,
+        output_format=output_format,
+        turn_detection=turn_detection if provider_name == "openai-realtime" else None,
+        realtime_protocols=(
+            list(realtime_protocols) if provider_name == "openai-realtime" else []
+        ),
+    )
+
+
+def _model_command_options(
+    *,
+    response: ModelsResponse | None,
+    current_model: AgentModelChanged | None,
+) -> tuple["AskCommandOption", ...]:
+    if response is None:
+        return ()
+    options: list[AskCommandOption] = []
+    for provider in response.providers:
+        for model in provider.models:
+            is_active = (
+                current_model is not None
+                and current_model.provider == provider.name
+                and current_model.model == model.name
+            ) or (current_model is None and model.active)
+            command_value = _provider_model_display_name(
+                provider=provider.name,
+                model=model.name,
+            )
+            options.append(
+                AskCommandOption(
+                    command=f"/model {command_value}",
+                    label=command_value,
+                    description=model.description,
+                    active=is_active,
+                )
+            )
+    return tuple(sorted(options, key=lambda option: (not option.active, option.label)))
+
+
+def _voice_command_options(
+    *,
+    response: ModelsResponse | None,
+    current_model: AgentModelChanged | None,
+) -> tuple["AskCommandOption", ...]:
+    model_info = _model_info_for_current_selection(
+        response=response,
+        current_model=current_model,
+    )
+    if model_info is None or len(model_info.available_voices) == 0:
+        return ()
+    current_voice = current_model.voice if current_model is not None else None
+    if current_voice is None:
+        current_voice = model_info.default_output_voice
+    return tuple(
+        AskCommandOption(
+            command=f"/voice {voice}",
+            label=voice,
+            description="Output voice",
+            active=voice == current_voice,
+        )
+        for voice in model_info.available_voices
+    )
+
+
+def _process_command_options(
+    prompt: str,
+    *,
+    response: ModelsResponse | None,
+    current_model: AgentModelChanged | None,
+    current_output_modalities: tuple[Literal["text", "audio"], ...] = ("text",),
+) -> tuple["AskCommandOption", ...]:
+    stripped = prompt.strip()
+    if stripped.startswith("/output"):
+        model_info = _model_info_for_current_selection(
+            response=response,
+            current_model=current_model,
+        )
+        supported = (
+            tuple(model_info.modalities) if model_info is not None else ("text",)
+        )
+        return tuple(
+            AskCommandOption(
+                command=f"/output {output}",
+                label=output,
+                description=(
+                    "Voice responses" if output == "audio" else "Text responses"
+                ),
+                active=output in current_output_modalities,
+            )
+            for output in ("text", "audio")
+            if output in supported
+        )
+
+    if stripped.startswith("/voice"):
+        parts = stripped.split(maxsplit=1)
+        filter_text = parts[1].lower() if len(parts) > 1 else ""
+        options = _voice_command_options(
+            response=response,
+            current_model=current_model,
+        )
+        if filter_text == "":
+            return options
+        return tuple(
+            option for option in options if filter_text in option.label.lower()
+        )
+
+    if not stripped.startswith("/model"):
+        return ()
+    parts = stripped.split(maxsplit=1)
+    if len(parts) > 1 and "/" not in parts[1]:
+        filter_text = parts[1].lower()
+    else:
+        filter_text = ""
+    options = _model_command_options(
+        response=response,
+        current_model=current_model,
+    )
+    if filter_text == "":
+        return options
+    return tuple(
+        option
+        for option in options
+        if filter_text in option.label.lower()
+        or (
+            option.description is not None and filter_text in option.description.lower()
+        )
+    )
+
+
+def _format_provider_list(
+    *,
+    providers: list[AgentProviderInfo],
+    current_model: AgentModelChanged | None,
+) -> str:
+    lines = ["Providers:"]
+    current_provider = current_model.provider if current_model is not None else None
+    if current_provider is None:
+        current_provider = next(
+            (
+                provider.name
+                for provider in providers
+                if any(model.active for model in provider.models)
+            ),
+            None,
+        )
+    for provider in providers:
+        marker = "*" if provider.name == current_provider else " "
+        lines.append(f"{marker} {provider.name} - {provider.friendly_name}")
+    return "\n".join(lines)
+
+
+def _format_model_list(
+    *,
+    providers: list[AgentProviderInfo],
+    current_model: AgentModelChanged | None,
+) -> str:
+    lines = ["Models:"]
+    current_provider = current_model.provider if current_model is not None else None
+    current_model_name = current_model.model if current_model is not None else None
+    for provider in providers:
+        for model in provider.models:
+            marker = (
+                "*"
+                if (
+                    provider.name == current_provider
+                    and model.name == current_model_name
+                )
+                or (current_model is None and model.active)
+                else " "
+            )
+            lines.append(
+                f"{marker} {_provider_model_display_name(provider=provider.name, model=model.name)}"
+            )
+    return "\n".join(lines)
+
+
+def _supports_openai_responses_builtin_tools(*, model: str) -> bool:
+    return _provider_name_for_model(model) == "openai"
+
+
+def _supports_anthropic_builtin_tools(*, model: str) -> bool:
+    return _provider_name_for_model(model) == "anthropic"
+
+
+def _has_openai_responses_provider(
+    *, models: list[str], llm_participant: str | None
+) -> bool:
+    if llm_participant is not None:
+        return False
+    return any(_provider_name_for_model(model) == "openai" for model in models)
 
 
 def _build_decision_llm_adapter(
@@ -1924,7 +3326,7 @@ def _build_runtime_agent(
     api_key: str | None = None,
     runtime: Literal["chatbot", "process"],
     normalized_tool_options: NormalizedRequiredToolOptions,
-    model: str,
+    model: str | list[str],
     rule: list[str],
     rules_file: Optional[list[str]],
     instructions: Optional[list[str]],
@@ -1953,6 +3355,7 @@ def _build_runtime_agent(
     compaction_threshold: Optional[int],
     max_output_tokens: Optional[int],
     reasoning_effort: Optional[str],
+    transcription_model: str | None,
     working_dir: Optional[str],
     dataset_namespace: Optional[list[str]],
     skill_dirs: Optional[list[str]],
@@ -1962,19 +3365,41 @@ def _build_runtime_agent(
     shell_set_env: Optional[list[str]],
     log_llm_requests: Optional[bool],
     channels: Optional[list[str]],
-    starting_url: Optional[str],
-    allow_goto_url: bool,
-    room_rules_path: Optional[list[str]],
+    voice: str | None = None,
+    turn_detection: Literal[
+        "none", "automatic"
+    ] = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    realtime_protocols: tuple[
+        Literal["websocket", "webrtc"], ...
+    ] = DEFAULT_OPENAI_REALTIME_PROTOCOLS,
+    output_modality: OutputModality = "text",
+    input_audio_format: str = "audio/pcm",
+    input_audio_sample_rate: int | None = 24000,
+    input_audio_bitrate: int | None = None,
+    output_audio_format: str = "audio/pcm",
+    output_audio_sample_rate: int | None = 24000,
+    output_audio_bitrate: int | None = None,
+    starting_url: Optional[str] = None,
+    allow_goto_url: bool = False,
+    room_rules_path: Optional[list[str]] = None,
+    verbose_dataset: bool = False,
+    save_audio_input: bool = False,
     preamble_rule: bool = True,
 ):
     builder = _builder_for_runtime(runtime)
+    selected_models = _normalize_model_options(model)
+    builder_model: str | list[str]
+    if runtime == "process":
+        builder_model = selected_models
+    else:
+        builder_model = selected_models[0]
     builder_kwargs: dict[str, Any] = {
         "computer_use": False,
         "require_computer_use": normalized_tool_options["require_computer_use"],
         "api_key": api_key,
         "starting_url": starting_url,
         "allow_goto_url": allow_goto_url,
-        "model": model,
+        "model": builder_model,
         "rule": rule,
         "toolkit": normalized_tool_options["toolkit"],
         "schema": normalized_tool_options["schema"],
@@ -2018,6 +3443,17 @@ def _build_runtime_agent(
         "shell_set_env": shell_set_env,
         "log_llm_requests": log_llm_requests,
         "channels": channels,
+        "transcription_model": transcription_model,
+        "voice": voice,
+        "turn_detection": turn_detection,
+        "realtime_protocols": realtime_protocols,
+        "output_modality": output_modality,
+        "input_audio_format": input_audio_format,
+        "input_audio_sample_rate": input_audio_sample_rate,
+        "input_audio_bitrate": input_audio_bitrate,
+        "output_audio_format": output_audio_format,
+        "output_audio_sample_rate": output_audio_sample_rate,
+        "output_audio_bitrate": output_audio_bitrate,
     }
     if runtime == "process":
         builder_kwargs["thread_storage"] = thread_storage
@@ -2025,6 +3461,8 @@ def _build_runtime_agent(
         builder_kwargs["compaction_threshold"] = compaction_threshold
         builder_kwargs["max_output_tokens"] = max_output_tokens
         builder_kwargs["reasoning_effort"] = reasoning_effort
+        builder_kwargs["verbose_dataset"] = verbose_dataset
+        builder_kwargs["save_audio_input"] = save_audio_input
         builder_kwargs["preamble_rule"] = preamble_rule
     return builder(**builder_kwargs)
 
@@ -2163,6 +3601,21 @@ def build_chatbot(
     shell_copy_env: Optional[list[str]] = None,
     shell_set_env: Optional[list[str]] = None,
     channels: Optional[list[str]] = None,
+    transcription_model: str | None = DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL,
+    voice: str | None = None,
+    turn_detection: Literal[
+        "none", "automatic"
+    ] = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    realtime_protocols: tuple[
+        Literal["websocket", "webrtc"], ...
+    ] = DEFAULT_OPENAI_REALTIME_PROTOCOLS,
+    output_modality: OutputModality = "text",
+    input_audio_format: str = "audio/pcm",
+    input_audio_sample_rate: int | None = 24000,
+    input_audio_bitrate: int | None = None,
+    output_audio_format: str = "audio/pcm",
+    output_audio_sample_rate: int | None = 24000,
+    output_audio_bitrate: int | None = None,
     preamble_rule: bool = True,
 ):
     del channels
@@ -2201,8 +3654,12 @@ def build_chatbot(
             except FileNotFoundError:
                 print(f"[yellow]rules file not found at {rules_path}[/yellow]")
 
+    realtime_model = _resolve_openai_realtime_model(model=model)
+    is_openai_realtime_model = realtime_model is not None
     is_claude_model = model.startswith("claude-")
-    supports_openai_tools = llm_participant is None and not is_claude_model
+    supports_openai_tools = (
+        llm_participant is None and not is_claude_model and not is_openai_realtime_model
+    )
     supports_openai_shell = supports_openai_shell_tool(
         model=model, llm_participant=llm_participant
     )
@@ -2227,6 +3684,16 @@ def build_chatbot(
 
     BaseClass = ChatBot
     resolved_decision_model = _normalized_decision_model(decision_model=decision_model)
+    realtime_input_format = _audio_format_option(
+        audio_format=input_audio_format,
+        sample_rate=input_audio_sample_rate,
+        bitrate=input_audio_bitrate,
+    )
+    realtime_output_format = _audio_format_option(
+        audio_format=output_audio_format,
+        sample_rate=output_audio_sample_rate,
+        bitrate=output_audio_bitrate,
+    )
     if llm_participant:
         llm_adapter = MessageStreamLLMAdapter(
             participant_name=llm_participant,
@@ -2240,6 +3707,28 @@ def build_chatbot(
             )
             if resolved_decision_model is None:
                 resolved_decision_model = model
+        elif realtime_model is not None:
+            llm_adapter = OpenAIRealtimeAdapter(
+                model=realtime_model,
+                api_key=api_key,
+                log_requests=log_llm_requests,
+                session_options=_openai_realtime_session_options(
+                    output_modality=output_modality
+                ),
+                response_options=_openai_realtime_response_options(
+                    output_modality=output_modality
+                ),
+                transcription_model=transcription_model,
+                turn_detection=turn_detection,
+                realtime_protocols=realtime_protocols,
+                **_realtime_adapter_audio_kwargs(
+                    voice=voice,
+                    input_format=realtime_input_format,
+                    output_format=realtime_output_format,
+                ),
+            )
+            if resolved_decision_model is None:
+                resolved_decision_model = _DEFAULT_OPENAI_REALTIME_DECISION_MODEL
         else:
             llm_adapter = OpenAIResponsesAdapter(
                 model=model,
@@ -2577,7 +4066,7 @@ def build_process_agent(
     *,
     client: RoomClient | None = None,
     api_key: str | None = None,
-    model: str,
+    model: str | list[str],
     rule: List[str],
     toolkit: List[str],
     schema: List[str],
@@ -2629,6 +4118,23 @@ def build_process_agent(
     shell_copy_env: Optional[list[str]] = None,
     shell_set_env: Optional[list[str]] = None,
     channels: Optional[list[str]] = None,
+    transcription_model: str | None = DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL,
+    voice: str | None = None,
+    turn_detection: Literal[
+        "none", "automatic"
+    ] = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    realtime_protocols: tuple[
+        Literal["websocket", "webrtc"], ...
+    ] = DEFAULT_OPENAI_REALTIME_PROTOCOLS,
+    output_modality: OutputModality = "text",
+    input_audio_format: str = "audio/pcm",
+    input_audio_sample_rate: int | None = 24000,
+    input_audio_bitrate: int | None = None,
+    output_audio_format: str = "audio/pcm",
+    output_audio_sample_rate: int | None = 24000,
+    output_audio_bitrate: int | None = None,
+    verbose_dataset: bool = False,
+    save_audio_input: bool = False,
     preamble_rule: bool = True,
 ):
     from meshagent.agents import (
@@ -2642,7 +4148,12 @@ def build_process_agent(
         ToolkitChannel,
     )
     from meshagent.agents.messages import TurnStart, TurnSteer
-    from meshagent.agents.process import AgentSupervisor, LLMAgentProcess, Message
+    from meshagent.agents.process import (
+        AgentSupervisor,
+        LLMAgentProcess,
+        Message,
+        agent_provider_info,
+    )
     from meshagent.tools import Toolkit, ToolContext
     from meshagent.tools.hosting import _RemoteToolkitWrapper, _start_hosted_toolkit
 
@@ -2682,6 +4193,8 @@ def build_process_agent(
             return DatasetThreadStorage(
                 room=room,
                 path=thread_id,
+                persist_deltas=verbose_dataset,
+                persist_audio_input=save_audio_input,
             )
         return MeshDocumentThreadStorage(
             room=room,
@@ -2710,9 +4223,22 @@ def build_process_agent(
             except FileNotFoundError:
                 print(f"[yellow]rules file not found at {rules_path}[/yellow]")
 
-    is_claude_model = model.startswith("claude-")
-    supports_openai_tools = llm_participant is None and not is_claude_model
-    if reasoning_effort is not None and not supports_openai_tools:
+    selected_models = _normalize_model_options(model)
+    realtime_input_format = _audio_format_option(
+        audio_format=input_audio_format,
+        sample_rate=input_audio_sample_rate,
+        bitrate=input_audio_bitrate,
+    )
+    realtime_output_format = _audio_format_option(
+        audio_format=output_audio_format,
+        sample_rate=output_audio_sample_rate,
+        bitrate=output_audio_bitrate,
+    )
+    supports_openai_responses_tools = _has_openai_responses_provider(
+        models=selected_models,
+        llm_participant=llm_participant,
+    )
+    if reasoning_effort is not None and not supports_openai_responses_tools:
         print(
             "[red]--reasoning-effort is only supported by OpenAI Responses models[/red]"
         )
@@ -2720,16 +4246,20 @@ def build_process_agent(
     base_shell_env = _copy_shell_env_vars(copy_env=shell_copy_env)
     base_shell_env.update(_set_shell_env_vars(set_env=shell_set_env))
     resolved_shell_image = resolve_shell_image(shell_image)
-    if not supports_openai_tools:
+    if not supports_openai_responses_tools:
         if require_image_generation:
-            print("[red]image generation tool is only supported by openai models[/red]")
+            print(
+                "[red]image generation tool is only supported by OpenAI Responses models[/red]"
+            )
             raise typer.Exit(1)
         if require_apply_patch:
-            print("[red]apply patch tool is only supported by openai models[/red]")
+            print(
+                "[red]apply patch tool is only supported by OpenAI Responses models[/red]"
+            )
             raise typer.Exit(1)
         if computer_use or require_computer_use:
             print(
-                "[red]computer use tool is currently only supported by openai models[/red]"
+                "[red]computer use tool is currently only supported by OpenAI Responses models[/red]"
             )
             raise typer.Exit(1)
 
@@ -2746,41 +4276,116 @@ def build_process_agent(
         log_llm_requests=log_llm_requests,
     )
 
+    llm_providers: list[LLMProvider] = []
     if llm_participant:
-        llm_adapter = MessageStreamLLMAdapter(
-            participant_name=llm_participant,
+        llm_providers.append(
+            LLMProvider(
+                name="remote",
+                adapter=MessageStreamLLMAdapter(
+                    participant_name=llm_participant,
+                ),
+            )
         )
     else:
+        openai_models: list[str] = []
+        realtime_models: list[str] = []
+        anthropic_models: list[str] = []
+        provider_order: list[str] = []
+        for selected_model in selected_models:
+            provider_name = _provider_name_for_model(selected_model)
+            if provider_name not in provider_order:
+                provider_order.append(provider_name)
+            if provider_name == "openai-realtime":
+                realtime_model = _resolve_openai_realtime_model(model=selected_model)
+                if realtime_model is not None and realtime_model not in realtime_models:
+                    realtime_models.append(realtime_model)
+            elif provider_name == "anthropic":
+                if selected_model not in anthropic_models:
+                    anthropic_models.append(selected_model)
+            elif selected_model not in openai_models:
+                openai_models.append(selected_model)
+
         if computer_use or require_computer_use:
-            llm_adapter = OpenAIResponsesAdapter(
-                model=model,
-                api_key=api_key,
-                response_options={
-                    "reasoning": {"summary": "concise"},
-                },
-                log_requests=log_llm_requests,
-                context_management=context_management,
-                compaction_threshold=compaction_threshold,
-                max_output_tokens=max_output_tokens,
-                reasoning_effort=reasoning_effort,
+            if not openai_models:
+                print(
+                    "[red]computer use tool is currently only supported by OpenAI Responses models[/red]"
+                )
+                raise typer.Exit(1)
+            default_openai_model = openai_models[0]
+            llm_providers.append(
+                LLMProvider(
+                    name="openai",
+                    adapter=OpenAIResponsesAdapter(
+                        model=default_openai_model,
+                        api_key=api_key,
+                        response_options={
+                            "reasoning": {"summary": "concise"},
+                        },
+                        log_requests=log_llm_requests,
+                        context_management=context_management,
+                        compaction_threshold=compaction_threshold,
+                        max_output_tokens=max_output_tokens,
+                        reasoning_effort=reasoning_effort,
+                        allowed_models=openai_models,
+                    ),
+                )
             )
         else:
-            if is_claude_model:
-                llm_adapter = AnthropicOpenAIResponsesStreamAdapter(
-                    model=model,
-                    api_key=api_key,
-                    log_requests=log_llm_requests,
+            providers_by_name: dict[str, LLMProvider] = {}
+            if openai_models:
+                providers_by_name["openai"] = LLMProvider(
+                    name="openai",
+                    adapter=OpenAIResponsesAdapter(
+                        model=openai_models[0],
+                        api_key=api_key,
+                        log_requests=log_llm_requests,
+                        context_management=context_management,
+                        compaction_threshold=compaction_threshold,
+                        max_output_tokens=max_output_tokens,
+                        reasoning_effort=reasoning_effort,
+                        allowed_models=openai_models,
+                    ),
                 )
-            else:
-                llm_adapter = OpenAIResponsesAdapter(
-                    model=model,
-                    api_key=api_key,
-                    log_requests=log_llm_requests,
-                    context_management=context_management,
-                    compaction_threshold=compaction_threshold,
-                    max_output_tokens=max_output_tokens,
-                    reasoning_effort=reasoning_effort,
+            if realtime_models:
+                providers_by_name["openai-realtime"] = LLMProvider(
+                    name="openai-realtime",
+                    adapter=OpenAIRealtimeAdapter(
+                        model=realtime_models[0],
+                        api_key=api_key,
+                        log_requests=log_llm_requests,
+                        session_options=_openai_realtime_session_options(
+                            output_modality=output_modality
+                        ),
+                        response_options=_openai_realtime_response_options(
+                            output_modality=output_modality
+                        ),
+                        allowed_models=realtime_models,
+                        transcription_model=transcription_model,
+                        turn_detection=turn_detection,
+                        realtime_protocols=realtime_protocols,
+                        **_realtime_adapter_audio_kwargs(
+                            voice=voice,
+                            input_format=realtime_input_format,
+                            output_format=realtime_output_format,
+                        ),
+                    ),
                 )
+            if anthropic_models:
+                providers_by_name["anthropic"] = LLMProvider(
+                    name="anthropic",
+                    adapter=AnthropicOpenAIResponsesStreamAdapter(
+                        model=anthropic_models[0],
+                        api_key=api_key,
+                        log_requests=log_llm_requests,
+                        allowed_models=anthropic_models,
+                    ),
+                )
+            for provider_name in provider_order:
+                provider = providers_by_name.get(provider_name)
+                if provider is not None:
+                    llm_providers.append(provider)
+
+    default_provider = llm_providers[0]
 
     resolved_channels = _resolved_channels(
         runtime="process",
@@ -2858,10 +4463,10 @@ def build_process_agent(
                 raise RoomException("agent is already started")
 
             self._room = room
-            if require_image_generation and isinstance(
-                llm_adapter, OpenAIResponsesAdapter
-            ):
-                llm_adapter.set_images_dataset(ImagesDataset(room=room))
+            if require_image_generation:
+                for provider in llm_providers:
+                    if isinstance(provider.adapter, OpenAIResponsesAdapter):
+                        provider.adapter.set_images_dataset(ImagesDataset(room=room))
             if require_mcp:
                 await room.local_participant.set_attribute("supports_mcp", True)
             if _has_chat_channel(channels=resolved_channels):
@@ -3003,7 +4608,7 @@ def build_process_agent(
         async def init_session(self) -> AgentSessionContext:
             from meshagent.cli.helper import init_context_from_spec
 
-            context = llm_adapter.create_session()
+            context = default_provider.adapter.create_session()
             await init_context_from_spec(context)
             return context
 
@@ -3132,6 +4737,10 @@ def build_process_agent(
                     add_tool(toolkit_name="script", tool=script_tool)
 
             if require_image_generation:
+                if not _supports_openai_responses_builtin_tools(model=model):
+                    raise ValueError(
+                        "image generation tool is only supported by OpenAI Responses models"
+                    )
                 add_tool(
                     toolkit_name="image_generation",
                     tool=ImageGenerationTool(
@@ -3141,6 +4750,10 @@ def build_process_agent(
                 )
 
             if require_apply_patch:
+                if not _supports_openai_responses_builtin_tools(model=model):
+                    raise ValueError(
+                        "apply patch tool is only supported by OpenAI Responses models"
+                    )
                 add_tool(
                     toolkit_name="apply_patch",
                     tool=ApplyPatchTool(
@@ -3164,31 +4777,43 @@ def build_process_agent(
                 add_toolkit(self._advanced_shell_toolkit)
 
             if require_mcp:
-                if is_claude_model:
+                if _supports_anthropic_builtin_tools(model=model):
                     add_toolkit(AnthropicMessagesMCPToolkit())
-                else:
+                elif _supports_openai_responses_builtin_tools(model=model):
                     add_toolkit(OpenAIResponsesMCPToolkit())
+                else:
+                    raise ValueError(
+                        "MCP tools are only supported by OpenAI Responses and Anthropic models"
+                    )
 
             if require_web_search:
-                if is_claude_model:
+                if _supports_anthropic_builtin_tools(model=model):
                     add_tool(
                         toolkit_name="web_search",
                         tool=AnthropicWebSearchTool(),
                     )
-                else:
+                elif _supports_openai_responses_builtin_tools(model=model):
                     add_tool(
                         toolkit_name="web_search",
                         tool=WebSearchTool(),
                     )
+                else:
+                    raise ValueError(
+                        "web search is only supported by OpenAI Responses and Anthropic models"
+                    )
 
             if require_web_fetch:
-                if is_claude_model:
+                if _supports_anthropic_builtin_tools(model=model):
                     add_tool(
                         toolkit_name="web_fetch",
                         tool=AnthropicWebFetchTool(),
                     )
-                else:
+                elif _supports_openai_responses_builtin_tools(model=model):
                     add_tool(toolkit_name="web_fetch", tool=WebFetchTool())
+                else:
+                    raise ValueError(
+                        "web fetch is only supported by OpenAI Responses and Anthropic models"
+                    )
 
             if require_storage:
                 add_toolkit(
@@ -3322,7 +4947,6 @@ def build_process_agent(
                                 "width": width,
                                 "height": height,
                                 "status": "completed",
-                                "status_detail": "Screenshot saved",
                             },
                         )
                     )
@@ -3392,6 +5016,132 @@ def build_process_agent(
                     queue.put_nowait(message)
             super().send(message)
 
+        async def on_models_request(self, message: Message) -> None:
+            if not isinstance(message.data, ModelsRequest):
+                return
+            default_model = default_provider.adapter.default_model()
+            self._send_to_channels(
+                Message(
+                    data=ModelsResponse(
+                        type=AGENT_MESSAGE_MODELS_RESPONSE,
+                        source_message_id=message.data.message_id,
+                        providers=[
+                            agent_provider_info(
+                                provider=provider,
+                                current_provider=default_provider.name,
+                                current_model=default_model,
+                            )
+                            for provider in llm_providers
+                        ],
+                    ),
+                    sender=message.sender,
+                )
+            )
+
+        async def validate_turn_start(self, turn_start: TurnStart) -> AgentError | None:
+            provider = default_provider
+            if turn_start.provider is not None and turn_start.provider.strip() != "":
+                provider = next(
+                    (
+                        candidate
+                        for candidate in llm_providers
+                        if candidate.name == turn_start.provider
+                    ),
+                    None,
+                )
+                if provider is None:
+                    return AgentError(
+                        message=f"unknown provider {turn_start.provider!r}",
+                        code="unknown_provider",
+                    )
+
+            model = turn_start.model
+            if model is None or model.strip() == "":
+                resolved_model = provider.adapter.default_model()
+            else:
+                resolved_model = model
+
+            model_info = next(
+                (
+                    candidate
+                    for candidate in provider.adapter.list_models()
+                    if candidate.name == resolved_model
+                ),
+                None,
+            )
+            if model_info is None:
+                names = ", ".join(
+                    model_info.name for model_info in provider.adapter.list_models()
+                )
+                return AgentError(
+                    message=(
+                        f"unknown model {resolved_model!r} for provider {provider.name!r}; "
+                        f"available models: {names}"
+                    ),
+                    code="unknown_model",
+                )
+            unsupported_output_modalities = [
+                output
+                for output in (turn_start.output_modalities or [])
+                if output not in model_info.modalities
+            ]
+            if len(unsupported_output_modalities) > 0:
+                unsupported = ", ".join(
+                    repr(item) for item in unsupported_output_modalities
+                )
+                return AgentError(
+                    message=(
+                        f"model {model_info.name!r} does not support "
+                        f"{unsupported} output modalities"
+                    ),
+                    code="unsupported_modality",
+                )
+            return None
+
+        async def create_realtime_connection(
+            self,
+            *,
+            thread_id: str,
+            start_thread: StartThread,
+            sender: Participant | None,
+        ) -> AgentRealtimeConnectionInfo | None:
+            del thread_id
+            del sender
+            protocol = start_thread.realtime_protocol
+            if protocol is None:
+                return None
+            provider = default_provider
+            if (
+                start_thread.provider is not None
+                and start_thread.provider.strip() != ""
+            ):
+                provider = next(
+                    (
+                        candidate
+                        for candidate in llm_providers
+                        if candidate.name == start_thread.provider
+                    ),
+                    None,
+                )
+                if provider is None:
+                    raise RoomException(f"unknown provider {start_thread.provider!r}")
+            model = start_thread.model
+            resolved_model = (
+                provider.adapter.default_model()
+                if model is None or model.strip() == ""
+                else model
+            )
+            connection = await provider.adapter.create_realtime_connection(
+                protocol=protocol,
+                model=resolved_model,
+            )
+            return AgentRealtimeConnectionInfo(
+                protocol=connection.protocol,
+                url=connection.url,
+                headers=connection.headers,
+                web_only_protocol=connection.web_only_protocol,
+            )
+
         def create_thread_process(self, thread_id: str) -> LLMAgentProcess:
             async def _turn_instructions_provider(
                 participant: Participant | None,
@@ -3408,7 +5158,8 @@ def build_process_agent(
             process = LLMAgentProcess(
                 thread_id=thread_id,
                 participant=self._agent.room.local_participant,
-                llm_adapter=llm_adapter,
+                llm_providers=llm_providers,
+                default_provider=default_provider,
                 toolkits=[*toolkits],
                 thread_storage=create_thread_storage(
                     room=self._agent.room,
@@ -3489,8 +5240,12 @@ async def join(
         typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
-        str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
-    ] = "gpt-5.5",
+        list[str],
+        typer.Option(
+            "--model",
+            help="Name of an LLM model to make available. Can be repeated.",
+        ),
+    ] = ["gpt-5.5"],
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -3654,6 +5409,19 @@ async def join(
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
     decision_model: DecisionModelOption = None,
+    transcription_model: TranscriptionModelOption = (
+        DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
+    ),
+    voice: VoiceOption = None,
+    turn_detection: TurnDetectionOption = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    realtime_protocol: RealtimeProtocolOption = [],
+    output_modality: OutputModalityOption = "text",
+    input_audio_format: InputAudioFormatOption = "audio/pcm",
+    input_audio_sample_rate: InputAudioSampleRateOption = 24000,
+    input_audio_bitrate: InputAudioBitrateOption = None,
+    output_audio_format: OutputAudioFormatOption = "audio/pcm",
+    output_audio_sample_rate: OutputAudioSampleRateOption = 24000,
+    output_audio_bitrate: OutputAudioBitrateOption = None,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -3692,6 +5460,20 @@ async def join(
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
+    ] = False,
+    verbose_dataset: Annotated[
+        bool,
+        typer.Option(
+            "--verbose-dataset",
+            help="Persist streaming delta events to dataset thread storage for debugging",
+        ),
+    ] = False,
+    save_audio_input: Annotated[
+        bool,
+        typer.Option(
+            "--save-audio-input",
+            help="Persist realtime audio input chunks to dataset thread storage as binary attachments.",
+        ),
     ] = False,
 ):
     runtime = _current_command_runtime()
@@ -3734,12 +5516,12 @@ async def join(
         storage=storage,
         require_storage=require_storage,
     )
+    room = _require_resolved_room(resolve_room(room))
 
     key = await resolve_key(project_id=project_id, key=key)
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        room = resolve_room(room)
 
         token_env = token_from_env or "MESHAGENT_TOKEN"
         jwt = os.getenv(token_env)
@@ -3819,6 +5601,17 @@ async def join(
             require_advanced_shell=require_advanced_shell,
             llm_participant=llm_participant,
             decision_model=decision_model,
+            transcription_model=transcription_model,
+            voice=voice,
+            turn_detection=turn_detection,
+            realtime_protocols=_normalize_realtime_protocols(realtime_protocol),
+            output_modality=output_modality,
+            input_audio_format=input_audio_format,
+            input_audio_sample_rate=input_audio_sample_rate,
+            input_audio_bitrate=input_audio_bitrate,
+            output_audio_format=output_audio_format,
+            output_audio_sample_rate=output_audio_sample_rate,
+            output_audio_bitrate=output_audio_bitrate,
             always_reply=always_reply,
             threading_mode=resolved_threading_mode,
             thread_dir=resolved_thread_dir,
@@ -3839,6 +5632,8 @@ async def join(
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
             room_rules_path=room_rules,
+            verbose_dataset=verbose_dataset,
+            save_audio_input=save_audio_input,
             preamble_rule=preamble_rule,
         )
 
@@ -3917,8 +5712,12 @@ async def service(
         typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
-        str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
-    ] = "gpt-5.5",
+        list[str],
+        typer.Option(
+            "--model",
+            help="Name of an LLM model to make available. Can be repeated.",
+        ),
+    ] = ["gpt-5.5"],
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -4077,6 +5876,19 @@ async def service(
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
     decision_model: DecisionModelOption = None,
+    transcription_model: TranscriptionModelOption = (
+        DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
+    ),
+    voice: VoiceOption = None,
+    turn_detection: TurnDetectionOption = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    realtime_protocol: RealtimeProtocolOption = [],
+    output_modality: OutputModalityOption = "text",
+    input_audio_format: InputAudioFormatOption = "audio/pcm",
+    input_audio_sample_rate: InputAudioSampleRateOption = 24000,
+    input_audio_bitrate: InputAudioBitrateOption = None,
+    output_audio_format: OutputAudioFormatOption = "audio/pcm",
+    output_audio_sample_rate: OutputAudioSampleRateOption = 24000,
+    output_audio_bitrate: OutputAudioBitrateOption = None,
     host: Annotated[
         Optional[str], typer.Option(help="Host to bind the service on")
     ] = None,
@@ -4115,6 +5927,20 @@ async def service(
     log_llm_requests: Annotated[
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
+    ] = False,
+    verbose_dataset: Annotated[
+        bool,
+        typer.Option(
+            "--verbose-dataset",
+            help="Persist streaming delta events to dataset thread storage for debugging",
+        ),
+    ] = False,
+    save_audio_input: Annotated[
+        bool,
+        typer.Option(
+            "--save-audio-input",
+            help="Persist realtime audio input chunks to dataset thread storage as binary attachments.",
+        ),
     ] = False,
 ):
     runtime = _current_command_runtime()
@@ -4227,6 +6053,17 @@ async def service(
             require_advanced_shell=require_advanced_shell,
             llm_participant=llm_participant,
             decision_model=decision_model,
+            transcription_model=transcription_model,
+            voice=voice,
+            turn_detection=turn_detection,
+            realtime_protocols=_normalize_realtime_protocols(realtime_protocol),
+            output_modality=output_modality,
+            input_audio_format=input_audio_format,
+            input_audio_sample_rate=input_audio_sample_rate,
+            input_audio_bitrate=input_audio_bitrate,
+            output_audio_format=output_audio_format,
+            output_audio_sample_rate=output_audio_sample_rate,
+            output_audio_bitrate=output_audio_bitrate,
             always_reply=always_reply,
             threading_mode=resolved_threading_mode,
             thread_dir=resolved_thread_dir,
@@ -4247,6 +6084,8 @@ async def service(
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
             room_rules_path=room_rules,
+            verbose_dataset=verbose_dataset,
+            save_audio_input=save_audio_input,
         ),
     )
 
@@ -4307,8 +6146,12 @@ async def spec(
         typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
-        str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
-    ] = "gpt-5.5",
+        list[str],
+        typer.Option(
+            "--model",
+            help="Name of an LLM model to make available. Can be repeated.",
+        ),
+    ] = ["gpt-5.5"],
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -4460,6 +6303,19 @@ async def spec(
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
     decision_model: DecisionModelOption = None,
+    transcription_model: TranscriptionModelOption = (
+        DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
+    ),
+    voice: VoiceOption = None,
+    turn_detection: TurnDetectionOption = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    realtime_protocol: RealtimeProtocolOption = [],
+    output_modality: OutputModalityOption = "text",
+    input_audio_format: InputAudioFormatOption = "audio/pcm",
+    input_audio_sample_rate: InputAudioSampleRateOption = 24000,
+    input_audio_bitrate: InputAudioBitrateOption = None,
+    output_audio_format: OutputAudioFormatOption = "audio/pcm",
+    output_audio_sample_rate: OutputAudioSampleRateOption = 24000,
+    output_audio_bitrate: OutputAudioBitrateOption = None,
     always_reply: Annotated[
         Optional[bool],
         typer.Option(..., help="Always reply"),
@@ -4600,6 +6456,17 @@ async def spec(
             require_advanced_shell=require_advanced_shell,
             llm_participant=llm_participant,
             decision_model=decision_model,
+            transcription_model=transcription_model,
+            voice=voice,
+            turn_detection=turn_detection,
+            realtime_protocols=_normalize_realtime_protocols(realtime_protocol),
+            output_modality=output_modality,
+            input_audio_format=input_audio_format,
+            input_audio_sample_rate=input_audio_sample_rate,
+            input_audio_bitrate=input_audio_bitrate,
+            output_audio_format=output_audio_format,
+            output_audio_sample_rate=output_audio_sample_rate,
+            output_audio_bitrate=output_audio_bitrate,
             always_reply=always_reply,
             threading_mode=resolved_threading_mode,
             thread_dir=resolved_thread_dir,
@@ -4698,8 +6565,12 @@ async def deploy(
         typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
-        str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
-    ] = "gpt-5.5",
+        list[str],
+        typer.Option(
+            "--model",
+            help="Name of an LLM model to make available. Can be repeated.",
+        ),
+    ] = ["gpt-5.5"],
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -4851,6 +6722,19 @@ async def deploy(
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
     decision_model: DecisionModelOption = None,
+    transcription_model: TranscriptionModelOption = (
+        DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
+    ),
+    voice: VoiceOption = None,
+    turn_detection: TurnDetectionOption = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    realtime_protocol: RealtimeProtocolOption = [],
+    output_modality: OutputModalityOption = "text",
+    input_audio_format: InputAudioFormatOption = "audio/pcm",
+    input_audio_sample_rate: InputAudioSampleRateOption = 24000,
+    input_audio_bitrate: InputAudioBitrateOption = None,
+    output_audio_format: OutputAudioFormatOption = "audio/pcm",
+    output_audio_sample_rate: OutputAudioSampleRateOption = 24000,
+    output_audio_bitrate: OutputAudioBitrateOption = None,
     always_reply: Annotated[
         Optional[bool],
         typer.Option(..., help="Always reply"),
@@ -4998,6 +6882,17 @@ async def deploy(
             require_advanced_shell=require_advanced_shell,
             llm_participant=llm_participant,
             decision_model=decision_model,
+            transcription_model=transcription_model,
+            voice=voice,
+            turn_detection=turn_detection,
+            realtime_protocols=_normalize_realtime_protocols(realtime_protocol),
+            output_modality=output_modality,
+            input_audio_format=input_audio_format,
+            input_audio_sample_rate=input_audio_sample_rate,
+            input_audio_bitrate=input_audio_bitrate,
+            output_audio_format=output_audio_format,
+            output_audio_sample_rate=output_audio_sample_rate,
+            output_audio_bitrate=output_audio_bitrate,
             always_reply=always_reply,
             threading_mode=resolved_threading_mode,
             thread_dir=resolved_thread_dir,
@@ -5946,26 +7841,9 @@ async def chat_with(
             return False
 
         def _active_thread_status_text(self) -> str | None:
-            status = _thread_status_text(
+            return _thread_status_text(
                 getattr(self._chat_client, "thread_status_text", None)
             )
-            if status is not None:
-                return status
-
-            participant = self._chat_client._participant
-            if participant is None:
-                return None
-
-            status_attr = f"thread.status.text.{self._chat_client.thread_path}"
-            status = participant.get_attribute(status_attr)
-            if not isinstance(status, str):
-                return None
-
-            normalized = status.strip()
-            if normalized == "":
-                return None
-
-            return normalized
 
         def _render_thread_status_item(self, status_text: str) -> RenderableType:
             table = Table.grid(expand=True, padding=(0, 0))
@@ -6206,6 +8084,16 @@ async def chat_with(
             if headline == "":
                 headline = "event"
 
+            diff_blocks = (
+                self._diff_preview_blocks(item) if normalized_kind == "diff" else []
+            )
+            if len(diff_blocks) > 0:
+                headline = self._diff_preview_headline(
+                    blocks=diff_blocks,
+                    state=state,
+                    fallback=headline,
+                )
+
             if active:
                 headline_text = f"{self._event_spinner()} {headline}"
             else:
@@ -6242,7 +8130,22 @@ async def chat_with(
                     )
 
             detail_lines = self._event_detail_lines(item)
-            if len(detail_lines) > 0:
+            if len(diff_blocks) > 0:
+                table.add_row(Text("  "), Text(" "), Text("  "))
+                for index, block in enumerate(diff_blocks):
+                    if index > 0:
+                        table.add_row(Text("  "), Text(" "), Text("  "))
+                    table.add_row(
+                        Text("  "),
+                        Text(f"└ {block['header']}", style="dim"),
+                        Text("  "),
+                    )
+                    for line in block["lines"]:
+                        detail_text = Text("    ")
+                        detail_text.append_text(self._render_diff_line(line))
+                        table.add_row(Text("  "), detail_text, Text("  "))
+                table.add_row(Text("  "), Text(" "), Text("  "))
+            elif len(detail_lines) > 0:
                 table.add_row(Text("  "), Text(" "), Text("  "))
                 for line in detail_lines:
                     detail_text = Text("  ")
@@ -6261,6 +8164,112 @@ async def chat_with(
             if not isinstance(details, str) or details.strip() == "":
                 return []
             return details.splitlines()
+
+        def _diff_preview_blocks(self, item) -> list[dict[str, object]]:
+            candidates: list[str] = []
+            for attr in ("preview", "data"):
+                value = item.get_attribute(attr)
+                if isinstance(value, str) and value.strip() != "":
+                    candidates.append(value)
+            for candidate in candidates:
+                blocks = self._apply_patch_preview_blocks(candidate)
+                if len(blocks) > 0:
+                    return blocks
+            return []
+
+        def _apply_patch_preview_blocks(self, text: str) -> list[dict[str, object]]:
+            normalized = text.replace("\r\n", "\n").rstrip()
+            if (
+                "*** Begin Patch" not in normalized
+                and "*** Update File:" not in normalized
+                and "*** Add File:" not in normalized
+                and "*** Delete File:" not in normalized
+            ):
+                return []
+
+            blocks: list[dict[str, object]] = []
+            current_path = ""
+            current_lines: list[str] = []
+            lines_added = 0
+            lines_removed = 0
+
+            def flush() -> None:
+                nonlocal current_lines, lines_added, lines_removed
+                if current_path == "" or len(current_lines) == 0:
+                    current_lines = []
+                    lines_added = 0
+                    lines_removed = 0
+                    return
+                blocks.append(
+                    {
+                        "path": current_path,
+                        "header": self._diff_preview_header(
+                            path=current_path,
+                            lines_added=lines_added,
+                            lines_removed=lines_removed,
+                        ),
+                        "lines": current_lines,
+                        "lines_added": lines_added,
+                        "lines_removed": lines_removed,
+                    }
+                )
+                current_lines = []
+                lines_added = 0
+                lines_removed = 0
+
+            for line in normalized.splitlines():
+                match = re.match(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$", line)
+                if match is not None:
+                    flush()
+                    current_path = match.group(1).strip()
+                    continue
+                if current_path == "" or line.startswith("*** "):
+                    continue
+                current_lines.append(line)
+                if line.startswith("+") and not line.startswith("+++"):
+                    lines_added += 1
+                elif line.startswith("-") and not line.startswith("---"):
+                    lines_removed += 1
+            flush()
+            return blocks
+
+        def _diff_preview_header(
+            self, *, path: str, lines_added: int, lines_removed: int
+        ) -> str:
+            if lines_added == 0 and lines_removed == 0:
+                return path
+            return f"{path} (+{lines_added} -{lines_removed})"
+
+        def _diff_preview_headline(
+            self, *, blocks: list[dict[str, object]], state: str, fallback: str
+        ) -> str:
+            if len(blocks) == 0:
+                return fallback
+            lines_added = sum(
+                value if isinstance(value := block.get("lines_added"), int) else 0
+                for block in blocks
+            )
+            lines_removed = sum(
+                value if isinstance(value := block.get("lines_removed"), int) else 0
+                for block in blocks
+            )
+            path = blocks[0].get("path")
+            target = (
+                f"{len(blocks)} files"
+                if len(blocks) != 1
+                else path
+                if isinstance(path, str) and path.strip() != ""
+                else "patch"
+            )
+            verb = "Editing"
+            normalized_state = state.strip().lower()
+            if normalized_state == "completed":
+                verb = "Edited"
+            elif normalized_state == "failed":
+                verb = "Attempted to patch"
+            elif normalized_state == "cancelled":
+                verb = "Patch cancelled:"
+            return f"{verb} {target} (+{lines_added} -{lines_removed})"
 
         def _render_event_detail_line(self, *, kind: str, line: str) -> Text:
             if kind == "diff":
@@ -6588,8 +8597,12 @@ async def run(
         typer.Option("--schema", "-s", help="the name or url of a required schema"),
     ] = [],
     model: Annotated[
-        str, typer.Option(..., help="Name of the LLM model to use for the chatbot")
-    ] = "gpt-5.5",
+        list[str],
+        typer.Option(
+            "--model",
+            help="Name of an LLM model to make available. Can be repeated.",
+        ),
+    ] = ["gpt-5.5"],
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -6746,6 +8759,19 @@ async def run(
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
     decision_model: DecisionModelOption = None,
+    transcription_model: TranscriptionModelOption = (
+        DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
+    ),
+    voice: VoiceOption = None,
+    turn_detection: TurnDetectionOption = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
+    realtime_protocol: RealtimeProtocolOption = [],
+    output_modality: OutputModalityOption = "text",
+    input_audio_format: InputAudioFormatOption = "audio/pcm",
+    input_audio_sample_rate: InputAudioSampleRateOption = 24000,
+    input_audio_bitrate: InputAudioBitrateOption = None,
+    output_audio_format: OutputAudioFormatOption = "audio/pcm",
+    output_audio_sample_rate: OutputAudioSampleRateOption = 24000,
+    output_audio_bitrate: OutputAudioBitrateOption = None,
     always_reply: Annotated[
         Optional[bool],
         typer.Option(..., help="Always reply"),
@@ -6781,6 +8807,20 @@ async def run(
         typer.Option(
             "--verbose",
             help="Enable verbose logging and disable default log suppression",
+        ),
+    ] = False,
+    verbose_dataset: Annotated[
+        bool,
+        typer.Option(
+            "--verbose-dataset",
+            help="Persist streaming delta events to dataset thread storage for debugging",
+        ),
+    ] = False,
+    save_audio_input: Annotated[
+        bool,
+        typer.Option(
+            "--save-audio-input",
+            help="Persist realtime audio input chunks to dataset thread storage as binary attachments.",
         ),
     ] = False,
     thread_path: Annotated[
@@ -6851,12 +8891,12 @@ async def run(
         storage=storage,
         require_storage=require_storage,
     )
+    room = _require_resolved_room(resolve_room(room))
 
     key = await resolve_key(project_id=project_id, key=key)
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        room = resolve_room(room)
 
         jwt = os.getenv("MESHAGENT_TOKEN")
         if jwt is None:
@@ -6928,6 +8968,17 @@ async def run(
             require_advanced_shell=require_advanced_shell,
             llm_participant=llm_participant,
             decision_model=decision_model,
+            transcription_model=transcription_model,
+            voice=voice,
+            turn_detection=turn_detection,
+            realtime_protocols=_normalize_realtime_protocols(realtime_protocol),
+            output_modality=output_modality,
+            input_audio_format=input_audio_format,
+            input_audio_sample_rate=input_audio_sample_rate,
+            input_audio_bitrate=input_audio_bitrate,
+            output_audio_format=output_audio_format,
+            output_audio_sample_rate=output_audio_sample_rate,
+            output_audio_bitrate=output_audio_bitrate,
             always_reply=always_reply,
             threading_mode=resolved_threading_mode,
             thread_dir=resolved_thread_dir,
@@ -6936,6 +8987,7 @@ async def run(
             compaction_threshold=compaction_threshold,
             max_output_tokens=max_output_tokens,
             reasoning_effort=reasoning_effort,
+            verbose_dataset=verbose_dataset,
             working_dir=working_dir,
             dataset_namespace=resolved_dataset_namespace,
             skill_dirs=skill_dir,
@@ -6948,6 +9000,7 @@ async def run(
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
             room_rules_path=room_rules,
+            save_audio_input=save_audio_input,
             preamble_rule=preamble_rule,
         )
 
@@ -6955,18 +9008,51 @@ async def run(
 
         async def run_interactive_session(client: RoomClient) -> None:
             if runtime == "process":
-                interaction_task = asyncio.create_task(
-                    _run_process_run_tui(
-                        bot=bot,
-                        model=model,
-                        thread_path=thread_path,
-                        thread_storage=thread_storage,
-                        agent_name=agent_name,
-                        thread_dir=resolved_thread_dir,
-                        threading_mode=resolved_threading_mode,
-                        message=message,
-                        working_dir=working_dir,
+                process_tui_kwargs: dict[str, Any] = {
+                    "bot": bot,
+                    "model": model,
+                    "thread_path": thread_path,
+                    "thread_storage": thread_storage,
+                    "agent_name": agent_name,
+                    "thread_dir": resolved_thread_dir,
+                    "threading_mode": resolved_threading_mode,
+                    "message": message,
+                    "working_dir": working_dir,
+                }
+                if voice is not None:
+                    process_tui_kwargs["voice"] = voice
+                process_tui_kwargs["turn_detection"] = turn_detection
+                process_tui_kwargs["realtime_protocols"] = (
+                    _normalize_realtime_protocols(realtime_protocol)
+                )
+                process_tui_kwargs["output_modality"] = output_modality
+                audio_format_kwargs = _realtime_adapter_audio_kwargs(
+                    voice=None,
+                    input_format=_audio_format_option(
+                        audio_format=input_audio_format,
+                        sample_rate=input_audio_sample_rate,
+                        bitrate=input_audio_bitrate,
+                    ),
+                    output_format=_audio_format_option(
+                        audio_format=output_audio_format,
+                        sample_rate=output_audio_sample_rate,
+                        bitrate=output_audio_bitrate,
+                    ),
+                )
+                if "input_format" in audio_format_kwargs:
+                    process_tui_kwargs["input_audio_format"] = input_audio_format
+                    process_tui_kwargs["input_audio_sample_rate"] = (
+                        input_audio_sample_rate
                     )
+                    process_tui_kwargs["input_audio_bitrate"] = input_audio_bitrate
+                if "output_format" in audio_format_kwargs:
+                    process_tui_kwargs["output_audio_format"] = output_audio_format
+                    process_tui_kwargs["output_audio_sample_rate"] = (
+                        output_audio_sample_rate
+                    )
+                    process_tui_kwargs["output_audio_bitrate"] = output_audio_bitrate
+                interaction_task = asyncio.create_task(
+                    _run_process_run_tui(**process_tui_kwargs)
                 )
             else:
                 interaction_task = asyncio.create_task(
@@ -7032,11 +9118,11 @@ async def use(
     runtime = _current_command_runtime()
     root = logging.getLogger()
     root.setLevel(logging.ERROR)
+    room = _require_resolved_room(resolve_room(room))
 
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        room = resolve_room(room)
 
         if runtime == "process":
             if agent_name is None or agent_name.strip() == "":
