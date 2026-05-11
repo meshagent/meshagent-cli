@@ -501,8 +501,8 @@ class _StatusAwareLLMAdapter(LLMAdapter[Any]):
     def default_model(self) -> str:
         return self._delegate.default_model()
 
-    def create_session(self):
-        return self._delegate.create_session()
+    def create_session(self, *, usage_callback=None):
+        return self._delegate.create_session(usage_callback=usage_callback)
 
     def get_additional_instructions(self) -> str | None:
         return self._delegate.get_additional_instructions()

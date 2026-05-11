@@ -34,7 +34,7 @@ class _FakeAskAdapter(LLMAdapter[object]):
     def default_model(self) -> str:
         return "gpt-5.5"
 
-    def create_session(self) -> AgentSessionContext:
+    def create_session(self, *, usage_callback=None) -> AgentSessionContext:
         return AgentSessionContext()
 
     async def create_response(
