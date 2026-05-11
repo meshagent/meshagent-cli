@@ -707,8 +707,8 @@ def test_build_process_agent_uses_realtime_adapter_for_openai_realtime_model(
             "model": "gpt-realtime",
             "api_key": None,
             "log_requests": None,
-            "session_options": {"output_modalities": ["text"]},
-            "response_options": {"output_modalities": ["text"]},
+            "session_options": {"output_modalities": ["text", "audio"]},
+            "response_options": {"output_modalities": ["text", "audio"]},
             "allowed_models": ["gpt-realtime"],
             "transcription_model": process.DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL,
             "turn_detection": process.DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
@@ -718,12 +718,29 @@ def test_build_process_agent_uses_realtime_adapter_for_openai_realtime_model(
 
 
 def test_openai_realtime_session_options_leave_transcription_to_adapter() -> None:
-    assert process._openai_realtime_session_options(output_modality="text") == {
+    assert process._openai_realtime_session_options(output_modalities=("text",)) == {
         "output_modalities": ["text"],
     }
-    assert process._openai_realtime_response_options(output_modality="audio") == {
+    assert process._openai_realtime_response_options(output_modalities=("audio",)) == {
         "output_modalities": ["audio"],
     }
+
+
+def test_configured_realtime_models_use_output_modality_filter() -> None:
+    current_model = process._agent_model_changed_for_model(
+        model="gpt-realtime",
+        thread_id="/threads/test.thread",
+        output_modalities=("audio",),
+    )
+
+    response = process._configured_models_response(
+        models=["gpt-realtime"],
+        current_model=current_model,
+        output_modalities=("audio",),
+    )
+
+    assert response.providers[0].models[0].modalities == ["audio"]
+    assert current_model.output_modalities == ["audio"]
 
 
 def test_build_process_agent_passes_custom_realtime_transcription_model(
@@ -1497,7 +1514,7 @@ async def test_process_run_starts_room_agent_and_uses_ask_tui(
         "working_dir": None,
         "turn_detection": process.DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
         "realtime_protocols": process.DEFAULT_OPENAI_REALTIME_PROTOCOLS,
-        "output_modality": "text",
+        "output_modalities": [],
     }
     assert captured["account_closed"] is True
 

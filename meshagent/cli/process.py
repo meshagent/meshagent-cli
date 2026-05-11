@@ -9,6 +9,7 @@ from typing import (
     Literal,
     Awaitable,
     Callable,
+    Iterable,
 )
 import uuid
 from meshagent.tools import (
@@ -955,7 +956,7 @@ async def _run_process_run_tui(
     realtime_protocols: tuple[
         Literal["websocket", "webrtc"], ...
     ] = DEFAULT_OPENAI_REALTIME_PROTOCOLS,
-    output_modality: OutputModality = "text",
+    output_modalities: Iterable[str] | None = None,
     input_audio_format: str = "audio/pcm",
     input_audio_sample_rate: int | None = 24000,
     input_audio_bitrate: int | None = None,
@@ -973,6 +974,7 @@ async def _run_process_run_tui(
     from meshagent.cli import ask as ask_module
 
     configured_models = _normalize_model_options(model)
+    selected_output_modalities = _normalize_output_modalities(output_modalities)
     thread_id = _process_run_thread_id(
         thread_path=thread_path,
         thread_storage=thread_storage,
@@ -987,7 +989,7 @@ async def _run_process_run_tui(
             voice=voice,
             turn_detection=turn_detection,
             realtime_protocols=realtime_protocols,
-            output_modality=output_modality,
+            output_modalities=selected_output_modalities,
             input_audio_format=input_audio_format,
             input_audio_sample_rate=input_audio_sample_rate,
             input_audio_bitrate=input_audio_bitrate,
@@ -1023,7 +1025,7 @@ async def _run_process_run_tui(
                     voice=voice,
                     turn_detection=turn_detection,
                     realtime_protocols=realtime_protocols,
-                    output_modality=output_modality,
+                    output_modalities=selected_output_modalities,
                     input_audio_format=input_audio_format,
                     input_audio_sample_rate=input_audio_sample_rate,
                     input_audio_bitrate=input_audio_bitrate,
@@ -2065,10 +2067,13 @@ RealtimeProtocolOption = Annotated[
 ]
 
 OutputModalityOption = Annotated[
-    OutputModality,
+    list[str],
     typer.Option(
         "--output-modality",
-        help="Default response output modality: text or audio.",
+        help=(
+            "Restrict supported response output modalities to text or audio. "
+            "Pass multiple times to allow multiple output modalities; omit to allow all."
+        ),
     ),
 ]
 
@@ -2451,16 +2456,32 @@ _DEFAULT_OPENAI_REALTIME_DECISION_MODEL = "gpt-5.4-mini"
 
 def _openai_realtime_session_options(
     *,
-    output_modality: OutputModality,
+    output_modalities: tuple[OutputModality, ...],
 ) -> dict[str, Any]:
-    return {"output_modalities": [output_modality]}
+    return {"output_modalities": list(output_modalities)}
 
 
 def _openai_realtime_response_options(
     *,
-    output_modality: OutputModality,
+    output_modalities: tuple[OutputModality, ...],
 ) -> dict[str, Any]:
-    return {"output_modalities": [output_modality]}
+    return {"output_modalities": list(output_modalities)}
+
+
+def _normalize_output_modalities(
+    output_modalities: Iterable[str] | None,
+) -> tuple[OutputModality, ...]:
+    selected: list[OutputModality] = []
+    for raw_modality in output_modalities or ():
+        normalized_modality = raw_modality.strip().lower()
+        if normalized_modality not in {"text", "audio"}:
+            raise typer.BadParameter("output modality must be one of: text, audio")
+        modality: OutputModality = "audio" if normalized_modality == "audio" else "text"
+        if modality not in selected:
+            selected.append(modality)
+    if len(selected) == 0:
+        return ("text", "audio")
+    return tuple(selected)
 
 
 def _audio_format_option(
@@ -2585,9 +2606,15 @@ def _active_model_from_models_response(
                 output_format=model.output_format,
                 turn_detection=model.turn_detection,
                 realtime_protocols=model.realtime_protocols,
-                output_modalities=["text"],
+                output_modalities=_default_output_modalities_for_model_info(model),
             )
     return None
+
+
+def _default_output_modalities_for_model_info(
+    model: AgentModelInfo,
+) -> list[OutputModality]:
+    return [model.modalities[0]] if len(model.modalities) > 0 else ["text"]
 
 
 def _selected_model_from_models_response(
@@ -2620,7 +2647,7 @@ def _selected_model_from_models_response(
             output_format=selected_model.output_format,
             turn_detection=selected_model.turn_detection,
             realtime_protocols=selected_model.realtime_protocols,
-            output_modalities=["text"],
+            output_modalities=_default_output_modalities_for_model_info(selected_model),
         )
     return None
 
@@ -2659,7 +2686,7 @@ def _selected_default_model_for_provider(
             output_format=selected_model.output_format,
             turn_detection=selected_model.turn_detection,
             realtime_protocols=selected_model.realtime_protocols,
-            output_modalities=["text"],
+            output_modalities=_default_output_modalities_for_model_info(selected_model),
         )
     return None
 
@@ -2710,7 +2737,7 @@ def _agent_model_changed_for_model(
     realtime_protocols: tuple[
         Literal["websocket", "webrtc"], ...
     ] = DEFAULT_OPENAI_REALTIME_PROTOCOLS,
-    output_modality: OutputModality = "text",
+    output_modalities: Iterable[str] | None = None,
 ) -> AgentModelChanged:
     provider = _provider_name_for_model(model)
     input_format, output_format = _configured_realtime_audio_formats(
@@ -2726,7 +2753,9 @@ def _agent_model_changed_for_model(
     selected_output_modalities: list[OutputModality] = ["text"]
     if provider == "openai-realtime":
         selected_voice = voice or DEFAULT_OPENAI_REALTIME_VOICE
-        selected_output_modalities = [output_modality]
+        selected_output_modalities = [
+            _normalize_output_modalities(output_modalities)[0]
+        ]
     return AgentModelChanged(
         type=AGENT_EVENT_MODEL_CHANGED,
         thread_id=thread_id,
@@ -2792,8 +2821,9 @@ def _configured_models_response(
     realtime_protocols: tuple[
         Literal["websocket", "webrtc"], ...
     ] = DEFAULT_OPENAI_REALTIME_PROTOCOLS,
-    output_modality: OutputModality = "text",
+    output_modalities: Iterable[str] | None = None,
 ) -> ModelsResponse:
+    selected_output_modalities = _normalize_output_modalities(output_modalities)
     grouped: dict[str, list[str]] = {}
     for model in models:
         grouped.setdefault(_provider_name_for_model(model), []).append(model)
@@ -2812,7 +2842,7 @@ def _configured_models_response(
                         voice=voice,
                         turn_detection=turn_detection,
                         realtime_protocols=realtime_protocols,
-                        output_modality=output_modality,
+                        output_modalities=selected_output_modalities,
                         input_audio_format=input_audio_format,
                         input_audio_sample_rate=input_audio_sample_rate,
                         input_audio_bitrate=input_audio_bitrate,
@@ -2849,9 +2879,9 @@ def _agent_model_info_for_configured_model(
     realtime_protocols: tuple[
         Literal["websocket", "webrtc"], ...
     ] = DEFAULT_OPENAI_REALTIME_PROTOCOLS,
-    output_modality: OutputModality = "text",
+    output_modalities: Iterable[str] | None = None,
 ) -> AgentModelInfo:
-    del output_modality
+    selected_output_modalities = _normalize_output_modalities(output_modalities)
     input_format, output_format = _configured_realtime_audio_formats(
         provider_name=provider_name,
         input_audio_format=input_audio_format,
@@ -2865,7 +2895,9 @@ def _agent_model_info_for_configured_model(
         name=model,
         friendly_name=model,
         modalities=(
-            ["text", "audio"] if provider_name == "openai-realtime" else ["text"]
+            list(selected_output_modalities)
+            if provider_name == "openai-realtime"
+            else ["text"]
         ),
         active=(
             current_model is not None
@@ -3372,7 +3404,7 @@ def _build_runtime_agent(
     realtime_protocols: tuple[
         Literal["websocket", "webrtc"], ...
     ] = DEFAULT_OPENAI_REALTIME_PROTOCOLS,
-    output_modality: OutputModality = "text",
+    output_modalities: Iterable[str] | None = None,
     input_audio_format: str = "audio/pcm",
     input_audio_sample_rate: int | None = 24000,
     input_audio_bitrate: int | None = None,
@@ -3388,6 +3420,7 @@ def _build_runtime_agent(
 ):
     builder = _builder_for_runtime(runtime)
     selected_models = _normalize_model_options(model)
+    selected_output_modalities = _normalize_output_modalities(output_modalities)
     builder_model: str | list[str]
     if runtime == "process":
         builder_model = selected_models
@@ -3447,7 +3480,7 @@ def _build_runtime_agent(
         "voice": voice,
         "turn_detection": turn_detection,
         "realtime_protocols": realtime_protocols,
-        "output_modality": output_modality,
+        "output_modalities": selected_output_modalities,
         "input_audio_format": input_audio_format,
         "input_audio_sample_rate": input_audio_sample_rate,
         "input_audio_bitrate": input_audio_bitrate,
@@ -3609,7 +3642,7 @@ def build_chatbot(
     realtime_protocols: tuple[
         Literal["websocket", "webrtc"], ...
     ] = DEFAULT_OPENAI_REALTIME_PROTOCOLS,
-    output_modality: OutputModality = "text",
+    output_modalities: Iterable[str] | None = None,
     input_audio_format: str = "audio/pcm",
     input_audio_sample_rate: int | None = 24000,
     input_audio_bitrate: int | None = None,
@@ -3684,6 +3717,7 @@ def build_chatbot(
 
     BaseClass = ChatBot
     resolved_decision_model = _normalized_decision_model(decision_model=decision_model)
+    selected_output_modalities = _normalize_output_modalities(output_modalities)
     realtime_input_format = _audio_format_option(
         audio_format=input_audio_format,
         sample_rate=input_audio_sample_rate,
@@ -3713,10 +3747,10 @@ def build_chatbot(
                 api_key=api_key,
                 log_requests=log_llm_requests,
                 session_options=_openai_realtime_session_options(
-                    output_modality=output_modality
+                    output_modalities=selected_output_modalities
                 ),
                 response_options=_openai_realtime_response_options(
-                    output_modality=output_modality
+                    output_modalities=selected_output_modalities
                 ),
                 transcription_model=transcription_model,
                 turn_detection=turn_detection,
@@ -4126,7 +4160,7 @@ def build_process_agent(
     realtime_protocols: tuple[
         Literal["websocket", "webrtc"], ...
     ] = DEFAULT_OPENAI_REALTIME_PROTOCOLS,
-    output_modality: OutputModality = "text",
+    output_modalities: Iterable[str] | None = None,
     input_audio_format: str = "audio/pcm",
     input_audio_sample_rate: int | None = 24000,
     input_audio_bitrate: int | None = None,
@@ -4234,6 +4268,7 @@ def build_process_agent(
         sample_rate=output_audio_sample_rate,
         bitrate=output_audio_bitrate,
     )
+    selected_output_modalities = _normalize_output_modalities(output_modalities)
     supports_openai_responses_tools = _has_openai_responses_provider(
         models=selected_models,
         llm_participant=llm_participant,
@@ -4354,10 +4389,10 @@ def build_process_agent(
                         api_key=api_key,
                         log_requests=log_llm_requests,
                         session_options=_openai_realtime_session_options(
-                            output_modality=output_modality
+                            output_modalities=selected_output_modalities
                         ),
                         response_options=_openai_realtime_response_options(
-                            output_modality=output_modality
+                            output_modalities=selected_output_modalities
                         ),
                         allowed_models=realtime_models,
                         transcription_model=transcription_model,
@@ -5415,7 +5450,7 @@ async def join(
     voice: VoiceOption = None,
     turn_detection: TurnDetectionOption = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
     realtime_protocol: RealtimeProtocolOption = [],
-    output_modality: OutputModalityOption = "text",
+    output_modality: OutputModalityOption = [],
     input_audio_format: InputAudioFormatOption = "audio/pcm",
     input_audio_sample_rate: InputAudioSampleRateOption = 24000,
     input_audio_bitrate: InputAudioBitrateOption = None,
@@ -5605,7 +5640,7 @@ async def join(
             voice=voice,
             turn_detection=turn_detection,
             realtime_protocols=_normalize_realtime_protocols(realtime_protocol),
-            output_modality=output_modality,
+            output_modalities=output_modality,
             input_audio_format=input_audio_format,
             input_audio_sample_rate=input_audio_sample_rate,
             input_audio_bitrate=input_audio_bitrate,
@@ -5882,7 +5917,7 @@ async def service(
     voice: VoiceOption = None,
     turn_detection: TurnDetectionOption = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
     realtime_protocol: RealtimeProtocolOption = [],
-    output_modality: OutputModalityOption = "text",
+    output_modality: OutputModalityOption = [],
     input_audio_format: InputAudioFormatOption = "audio/pcm",
     input_audio_sample_rate: InputAudioSampleRateOption = 24000,
     input_audio_bitrate: InputAudioBitrateOption = None,
@@ -6057,7 +6092,7 @@ async def service(
             voice=voice,
             turn_detection=turn_detection,
             realtime_protocols=_normalize_realtime_protocols(realtime_protocol),
-            output_modality=output_modality,
+            output_modalities=output_modality,
             input_audio_format=input_audio_format,
             input_audio_sample_rate=input_audio_sample_rate,
             input_audio_bitrate=input_audio_bitrate,
@@ -6309,7 +6344,7 @@ async def spec(
     voice: VoiceOption = None,
     turn_detection: TurnDetectionOption = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
     realtime_protocol: RealtimeProtocolOption = [],
-    output_modality: OutputModalityOption = "text",
+    output_modality: OutputModalityOption = [],
     input_audio_format: InputAudioFormatOption = "audio/pcm",
     input_audio_sample_rate: InputAudioSampleRateOption = 24000,
     input_audio_bitrate: InputAudioBitrateOption = None,
@@ -6460,7 +6495,7 @@ async def spec(
             voice=voice,
             turn_detection=turn_detection,
             realtime_protocols=_normalize_realtime_protocols(realtime_protocol),
-            output_modality=output_modality,
+            output_modalities=output_modality,
             input_audio_format=input_audio_format,
             input_audio_sample_rate=input_audio_sample_rate,
             input_audio_bitrate=input_audio_bitrate,
@@ -6728,7 +6763,7 @@ async def deploy(
     voice: VoiceOption = None,
     turn_detection: TurnDetectionOption = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
     realtime_protocol: RealtimeProtocolOption = [],
-    output_modality: OutputModalityOption = "text",
+    output_modality: OutputModalityOption = [],
     input_audio_format: InputAudioFormatOption = "audio/pcm",
     input_audio_sample_rate: InputAudioSampleRateOption = 24000,
     input_audio_bitrate: InputAudioBitrateOption = None,
@@ -6886,7 +6921,7 @@ async def deploy(
             voice=voice,
             turn_detection=turn_detection,
             realtime_protocols=_normalize_realtime_protocols(realtime_protocol),
-            output_modality=output_modality,
+            output_modalities=output_modality,
             input_audio_format=input_audio_format,
             input_audio_sample_rate=input_audio_sample_rate,
             input_audio_bitrate=input_audio_bitrate,
@@ -8765,7 +8800,7 @@ async def run(
     voice: VoiceOption = None,
     turn_detection: TurnDetectionOption = DEFAULT_OPENAI_REALTIME_TURN_DETECTION,
     realtime_protocol: RealtimeProtocolOption = [],
-    output_modality: OutputModalityOption = "text",
+    output_modality: OutputModalityOption = [],
     input_audio_format: InputAudioFormatOption = "audio/pcm",
     input_audio_sample_rate: InputAudioSampleRateOption = 24000,
     input_audio_bitrate: InputAudioBitrateOption = None,
@@ -8972,7 +9007,7 @@ async def run(
             voice=voice,
             turn_detection=turn_detection,
             realtime_protocols=_normalize_realtime_protocols(realtime_protocol),
-            output_modality=output_modality,
+            output_modalities=output_modality,
             input_audio_format=input_audio_format,
             input_audio_sample_rate=input_audio_sample_rate,
             input_audio_bitrate=input_audio_bitrate,
@@ -9025,7 +9060,7 @@ async def run(
                 process_tui_kwargs["realtime_protocols"] = (
                     _normalize_realtime_protocols(realtime_protocol)
                 )
-                process_tui_kwargs["output_modality"] = output_modality
+                process_tui_kwargs["output_modalities"] = output_modality
                 audio_format_kwargs = _realtime_adapter_audio_kwargs(
                     voice=None,
                     input_format=_audio_format_option(
