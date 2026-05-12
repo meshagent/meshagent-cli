@@ -17,8 +17,8 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     assert "meshagent init" in result.output
     assert "Created a minimal deployable Python backend agent" in result.output
     assert "meshagent doctor" in result.output
-    assert "meshagent deploy ." in result.output
-    assert "--meshagent-token agentDefault" in result.output
+    assert "MESHAGENT_ROOM=<room> ./scripts/dev.sh" in result.output
+    assert "./scripts/deploy.sh" in result.output
     assert "--meshagent-token full" not in result.output
     assert " -e " not in result.output
     assert "--liveness" not in result.output
@@ -27,6 +27,10 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     pyproject = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
     server_py = (tmp_path / "server.py").read_text(encoding="utf-8")
     dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")
+    dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
+    deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    assert not (tmp_path / "Makefile").exists()
 
     assert 'requires-python = ">=3.13"' in pyproject
     assert '"meshagent-api==' in pyproject
@@ -42,6 +46,17 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     assert "LABEL meshagent.runtime=python" in dockerfile
     assert 'CMD ["-m", "server"]' in dockerfile
     assert "EXPOSE" not in dockerfile
+    assert 'PYTHON="${PYTHON:-python3.13}"' in install_sh
+    assert 'VENV="${VENV:-.venv}"' in install_sh
+    assert 'PIP_ONLY_BINARY="${PIP_ONLY_BINARY:-:all:}"' in install_sh
+    assert 'meshagent room connect -- "$VENV_PYTHON" server.py' in dev_sh
+    assert "./scripts/install.sh" not in dev_sh
+    assert "MESHAGENT_INIT_DEV_READY_PATH" in server_py
+    assert "room.storage.upload" in server_py
+    assert (
+        'meshagent deploy . --tag "$IMAGE_TAG" --meshagent-token agentDefault --wait'
+        in deploy_sh
+    )
 
     assert diagnosis.language == "Python"
     assert diagnosis.sdk == "meshagent-api"
@@ -95,20 +110,35 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     pyproject = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
     server_py = (tmp_path / "server.py").read_text(encoding="utf-8")
     dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")
+    dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
+    deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    assert not (tmp_path / "Makefile").exists()
 
     assert '"aiohttp[speedups]~=3.13.0"' in pyproject
-    assert "meshagent-api" not in pyproject
+    assert '"meshagent-api==' in pyproject
     assert "from aiohttp import web" in server_py
     assert 'app.router.add_get("/status", status)' in server_py
     assert 'app.router.add_get("/api/ping", ping)' in server_py
-    assert "RoomClient" not in server_py
+    assert "RoomClient" in server_py
+    assert "MESHAGENT_INIT_DEV_READY_PATH" in server_py
+    assert "room.storage.upload" in server_py
     assert "python-sdk-slim" in dockerfile
     assert "FROM scratch" in dockerfile
     assert "LABEL meshagent.runtime=python" in dockerfile
     assert "EXPOSE 8000" in dockerfile
-    assert diagnosis.sdk is None
+    assert 'PYTHON="${PYTHON:-python3.13}"' in install_sh
+    assert 'VENV="${VENV:-.venv}"' in install_sh
+    assert 'PIP_ONLY_BINARY="${PIP_ONLY_BINARY:-:all:}"' in install_sh
+    assert 'meshagent room connect -- "$VENV_PYTHON" server.py' in dev_sh
+    assert "./scripts/install.sh" not in dev_sh
+    assert (
+        'meshagent deploy . --tag "$IMAGE_TAG" --public --liveness /health --wait'
+        in deploy_sh
+    )
+    assert diagnosis.sdk == "meshagent-api"
     assert diagnosis.python_has_pyproject is True
-    assert diagnosis.python_source_uses_sdk is False
+    assert diagnosis.python_source_uses_sdk is True
 
 
 def test_init_creates_javascript_webserver_non_interactively(tmp_path) -> None:
@@ -126,23 +156,37 @@ def test_init_creates_javascript_webserver_non_interactively(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "Created a minimal deployable JavaScript web server" in result.output
-    assert "meshagent deploy ." in result.output
+    assert "MESHAGENT_ROOM=<room> npm run dev" in result.output
+    assert "npm run deploy" in result.output
     package_json = tmp_path / "package.json"
+    npmrc = tmp_path / ".npmrc"
     server_js = tmp_path / "server.js"
     dockerfile = tmp_path / "Dockerfile"
     assert package_json.is_file()
+    assert npmrc.is_file()
     assert server_js.is_file()
     assert dockerfile.is_file()
     package_text = package_json.read_text(encoding="utf-8")
+    npmrc_text = npmrc.read_text(encoding="utf-8")
     dockerfile_text = dockerfile.read_text(encoding="utf-8")
+    assert "cache=.npm-cache" in npmrc_text
+    assert "audit=false" in npmrc_text
     assert '"build": "ncc build server.js -o dist"' in package_text
+    assert '"dev": "meshagent room connect -- node server.js"' in package_text
+    assert (
+        '"deploy": "meshagent deploy . --tag meshagent-init-javascript:dev --public --liveness /health --wait"'
+        in package_text
+    )
     assert '"start": "node dist/index.js"' in package_text
     assert '"@vercel/ncc"' in package_text
-    assert "@meshagent/meshagent" not in package_text
+    assert "@meshagent/meshagent" in package_text
     server_text = server_js.read_text(encoding="utf-8")
     assert "hello from meshagent init" in server_text
     assert 'request.url === "/status"' in server_text
     assert 'request.url === "/api/ping"' in server_text
+    assert "RoomClient" in server_text
+    assert "MESHAGENT_INIT_DEV_READY_PATH" in server_text
+    assert "room.storage.upload" in server_text
     assert "node-sdk" in dockerfile_text
     assert "RUN npm run build" in dockerfile_text
     assert "COPY --from=build /app/dist/index.js /app/index.js" in dockerfile_text
@@ -166,15 +210,25 @@ def test_init_creates_javascript_backend_agent_non_interactively(tmp_path) -> No
 
     assert result.exit_code == 0
     assert "Created a minimal deployable JavaScript backend agent" in result.output
-    assert "--meshagent-token agentDefault" in result.output
+    assert "MESHAGENT_ROOM=<room> npm run dev" in result.output
+    assert "npm run deploy" in result.output
     assert "--meshagent-token full" not in result.output
     assert " -e " not in result.output
     assert "--liveness" not in result.output
     assert "@meshagent/meshagent" in (tmp_path / "package.json").read_text(
         encoding="utf-8"
     )
+    assert "cache=.npm-cache" in (tmp_path / ".npmrc").read_text(encoding="utf-8")
+    package_text = (tmp_path / "package.json").read_text(encoding="utf-8")
+    assert '"dev": "meshagent room connect -- node server.js"' in package_text
+    assert (
+        '"deploy": "meshagent deploy . --tag meshagent-init-javascript-agent:dev --meshagent-token agentDefault --wait"'
+        in package_text
+    )
     server_js = (tmp_path / "server.js").read_text(encoding="utf-8")
     assert "RoomClient" in server_js
+    assert "MESHAGENT_INIT_DEV_READY_PATH" in server_js
+    assert "room.storage.upload" in server_js
     assert "server.listen" not in server_js
     dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     assert "node-sdk" in dockerfile
@@ -202,21 +256,35 @@ def test_init_creates_typescript_webserver_non_interactively(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "Created a minimal deployable TypeScript web server" in result.output
-    assert "meshagent deploy ." in result.output
+    assert "MESHAGENT_ROOM=<room> npm run dev" in result.output
+    assert "npm run deploy" in result.output
     assert (tmp_path / "package.json").is_file()
+    assert (tmp_path / ".npmrc").is_file()
     assert (tmp_path / "tsconfig.json").is_file()
     assert (tmp_path / "src" / "server.ts").is_file()
     assert (tmp_path / "Dockerfile").is_file()
     package_text = (tmp_path / "package.json").read_text(encoding="utf-8")
+    npmrc_text = (tmp_path / ".npmrc").read_text(encoding="utf-8")
     dockerfile_text = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    assert "cache=.npm-cache" in npmrc_text
+    assert "audit=false" in npmrc_text
     assert '"build": "ncc build src/server.ts -o dist"' in package_text
+    assert '"dev": "meshagent room connect -- tsx src/server.ts"' in package_text
+    assert (
+        '"deploy": "meshagent deploy . --tag meshagent-init-typescript:dev --public --liveness /health --wait"'
+        in package_text
+    )
     assert '"start": "node dist/index.js"' in package_text
+    assert '"tsx"' in package_text
     assert '"@vercel/ncc"' in package_text
+    assert "@meshagent/meshagent" in package_text
     server_ts = (tmp_path / "src" / "server.ts").read_text(encoding="utf-8")
     assert "createServer" in server_ts
     assert 'request.url === "/status"' in server_ts
     assert 'request.url === "/api/ping"' in server_ts
-    assert "RoomClient" not in server_ts
+    assert "RoomClient" in server_ts
+    assert "MESHAGENT_INIT_DEV_READY_PATH" in server_ts
+    assert "room.storage.upload" in server_ts
     assert "node-sdk" in dockerfile_text
     assert "RUN npm run build" in dockerfile_text
     assert "COPY --from=build /app/dist/index.js /app/index.js" in dockerfile_text
@@ -225,7 +293,7 @@ def test_init_creates_typescript_webserver_non_interactively(tmp_path) -> None:
     assert "EXPOSE 3000" in dockerfile_text
     assert diagnosis.language == "TypeScript"
     assert diagnosis.javascript_flavor == "Node.js/TypeScript"
-    assert diagnosis.sdk is None
+    assert diagnosis.sdk == "@meshagent/meshagent"
 
 
 def test_init_creates_typescript_backend_agent_non_interactively(tmp_path) -> None:
@@ -244,14 +312,24 @@ def test_init_creates_typescript_backend_agent_non_interactively(tmp_path) -> No
 
     assert result.exit_code == 0
     assert "Created a minimal deployable TypeScript backend agent" in result.output
-    assert "--meshagent-token agentDefault" in result.output
+    assert "MESHAGENT_ROOM=<room> npm run dev" in result.output
+    assert "npm run deploy" in result.output
     assert "--meshagent-token full" not in result.output
     assert " -e " not in result.output
     assert "@meshagent/meshagent" in (tmp_path / "package.json").read_text(
         encoding="utf-8"
     )
+    assert "cache=.npm-cache" in (tmp_path / ".npmrc").read_text(encoding="utf-8")
+    package_text = (tmp_path / "package.json").read_text(encoding="utf-8")
+    assert '"dev": "meshagent room connect -- tsx src/server.ts"' in package_text
+    assert (
+        '"deploy": "meshagent deploy . --tag meshagent-init-typescript-agent:dev --meshagent-token agentDefault --wait"'
+        in package_text
+    )
     server_ts = (tmp_path / "src" / "server.ts").read_text(encoding="utf-8")
     assert "RoomClient" in server_ts
+    assert "MESHAGENT_INIT_DEV_READY_PATH" in server_ts
+    assert "room.storage.upload" in server_ts
     assert "server.listen" not in server_ts
     dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     assert "node-sdk" in dockerfile
@@ -282,16 +360,34 @@ def test_init_creates_react_webserver_non_interactively(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "Created a minimal deployable React web server" in result.output
-    assert "--room-mount /:/data:rw" in result.output
+    assert "MESHAGENT_ROOM=<room> npm run dev" in result.output
+    assert "npm run deploy" in result.output
     assert (tmp_path / "package.json").is_file()
+    assert (tmp_path / ".npmrc").is_file()
     assert (tmp_path / "tsconfig.json").is_file()
     assert (tmp_path / "vite.config.ts").is_file()
     assert (tmp_path / "index.html").is_file()
     assert (tmp_path / "src" / "main.tsx").is_file()
     package_json = (tmp_path / "package.json").read_text(encoding="utf-8")
+    npmrc = (tmp_path / ".npmrc").read_text(encoding="utf-8")
     dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    assert "cache=.npm-cache" in npmrc
+    assert "audit=false" in npmrc
     assert '"react"' in package_json
     assert '"vite"' in package_json
+    assert (
+        '"dev": "meshagent room connect -- sh -c '
+        "'node scripts/dev-room-proof.js & vite --host 0.0.0.0'\"" in package_json
+    )
+    assert "@meshagent/meshagent" in package_json
+    assert (
+        '"deploy": "meshagent deploy . --tag meshagent-init-react:dev --public --liveness /health --room-mount /:/data:rw --wait"'
+        in package_json
+    )
+    dev_probe = (tmp_path / "scripts" / "dev-room-proof.js").read_text(encoding="utf-8")
+    assert "RoomClient" in dev_probe
+    assert "MESHAGENT_INIT_DEV_READY_PATH" in dev_probe
+    assert "room.storage.upload" in dev_probe
     assert "nginx:1.27-alpine" in dockerfile
     assert "listen 80" in dockerfile
     assert "location = /status" in dockerfile
@@ -299,7 +395,7 @@ def test_init_creates_react_webserver_non_interactively(tmp_path) -> None:
     assert "EXPOSE 80" in dockerfile
     assert diagnosis.language == "TypeScript"
     assert diagnosis.javascript_flavor == "React/Vite"
-    assert diagnosis.sdk is None
+    assert diagnosis.sdk == "@meshagent/meshagent"
 
 
 def test_init_rejects_react_backend_agent(tmp_path) -> None:
@@ -337,7 +433,8 @@ def test_init_creates_dotnet_backend_agent_non_interactively(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "Created a minimal deployable .NET backend agent" in result.output
-    assert "--meshagent-token agentDefault" in result.output
+    assert "MESHAGENT_ROOM=<room> ./scripts/dev.sh" in result.output
+    assert "./scripts/deploy.sh" in result.output
     assert "--meshagent-token full" not in result.output
     assert 'PackageReference Include="Meshagent.Api"' in (
         tmp_path / "MeshAgentHello.csproj"
@@ -345,11 +442,25 @@ def test_init_creates_dotnet_backend_agent_non_interactively(tmp_path) -> None:
     csproj = (tmp_path / "MeshAgentHello.csproj").read_text(encoding="utf-8")
     program_cs = (tmp_path / "Program.cs").read_text(encoding="utf-8")
     dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")
+    dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
+    deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    assert not (tmp_path / "Makefile").exists()
     assert '<Project Sdk="Microsoft.NET.Sdk">' in csproj
     assert "RoomClient" in program_cs
+    assert "MESHAGENT_INIT_DEV_READY_PATH" in program_cs
+    assert "Storage.Upload" in program_cs
     assert "MapGet" not in program_cs
     assert "mcr.microsoft.com/dotnet/runtime:9.0" in dockerfile
     assert "EXPOSE" not in dockerfile
+    assert 'DOTNET_CLI_HOME="${DOTNET_CLI_HOME:-$ROOT/.dotnet-home}"' in install_sh
+    assert 'NUGET_PACKAGES="${NUGET_PACKAGES:-$ROOT/.nuget/packages}"' in install_sh
+    assert "dotnet restore" in install_sh
+    assert "meshagent room connect -- dotnet run" in dev_sh
+    assert (
+        'meshagent deploy . --tag "$IMAGE_TAG" --meshagent-token agentDefault --wait'
+        in deploy_sh
+    )
 
 
 def test_init_creates_dotnet_webserver_non_interactively(tmp_path) -> None:
@@ -371,13 +482,28 @@ def test_init_creates_dotnet_webserver_non_interactively(tmp_path) -> None:
     csproj = (tmp_path / "MeshAgentHello.csproj").read_text(encoding="utf-8")
     program_cs = (tmp_path / "Program.cs").read_text(encoding="utf-8")
     dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")
+    dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
+    deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    assert not (tmp_path / "Makefile").exists()
     assert '<Project Sdk="Microsoft.NET.Sdk.Web">' in csproj
+    assert 'PackageReference Include="Meshagent.Api"' in csproj
     assert 'MapGet("/health"' in program_cs
     assert 'MapGet("/status"' in program_cs
     assert 'MapGet("/api/ping"' in program_cs
-    assert "RoomClient" not in program_cs
+    assert "RoomClient" in program_cs
+    assert "MESHAGENT_INIT_DEV_READY_PATH" in program_cs
+    assert "Storage.Upload" in program_cs
     assert "mcr.microsoft.com/dotnet/aspnet:9.0" in dockerfile
     assert "EXPOSE 5000" in dockerfile
+    assert 'DOTNET_CLI_HOME="${DOTNET_CLI_HOME:-$ROOT/.dotnet-home}"' in install_sh
+    assert 'NUGET_PACKAGES="${NUGET_PACKAGES:-$ROOT/.nuget/packages}"' in install_sh
+    assert "dotnet restore" in install_sh
+    assert "meshagent room connect -- dotnet run" in dev_sh
+    assert (
+        'meshagent deploy . --tag "$IMAGE_TAG" --public --liveness /health --wait'
+        in deploy_sh
+    )
 
 
 def test_init_creates_flutter_webserver_non_interactively(tmp_path) -> None:
@@ -395,10 +521,16 @@ def test_init_creates_flutter_webserver_non_interactively(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "Created a minimal deployable Flutter web server" in result.output
-    assert "--room-mount /:/data:rw" in result.output
+    assert "MESHAGENT_ROOM=<room> ./scripts/dev.sh" in result.output
+    assert "./scripts/deploy.sh" in result.output
     assert (tmp_path / "pubspec.yaml").is_file()
     assert (tmp_path / "lib" / "main.dart").is_file()
+    assert (tmp_path / "tool" / "dev_room_proof.dart").is_file()
     assert (tmp_path / "web" / "index.html").is_file()
+    assert not (tmp_path / "Makefile").exists()
+    install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")
+    dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
+    deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert "flutter build web --release" in (tmp_path / "Dockerfile").read_text(
         encoding="utf-8"
     )
@@ -407,6 +539,19 @@ def test_init_creates_flutter_webserver_non_interactively(tmp_path) -> None:
     assert "location = /status" in flutter_dockerfile
     assert "location = /api/ping" in flutter_dockerfile
     assert "EXPOSE 80" in flutter_dockerfile
+    assert 'PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"' in install_sh
+    assert "flutter pub get" in install_sh
+    assert "meshagent room connect -- sh -c" in dev_sh
+    assert "dart run tool/dev_room_proof.dart" in dev_sh
+    assert "flutter run -d web-server" in dev_sh
+    dev_probe = (tmp_path / "tool" / "dev_room_proof.dart").read_text(encoding="utf-8")
+    assert "RoomClient" in dev_probe
+    assert "MESHAGENT_INIT_DEV_READY_PATH" in dev_probe
+    assert "room.storage.upload" in dev_probe
+    assert (
+        'meshagent deploy . --tag "$IMAGE_TAG" --public --liveness /health --room-mount /:/data:rw --wait'
+        in deploy_sh
+    )
 
 
 def test_init_creates_dart_backend_agent_non_interactively(tmp_path) -> None:
@@ -424,10 +569,17 @@ def test_init_creates_dart_backend_agent_non_interactively(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "Created a minimal deployable Dart backend agent" in result.output
-    assert "--meshagent-token agentDefault" in result.output
+    assert "MESHAGENT_ROOM=<room> ./scripts/dev.sh" in result.output
+    assert "./scripts/deploy.sh" in result.output
     assert "--meshagent-token full" not in result.output
     assert "meshagent:" in (tmp_path / "pubspec.yaml").read_text(encoding="utf-8")
     assert "RoomClient" in (tmp_path / "bin" / "server.dart").read_text(
+        encoding="utf-8"
+    )
+    assert "MESHAGENT_INIT_DEV_READY_PATH" in (
+        tmp_path / "bin" / "server.dart"
+    ).read_text(encoding="utf-8")
+    assert "room.storage.upload" in (tmp_path / "bin" / "server.dart").read_text(
         encoding="utf-8"
     )
     assert "HttpServer" not in (tmp_path / "bin" / "server.dart").read_text(
@@ -435,6 +587,17 @@ def test_init_creates_dart_backend_agent_non_interactively(tmp_path) -> None:
     )
     assert "FROM dart:stable" in (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     assert "EXPOSE" not in (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")
+    dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
+    deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    assert not (tmp_path / "Makefile").exists()
+    assert 'PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"' in install_sh
+    assert "dart pub get" in install_sh
+    assert "meshagent room connect -- dart run bin/server.dart" in dev_sh
+    assert (
+        'meshagent deploy . --tag "$IMAGE_TAG" --meshagent-token agentDefault --wait'
+        in deploy_sh
+    )
 
 
 def test_init_rejects_unknown_language(tmp_path) -> None:

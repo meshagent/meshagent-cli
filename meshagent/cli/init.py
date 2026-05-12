@@ -97,9 +97,11 @@ PYTHON_WEBSERVER = """\
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 
 from aiohttp import web
+from meshagent.api import RoomClient, WebSocketClientProtocol, websocket_room_url
 
 
 async def health(request: web.Request) -> web.Response:
@@ -121,6 +123,35 @@ async def ping(request: web.Request) -> web.Response:
     return web.json_response({"pong": True})
 
 
+async def publish_dev_ready_marker() -> None:
+    ready_path = os.environ.get("MESHAGENT_INIT_DEV_READY_PATH")
+    probe = os.environ.get("MESHAGENT_INIT_DEV_PROBE")
+    room_name = os.environ.get("MESHAGENT_ROOM")
+    token = os.environ.get("MESHAGENT_TOKEN")
+    if not ready_path or not probe or not room_name or not token:
+        return
+
+    protocol = WebSocketClientProtocol(
+        url=websocket_room_url(room_name=room_name),
+        token=token,
+    )
+    async with RoomClient(protocol_factory=protocol.create_factory()) as room:
+        payload = {
+            "probe": probe,
+            "room": room.room_name,
+            "language": "python",
+            "focus": "webserver",
+        }
+        await room.storage.upload(
+            path=ready_path,
+            data=(json.dumps(payload) + "\\n").encode("utf-8"),
+            overwrite=True,
+            mime_type="application/json",
+        )
+        print(f"MeshAgent init dev probe wrote: {ready_path} {probe}")
+        await room.wait_for_close()
+
+
 async def main() -> None:
     port = int(os.environ.get("PORT", "8000"))
     app = web.Application()
@@ -134,6 +165,7 @@ async def main() -> None:
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
     print(f"Serving on 0.0.0.0:{port}")
+    asyncio.create_task(publish_dev_ready_marker())
 
     await asyncio.Event().wait()
 
@@ -146,6 +178,7 @@ PYTHON_AGENT = """\
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 
 from meshagent.api import RoomClient, WebSocketClientProtocol, websocket_room_url
@@ -165,14 +198,36 @@ async def main() -> None:
     )
     async with RoomClient(protocol_factory=protocol.create_factory()) as room:
         print(f"Connected to MeshAgent room: {room.room_name}")
+        await publish_dev_ready_marker(room)
         await room.wait_for_close()
+
+
+async def publish_dev_ready_marker(room: RoomClient) -> None:
+    ready_path = os.environ.get("MESHAGENT_INIT_DEV_READY_PATH")
+    probe = os.environ.get("MESHAGENT_INIT_DEV_PROBE")
+    if not ready_path or not probe:
+        return
+
+    payload = {
+        "probe": probe,
+        "room": room.room_name,
+        "language": "python",
+        "focus": "backend-agent",
+    }
+    await room.storage.upload(
+        path=ready_path,
+        data=(json.dumps(payload) + "\\n").encode("utf-8"),
+        overwrite=True,
+        mime_type="application/json",
+    )
+    print(f"MeshAgent init dev probe wrote: {ready_path} {probe}")
 
 
 if __name__ == "__main__":
     asyncio.run(main())
 """
 
-PYTHON_WEBSERVER_PYPROJECT = """\
+PYTHON_WEBSERVER_PYPROJECT = f"""\
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
@@ -183,6 +238,7 @@ version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
   "aiohttp[speedups]~=3.13.0",
+  "meshagent-api=={__version__}",
 ]
 
 [tool.setuptools]
@@ -245,20 +301,72 @@ venv/
 .DS_Store
 """
 
-JAVASCRIPT_PACKAGE_JSON = """\
-{
+PYTHON_INSTALL_SCRIPT = """\
+#!/usr/bin/env sh
+set -eu
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+PYTHON="${PYTHON:-python3.13}"
+VENV="${VENV:-.venv}"
+VENV_PYTHON="$VENV/bin/python"
+if [ ! -x "$VENV_PYTHON" ]; then
+  "$PYTHON" -m venv "$VENV"
+  "$VENV_PYTHON" -m pip install --upgrade pip
+fi
+PIP_ONLY_BINARY="${PIP_ONLY_BINARY:-:all:}" "$VENV_PYTHON" -m pip install -e .
+"""
+
+PYTHON_DEV_SCRIPT = """\
+#!/usr/bin/env sh
+set -eu
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+VENV="${VENV:-.venv}"
+VENV_PYTHON="$VENV/bin/python"
+if [ ! -x "$VENV_PYTHON" ]; then
+  echo "Missing $VENV_PYTHON. Run the install script first." >&2
+  exit 1
+fi
+meshagent room connect -- "$VENV_PYTHON" server.py
+"""
+
+PYTHON_WEBSERVER_DEPLOY_SCRIPT = """\
+#!/usr/bin/env sh
+set -eu
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+IMAGE_TAG="${IMAGE_TAG:-meshagent-init-python-webserver:dev}"
+meshagent deploy . --tag "$IMAGE_TAG" --public --liveness /health --wait
+"""
+
+PYTHON_AGENT_DEPLOY_SCRIPT = """\
+#!/usr/bin/env sh
+set -eu
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+IMAGE_TAG="${IMAGE_TAG:-meshagent-init-python-agent:dev}"
+meshagent deploy . --tag "$IMAGE_TAG" --meshagent-token agentDefault --wait
+"""
+
+JAVASCRIPT_PACKAGE_JSON = f"""\
+{{
   "name": "meshagent-init-javascript",
   "version": "0.1.0",
   "private": true,
   "type": "commonjs",
-  "scripts": {
+  "scripts": {{
     "build": "ncc build server.js -o dist",
+    "dev": "meshagent room connect -- node server.js",
+    "deploy": "meshagent deploy . --tag meshagent-init-javascript:dev --public --liveness /health --wait",
     "start": "node dist/index.js"
-  },
-  "devDependencies": {
+  }},
+  "dependencies": {{
+    "@meshagent/meshagent": "^{__version__}"
+  }},
+  "devDependencies": {{
     "@vercel/ncc": "^0.38.3"
-  }
-}
+  }}
+}}
 """
 
 JAVASCRIPT_AGENT_PACKAGE_JSON = f"""\
@@ -269,6 +377,8 @@ JAVASCRIPT_AGENT_PACKAGE_JSON = f"""\
   "type": "commonjs",
   "scripts": {{
     "build": "ncc build server.js -o dist",
+    "dev": "meshagent room connect -- node server.js",
+    "deploy": "meshagent deploy . --tag meshagent-init-javascript-agent:dev --meshagent-token agentDefault --wait",
     "start": "node dist/index.js"
   }},
   "dependencies": {{
@@ -282,6 +392,7 @@ JAVASCRIPT_AGENT_PACKAGE_JSON = f"""\
 
 JAVASCRIPT_WEBSERVER = """\
 const http = require("node:http");
+const { RoomClient } = require("@meshagent/meshagent");
 
 const port = Number(process.env.PORT || 3000);
 
@@ -314,7 +425,38 @@ const server = http.createServer((request, response) => {
   response.end("not found\\n");
 });
 
-server.listen(port, "0.0.0.0");
+server.listen(port, "0.0.0.0", () => {
+  console.log(`Serving on 0.0.0.0:${port}`);
+});
+
+async function publishDevReadyMarker(focus) {
+  const readyPath = process.env.MESHAGENT_INIT_DEV_READY_PATH;
+  const probe = process.env.MESHAGENT_INIT_DEV_PROBE;
+  if (!readyPath || !probe || !process.env.MESHAGENT_ROOM || !process.env.MESHAGENT_TOKEN) {
+    return;
+  }
+
+  const room = new RoomClient();
+  await room.start();
+  const payload = {
+    probe,
+    room: room.roomName,
+    language: "javascript",
+    focus,
+  };
+  await room.storage.upload(
+    readyPath,
+    Buffer.from(JSON.stringify(payload) + "\\n", "utf8"),
+    { overwrite: true, mimeType: "application/json" },
+  );
+  console.log(`MeshAgent init dev probe wrote: ${readyPath} ${probe}`);
+  await new Promise(() => {});
+}
+
+publishDevReadyMarker("webserver").catch((error) => {
+  console.error("Unable to write MeshAgent init dev probe:", error);
+  process.exitCode = 1;
+});
 """
 
 JAVASCRIPT_AGENT = """\
@@ -330,7 +472,29 @@ async function main() {
   const room = new RoomClient();
   await room.start();
   console.log(`Connected to MeshAgent room: ${room.roomName}`);
+  await publishDevReadyMarker(room);
   await new Promise(() => {});
+}
+
+async function publishDevReadyMarker(room) {
+  const readyPath = process.env.MESHAGENT_INIT_DEV_READY_PATH;
+  const probe = process.env.MESHAGENT_INIT_DEV_PROBE;
+  if (!readyPath || !probe) {
+    return;
+  }
+
+  const payload = {
+    probe,
+    room: room.roomName,
+    language: "javascript",
+    focus: "backend-agent",
+  };
+  await room.storage.upload(
+    readyPath,
+    Buffer.from(JSON.stringify(payload) + "\\n", "utf8"),
+    { overwrite: true, mimeType: "application/json" },
+  );
+  console.log(`MeshAgent init dev probe wrote: ${readyPath} ${probe}`);
 }
 
 main().catch((error) => {
@@ -375,27 +539,40 @@ CMD ["index.js"]
 JAVASCRIPT_DOCKERIGNORE = """\
 node_modules/
 dist/
+.npm-cache/
 npm-debug.log*
 .git/
 .DS_Store
 """
 
-TYPESCRIPT_PACKAGE_JSON = """\
-{
+NPMRC = """\
+cache=.npm-cache
+fund=false
+audit=false
+"""
+
+TYPESCRIPT_PACKAGE_JSON = f"""\
+{{
   "name": "meshagent-init-typescript",
   "version": "0.1.0",
   "private": true,
   "type": "commonjs",
-  "scripts": {
+  "scripts": {{
     "build": "ncc build src/server.ts -o dist",
+    "dev": "meshagent room connect -- tsx src/server.ts",
+    "deploy": "meshagent deploy . --tag meshagent-init-typescript:dev --public --liveness /health --wait",
     "start": "node dist/index.js"
-  },
-  "devDependencies": {
+  }},
+  "dependencies": {{
+    "@meshagent/meshagent": "^{__version__}"
+  }},
+  "devDependencies": {{
     "@types/node": "^22.10.0",
+    "tsx": "^4.20.0",
     "@vercel/ncc": "^0.38.3",
     "typescript": "^5.8.0"
-  }
-}
+  }}
+}}
 """
 
 TYPESCRIPT_AGENT_PACKAGE_JSON = f"""\
@@ -406,6 +583,8 @@ TYPESCRIPT_AGENT_PACKAGE_JSON = f"""\
   "type": "commonjs",
   "scripts": {{
     "build": "ncc build src/server.ts -o dist",
+    "dev": "meshagent room connect -- tsx src/server.ts",
+    "deploy": "meshagent deploy . --tag meshagent-init-typescript-agent:dev --meshagent-token agentDefault --wait",
     "start": "node dist/index.js"
   }},
   "dependencies": {{
@@ -413,6 +592,7 @@ TYPESCRIPT_AGENT_PACKAGE_JSON = f"""\
   }},
   "devDependencies": {{
     "@types/node": "^22.10.0",
+    "tsx": "^4.20.0",
     "@vercel/ncc": "^0.38.3",
     "typescript": "^5.8.0"
   }}
@@ -436,6 +616,7 @@ TYPESCRIPT_TSCONFIG = """\
 
 TYPESCRIPT_WEBSERVER = """\
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { RoomClient } from "@meshagent/meshagent";
 
 const port = Number(process.env.PORT || 3000);
 
@@ -468,7 +649,38 @@ const server = createServer((request: IncomingMessage, response: ServerResponse)
   response.end("not found\\n");
 });
 
-server.listen(port, "0.0.0.0");
+server.listen(port, "0.0.0.0", () => {
+  console.log(`Serving on 0.0.0.0:${port}`);
+});
+
+async function publishDevReadyMarker(focus: string): Promise<void> {
+  const readyPath = process.env.MESHAGENT_INIT_DEV_READY_PATH;
+  const probe = process.env.MESHAGENT_INIT_DEV_PROBE;
+  if (!readyPath || !probe || !process.env.MESHAGENT_ROOM || !process.env.MESHAGENT_TOKEN) {
+    return;
+  }
+
+  const room = new RoomClient();
+  await room.start();
+  const payload = {
+    probe,
+    room: room.roomName,
+    language: "typescript",
+    focus,
+  };
+  await room.storage.upload(
+    readyPath,
+    Buffer.from(JSON.stringify(payload) + "\\n", "utf8"),
+    { overwrite: true, mimeType: "application/json" },
+  );
+  console.log(`MeshAgent init dev probe wrote: ${readyPath} ${probe}`);
+  await new Promise<never>(() => {});
+}
+
+publishDevReadyMarker("webserver").catch((error: unknown) => {
+  console.error("Unable to write MeshAgent init dev probe:", error);
+  process.exitCode = 1;
+});
 """
 
 TYPESCRIPT_AGENT = """\
@@ -484,7 +696,29 @@ async function main(): Promise<void> {
   const room = new RoomClient();
   await room.start();
   console.log(`Connected to MeshAgent room: ${room.roomName}`);
+  await publishDevReadyMarker(room);
   await new Promise<never>(() => {});
+}
+
+async function publishDevReadyMarker(room: RoomClient): Promise<void> {
+  const readyPath = process.env.MESHAGENT_INIT_DEV_READY_PATH;
+  const probe = process.env.MESHAGENT_INIT_DEV_PROBE;
+  if (!readyPath || !probe) {
+    return;
+  }
+
+  const payload = {
+    probe,
+    room: room.roomName,
+    language: "typescript",
+    focus: "backend-agent",
+  };
+  await room.storage.upload(
+    readyPath,
+    Buffer.from(JSON.stringify(payload) + "\\n", "utf8"),
+    { overwrite: true, mimeType: "application/json" },
+  );
+  console.log(`MeshAgent init dev probe wrote: ${readyPath} ${probe}`);
 }
 
 main().catch((error: unknown) => {
@@ -526,24 +760,60 @@ COPY --from=build /app/dist/index.js /app/index.js
 CMD ["index.js"]
 """
 
-REACT_PACKAGE_JSON = """\
-{
+REACT_PACKAGE_JSON = f"""\
+{{
   "name": "meshagent-init-react",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "scripts": {
-    "build": "vite build"
-  },
-  "dependencies": {
+  "scripts": {{
+    "build": "vite build",
+    "dev": "meshagent room connect -- sh -c 'node scripts/dev-room-proof.js & vite --host 0.0.0.0'",
+    "deploy": "meshagent deploy . --tag meshagent-init-react:dev --public --liveness /health --room-mount /:/data:rw --wait"
+  }},
+  "dependencies": {{
+    "@meshagent/meshagent": "^{__version__}",
     "@vitejs/plugin-react": "^4.3.4",
     "vite": "^6.0.0",
     "typescript": "^5.8.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
-  },
-  "devDependencies": {}
+  }},
+  "devDependencies": {{}}
+}}
+"""
+
+REACT_DEV_ROOM_PROOF_JS = """\
+import { RoomClient } from "@meshagent/meshagent";
+
+async function main() {
+  const readyPath = process.env.MESHAGENT_INIT_DEV_READY_PATH;
+  const probe = process.env.MESHAGENT_INIT_DEV_PROBE;
+  if (!readyPath || !probe || !process.env.MESHAGENT_ROOM || !process.env.MESHAGENT_TOKEN) {
+    return;
+  }
+
+  const room = new RoomClient();
+  await room.start();
+  const payload = {
+    probe,
+    room: room.roomName,
+    language: "react",
+    focus: "webserver",
+  };
+  await room.storage.upload(
+    readyPath,
+    Buffer.from(JSON.stringify(payload) + "\\n", "utf8"),
+    { overwrite: true, mimeType: "application/json" },
+  );
+  console.log(`MeshAgent init dev probe wrote: ${readyPath} ${probe}`);
+  await new Promise(() => {});
 }
+
+main().catch((error) => {
+  console.error("Unable to write MeshAgent init dev probe:", error);
+  process.exitCode = 1;
+});
 """
 
 REACT_TSCONFIG = """\
@@ -642,18 +912,22 @@ CMD ["sh", "-c", "mkdir -p /data/nginx/client_temp /data/nginx/proxy_temp /data/
 REACT_DOCKERIGNORE = """\
 node_modules/
 dist/
+.npm-cache/
 npm-debug.log*
 .git/
 .DS_Store
 """
 
-DOTNET_CSPROJ = """\
+DOTNET_CSPROJ = f"""\
 <Project Sdk="Microsoft.NET.Sdk.Web">
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Meshagent.Api" Version="{__version__}" />
+  </ItemGroup>
 </Project>
 """
 
@@ -671,6 +945,10 @@ DOTNET_AGENT_CSPROJ = f"""\
 """
 
 DOTNET_PROGRAM = """\
+using System.Text;
+using System.Text.Json;
+using Meshagent.Api.Room;
+
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
 
@@ -683,10 +961,46 @@ app.MapGet("/status", () => Results.Text("ready\\n", "text/plain"));
 app.MapGet("/api/ping", () => Results.Json(new { pong = true }));
 app.MapGet("/", () => Results.Text("hello from meshagent init\\n", "text/plain"));
 
+_ = PublishDevReadyMarkerAsync("webserver");
+
 await app.RunAsync();
+
+static async Task PublishDevReadyMarkerAsync(string focus)
+{
+    var readyPath = Environment.GetEnvironmentVariable("MESHAGENT_INIT_DEV_READY_PATH");
+    var probe = Environment.GetEnvironmentVariable("MESHAGENT_INIT_DEV_PROBE");
+    if (
+        string.IsNullOrWhiteSpace(readyPath)
+        || string.IsNullOrWhiteSpace(probe)
+        || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("MESHAGENT_ROOM"))
+        || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("MESHAGENT_TOKEN"))
+    )
+    {
+        return;
+    }
+
+    await using var room = new RoomClient();
+    await room.ConnectAsync();
+    var payload = JsonSerializer.Serialize(new
+    {
+        probe,
+        room = room.RoomName,
+        language = "dotnet",
+        focus,
+    }) + "\\n";
+    await room.Storage.Upload(
+        readyPath,
+        Encoding.UTF8.GetBytes(payload),
+        overwrite: true,
+        mimeType: "application/json");
+    Console.WriteLine($"MeshAgent init dev probe wrote: {readyPath} {probe}");
+    await room.WaitForCloseAsync();
+}
 """
 
 DOTNET_AGENT_PROGRAM = """\
+using System.Text;
+using System.Text.Json;
 using Meshagent.Api.Room;
 
 if (
@@ -702,7 +1016,32 @@ if (
 await using var room = new RoomClient();
 await room.ConnectAsync();
 Console.WriteLine($"Connected to MeshAgent room: {room.RoomName}");
+await PublishDevReadyMarkerAsync(room);
 await Task.Delay(Timeout.InfiniteTimeSpan);
+
+static async Task PublishDevReadyMarkerAsync(RoomClient room)
+{
+    var readyPath = Environment.GetEnvironmentVariable("MESHAGENT_INIT_DEV_READY_PATH");
+    var probe = Environment.GetEnvironmentVariable("MESHAGENT_INIT_DEV_PROBE");
+    if (string.IsNullOrWhiteSpace(readyPath) || string.IsNullOrWhiteSpace(probe))
+    {
+        return;
+    }
+
+    var payload = JsonSerializer.Serialize(new
+    {
+        probe,
+        room = room.RoomName,
+        language = "dotnet",
+        focus = "backend-agent",
+    }) + "\\n";
+    await room.Storage.Upload(
+        readyPath,
+        Encoding.UTF8.GetBytes(payload),
+        overwrite: true,
+        mimeType: "application/json");
+    Console.WriteLine($"MeshAgent init dev probe wrote: {readyPath} {probe}");
+}
 """
 
 DOTNET_DOCKERFILE = """\
@@ -741,8 +1080,54 @@ ENTRYPOINT ["dotnet", "MeshAgentHello.dll"]
 DOTNET_DOCKERIGNORE = """\
 bin/
 obj/
+.dotnet-home/
+.nuget/
 .git/
 .DS_Store
+"""
+
+DOTNET_INSTALL_SCRIPT = """\
+#!/usr/bin/env sh
+set -eu
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+DOTNET_CLI_HOME="${DOTNET_CLI_HOME:-$ROOT/.dotnet-home}"
+NUGET_PACKAGES="${NUGET_PACKAGES:-$ROOT/.nuget/packages}"
+DOTNET_NOLOGO="${DOTNET_NOLOGO:-1}"
+DOTNET_SKIP_FIRST_TIME_EXPERIENCE="${DOTNET_SKIP_FIRST_TIME_EXPERIENCE:-1}"
+export DOTNET_CLI_HOME NUGET_PACKAGES DOTNET_NOLOGO DOTNET_SKIP_FIRST_TIME_EXPERIENCE
+dotnet restore
+"""
+
+DOTNET_DEV_SCRIPT = """\
+#!/usr/bin/env sh
+set -eu
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+DOTNET_CLI_HOME="${DOTNET_CLI_HOME:-$ROOT/.dotnet-home}"
+NUGET_PACKAGES="${NUGET_PACKAGES:-$ROOT/.nuget/packages}"
+DOTNET_NOLOGO="${DOTNET_NOLOGO:-1}"
+DOTNET_SKIP_FIRST_TIME_EXPERIENCE="${DOTNET_SKIP_FIRST_TIME_EXPERIENCE:-1}"
+export DOTNET_CLI_HOME NUGET_PACKAGES DOTNET_NOLOGO DOTNET_SKIP_FIRST_TIME_EXPERIENCE
+meshagent room connect -- dotnet run
+"""
+
+DOTNET_WEBSERVER_DEPLOY_SCRIPT = """\
+#!/usr/bin/env sh
+set -eu
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+IMAGE_TAG="${IMAGE_TAG:-meshagent-init-dotnet-webserver:dev}"
+meshagent deploy . --tag "$IMAGE_TAG" --public --liveness /health --wait
+"""
+
+DOTNET_AGENT_DEPLOY_SCRIPT = """\
+#!/usr/bin/env sh
+set -eu
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+IMAGE_TAG="${IMAGE_TAG:-meshagent-init-dotnet-agent:dev}"
+meshagent deploy . --tag "$IMAGE_TAG" --meshagent-token agentDefault --wait
 """
 
 DART_AGENT_PUBSPEC = f"""\
@@ -756,7 +1141,9 @@ dependencies:
 
 DART_AGENT = """\
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:meshagent/meshagent.dart';
 
@@ -777,7 +1164,30 @@ Future<void> main() async {
   );
   await room.start();
   print('Connected to MeshAgent room: ${room.roomName}');
+  await publishDevReadyMarker(room);
   await Completer<void>().future;
+}
+
+Future<void> publishDevReadyMarker(RoomClient room) async {
+  final readyPath = Platform.environment['MESHAGENT_INIT_DEV_READY_PATH'];
+  final probe = Platform.environment['MESHAGENT_INIT_DEV_PROBE'];
+  if (readyPath == null || readyPath.isEmpty || probe == null || probe.isEmpty) {
+    return;
+  }
+
+  final payload = jsonEncode({
+    'probe': probe,
+    'room': room.roomName,
+    'language': 'dart',
+    'focus': 'backend-agent',
+  });
+  await room.storage.upload(
+    readyPath,
+    Uint8List.fromList(utf8.encode('$payload\\n')),
+    overwrite: true,
+    mimeType: 'application/json',
+  );
+  print('MeshAgent init dev probe wrote: $readyPath $probe');
 }
 
 Uri _websocketRoomUrl(String roomName) {
@@ -805,12 +1215,42 @@ CMD ["dart", "run", "bin/server.dart"]
 
 DART_DOCKERIGNORE = """\
 .dart_tool/
+.pub-cache/
 build/
 .git/
 .DS_Store
 """
 
-FLUTTER_PUBSPEC = """\
+DART_INSTALL_SCRIPT = """\
+#!/usr/bin/env sh
+set -eu
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"
+export PUB_CACHE
+dart pub get
+"""
+
+DART_DEV_SCRIPT = """\
+#!/usr/bin/env sh
+set -eu
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"
+export PUB_CACHE
+meshagent room connect -- dart run bin/server.dart
+"""
+
+DART_AGENT_DEPLOY_SCRIPT = """\
+#!/usr/bin/env sh
+set -eu
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+IMAGE_TAG="${IMAGE_TAG:-meshagent-init-dart-agent:dev}"
+meshagent deploy . --tag "$IMAGE_TAG" --meshagent-token agentDefault --wait
+"""
+
+FLUTTER_PUBSPEC = f"""\
 name: meshagent_init_flutter
 description: A minimal deployable Flutter web app for MeshAgent.
 publish_to: "none"
@@ -819,6 +1259,69 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  meshagent: ^{__version__}
+"""
+
+FLUTTER_DEV_ROOM_PROOF_DART = """\
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:meshagent/meshagent.dart';
+
+Future<void> main() async {
+  final readyPath = Platform.environment['MESHAGENT_INIT_DEV_READY_PATH'];
+  final probe = Platform.environment['MESHAGENT_INIT_DEV_PROBE'];
+  final roomName = Platform.environment['MESHAGENT_ROOM'];
+  final token = Platform.environment['MESHAGENT_TOKEN'];
+  if (
+    readyPath == null ||
+    readyPath.isEmpty ||
+    probe == null ||
+    probe.isEmpty ||
+    roomName == null ||
+    roomName.isEmpty ||
+    token == null ||
+    token.isEmpty
+  ) {
+    return;
+  }
+
+  final room = RoomClient(
+    protocolFactory: WebSocketClientProtocol.createFactory(
+      url: _websocketRoomUrl(roomName),
+      token: token,
+    ),
+  );
+  await room.start();
+  final payload = jsonEncode({
+    'probe': probe,
+    'room': room.roomName,
+    'language': 'flutter',
+    'focus': 'webserver',
+  });
+  await room.storage.upload(
+    readyPath,
+    Uint8List.fromList(utf8.encode('$payload\\n')),
+    overwrite: true,
+    mimeType: 'application/json',
+  );
+  print('MeshAgent init dev probe wrote: $readyPath $probe');
+  await Completer<void>().future;
+}
+
+Uri _websocketRoomUrl(String roomName) {
+  var baseUrl = Platform.environment['MESHAGENT_ROOM_URL'] ??
+      Platform.environment['MESHAGENT_API_URL'] ??
+      'https://api.meshagent.com';
+  if (baseUrl.startsWith('https:')) {
+    baseUrl = 'wss:${baseUrl.substring('https:'.length)}';
+  } else if (baseUrl.startsWith('http:')) {
+    baseUrl = 'ws:${baseUrl.substring('http:'.length)}';
+  }
+  return Uri.parse('$baseUrl/rooms/$roomName');
+}
 """
 
 FLUTTER_MAIN = """\
@@ -893,6 +1396,7 @@ CMD ["sh", "-c", "mkdir -p /data/nginx/client_temp /data/nginx/proxy_temp /data/
 
 FLUTTER_DOCKERIGNORE = """\
 .dart_tool/
+.pub-cache/
 build/
 .flutter-plugins
 .flutter-plugins-dependencies
@@ -900,20 +1404,70 @@ build/
 .DS_Store
 """
 
+FLUTTER_INSTALL_SCRIPT = """\
+#!/usr/bin/env sh
+set -eu
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"
+export PUB_CACHE
+flutter pub get
+"""
+
+FLUTTER_DEV_SCRIPT = """\
+#!/usr/bin/env sh
+set -eu
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"
+export PUB_CACHE
+meshagent room connect -- sh -c 'dart run tool/dev_room_proof.dart & flutter run -d web-server --web-hostname 0.0.0.0 --web-port 3000'
+"""
+
+FLUTTER_DEPLOY_SCRIPT = """\
+#!/usr/bin/env sh
+set -eu
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+IMAGE_TAG="${IMAGE_TAG:-meshagent-init-flutter:dev}"
+meshagent deploy . --tag "$IMAGE_TAG" --public --liveness /health --room-mount /:/data:rw --wait
+"""
+
 WEBSERVER_NEXT_STEPS = (
     "meshagent doctor",
-    "meshagent deploy . --tag <repository>:<tag> --public --liveness /health --wait",
+    "./scripts/install.sh",
+    "MESHAGENT_ROOM=<room> ./scripts/dev.sh",
+    "./scripts/deploy.sh",
 )
 STATIC_WEBSERVER_NEXT_STEPS = (
     "meshagent doctor",
-    "meshagent deploy . --tag <repository>:<tag> --public --liveness /health --room-mount /:/data:rw --wait",
+    "./scripts/install.sh",
+    "MESHAGENT_ROOM=<room> ./scripts/dev.sh",
+    "./scripts/deploy.sh",
 )
 AGENT_NEXT_STEPS = (
     "meshagent doctor",
-    (
-        "meshagent deploy . --tag <repository>:<tag> "
-        "--meshagent-token agentDefault --wait"
-    ),
+    "./scripts/install.sh",
+    "MESHAGENT_ROOM=<room> ./scripts/dev.sh",
+    "./scripts/deploy.sh",
+)
+NPM_WEBSERVER_NEXT_STEPS = (
+    "meshagent doctor",
+    "npm install",
+    "MESHAGENT_ROOM=<room> npm run dev",
+    "npm run deploy",
+)
+NPM_STATIC_WEBSERVER_NEXT_STEPS = (
+    "meshagent doctor",
+    "npm install",
+    "MESHAGENT_ROOM=<room> npm run dev",
+    "npm run deploy",
+)
+NPM_AGENT_NEXT_STEPS = (
+    "meshagent doctor",
+    "npm install",
+    "MESHAGENT_ROOM=<room> npm run dev",
+    "npm run deploy",
 )
 
 LANGUAGES: Mapping[str, InitLanguage] = {
@@ -973,6 +1527,9 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
             "server.py": PYTHON_WEBSERVER,
             "Dockerfile": PYTHON_DOCKERFILE,
             ".dockerignore": PYTHON_DOCKERIGNORE,
+            "scripts/install.sh": PYTHON_INSTALL_SCRIPT,
+            "scripts/dev.sh": PYTHON_DEV_SCRIPT,
+            "scripts/deploy.sh": PYTHON_WEBSERVER_DEPLOY_SCRIPT,
         },
         next_steps=WEBSERVER_NEXT_STEPS,
     ),
@@ -986,6 +1543,9 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
             "server.py": PYTHON_AGENT,
             "Dockerfile": PYTHON_AGENT_DOCKERFILE,
             ".dockerignore": PYTHON_DOCKERIGNORE,
+            "scripts/install.sh": PYTHON_INSTALL_SCRIPT,
+            "scripts/dev.sh": PYTHON_DEV_SCRIPT,
+            "scripts/deploy.sh": PYTHON_AGENT_DEPLOY_SCRIPT,
         },
         next_steps=AGENT_NEXT_STEPS,
     ),
@@ -996,11 +1556,12 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         description="Node.js HTTP service on a declared container port.",
         files={
             "package.json": JAVASCRIPT_PACKAGE_JSON,
+            ".npmrc": NPMRC,
             "server.js": JAVASCRIPT_WEBSERVER,
             "Dockerfile": JAVASCRIPT_DOCKERFILE,
             ".dockerignore": JAVASCRIPT_DOCKERIGNORE,
         },
-        next_steps=WEBSERVER_NEXT_STEPS,
+        next_steps=NPM_WEBSERVER_NEXT_STEPS,
     ),
     ("javascript", AGENT_FOCUS): InitTemplate(
         language_id="javascript",
@@ -1009,11 +1570,12 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         description="Headless Node.js RoomClient service.",
         files={
             "package.json": JAVASCRIPT_AGENT_PACKAGE_JSON,
+            ".npmrc": NPMRC,
             "server.js": JAVASCRIPT_AGENT,
             "Dockerfile": JAVASCRIPT_AGENT_DOCKERFILE,
             ".dockerignore": JAVASCRIPT_DOCKERIGNORE,
         },
-        next_steps=AGENT_NEXT_STEPS,
+        next_steps=NPM_AGENT_NEXT_STEPS,
     ),
     ("typescript", WEB_FOCUS): InitTemplate(
         language_id="typescript",
@@ -1022,12 +1584,13 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         description="Node.js TypeScript HTTP service on a declared container port.",
         files={
             "package.json": TYPESCRIPT_PACKAGE_JSON,
+            ".npmrc": NPMRC,
             "tsconfig.json": TYPESCRIPT_TSCONFIG,
             "src/server.ts": TYPESCRIPT_WEBSERVER,
             "Dockerfile": TYPESCRIPT_DOCKERFILE,
             ".dockerignore": JAVASCRIPT_DOCKERIGNORE,
         },
-        next_steps=WEBSERVER_NEXT_STEPS,
+        next_steps=NPM_WEBSERVER_NEXT_STEPS,
     ),
     ("typescript", AGENT_FOCUS): InitTemplate(
         language_id="typescript",
@@ -1036,12 +1599,13 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         description="Headless TypeScript RoomClient service.",
         files={
             "package.json": TYPESCRIPT_AGENT_PACKAGE_JSON,
+            ".npmrc": NPMRC,
             "tsconfig.json": TYPESCRIPT_TSCONFIG,
             "src/server.ts": TYPESCRIPT_AGENT,
             "Dockerfile": TYPESCRIPT_AGENT_DOCKERFILE,
             ".dockerignore": JAVASCRIPT_DOCKERIGNORE,
         },
-        next_steps=AGENT_NEXT_STEPS,
+        next_steps=NPM_AGENT_NEXT_STEPS,
     ),
     ("react", WEB_FOCUS): InitTemplate(
         language_id="react",
@@ -1050,14 +1614,16 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         description="React/Vite web app served by nginx on a declared container port.",
         files={
             "package.json": REACT_PACKAGE_JSON,
+            ".npmrc": NPMRC,
             "tsconfig.json": REACT_TSCONFIG,
             "vite.config.ts": REACT_VITE_CONFIG,
             "index.html": REACT_INDEX_HTML,
+            "scripts/dev-room-proof.js": REACT_DEV_ROOM_PROOF_JS,
             "src/main.tsx": REACT_MAIN,
             "Dockerfile": REACT_DOCKERFILE,
             ".dockerignore": REACT_DOCKERIGNORE,
         },
-        next_steps=STATIC_WEBSERVER_NEXT_STEPS,
+        next_steps=NPM_STATIC_WEBSERVER_NEXT_STEPS,
     ),
     ("dotnet", WEB_FOCUS): InitTemplate(
         language_id="dotnet",
@@ -1069,6 +1635,9 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
             "Program.cs": DOTNET_PROGRAM,
             "Dockerfile": DOTNET_DOCKERFILE,
             ".dockerignore": DOTNET_DOCKERIGNORE,
+            "scripts/install.sh": DOTNET_INSTALL_SCRIPT,
+            "scripts/dev.sh": DOTNET_DEV_SCRIPT,
+            "scripts/deploy.sh": DOTNET_WEBSERVER_DEPLOY_SCRIPT,
         },
         next_steps=WEBSERVER_NEXT_STEPS,
     ),
@@ -1082,6 +1651,9 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
             "Program.cs": DOTNET_AGENT_PROGRAM,
             "Dockerfile": DOTNET_AGENT_DOCKERFILE,
             ".dockerignore": DOTNET_DOCKERIGNORE,
+            "scripts/install.sh": DOTNET_INSTALL_SCRIPT,
+            "scripts/dev.sh": DOTNET_DEV_SCRIPT,
+            "scripts/deploy.sh": DOTNET_AGENT_DEPLOY_SCRIPT,
         },
         next_steps=AGENT_NEXT_STEPS,
     ),
@@ -1093,9 +1665,13 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         files={
             "pubspec.yaml": FLUTTER_PUBSPEC,
             "lib/main.dart": FLUTTER_MAIN,
+            "tool/dev_room_proof.dart": FLUTTER_DEV_ROOM_PROOF_DART,
             "web/index.html": FLUTTER_INDEX_HTML,
             "Dockerfile": FLUTTER_DOCKERFILE,
             ".dockerignore": FLUTTER_DOCKERIGNORE,
+            "scripts/install.sh": FLUTTER_INSTALL_SCRIPT,
+            "scripts/dev.sh": FLUTTER_DEV_SCRIPT,
+            "scripts/deploy.sh": FLUTTER_DEPLOY_SCRIPT,
         },
         next_steps=STATIC_WEBSERVER_NEXT_STEPS,
     ),
@@ -1109,6 +1685,9 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
             "bin/server.dart": DART_AGENT,
             "Dockerfile": DART_AGENT_DOCKERFILE,
             ".dockerignore": DART_DOCKERIGNORE,
+            "scripts/install.sh": DART_INSTALL_SCRIPT,
+            "scripts/dev.sh": DART_DEV_SCRIPT,
+            "scripts/deploy.sh": DART_AGENT_DEPLOY_SCRIPT,
         },
         next_steps=AGENT_NEXT_STEPS,
     ),
@@ -1181,6 +1760,8 @@ def _write_file(path: Path, contents: str) -> None:
         textwrap.dedent(contents).lstrip()
     )
     path.write_text(rendered_contents, encoding="utf-8")
+    if path.suffix == ".sh":
+        path.chmod(0o755)
 
 
 def _supported_language_text() -> str:
