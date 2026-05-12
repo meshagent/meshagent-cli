@@ -95,7 +95,7 @@ class _CapturingOpenAIRealtimeAdapter(OpenAIRealtimeAdapter):
         self.sent_events: list[dict[str, Any]] = []
         self.received_events: list[dict[str, Any]] = []
 
-    def create_session(self):
+    def create_session(self, *, usage_callback=None):
         context = super().create_session()
         original_send_json = context.send_json
 

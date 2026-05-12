@@ -495,7 +495,7 @@ async def test_process_agent_uses_shared_decision_adapter_for_threaded_channels(
         def default_model(self) -> str:
             return self._model
 
-        def create_session(self) -> AgentSessionContext:
+        def create_session(self, *, usage_callback=None) -> AgentSessionContext:
             return AgentSessionContext()
 
         async def create_response(self, **kwargs):
@@ -3200,7 +3200,7 @@ class _SteeringRecordingAdapter:
     def provider_name(self) -> str:
         return "openai"
 
-    def create_session(self) -> AgentSessionContext:
+    def create_session(self, *, usage_callback=None) -> AgentSessionContext:
         return self.session
 
     async def start_session(
