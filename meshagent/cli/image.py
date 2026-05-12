@@ -2460,7 +2460,7 @@ async def _run_image_pack_stage(
             },
         )
         build_id = await client.containers.build(
-            tag=parsed_tag.value,
+            tags=[parsed_tag.value],
             mount_path=_DEFAULT_CONTEXT_MOUNT_PATH,
             context_path=_DEFAULT_CONTEXT_MOUNT_PATH,
             dockerfile_path=_generated_pack_dockerfile_path(
@@ -2500,6 +2500,7 @@ async def _run_image_build_stage(
     private: bool,
     optimize: bool,
     cred: list[str],
+    add_latest_tag: bool = False,
 ) -> None:
     del arch
     build_inputs = _resolve_build_stage_inputs(
@@ -2544,8 +2545,11 @@ async def _run_image_build_stage(
             source_dir=build_inputs.pack_spec.source_dir,
             preserved_paths=build_inputs.preserved_packed_build_paths,
         )
+        tags = [parsed_tag.value]
+        if add_latest_tag and parsed_tag.latest_ref != parsed_tag.value:
+            tags.append(parsed_tag.latest_ref)
         build_id = await client.containers.build(
-            tag=parsed_tag.value,
+            tags=tags,
             mount_path=build_inputs.pack_spec.mount_path,
             context_path=build_inputs.context_path,
             dockerfile_path=build_inputs.dockerfile_path,
@@ -2576,6 +2580,7 @@ def _validate_deploy_build_stage_options(
     builder_name: str | None,
     optimize: bool,
     cred: list[str],
+    add_latest_tag: bool,
 ) -> None:
     if pack is not None:
         return
@@ -2591,6 +2596,8 @@ def _validate_deploy_build_stage_options(
         invalid_options.append("--no-optimize")
     if len(cred) > 0:
         invalid_options.append("--cred")
+    if add_latest_tag:
+        invalid_options.append("--latest")
 
     if len(invalid_options) == 0:
         return
@@ -2684,6 +2691,13 @@ async def build_image(
             help="Docker creds (username,password) or (registry,username,password)",
         ),
     ] = [],
+    latest: Annotated[
+        bool,
+        typer.Option(
+            "--latest",
+            help="Also publish the built image as :latest in the same repository.",
+        ),
+    ] = False,
 ) -> None:
     parsed_tag = _parse_build_tag(tag)
     resolved_room = resolve_room(room)
@@ -2711,6 +2725,7 @@ async def build_image(
         private=private,
         optimize=optimize,
         cred=cred,
+        add_latest_tag=latest,
     )
 
 
@@ -2796,6 +2811,16 @@ async def deploy_image(
             help="Optional reusable builder name for streamed local pack builds.",
         ),
     ] = None,
+    latest: Annotated[
+        bool,
+        typer.Option(
+            "--latest",
+            help=(
+                "Also publish the built PATH image as :latest in the same "
+                "repository. Only used with PATH."
+            ),
+        ),
+    ] = False,
     domain: Annotated[
         Optional[str],
         typer.Option(
@@ -2913,6 +2938,7 @@ async def deploy_image(
         builder_name=builder_name,
         optimize=optimize,
         cred=cred,
+        add_latest_tag=latest,
     )
     parsed_environment = _parse_environment_variables(values=env)
     parsed_secret_environment = _parse_environment_secret_variables(values=env_secret)
@@ -3037,6 +3063,7 @@ async def deploy_image(
                 private=False,
                 optimize=optimize,
                 cred=cred,
+                add_latest_tag=latest,
             )
             existing_service = await _find_room_service_by_name(
                 account_client=account_client,

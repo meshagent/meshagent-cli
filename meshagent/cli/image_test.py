@@ -564,7 +564,7 @@ async def test_pack_image_streams_generated_build_context_and_waits_for_exit(
         },
     }
     assert captured["build_kwargs"] == {
-        "tag": "registry.meshagent.com/sample/app:1",
+        "tags": ["registry.meshagent.com/sample/app:1"],
         "mount_path": "/context",
         "context_path": "/context",
         "dockerfile_path": "/context/.meshagent-pack.Dockerfile",
@@ -666,6 +666,7 @@ async def test_build_image_streams_context_and_waits_for_exit(
         private=True,
         optimize=True,
         cred=["registry,user,password"],
+        latest=True,
     )
 
     assert captured["project_id"] == "project-1"
@@ -675,7 +676,10 @@ async def test_build_image_streams_context_and_waits_for_exit(
         "preserved_paths": frozenset(),
     }
     assert captured["build_kwargs"] == {
-        "tag": "registry.meshagent.com/project/name:tag",
+        "tags": [
+            "registry.meshagent.com/project/name:tag",
+            "registry.meshagent.com/project/name:latest",
+        ],
         "mount_path": "/workspace",
         "context_path": "/workspace",
         "dockerfile_path": "/workspace/Dockerfile",
@@ -850,7 +854,7 @@ async def test_build_image_pack_streams_context_and_defaults_context_path(
         "preserved_paths": frozenset(),
     }
     assert captured["build_kwargs"] == {
-        "tag": "registry.meshagent.com/project/example:1",
+        "tags": ["registry.meshagent.com/project/example:1"],
         "mount_path": "/context",
         "context_path": "/context",
         "dockerfile_path": "/context/Dockerfile",
@@ -1227,7 +1231,7 @@ async def test_build_image_can_disable_room_image_optimization(
     )
 
     assert captured["build_kwargs"] == {
-        "tag": "registry.meshagent.com/project/website:1",
+        "tags": ["registry.meshagent.com/project/website:1"],
         "mount_path": "/context",
         "context_path": "/context",
         "dockerfile_path": "/context/Dockerfile",
@@ -2489,6 +2493,7 @@ async def test_deploy_image_pack_builds_before_deploying(
     assert build_kwargs["private"] is False
     assert build_kwargs["optimize"] is False
     assert build_kwargs["cred"] == ["registry,user,password"]
+    assert build_kwargs["add_latest_tag"] is False
     assert captured["events"] == ["build", "create"]
     created_service = captured["created_service"]
     assert isinstance(created_service, tuple)
@@ -3023,6 +3028,32 @@ async def test_deploy_image_cred_requires_pack() -> None:
             dockerfile_path=None,
             optimize=True,
             cred=["registry,user,password"],
+            domain=None,
+            room_mount=[],
+            project_mount=[],
+            empty_dir_mount=[],
+            image_mount=[],
+            env=[],
+            meshagent_token=None,
+            private=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_deploy_image_latest_requires_pack() -> None:
+    with pytest.raises(
+        typer.BadParameter,
+        match="--latest requires PATH",
+    ):
+        await image.deploy_image(
+            project_id="project-1",
+            room="room-1",
+            tag="repo/web:1",
+            pack=None,
+            context_path=None,
+            dockerfile_path=None,
+            optimize=True,
+            latest=True,
             domain=None,
             room_mount=[],
             project_mount=[],

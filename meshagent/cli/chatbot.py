@@ -97,7 +97,7 @@ from meshagent.openai.tools.responses_adapter import (
 )
 
 from meshagent.tools.dataset import make_dataset_toolkit
-from meshagent.agents.adapter import LLMAdapter, MessageStreamLLMAdapter
+from meshagent.agents.adapter import LLMAdapter, LLMProvider, MessageStreamLLMAdapter
 from meshagent.agents.messages import (
     AGENT_EVENT_TEXT_CONTENT_DELTA,
     AGENT_EVENT_TURN_ENDED,
@@ -105,12 +105,16 @@ from meshagent.agents.messages import (
     AGENT_EVENT_TURN_STEER_ACCEPTED,
     AGENT_EVENT_TURN_STEER_REJECTED,
     AGENT_EVENT_USAGE_UPDATED,
+    AGENT_MESSAGE_MODELS_RESPONSE,
     AGENT_MESSAGE_TURN_INTERRUPT,
     AGENT_MESSAGE_TURN_START,
     AGENT_MESSAGE_TURN_STEER,
+    AgentError,
     AgentTextContentDelta,
     AgentTextContent,
     AgentUsageUpdated,
+    ModelsRequest,
+    ModelsResponse,
     TurnEnded,
     TurnInterrupt,
     TurnStart,
@@ -119,7 +123,7 @@ from meshagent.agents.messages import (
     TurnSteerAccepted,
     TurnSteerRejected,
 )
-from meshagent.agents.process import ContentScheme, Message
+from meshagent.agents.process import ContentScheme, Message, agent_provider_info
 
 from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.api.messaging import FileContent
@@ -139,6 +143,7 @@ import yaml
 
 import shlex
 import sys
+import re
 
 import asyncio
 from dataclasses import dataclass
@@ -150,16 +155,46 @@ from meshagent.api.client import ConflictError
 logger = logging.getLogger("chatbot")
 
 
-async def _await_cleanup(awaitable: Awaitable[Any]) -> Any:
+async def _await_cleanup(
+    awaitable: Awaitable[Any],
+    *,
+    timeout: float = 2,
+    label: str = "cleanup",
+) -> Any:
     task = asyncio.ensure_future(awaitable)
     try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError as cancel_exc:
+        return await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning("%s did not finish during shutdown; cancelling", label)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return None
+    except asyncio.CancelledError:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        raise
+
+
+async def _cancel_background_tasks(
+    tasks: set[asyncio.Task[Any]],
+    *,
+    timeout: float = 1,
+) -> None:
+    if len(tasks) == 0:
+        return
+
+    for task in tasks:
+        task.cancel()
+
+    done, pending = await asyncio.wait(tasks, timeout=timeout)
+    for task in done:
         try:
-            return await task
-        except Exception:
-            raise
-        raise cancel_exc
+            task.result()
+        except asyncio.CancelledError:
+            pass
+
+    for task in pending:
+        logger.debug("background task did not exit during shutdown: %r", task)
 
 
 async def _run_agent_room_session(
@@ -178,9 +213,12 @@ async def _run_agent_room_session(
         await runner(client)
     finally:
         if bot_started:
-            await _await_cleanup(bot.stop())
+            await _await_cleanup(bot.stop(), label="agent stop")
         if client_entered:
-            await _await_cleanup(client.__aexit__(None, None, None))
+            await _await_cleanup(
+                client.__aexit__(None, None, None),
+                label="room client close",
+            )
 
 
 async def _maybe_await(callback_result: Any) -> None:
@@ -500,7 +538,11 @@ class _ProcessUseChatChannelClient:
         raw_message = message.message
         if not isinstance(raw_message, dict):
             return
-        raw_payload = raw_message.get("payload")
+        raw_payload = (
+            raw_message
+            if isinstance(raw_message.get("type"), str)
+            else raw_message.get("payload")
+        )
         if not isinstance(raw_payload, dict):
             return
         if raw_payload.get("thread_id") != self._thread_path:
@@ -513,7 +555,7 @@ class _ProcessUseChatChannelClient:
         await self._room.messaging.send_message(
             to=self._participant,
             type="agent-message",
-            message={"payload": payload.model_dump(mode="json")},
+            message=payload.model_dump(mode="json"),
             attachment=None,
         )
 
@@ -2691,7 +2733,6 @@ def build_process_agent(
                                 "width": width,
                                 "height": height,
                                 "status": "completed",
-                                "status_detail": "Screenshot saved",
                             },
                         )
                     )
@@ -2760,6 +2801,67 @@ def build_process_agent(
                 for queue in [*self._local_event_queues]:
                     queue.put_nowait(message)
             super().send(message)
+
+        async def on_models_request(self, message: Message) -> None:
+            if not isinstance(message.data, ModelsRequest):
+                return
+            provider_name = llm_adapter.provider_name()
+            provider = LLMProvider(
+                name=provider_name.strip()
+                if provider_name is not None and provider_name.strip() != ""
+                else "default",
+                adapter=llm_adapter,
+            )
+            default_model = llm_adapter.default_model()
+            self._send_to_channels(
+                Message(
+                    data=ModelsResponse(
+                        type=AGENT_MESSAGE_MODELS_RESPONSE,
+                        source_message_id=message.data.message_id,
+                        providers=[
+                            agent_provider_info(
+                                provider=provider,
+                                current_provider=provider.name,
+                                current_model=default_model,
+                            )
+                        ],
+                    ),
+                    sender=message.sender,
+                )
+            )
+
+        async def validate_turn_start(self, turn_start: TurnStart) -> AgentError | None:
+            provider_name = llm_adapter.provider_name()
+            normalized_provider = (
+                provider_name.strip()
+                if provider_name is not None and provider_name.strip() != ""
+                else "default"
+            )
+            if (
+                turn_start.provider is not None
+                and turn_start.provider.strip() != ""
+                and turn_start.provider != normalized_provider
+            ):
+                return AgentError(
+                    message=f"unknown provider {turn_start.provider!r}",
+                    code="unknown_provider",
+                )
+
+            model = turn_start.model
+            if model is None or model.strip() == "":
+                return None
+
+            models = llm_adapter.list_models()
+            if not any(model_info.name == model for model_info in models):
+                names = ", ".join(model_info.name for model_info in models)
+                return AgentError(
+                    message=(
+                        f"unknown model {model!r} for provider {normalized_provider!r}; "
+                        f"available models: {names}"
+                    ),
+                    code="unknown_model",
+                )
+            return None
 
         def create_thread_process(self, thread_id: str) -> LLMAgentProcess:
             async def _turn_instructions_provider(
@@ -5261,20 +5363,7 @@ async def chat_with(
             return False
 
         def _active_thread_status_text(self) -> str | None:
-            participant = self._chat_client._participant
-            if participant is None:
-                return None
-
-            status_attr = f"thread.status.text.{self._chat_client.thread_path}"
-            status = participant.get_attribute(status_attr)
-            if not isinstance(status, str):
-                return None
-
-            normalized = status.strip()
-            if normalized == "":
-                return None
-
-            return normalized
+            return None
 
         def _render_thread_status_item(self, status_text: str) -> RenderableType:
             table = Table.grid(expand=True, padding=(0, 0))
@@ -5515,6 +5604,16 @@ async def chat_with(
             if headline == "":
                 headline = "event"
 
+            diff_blocks = (
+                self._diff_preview_blocks(item) if normalized_kind == "diff" else []
+            )
+            if len(diff_blocks) > 0:
+                headline = self._diff_preview_headline(
+                    blocks=diff_blocks,
+                    state=state,
+                    fallback=headline,
+                )
+
             if active:
                 headline_text = f"{self._event_spinner()} {headline}"
             else:
@@ -5551,7 +5650,22 @@ async def chat_with(
                     )
 
             detail_lines = self._event_detail_lines(item)
-            if len(detail_lines) > 0:
+            if len(diff_blocks) > 0:
+                table.add_row(Text("  "), Text(" "), Text("  "))
+                for index, block in enumerate(diff_blocks):
+                    if index > 0:
+                        table.add_row(Text("  "), Text(" "), Text("  "))
+                    table.add_row(
+                        Text("  "),
+                        Text(f"└ {block['header']}", style="dim"),
+                        Text("  "),
+                    )
+                    for line in block["lines"]:
+                        detail_text = Text("    ")
+                        detail_text.append_text(self._render_diff_line(line))
+                        table.add_row(Text("  "), detail_text, Text("  "))
+                table.add_row(Text("  "), Text(" "), Text("  "))
+            elif len(detail_lines) > 0:
                 table.add_row(Text("  "), Text(" "), Text("  "))
                 for line in detail_lines:
                     detail_text = Text("  ")
@@ -5570,6 +5684,112 @@ async def chat_with(
             if not isinstance(details, str) or details.strip() == "":
                 return []
             return details.splitlines()
+
+        def _diff_preview_blocks(self, item) -> list[dict[str, object]]:
+            candidates: list[str] = []
+            for attr in ("preview", "data"):
+                value = item.get_attribute(attr)
+                if isinstance(value, str) and value.strip() != "":
+                    candidates.append(value)
+            for candidate in candidates:
+                blocks = self._apply_patch_preview_blocks(candidate)
+                if len(blocks) > 0:
+                    return blocks
+            return []
+
+        def _apply_patch_preview_blocks(self, text: str) -> list[dict[str, object]]:
+            normalized = text.replace("\r\n", "\n").rstrip()
+            if (
+                "*** Begin Patch" not in normalized
+                and "*** Update File:" not in normalized
+                and "*** Add File:" not in normalized
+                and "*** Delete File:" not in normalized
+            ):
+                return []
+
+            blocks: list[dict[str, object]] = []
+            current_path = ""
+            current_lines: list[str] = []
+            lines_added = 0
+            lines_removed = 0
+
+            def flush() -> None:
+                nonlocal current_lines, lines_added, lines_removed
+                if current_path == "" or len(current_lines) == 0:
+                    current_lines = []
+                    lines_added = 0
+                    lines_removed = 0
+                    return
+                blocks.append(
+                    {
+                        "path": current_path,
+                        "header": self._diff_preview_header(
+                            path=current_path,
+                            lines_added=lines_added,
+                            lines_removed=lines_removed,
+                        ),
+                        "lines": current_lines,
+                        "lines_added": lines_added,
+                        "lines_removed": lines_removed,
+                    }
+                )
+                current_lines = []
+                lines_added = 0
+                lines_removed = 0
+
+            for line in normalized.splitlines():
+                match = re.match(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$", line)
+                if match is not None:
+                    flush()
+                    current_path = match.group(1).strip()
+                    continue
+                if current_path == "" or line.startswith("*** "):
+                    continue
+                current_lines.append(line)
+                if line.startswith("+") and not line.startswith("+++"):
+                    lines_added += 1
+                elif line.startswith("-") and not line.startswith("---"):
+                    lines_removed += 1
+            flush()
+            return blocks
+
+        def _diff_preview_header(
+            self, *, path: str, lines_added: int, lines_removed: int
+        ) -> str:
+            if lines_added == 0 and lines_removed == 0:
+                return path
+            return f"{path} (+{lines_added} -{lines_removed})"
+
+        def _diff_preview_headline(
+            self, *, blocks: list[dict[str, object]], state: str, fallback: str
+        ) -> str:
+            if len(blocks) == 0:
+                return fallback
+            lines_added = sum(
+                value if isinstance(value := block.get("lines_added"), int) else 0
+                for block in blocks
+            )
+            lines_removed = sum(
+                value if isinstance(value := block.get("lines_removed"), int) else 0
+                for block in blocks
+            )
+            path = blocks[0].get("path")
+            target = (
+                f"{len(blocks)} files"
+                if len(blocks) != 1
+                else path
+                if isinstance(path, str) and path.strip() != ""
+                else "patch"
+            )
+            verb = "Editing"
+            normalized_state = state.strip().lower()
+            if normalized_state == "completed":
+                verb = "Edited"
+            elif normalized_state == "failed":
+                verb = "Attempted to patch"
+            elif normalized_state == "cancelled":
+                verb = "Patch cancelled:"
+            return f"{verb} {target} (+{lines_added} -{lines_removed})"
 
         def _render_event_detail_line(self, *, kind: str, line: str) -> Text:
             if kind == "diff":
@@ -6278,9 +6498,7 @@ async def run(
                 return_when="FIRST_COMPLETED",
             )
 
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
+            await _cancel_background_tasks(pending)
             for task in done:
                 task.result()
 

@@ -1,9 +1,11 @@
 from collections.abc import AsyncIterable, AsyncIterator, Iterator
 from dataclasses import dataclass
+from datetime import date, datetime
 import os
 from pydantic import ValidationError
 import shutil
 import json as _json
+import base64
 import sys
 import tempfile
 from typing import Annotated, Optional, List, Any
@@ -64,6 +66,8 @@ DATASET_IMPORT_FORMATS = {"auto", "json", "arrow", "csv", "tsv", "parquet", "exc
 DATASET_IMPORT_MODES = {"create", "replace", "merge"}
 EXCEL_MAX_CELL_CHARS = 32767
 DATASET_IMPORT_BATCH_SIZE = 8192
+_ARROW_EXTENSION_NAME_METADATA_KEY = b"ARROW:extension:name"
+_ARROW_JSON_EXTENSION_NAME = b"arrow.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +197,63 @@ def _indent_block(text: str, prefix: str) -> str:
     return "\n".join(f"{prefix}{line}" for line in text.splitlines())
 
 
+def _json_safe_sql_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8")
+        except UnicodeDecodeError:
+            return {"base64": base64.b64encode(value).decode("ascii")}
+    if isinstance(value, dict):
+        return {key: _json_safe_sql_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_sql_value(item) for item in value]
+    return value
+
+
+def _is_arrow_json_field(field: pa.Field) -> bool:
+    metadata = field.metadata or {}
+    return (
+        metadata.get(_ARROW_EXTENSION_NAME_METADATA_KEY) == _ARROW_JSON_EXTENSION_NAME
+    )
+
+
+def _decode_arrow_json_value(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return _json.loads(value)
+        except _json.JSONDecodeError:
+            return value
+    if isinstance(value, bytes):
+        try:
+            return _json.loads(value.decode("utf-8"))
+        except (UnicodeDecodeError, _json.JSONDecodeError):
+            return value
+    return value
+
+
+def _json_safe_sql_row(
+    row: dict[str, Any], *, schema: pa.Schema | None = None
+) -> dict[str, Any]:
+    fields_by_name = (
+        {field.name: field for field in schema} if schema is not None else {}
+    )
+    normalized = dict[str, Any]()
+    for key, value in row.items():
+        field = fields_by_name.get(key)
+        if field is not None and _is_arrow_json_field(field):
+            value = _decode_arrow_json_value(value)
+        normalized[key] = _json_safe_sql_value(value)
+    return normalized
+
+
+def _sql_display_records(table: pa.Table) -> list[dict[str, Any]]:
+    return [_json_safe_sql_row(row, schema=table.schema) for row in table.to_pylist()]
+
+
 async def _print_row_batches(
     *,
     batches: AsyncIterable[Any],
@@ -202,6 +263,7 @@ async def _print_row_batches(
     first = True
     async for batch in batches:
         rows = batch.to_pylist() if isinstance(batch, pa.Table) else batch
+        schema = batch.schema if isinstance(batch, pa.Table) else None
         for row in rows:
             if first:
                 if pretty:
@@ -209,6 +271,7 @@ async def _print_row_batches(
             else:
                 typer.echo(",\n" if pretty else ",", nl=False)
 
+            row = _json_safe_sql_row(row, schema=schema)
             payload = _json.dumps(row, indent=2 if pretty else None)
             typer.echo(_indent_block(payload, "  ") if pretty else payload, nl=False)
             first = False
@@ -605,12 +668,14 @@ async def _write_sql_json_output(
         first = True
         async for batch in batches:
             rows = batch.to_pylist() if isinstance(batch, pa.Table) else batch
+            schema = batch.schema if isinstance(batch, pa.Table) else None
             for row in rows:
                 if first:
                     if pretty:
                         handle.write("\n")
                 else:
                     handle.write(",\n" if pretty else ",")
+                row = _json_safe_sql_row(row, schema=schema)
                 payload = _json.dumps(row, indent=2 if pretty else None)
                 handle.write(_indent_block(payload, "  ") if pretty else payload)
                 first = False
@@ -640,7 +705,7 @@ async def _write_sql_query_output(
         table = (
             pa.concat_tables(tables) if tables else pa.Table.from_batches([], schema)
         )
-        _print_records_table(table.to_pylist(), output_path=output_path)
+        _print_records_table(_sql_display_records(table), output_path=output_path)
         return
     if output_format == "excel":
         tables = [batch async for batch in batches]
