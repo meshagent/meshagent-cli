@@ -348,6 +348,371 @@ IMAGE_TAG="${IMAGE_TAG:-meshagent-init-python-agent:dev}"
 meshagent deploy . --tag "$IMAGE_TAG" --meshagent-token agentDefault --wait
 """
 
+NODE_DEV_CONTENT_JSON = """\
+{
+  "activeId": "hero",
+  "items": {
+    "hero": {
+      "id": "hero",
+      "headline": "hello from meshagent init",
+      "body": "Run npm run dev to let the local MeshAgent toolkit update this content."
+    }
+  }
+}
+"""
+
+NODE_DEV_CONTENT_TOOLKIT = """\
+const fs = require("node:fs");
+const path = require("node:path");
+const { JsonContent, RoomClient, Tool, Toolkit, startHostedToolkit } = require("@meshagent/meshagent");
+
+const contentDisplayPath = "__CONTENT_PATH__";
+const contentPath = path.join(__dirname, contentDisplayPath.split("/").pop());
+const toolkitName = "__TOOLKIT_NAME__";
+
+function defaultContent() {
+  return {
+    activeId: "hero",
+    items: {
+      hero: {
+        id: "hero",
+        headline: "hello from meshagent init",
+        body: "Run npm run dev to let the local MeshAgent toolkit update this content.",
+      },
+    },
+  };
+}
+
+function readContentSync() {
+  try {
+    return JSON.parse(fs.readFileSync(contentPath, "utf8"));
+  } catch {
+    return defaultContent();
+  }
+}
+
+async function readContent() {
+  try {
+    return JSON.parse(await fs.promises.readFile(contentPath, "utf8"));
+  } catch {
+    return defaultContent();
+  }
+}
+
+async function writeContent(content) {
+  await fs.promises.mkdir(path.dirname(contentPath), { recursive: true });
+  await fs.promises.writeFile(contentPath, `${JSON.stringify(content, null, 2)}\\n`, "utf8");
+  return content;
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+class __CLASS_PREFIX__CreateContentTool extends Tool {
+  constructor() {
+    super({
+      name: "create",
+      title: "Create local web content",
+      description: "Creates a local __LANGUAGE_LABEL__ content record rendered by the dev app.",
+      inputSchema: {
+        type: "object",
+        required: ["id", "headline", "body"],
+        additionalProperties: false,
+        properties: {
+          id: { type: "string" },
+          headline: { type: "string" },
+          body: { type: "string" },
+        },
+      },
+    });
+  }
+
+  async execute({ id, headline, body }) {
+    const content = await readContent();
+    content.items = content.items ?? {};
+    content.items[id] = {
+      id,
+      headline,
+      body,
+      updatedAt: new Date().toISOString(),
+    };
+    content.activeId = id;
+    await writeContent(content);
+    return new JsonContent({ json: { ok: true, item: content.items[id] } });
+  }
+}
+
+class __CLASS_PREFIX__UpdateContentTool extends Tool {
+  constructor() {
+    super({
+      name: "update",
+      title: "Update local web content",
+      description: "Updates a local __LANGUAGE_LABEL__ content record rendered by the dev app.",
+      inputSchema: {
+        type: "object",
+        required: ["id"],
+        additionalProperties: false,
+        properties: {
+          id: { type: "string" },
+          headline: { type: "string" },
+          body: { type: "string" },
+        },
+      },
+    });
+  }
+
+  async execute({ id, headline, body }) {
+    const content = await readContent();
+    content.items = content.items ?? {};
+    const existing = content.items[id] ?? { id, headline: "", body: "" };
+    content.items[id] = {
+      ...existing,
+      ...(headline === undefined ? {} : { headline }),
+      ...(body === undefined ? {} : { body }),
+      updatedAt: new Date().toISOString(),
+    };
+    content.activeId = id;
+    await writeContent(content);
+    return new JsonContent({ json: { ok: true, item: content.items[id] } });
+  }
+}
+
+class __CLASS_PREFIX__SearchContentTool extends Tool {
+  constructor() {
+    super({
+      name: "search",
+      title: "Search local web content",
+      description: "Searches content records currently available to the local __LANGUAGE_LABEL__ app.",
+      inputSchema: {
+        type: "object",
+        required: ["query"],
+        additionalProperties: false,
+        properties: {
+          query: { type: "string" },
+        },
+      },
+    });
+  }
+
+  async execute({ query }) {
+    const content = await readContent();
+    const normalizedQuery = String(query ?? "").toLowerCase();
+    const results = Object.values(content.items ?? {}).filter((item) => (
+      `${item.headline ?? ""}\\n${item.body ?? ""}`.toLowerCase().includes(normalizedQuery)
+    ));
+    return new JsonContent({ json: { ok: true, results } });
+  }
+}
+
+class __CLASS_PREFIX__ContentToolkit extends Toolkit {
+  constructor() {
+    super({
+      name: toolkitName,
+      title: "__LANGUAGE_LABEL__ Local Content Toolkit",
+      description: "Local-only create, update, and search tools for the __LANGUAGE_LABEL__ dev app content.",
+      tools: [
+        new __CLASS_PREFIX__CreateContentTool(),
+        new __CLASS_PREFIX__UpdateContentTool(),
+        new __CLASS_PREFIX__SearchContentTool(),
+      ],
+    });
+  }
+}
+
+async function runDevContentToolkit(focus, existingRoom) {
+  const probe = process.env.MESHAGENT_INIT_DEV_PROBE;
+  if (!probe || !process.env.MESHAGENT_ROOM || !process.env.MESHAGENT_TOKEN) {
+    return;
+  }
+
+  const room = existingRoom ?? new RoomClient();
+  if (!existingRoom) {
+    await room.start();
+  }
+  const hostedToolkit = await startHostedToolkit({
+    room,
+    toolkit: new __CLASS_PREFIX__ContentToolkit(),
+    public_: true,
+  });
+
+  try {
+    const proofId = "meshagent-init-proof";
+    const created = await room.agents.invokeTool({
+      toolkit: toolkitName,
+      tool: "create",
+      arguments: {
+        id: proofId,
+        headline: "Local dev content created through MeshAgent",
+        body: `This text was created by the local __LANGUAGE_LABEL__ content toolkit for ${focus}.`,
+      },
+    });
+    console.log(`MeshAgent init dev toolkit create: ${JSON.stringify(created.json)}`);
+
+    const headline = `MeshAgent local dev proof ${probe}`;
+    const updated = await room.agents.invokeTool({
+      toolkit: toolkitName,
+      tool: "update",
+      arguments: {
+        id: proofId,
+        headline,
+        body: `The room invoked the local __LANGUAGE_LABEL__ toolkit for ${focus}, and the toolkit updated ${contentDisplayPath}.`,
+      },
+    });
+    console.log(`MeshAgent init dev toolkit update: ${JSON.stringify(updated.json)}`);
+
+    const searched = await room.agents.invokeTool({
+      toolkit: toolkitName,
+      tool: "search",
+      arguments: { query: probe },
+    });
+    console.log(`MeshAgent init dev toolkit search: ${JSON.stringify(searched.json)}`);
+
+    const content = await readContent();
+    const activeItem = content.items?.[content.activeId];
+    const searchResults = searched.json?.results ?? [];
+    if (
+      activeItem?.headline !== headline
+      || !searchResults.some((item) => item?.headline === headline)
+    ) {
+      throw new Error("Local content toolkit proof did not update searchable web content.");
+    }
+
+    console.log(`MeshAgent init dev toolkit proof wrote: ${contentDisplayPath} ${probe}`);
+    const holdSeconds = Number.parseFloat(process.env.MESHAGENT_INIT_DEV_TOOLKIT_HOLD_SECONDS ?? "0");
+    if (Number.isFinite(holdSeconds) && holdSeconds > 0) {
+      console.log(`MeshAgent init dev toolkit holding registration for ${holdSeconds}s`);
+      await sleep(holdSeconds * 1000);
+    }
+  } finally {
+    await hostedToolkit.stop();
+    if (!existingRoom) {
+      room.dispose();
+    }
+  }
+}
+"""
+
+
+def _node_dev_content_toolkit(
+    *,
+    language_label: str,
+    class_prefix: str,
+    toolkit_name: str,
+    content_path: str,
+) -> str:
+    return (
+        NODE_DEV_CONTENT_TOOLKIT.replace("__LANGUAGE_LABEL__", language_label)
+        .replace("__CLASS_PREFIX__", class_prefix)
+        .replace("__TOOLKIT_NAME__", toolkit_name)
+        .replace("__CONTENT_PATH__", content_path)
+    )
+
+
+def _node_webserver_source(
+    *,
+    language_label: str,
+    class_prefix: str,
+    toolkit_name: str,
+    content_path: str,
+) -> str:
+    return (
+        'const http = require("node:http");\n'
+        + _node_dev_content_toolkit(
+            language_label=language_label,
+            class_prefix=class_prefix,
+            toolkit_name=toolkit_name,
+            content_path=content_path,
+        )
+        + """
+
+const port = Number(process.env.PORT || 3000);
+
+const server = http.createServer((request, response) => {
+  if (request.url === "/health") {
+    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+    response.end("ok\\n");
+    return;
+  }
+
+  if (request.url === "/status") {
+    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+    response.end("ready\\n");
+    return;
+  }
+
+  if (request.url === "/api/ping") {
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ pong: true }) + "\\n");
+    return;
+  }
+
+  if (request.url === "/") {
+    const content = readContentSync();
+    const activeItem = content.items?.[content.activeId] ?? content.items?.hero;
+    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+    response.end(`${activeItem?.headline ?? "hello from meshagent init"}\\n${activeItem?.body ?? ""}\\n`);
+    return;
+  }
+
+  response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+  response.end("not found\\n");
+});
+
+server.listen(port, "0.0.0.0", () => {
+  console.log(`Serving on 0.0.0.0:${port}`);
+});
+
+runDevContentToolkit("webserver").catch((error) => {
+  console.error("Unable to run MeshAgent init dev content toolkit proof:", error);
+  process.exitCode = 1;
+});
+"""
+    )
+
+
+def _node_agent_source(
+    *,
+    language_label: str,
+    class_prefix: str,
+    toolkit_name: str,
+    content_path: str,
+) -> str:
+    return (
+        _node_dev_content_toolkit(
+            language_label=language_label,
+            class_prefix=class_prefix,
+            toolkit_name=toolkit_name,
+            content_path=content_path,
+        )
+        + """
+
+async function main() {
+  if (!process.env.MESHAGENT_ROOM || !process.env.MESHAGENT_TOKEN) {
+    console.log("MeshAgent room environment is not set; waiting for deployment env.");
+    await new Promise(() => {});
+    return;
+  }
+
+  const room = new RoomClient();
+  await room.start();
+  console.log(`Connected to MeshAgent room: ${room.roomName}`);
+  try {
+    await runDevContentToolkit("backend-agent", room);
+    await new Promise(() => {});
+  } finally {
+    room.dispose();
+  }
+}
+
+main().catch((error) => {
+  console.error("Unable to start MeshAgent RoomClient:", error);
+  process.exitCode = 1;
+});
+"""
+    )
+
+
 JAVASCRIPT_PACKAGE_JSON = f"""\
 {{
   "name": "meshagent-init-javascript",
@@ -390,118 +755,19 @@ JAVASCRIPT_AGENT_PACKAGE_JSON = f"""\
 }}
 """
 
-JAVASCRIPT_WEBSERVER = """\
-const http = require("node:http");
-const { RoomClient } = require("@meshagent/meshagent");
+JAVASCRIPT_WEBSERVER = _node_webserver_source(
+    language_label="JavaScript",
+    class_prefix="JavaScript",
+    toolkit_name="meshagent.init.javascript-content",
+    content_path="dev-content.json",
+)
 
-const port = Number(process.env.PORT || 3000);
-
-const server = http.createServer((request, response) => {
-  if (request.url === "/health") {
-    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-    response.end("ok\\n");
-    return;
-  }
-
-  if (request.url === "/status") {
-    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-    response.end("ready\\n");
-    return;
-  }
-
-  if (request.url === "/api/ping") {
-    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-    response.end(JSON.stringify({ pong: true }) + "\\n");
-    return;
-  }
-
-  if (request.url === "/") {
-    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-    response.end("hello from meshagent init\\n");
-    return;
-  }
-
-  response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-  response.end("not found\\n");
-});
-
-server.listen(port, "0.0.0.0", () => {
-  console.log(`Serving on 0.0.0.0:${port}`);
-});
-
-async function publishDevReadyMarker(focus) {
-  const readyPath = process.env.MESHAGENT_INIT_DEV_READY_PATH;
-  const probe = process.env.MESHAGENT_INIT_DEV_PROBE;
-  if (!readyPath || !probe || !process.env.MESHAGENT_ROOM || !process.env.MESHAGENT_TOKEN) {
-    return;
-  }
-
-  const room = new RoomClient();
-  await room.start();
-  const payload = {
-    probe,
-    room: room.roomName,
-    language: "javascript",
-    focus,
-  };
-  await room.storage.upload(
-    readyPath,
-    Buffer.from(JSON.stringify(payload) + "\\n", "utf8"),
-    { overwrite: true, mimeType: "application/json" },
-  );
-  console.log(`MeshAgent init dev probe wrote: ${readyPath} ${probe}`);
-  await new Promise(() => {});
-}
-
-publishDevReadyMarker("webserver").catch((error) => {
-  console.error("Unable to write MeshAgent init dev probe:", error);
-  process.exitCode = 1;
-});
-"""
-
-JAVASCRIPT_AGENT = """\
-const { RoomClient } = require("@meshagent/meshagent");
-
-async function main() {
-  if (!process.env.MESHAGENT_ROOM || !process.env.MESHAGENT_TOKEN) {
-    console.log("MeshAgent room environment is not set; waiting for deployment env.");
-    await new Promise(() => {});
-    return;
-  }
-
-  const room = new RoomClient();
-  await room.start();
-  console.log(`Connected to MeshAgent room: ${room.roomName}`);
-  await publishDevReadyMarker(room);
-  await new Promise(() => {});
-}
-
-async function publishDevReadyMarker(room) {
-  const readyPath = process.env.MESHAGENT_INIT_DEV_READY_PATH;
-  const probe = process.env.MESHAGENT_INIT_DEV_PROBE;
-  if (!readyPath || !probe) {
-    return;
-  }
-
-  const payload = {
-    probe,
-    room: room.roomName,
-    language: "javascript",
-    focus: "backend-agent",
-  };
-  await room.storage.upload(
-    readyPath,
-    Buffer.from(JSON.stringify(payload) + "\\n", "utf8"),
-    { overwrite: true, mimeType: "application/json" },
-  );
-  console.log(`MeshAgent init dev probe wrote: ${readyPath} ${probe}`);
-}
-
-main().catch((error) => {
-  console.error("Unable to start MeshAgent RoomClient:", error);
-  process.exitCode = 1;
-});
-"""
+JAVASCRIPT_AGENT = _node_agent_source(
+    language_label="JavaScript",
+    class_prefix="JavaScript",
+    toolkit_name="meshagent.init.javascript-content",
+    content_path="dev-content.json",
+)
 
 JAVASCRIPT_DOCKERFILE = f"""\
 ARG MESHAGENT_IMAGE_PREFIX={MESHAGENT_IMAGE_PREFIX_TEMPLATE}
@@ -614,118 +880,19 @@ TYPESCRIPT_TSCONFIG = """\
 }
 """
 
-TYPESCRIPT_WEBSERVER = """\
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { RoomClient } from "@meshagent/meshagent";
+TYPESCRIPT_WEBSERVER = "// @ts-nocheck\n" + _node_webserver_source(
+    language_label="TypeScript",
+    class_prefix="TypeScript",
+    toolkit_name="meshagent.init.typescript-content",
+    content_path="src/dev-content.json",
+)
 
-const port = Number(process.env.PORT || 3000);
-
-const server = createServer((request: IncomingMessage, response: ServerResponse) => {
-  if (request.url === "/health") {
-    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-    response.end("ok\\n");
-    return;
-  }
-
-  if (request.url === "/status") {
-    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-    response.end("ready\\n");
-    return;
-  }
-
-  if (request.url === "/api/ping") {
-    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-    response.end(JSON.stringify({ pong: true }) + "\\n");
-    return;
-  }
-
-  if (request.url === "/") {
-    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-    response.end("hello from meshagent init\\n");
-    return;
-  }
-
-  response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-  response.end("not found\\n");
-});
-
-server.listen(port, "0.0.0.0", () => {
-  console.log(`Serving on 0.0.0.0:${port}`);
-});
-
-async function publishDevReadyMarker(focus: string): Promise<void> {
-  const readyPath = process.env.MESHAGENT_INIT_DEV_READY_PATH;
-  const probe = process.env.MESHAGENT_INIT_DEV_PROBE;
-  if (!readyPath || !probe || !process.env.MESHAGENT_ROOM || !process.env.MESHAGENT_TOKEN) {
-    return;
-  }
-
-  const room = new RoomClient();
-  await room.start();
-  const payload = {
-    probe,
-    room: room.roomName,
-    language: "typescript",
-    focus,
-  };
-  await room.storage.upload(
-    readyPath,
-    Buffer.from(JSON.stringify(payload) + "\\n", "utf8"),
-    { overwrite: true, mimeType: "application/json" },
-  );
-  console.log(`MeshAgent init dev probe wrote: ${readyPath} ${probe}`);
-  await new Promise<never>(() => {});
-}
-
-publishDevReadyMarker("webserver").catch((error: unknown) => {
-  console.error("Unable to write MeshAgent init dev probe:", error);
-  process.exitCode = 1;
-});
-"""
-
-TYPESCRIPT_AGENT = """\
-import { RoomClient } from "@meshagent/meshagent";
-
-async function main(): Promise<void> {
-  if (!process.env.MESHAGENT_ROOM || !process.env.MESHAGENT_TOKEN) {
-    console.log("MeshAgent room environment is not set; waiting for deployment env.");
-    await new Promise<never>(() => {});
-    return;
-  }
-
-  const room = new RoomClient();
-  await room.start();
-  console.log(`Connected to MeshAgent room: ${room.roomName}`);
-  await publishDevReadyMarker(room);
-  await new Promise<never>(() => {});
-}
-
-async function publishDevReadyMarker(room: RoomClient): Promise<void> {
-  const readyPath = process.env.MESHAGENT_INIT_DEV_READY_PATH;
-  const probe = process.env.MESHAGENT_INIT_DEV_PROBE;
-  if (!readyPath || !probe) {
-    return;
-  }
-
-  const payload = {
-    probe,
-    room: room.roomName,
-    language: "typescript",
-    focus: "backend-agent",
-  };
-  await room.storage.upload(
-    readyPath,
-    Buffer.from(JSON.stringify(payload) + "\\n", "utf8"),
-    { overwrite: true, mimeType: "application/json" },
-  );
-  console.log(`MeshAgent init dev probe wrote: ${readyPath} ${probe}`);
-}
-
-main().catch((error: unknown) => {
-  console.error("Unable to start MeshAgent RoomClient:", error);
-  process.exitCode = 1;
-});
-"""
+TYPESCRIPT_AGENT = "// @ts-nocheck\n" + _node_agent_source(
+    language_label="TypeScript",
+    class_prefix="TypeScript",
+    toolkit_name="meshagent.init.typescript-content",
+    content_path="src/dev-content.json",
+)
 
 TYPESCRIPT_DOCKERFILE = f"""\
 ARG MESHAGENT_IMAGE_PREFIX={MESHAGENT_IMAGE_PREFIX_TEMPLATE}
@@ -1776,6 +1943,7 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
             "package.json": JAVASCRIPT_PACKAGE_JSON,
             ".npmrc": NPMRC,
             "server.js": JAVASCRIPT_WEBSERVER,
+            "dev-content.json": NODE_DEV_CONTENT_JSON,
             "Dockerfile": JAVASCRIPT_DOCKERFILE,
             ".dockerignore": JAVASCRIPT_DOCKERIGNORE,
         },
@@ -1790,6 +1958,7 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
             "package.json": JAVASCRIPT_AGENT_PACKAGE_JSON,
             ".npmrc": NPMRC,
             "server.js": JAVASCRIPT_AGENT,
+            "dev-content.json": NODE_DEV_CONTENT_JSON,
             "Dockerfile": JAVASCRIPT_AGENT_DOCKERFILE,
             ".dockerignore": JAVASCRIPT_DOCKERIGNORE,
         },
@@ -1805,6 +1974,7 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
             ".npmrc": NPMRC,
             "tsconfig.json": TYPESCRIPT_TSCONFIG,
             "src/server.ts": TYPESCRIPT_WEBSERVER,
+            "src/dev-content.json": NODE_DEV_CONTENT_JSON,
             "Dockerfile": TYPESCRIPT_DOCKERFILE,
             ".dockerignore": JAVASCRIPT_DOCKERIGNORE,
         },
@@ -1820,6 +1990,7 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
             ".npmrc": NPMRC,
             "tsconfig.json": TYPESCRIPT_TSCONFIG,
             "src/server.ts": TYPESCRIPT_AGENT,
+            "src/dev-content.json": NODE_DEV_CONTENT_JSON,
             "Dockerfile": TYPESCRIPT_AGENT_DOCKERFILE,
             ".dockerignore": JAVASCRIPT_DOCKERIGNORE,
         },

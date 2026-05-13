@@ -7,6 +7,29 @@ from meshagent.cli.doctor import diagnose_project
 from meshagent.cli.init import init_command
 
 
+def _assert_node_content_toolkit(
+    source: str,
+    *,
+    language_label: str,
+    class_prefix: str,
+    content_path: str,
+) -> None:
+    assert "RoomClient" in source
+    assert "startHostedToolkit" in source
+    assert "public_: true" in source
+    assert "MESHAGENT_INIT_DEV_TOOLKIT_HOLD_SECONDS" in source
+    assert f"class {class_prefix}ContentToolkit extends Toolkit" in source
+    assert 'name: "create"' in source
+    assert 'name: "update"' in source
+    assert 'name: "search"' in source
+    assert f'title: "{language_label} Local Content Toolkit"' in source
+    assert "room.agents.invokeTool" in source
+    assert "meshagent-init-proof" in source
+    assert content_path in source
+    assert "MESHAGENT_INIT_DEV_PROBE" in source
+    assert "room.storage.upload" not in source
+
+
 def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> None:
     (tmp_path / ".gitkeep").write_text("", encoding="utf-8")
 
@@ -161,14 +184,17 @@ def test_init_creates_javascript_webserver_non_interactively(tmp_path) -> None:
     package_json = tmp_path / "package.json"
     npmrc = tmp_path / ".npmrc"
     server_js = tmp_path / "server.js"
+    dev_content_json = tmp_path / "dev-content.json"
     dockerfile = tmp_path / "Dockerfile"
     assert package_json.is_file()
     assert npmrc.is_file()
     assert server_js.is_file()
+    assert dev_content_json.is_file()
     assert dockerfile.is_file()
     package_text = package_json.read_text(encoding="utf-8")
     npmrc_text = npmrc.read_text(encoding="utf-8")
     dockerfile_text = dockerfile.read_text(encoding="utf-8")
+    dev_content = dev_content_json.read_text(encoding="utf-8")
     assert "cache=.npm-cache" in npmrc_text
     assert "audit=false" in npmrc_text
     assert '"build": "ncc build server.js -o dist"' in package_text
@@ -184,9 +210,14 @@ def test_init_creates_javascript_webserver_non_interactively(tmp_path) -> None:
     assert "hello from meshagent init" in server_text
     assert 'request.url === "/status"' in server_text
     assert 'request.url === "/api/ping"' in server_text
-    assert "RoomClient" in server_text
-    assert "MESHAGENT_INIT_DEV_READY_PATH" in server_text
-    assert "room.storage.upload" in server_text
+    _assert_node_content_toolkit(
+        server_text,
+        language_label="JavaScript",
+        class_prefix="JavaScript",
+        content_path="dev-content.json",
+    )
+    assert "readContentSync" in server_text
+    assert "hello from meshagent init" in dev_content
     assert "node-sdk" in dockerfile_text
     assert "RUN npm run build" in dockerfile_text
     assert "COPY --from=build /app/dist/index.js /app/index.js" in dockerfile_text
@@ -219,6 +250,7 @@ def test_init_creates_javascript_backend_agent_non_interactively(tmp_path) -> No
         encoding="utf-8"
     )
     assert "cache=.npm-cache" in (tmp_path / ".npmrc").read_text(encoding="utf-8")
+    assert (tmp_path / "dev-content.json").is_file()
     package_text = (tmp_path / "package.json").read_text(encoding="utf-8")
     assert '"dev": "meshagent room connect -- node server.js"' in package_text
     assert (
@@ -226,9 +258,15 @@ def test_init_creates_javascript_backend_agent_non_interactively(tmp_path) -> No
         in package_text
     )
     server_js = (tmp_path / "server.js").read_text(encoding="utf-8")
-    assert "RoomClient" in server_js
-    assert "MESHAGENT_INIT_DEV_READY_PATH" in server_js
-    assert "room.storage.upload" in server_js
+    _assert_node_content_toolkit(
+        server_js,
+        language_label="JavaScript",
+        class_prefix="JavaScript",
+        content_path="dev-content.json",
+    )
+    assert "hello from meshagent init" in (tmp_path / "dev-content.json").read_text(
+        encoding="utf-8"
+    )
     assert "server.listen" not in server_js
     dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     assert "node-sdk" in dockerfile
@@ -262,6 +300,7 @@ def test_init_creates_typescript_webserver_non_interactively(tmp_path) -> None:
     assert (tmp_path / ".npmrc").is_file()
     assert (tmp_path / "tsconfig.json").is_file()
     assert (tmp_path / "src" / "server.ts").is_file()
+    assert (tmp_path / "src" / "dev-content.json").is_file()
     assert (tmp_path / "Dockerfile").is_file()
     package_text = (tmp_path / "package.json").read_text(encoding="utf-8")
     npmrc_text = (tmp_path / ".npmrc").read_text(encoding="utf-8")
@@ -282,9 +321,16 @@ def test_init_creates_typescript_webserver_non_interactively(tmp_path) -> None:
     assert "createServer" in server_ts
     assert 'request.url === "/status"' in server_ts
     assert 'request.url === "/api/ping"' in server_ts
-    assert "RoomClient" in server_ts
-    assert "MESHAGENT_INIT_DEV_READY_PATH" in server_ts
-    assert "room.storage.upload" in server_ts
+    _assert_node_content_toolkit(
+        server_ts,
+        language_label="TypeScript",
+        class_prefix="TypeScript",
+        content_path="src/dev-content.json",
+    )
+    assert "readContentSync" in server_ts
+    assert "hello from meshagent init" in (
+        tmp_path / "src" / "dev-content.json"
+    ).read_text(encoding="utf-8")
     assert "node-sdk" in dockerfile_text
     assert "RUN npm run build" in dockerfile_text
     assert "COPY --from=build /app/dist/index.js /app/index.js" in dockerfile_text
@@ -320,6 +366,7 @@ def test_init_creates_typescript_backend_agent_non_interactively(tmp_path) -> No
         encoding="utf-8"
     )
     assert "cache=.npm-cache" in (tmp_path / ".npmrc").read_text(encoding="utf-8")
+    assert (tmp_path / "src" / "dev-content.json").is_file()
     package_text = (tmp_path / "package.json").read_text(encoding="utf-8")
     assert '"dev": "meshagent room connect -- tsx src/server.ts"' in package_text
     assert (
@@ -327,9 +374,15 @@ def test_init_creates_typescript_backend_agent_non_interactively(tmp_path) -> No
         in package_text
     )
     server_ts = (tmp_path / "src" / "server.ts").read_text(encoding="utf-8")
-    assert "RoomClient" in server_ts
-    assert "MESHAGENT_INIT_DEV_READY_PATH" in server_ts
-    assert "room.storage.upload" in server_ts
+    _assert_node_content_toolkit(
+        server_ts,
+        language_label="TypeScript",
+        class_prefix="TypeScript",
+        content_path="src/dev-content.json",
+    )
+    assert "hello from meshagent init" in (
+        tmp_path / "src" / "dev-content.json"
+    ).read_text(encoding="utf-8")
     assert "server.listen" not in server_ts
     dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     assert "node-sdk" in dockerfile
