@@ -485,12 +485,10 @@ async def _thread_agent_messages_from_storage(
     thread_storage: object,
 ) -> list[AgentMessage]:
     from meshagent.agents.dataset_thread_storage import DatasetThreadStorage
-    from meshagent.agents.process import AsyncReadyThreadStorage
     from meshagent.agents.process_thread_adapter import MeshDocumentThreadStorage
 
     if isinstance(thread_storage, (DatasetThreadStorage, MeshDocumentThreadStorage)):
-        if isinstance(thread_storage, AsyncReadyThreadStorage):
-            await thread_storage.wait_until_ready()
+        await thread_storage.wait_until_ready()
         return thread_storage.agent_messages()
     return []
 
@@ -1303,7 +1301,7 @@ class _ProcessThreadSidebar:
             return
         self._confirm_delete_path = None
         await self._switch_thread(entry.path)
-        self._message = f"Opened {entry.name}"
+        self._message = None
 
     async def _confirm_or_delete_selected_thread(self) -> None:
         entry = self._selected_entry()
@@ -1316,7 +1314,7 @@ class _ProcessThreadSidebar:
         deleted_current = self._current_thread_path() == entry.path
         await self._delete_thread(entry.path)
         self._confirm_delete_path = None
-        self._message = f"Deleted {entry.name}"
+        self._message = None
         self._entries = [
             existing for existing in self._entries if existing.path != entry.path
         ]
@@ -1361,7 +1359,7 @@ class _ProcessThreadSidebar:
             return
         rename_path = self._rename_path
         await self._rename_thread(rename_path, name)
-        self._message = f"Renamed to {name}"
+        self._message = None
         self._entries = [
             (
                 ThreadListEntry(
