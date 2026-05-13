@@ -669,14 +669,25 @@ def test_init_creates_flutter_webserver_non_interactively(tmp_path) -> None:
     assert "location = /api/ping" in flutter_dockerfile
     assert "EXPOSE 80" in flutter_dockerfile
     assert 'PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"' in install_sh
+    assert "command -v flutter" in install_sh
+    assert "command -v docker" in install_sh
+    assert "ghcr.io/cirruslabs/flutter:stable" in install_sh
     assert "flutter pub get" in install_sh
     assert "meshagent room connect -- sh -c" in dev_sh
+    assert "meshagent room connect -- docker run --rm" in dev_sh
+    assert "-p 3000:3000" in dev_sh
+    assert "-e MESHAGENT_API_URL" in dev_sh
+    assert "-e MESHAGENT_PROJECT_ID" in dev_sh
+    assert "-e MESHAGENT_ROOM" in dev_sh
+    assert "-e MESHAGENT_TOKEN" in dev_sh
+    assert "ghcr.io/cirruslabs/flutter:stable" in dev_sh
     assert "dart run tool/dev_room_proof.dart" in dev_sh
     assert "flutter run -d web-server" in dev_sh
     dev_probe = (tmp_path / "tool" / "dev_room_proof.dart").read_text(encoding="utf-8")
     assert "RoomClient" in dev_probe
     assert "MESHAGENT_INIT_DEV_READY_PATH" in dev_probe
     assert "room.storage.upload" in dev_probe
+    assert "room.dispose()" in dev_probe
     assert (
         'meshagent deploy . --tag "$IMAGE_TAG" --public --liveness /health --room-mount /:/data:rw --wait'
         in deploy_sh
@@ -711,6 +722,12 @@ def test_init_creates_dart_backend_agent_non_interactively(tmp_path) -> None:
     assert "room.storage.upload" in (tmp_path / "bin" / "server.dart").read_text(
         encoding="utf-8"
     )
+    assert "wroteDevProof" in (tmp_path / "bin" / "server.dart").read_text(
+        encoding="utf-8"
+    )
+    assert "room.dispose()" in (tmp_path / "bin" / "server.dart").read_text(
+        encoding="utf-8"
+    )
     assert "HttpServer" not in (tmp_path / "bin" / "server.dart").read_text(
         encoding="utf-8"
     )
@@ -721,8 +738,17 @@ def test_init_creates_dart_backend_agent_non_interactively(tmp_path) -> None:
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert not (tmp_path / "Makefile").exists()
     assert 'PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"' in install_sh
+    assert "command -v dart" in install_sh
+    assert "command -v docker" in install_sh
+    assert "dart:stable" in install_sh
     assert "dart pub get" in install_sh
     assert "meshagent room connect -- dart run bin/server.dart" in dev_sh
+    assert "meshagent room connect -- docker run --rm" in dev_sh
+    assert "-e MESHAGENT_API_URL" in dev_sh
+    assert "-e MESHAGENT_PROJECT_ID" in dev_sh
+    assert "-e MESHAGENT_ROOM" in dev_sh
+    assert "-e MESHAGENT_TOKEN" in dev_sh
+    assert "dart:stable" in dev_sh
     assert (
         'meshagent deploy . --tag "$IMAGE_TAG" --meshagent-token agentDefault --wait'
         in deploy_sh

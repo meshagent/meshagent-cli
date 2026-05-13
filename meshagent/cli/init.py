@@ -2080,15 +2080,19 @@ Future<void> main() async {
   );
   await room.start();
   print('Connected to MeshAgent room: ${room.roomName}');
-  await publishDevReadyMarker(room);
+  final wroteDevProof = await publishDevReadyMarker(room);
+  if (wroteDevProof) {
+    room.dispose();
+    return;
+  }
   await Completer<void>().future;
 }
 
-Future<void> publishDevReadyMarker(RoomClient room) async {
+Future<bool> publishDevReadyMarker(RoomClient room) async {
   final readyPath = Platform.environment['MESHAGENT_INIT_DEV_READY_PATH'];
   final probe = Platform.environment['MESHAGENT_INIT_DEV_PROBE'];
   if (readyPath == null || readyPath.isEmpty || probe == null || probe.isEmpty) {
-    return;
+    return false;
   }
 
   final payload = jsonEncode({
@@ -2104,6 +2108,7 @@ Future<void> publishDevReadyMarker(RoomClient room) async {
     mimeType: 'application/json',
   );
   print('MeshAgent init dev probe wrote: $readyPath $probe');
+  return true;
 }
 
 Uri _websocketRoomUrl(String roomName) {
@@ -2144,7 +2149,19 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"
 export PUB_CACHE
-dart pub get
+if command -v dart >/dev/null 2>&1; then
+  dart pub get
+elif command -v docker >/dev/null 2>&1; then
+  docker run --rm \
+    -e PUB_CACHE=/app/.pub-cache \
+    -v "$ROOT:/app" \
+    -w /app \
+    dart:stable \
+    dart pub get
+else
+  echo "Neither dart nor docker is installed. Install the Dart SDK or Docker, then rerun this script." >&2
+  exit 127
+fi
 """
 
 DART_DEV_SCRIPT = """\
@@ -2154,7 +2171,25 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"
 export PUB_CACHE
-meshagent room connect -- dart run bin/server.dart
+if command -v dart >/dev/null 2>&1; then
+  meshagent room connect -- dart run bin/server.dart
+elif command -v docker >/dev/null 2>&1; then
+  meshagent room connect -- docker run --rm \
+    -e MESHAGENT_API_URL \
+    -e MESHAGENT_PROJECT_ID \
+    -e MESHAGENT_ROOM \
+    -e MESHAGENT_TOKEN \
+    -e MESHAGENT_INIT_DEV_PROBE \
+    -e MESHAGENT_INIT_DEV_READY_PATH \
+    -e PUB_CACHE=/app/.pub-cache \
+    -v "$ROOT:/app" \
+    -w /app \
+    dart:stable \
+    dart run bin/server.dart
+else
+  echo "Neither dart nor docker is installed. Install the Dart SDK or Docker, then rerun this script." >&2
+  exit 127
+fi
 """
 
 DART_AGENT_DEPLOY_SCRIPT = """\
@@ -2224,7 +2259,7 @@ Future<void> main() async {
     mimeType: 'application/json',
   );
   print('MeshAgent init dev probe wrote: $readyPath $probe');
-  await Completer<void>().future;
+  room.dispose();
 }
 
 Uri _websocketRoomUrl(String roomName) {
@@ -2327,7 +2362,19 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"
 export PUB_CACHE
-flutter pub get
+if command -v flutter >/dev/null 2>&1; then
+  flutter pub get
+elif command -v docker >/dev/null 2>&1; then
+  docker run --rm \
+    -e PUB_CACHE=/app/.pub-cache \
+    -v "$ROOT:/app" \
+    -w /app \
+    ghcr.io/cirruslabs/flutter:stable \
+    flutter pub get
+else
+  echo "Neither flutter nor docker is installed. Install the Flutter SDK or Docker, then rerun this script." >&2
+  exit 127
+fi
 """
 
 FLUTTER_DEV_SCRIPT = """\
@@ -2337,7 +2384,26 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"
 export PUB_CACHE
-meshagent room connect -- sh -c 'dart run tool/dev_room_proof.dart & flutter run -d web-server --web-hostname 0.0.0.0 --web-port 3000'
+if command -v flutter >/dev/null 2>&1; then
+  meshagent room connect -- sh -c 'dart run tool/dev_room_proof.dart & flutter run -d web-server --web-hostname 0.0.0.0 --web-port 3000'
+elif command -v docker >/dev/null 2>&1; then
+  meshagent room connect -- docker run --rm \
+    -p 3000:3000 \
+    -e MESHAGENT_API_URL \
+    -e MESHAGENT_PROJECT_ID \
+    -e MESHAGENT_ROOM \
+    -e MESHAGENT_TOKEN \
+    -e MESHAGENT_INIT_DEV_PROBE \
+    -e MESHAGENT_INIT_DEV_READY_PATH \
+    -e PUB_CACHE=/app/.pub-cache \
+    -v "$ROOT:/app" \
+    -w /app \
+    ghcr.io/cirruslabs/flutter:stable \
+    sh -c 'dart run tool/dev_room_proof.dart & flutter run -d web-server --web-hostname 0.0.0.0 --web-port 3000'
+else
+  echo "Neither flutter nor docker is installed. Install the Flutter SDK or Docker, then rerun this script." >&2
+  exit 127
+fi
 """
 
 FLUTTER_DEPLOY_SCRIPT = """\
