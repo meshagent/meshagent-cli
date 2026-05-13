@@ -184,6 +184,7 @@ _ASK_PASS_THROUGH_AGENT_EVENT_TYPES = {
     AGENT_EVENT_TOOL_CALL_STARTED,
 }
 _ASK_SLASH_COMMANDS = (
+    ("/new", "Start a new thread"),
     ("/model", "List or change the active model"),
     ("/output", "Change text or audio outputs"),
 )
@@ -431,6 +432,12 @@ class _AskImageDatasetProvider(Protocol):
     def image_dataset_client(self) -> ImageDatasetClient | None: ...
 
 
+@runtime_checkable
+class _AskThreadGenerationState(Protocol):
+    @property
+    def thread_generation(self) -> int: ...
+
+
 class _AgentMessageChannelClient(Protocol):
     @property
     def has_thread_path(self) -> bool: ...
@@ -639,7 +646,7 @@ def _ask_conversation_message_from_agent_message(
     *,
     local_participant_name: str | None,
 ) -> _AskConversationMessage | None:
-    if isinstance(message, (TurnStart, TurnSteer)):
+    if isinstance(message, (StartThread, TurnStart, TurnSteer)):
         text = _agent_message_content_text(message.content)
         if text == "":
             return None
@@ -989,6 +996,11 @@ class _AgentMessageSession:
 
     def add_agent_message(self, message: AgentMessage) -> None:
         self._client.add_agent_message(message)
+
+    def replace_client(self, client: _AgentMessageChannelClient) -> None:
+        self._client = client
+        if self._image_dataset_client is None:
+            self._image_dataset_client = _image_dataset_client_from_agent_client(client)
 
     async def close(self, *, close_client: bool = True) -> None:
         self._pending_steer_callbacks.clear()
@@ -1670,6 +1682,11 @@ async def _run_ask_tui(
     model_label_provider: Callable[[], str | None] | None = None,
     output_label_provider: Callable[[], str | None] | None = None,
     command_options_provider: Callable[[str], Sequence[AskCommandOption]] | None = None,
+    side_panel_renderer: Callable[[bool], Any] | None = None,
+    side_panel_key_handler: Callable[[str, str | None], Awaitable[bool] | bool]
+    | None = None,
+    side_panel_mouse_handler: Callable[[int, int], Awaitable[bool] | bool]
+    | None = None,
 ) -> None:
     try:
         from rich.text import Text
@@ -1723,6 +1740,17 @@ async def _run_ask_tui(
         options: list[AskCommandOption]
         selected_index: int = 0
 
+    class _AskSidePanel(Static):
+        can_focus = True
+
+        def on_click(self, event: Any) -> None:
+            event.prevent_default()
+            event.stop()
+            self.focus()
+            app = self.app
+            if isinstance(app, _AskTextualApp):
+                app._submit_side_panel_click(x=event.x, y=event.y)
+
     class _AskTextualApp(App[None]):
         CSS = """
         Screen {
@@ -1739,9 +1767,28 @@ async def _run_ask_tui(
             color: #cfd3dc;
         }
         #feed-scroll {
-            width: 100%;
+            width: 4fr;
             height: 1fr;
             align: left bottom;
+        }
+        #content-row {
+            width: 100%;
+            height: 1fr;
+        }
+        #side-panel {
+            display: none;
+            width: 1fr;
+            height: 100%;
+            padding: 1 1;
+            border-left: solid #2d3138;
+            background: #101114;
+            color: #cfd3dc;
+        }
+        #side-panel.side-panel--visible {
+            display: block;
+        }
+        #side-panel.side-panel--focused {
+            border-left: solid #7dd3fc;
         }
         #feed {
             width: 100%;
@@ -1884,6 +1931,7 @@ async def _run_ask_tui(
 
         BINDINGS = [
             Binding("ctrl+c", "quit_app", "Quit", priority=True),
+            Binding("tab", "toggle_side_panel_focus", "Focus", priority=True),
             Binding("escape", "interrupt_turn", "Interrupt", priority=True),
             Binding("shift+enter", "insert_newline", show=False, priority=True),
             Binding("enter", "submit_prompt", "Send", priority=True),
@@ -1900,6 +1948,11 @@ async def _run_ask_tui(
             output_label_provider: Callable[[], str | None] | None,
             command_options_provider: Callable[[str], Sequence[AskCommandOption]]
             | None,
+            side_panel_renderer: Callable[[bool], Any] | None,
+            side_panel_key_handler: Callable[[str, str | None], Awaitable[bool] | bool]
+            | None,
+            side_panel_mouse_handler: Callable[[int, int], Awaitable[bool] | bool]
+            | None,
         ) -> None:
             super().__init__()
             self._session = session
@@ -1909,9 +1962,13 @@ async def _run_ask_tui(
             self._model_label_provider = model_label_provider
             self._output_label_provider = output_label_provider
             self._command_options_provider = command_options_provider
+            self._side_panel_renderer = side_panel_renderer
+            self._side_panel_key_handler = side_panel_key_handler
+            self._side_panel_mouse_handler = side_panel_mouse_handler
             self._entries: list[_AskFeedEntry] = []
             self._feed_view: Vertical | None = None
             self._feed_scroll: VerticalScroll | None = None
+            self._side_panel_view: Static | None = None
             self._active_assistant_event_break: Static | None = None
             self._active_assistant_entry_view: Vertical | None = None
             self._active_assistant_header: Static | None = None
@@ -1947,25 +2004,35 @@ async def _run_ask_tui(
             self._command_selector: _CommandSelectorState | None = None
             self._audio_player = _StreamingAudioPlayer()
             self._audio_error_reported = False
+            self._side_panel_focused = False
+            self._thread_generation: int | None = None
 
         def compose(self) -> ComposeResult:
+            help_text = "Enter to send. Shift+Enter inserts a newline. Ctrl+C quits."
+            if self._side_panel_renderer is not None:
+                help_text = (
+                    "Enter to send. Tab switches focus. Shift+Enter inserts a newline. "
+                    "Ctrl+C quits."
+                )
             yield Static(
                 Text(
-                    f"{self._title}\nEnter to send. Shift+Enter inserts a newline. Ctrl+C quits.",
+                    f"{self._title}\n{help_text}",
                     style="bold",
                 ),
                 id="header",
             )
-            with VerticalScroll(id="feed-scroll"):
-                yield Vertical(id="feed")
-                yield Static("", id="active-assistant-event-break")
-                with Vertical(id="active-assistant-entry", classes="feed-entry"):
-                    yield Static("", id="active-assistant-header")
-                    yield TextualMarkdown(
-                        "",
-                        id="active-assistant-body",
-                        classes="feed-entry-body feed-entry-markdown",
-                    )
+            with Horizontal(id="content-row"):
+                with VerticalScroll(id="feed-scroll"):
+                    yield Vertical(id="feed")
+                    yield Static("", id="active-assistant-event-break")
+                    with Vertical(id="active-assistant-entry", classes="feed-entry"):
+                        yield Static("", id="active-assistant-header")
+                        yield TextualMarkdown(
+                            "",
+                            id="active-assistant-body",
+                            classes="feed-entry-body feed-entry-markdown",
+                        )
+                yield _AskSidePanel("", id="side-panel")
             yield Static("", id="status-line")
             yield Static("", id="turn-queue")
             yield Static("", id="command-menu")
@@ -1982,6 +2049,7 @@ async def _run_ask_tui(
         async def on_mount(self) -> None:
             self._feed_view = self.query_one("#feed", Vertical)
             self._feed_scroll = self.query_one("#feed-scroll", VerticalScroll)
+            self._side_panel_view = self.query_one("#side-panel", _AskSidePanel)
             self._active_assistant_event_break = self.query_one(
                 "#active-assistant-event-break", Static
             )
@@ -2009,6 +2077,7 @@ async def _run_ask_tui(
             self._render_turn_queue()
             self._render_command_menu()
             self._render_session_meta()
+            self._render_side_panel()
 
         async def on_unmount(self) -> None:
             await self._audio_player.close()
@@ -2025,6 +2094,9 @@ async def _run_ask_tui(
             self.exit()
 
         async def action_interrupt_turn(self) -> None:
+            if self._side_panel_focused:
+                self._submit_side_panel_key("escape", None)
+                return
             if self._command_selector is not None:
                 self._close_command_selector()
                 return
@@ -2034,6 +2106,11 @@ async def _run_ask_tui(
                 self._set_status_text("Interrupting")
 
         def on_key(self, event: Any) -> None:
+            if self._side_panel_focused:
+                event.prevent_default()
+                event.stop()
+                self._submit_side_panel_key(event.key, event.character)
+                return
             if self._command_selector is None:
                 return
             if event.key == "up":
@@ -2042,6 +2119,78 @@ async def _run_ask_tui(
             elif event.key == "down":
                 event.stop()
                 self._select_next_command_option()
+
+        async def action_toggle_side_panel_focus(self) -> None:
+            if self._side_panel_renderer is None:
+                return
+            if self._command_selector is not None:
+                self._close_command_selector()
+            self._side_panel_focused = not self._side_panel_focused
+            self._render_side_panel()
+            if self._side_panel_focused and self._side_panel_view is not None:
+                self._side_panel_view.focus()
+            elif self._input_view is not None:
+                self._input_view.focus()
+
+        def _submit_side_panel_key(self, key: str, character: str | None) -> None:
+            if self._side_panel_key_handler is None:
+                return
+            if self._pending and key not in {"up", "down"}:
+                self._entries.append(
+                    _AskFeedEntry(
+                        role="error",
+                        text="Wait for the current turn to finish before changing threads.",
+                    )
+                )
+                self._render_feed()
+                self._scroll_to_end()
+                return
+            task = asyncio.create_task(
+                self._run_side_panel_key_handler(key=key, character=character)
+            )
+            task.add_done_callback(_consume_task_exception)
+
+        def _submit_side_panel_click(self, *, x: int, y: int) -> None:
+            self._side_panel_focused = True
+            self._render_side_panel()
+            if self._side_panel_mouse_handler is None:
+                return
+            task = asyncio.create_task(self._run_side_panel_mouse_handler(x=x, y=y))
+            task.add_done_callback(_consume_task_exception)
+
+        async def _run_side_panel_mouse_handler(self, *, x: int, y: int) -> None:
+            handler = self._side_panel_mouse_handler
+            if handler is None:
+                return
+            try:
+                handled = handler(x, y)
+                if inspect.isawaitable(handled):
+                    handled = await handled
+                if handled:
+                    self._render_side_panel()
+                    self._sync_external_thread_state()
+            except Exception as exc:
+                self._entries.append(_AskFeedEntry(role="error", text=str(exc)))
+                self._render_feed()
+                self._scroll_to_end()
+
+        async def _run_side_panel_key_handler(
+            self, *, key: str, character: str | None
+        ) -> None:
+            handler = self._side_panel_key_handler
+            if handler is None:
+                return
+            try:
+                handled = handler(key, character)
+                if inspect.isawaitable(handled):
+                    handled = await handled
+                if handled:
+                    self._render_side_panel()
+                    self._sync_external_thread_state()
+            except Exception as exc:
+                self._entries.append(_AskFeedEntry(role="error", text=str(exc)))
+                self._render_feed()
+                self._scroll_to_end()
 
         def _select_previous_command_option(self) -> None:
             selector = self._command_selector
@@ -2068,6 +2217,10 @@ async def _run_ask_tui(
 
         async def action_submit_prompt(self) -> None:
             if self._input_view is None:
+                return
+
+            if self._side_panel_focused:
+                self._submit_side_panel_key("enter", None)
                 return
 
             if self._command_selector is not None:
@@ -2153,6 +2306,7 @@ async def _run_ask_tui(
                 self._status_started_at = None
                 self._status_text = None
                 self._submit_task = None
+                self._sync_external_thread_state()
                 self._render_status_line()
                 self._render_feed()
                 self._render_command_menu()
@@ -2533,6 +2687,9 @@ async def _run_ask_tui(
             self._scroll_to_end()
 
         async def _handle_agent_message(self, message: AgentMessage) -> None:
+            if isinstance(message, (StartThread, TurnStart, TurnSteer)):
+                self._sync_session_messages()
+                return
             if isinstance(message, TurnStarted):
                 await self._dispatch_pending_queued_turns()
                 return
@@ -2870,6 +3027,7 @@ async def _run_ask_tui(
 
         def _on_spinner_tick(self) -> None:
             self._sync_external_thread_state()
+            self._render_side_panel()
             if not (self._pending or self._external_thread_active):
                 return
             self._status_gradient_offset = self._status_gradient_offset + 1
@@ -2888,6 +3046,13 @@ async def _run_ask_tui(
         def _sync_external_thread_state(self) -> None:
             if not isinstance(self._session, _AskExternalThreadState):
                 return
+            if isinstance(self._session, _AskThreadGenerationState):
+                generation = self._session.thread_generation
+                if self._thread_generation is None:
+                    self._thread_generation = generation
+                elif self._thread_generation != generation:
+                    self._thread_generation = generation
+                    self._reset_current_thread_feed()
 
             status = self._session.thread_status_text
             labels = list(self._session.queued_message_labels)
@@ -2911,6 +3076,18 @@ async def _run_ask_tui(
             if status_changed or queue_changed:
                 self._render_turn_queue()
             self._sync_session_messages()
+
+        def _reset_current_thread_feed(self) -> None:
+            self._entries.clear()
+            self._rendered_session_message_ids.clear()
+            self._pending_session_image_message_ids.clear()
+            self._active_assistant_entry = None
+            self._active_assistant_text = ""
+            self._active_assistant_name = None
+            self._active_assistant_item_id = None
+            self._reset_rendered_feed()
+            self._render_feed()
+            self._scroll_to_end()
 
         def _sync_session_messages(self) -> None:
             if not isinstance(self._session, _AskExternalThreadState):
@@ -3105,6 +3282,21 @@ async def _run_ask_tui(
                 self._usage_footer_text(),
             )
             self._session_meta_view.update(table)
+
+        def _render_side_panel(self) -> None:
+            if self._side_panel_view is None:
+                return
+            renderer = self._side_panel_renderer
+            if renderer is None:
+                self._side_panel_view.styles.display = "none"
+                self._side_panel_view.update("")
+                return
+            self._side_panel_view.add_class("side-panel--visible")
+            if self._side_panel_focused:
+                self._side_panel_view.add_class("side-panel--focused")
+            else:
+                self._side_panel_view.remove_class("side-panel--focused")
+            self._side_panel_view.update(renderer(self._side_panel_focused))
 
         def _usage_footer_text(self) -> Text:
             usage_state = self._usage_state
@@ -3368,6 +3560,9 @@ async def _run_ask_tui(
             model_label_provider=model_label_provider,
             output_label_provider=output_label_provider,
             command_options_provider=command_options_provider,
+            side_panel_renderer=side_panel_renderer,
+            side_panel_key_handler=side_panel_key_handler,
+            side_panel_mouse_handler=side_panel_mouse_handler,
         )
         token = active_app.set(app)
         try:

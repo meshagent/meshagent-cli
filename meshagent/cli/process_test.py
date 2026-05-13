@@ -16,7 +16,9 @@ from meshagent.agents.messages import (
     AGENT_EVENT_TURN_START_ACCEPTED,
     AGENT_EVENT_TURN_STARTED,
     AGENT_MESSAGE_THREAD_CLOSE,
+    AGENT_MESSAGE_THREAD_DELETE,
     AGENT_MESSAGE_THREAD_OPEN,
+    AGENT_MESSAGE_THREAD_RENAME,
     AGENT_MESSAGE_THREAD_START,
     AGENT_MESSAGE_TURN_START,
     AGENT_MESSAGE_TURN_STEER,
@@ -39,6 +41,7 @@ from meshagent.agents.process import Message
 from meshagent.agents.thread_status_publisher import (
     AgentMessageThreadStatusPublisher,
 )
+from meshagent.agents.thread_storage import ThreadListEntry, ThreadListEvent
 from meshagent.api import RoomClient
 from meshagent.api.specs.service import ContainerSpec, ServiceMetadata, ServiceSpec
 from meshagent.cli.async_typer import get_command
@@ -52,6 +55,32 @@ from meshagent.cli import worker
 from meshagent.computers.agent import ComputerToolkit
 from meshagent.tools import Toolkit
 from meshagent.tools import ContainerShellTool, ContainerToolkit, ProcessShellTool
+
+
+def test_format_thread_status_text_includes_line_counts_before_bytes() -> None:
+    assert (
+        process._format_thread_status_text(
+            "Editing src/app.py",
+            total_bytes=2048,
+            lines_added=1200,
+            lines_removed=34,
+        )
+        == "Editing src/app.py +1,200 -34"
+    )
+
+
+def test_format_thread_status_text_includes_total_bytes() -> None:
+    assert (
+        process._format_thread_status_text("Writing src/app.py", total_bytes=2048)
+        == "Writing src/app.py 2,048 bytes"
+    )
+
+
+def test_format_thread_status_text_omits_small_total_bytes() -> None:
+    assert (
+        process._format_thread_status_text("Writing src/app.py", total_bytes=100)
+        == "Writing src/app.py"
+    )
 
 
 class _FakeService:
@@ -947,7 +976,7 @@ def test_process_agent_annotations_use_canonical_dataset_thread_dir() -> None:
         "meshagent.agent.type": "ChatBot",
         "meshagent.chatbot.threading": "default-new",
         "meshagent.chatbot.thread-dir": "dataset://agents/helper/threads",
-        "meshagent.chatbot.thread-list": "/agents/helper/threads/index.threadl",
+        "meshagent.chatbot.thread-list": "dataset://agents/helper/threads/index",
     }
 
 
@@ -971,7 +1000,7 @@ def test_process_threading_options_default_dataset_thread_dir_without_threading(
         threading_mode="none",
         thread_dir=None,
         thread_storage="dataset",
-    ) == ("none", "/agents/helper/threads")
+    ) == ("none", "dataset://agents/helper/threads")
 
 
 def test_process_agent_annotations_use_tmp_thread_dir_without_storage() -> None:
@@ -1723,6 +1752,7 @@ async def test_process_model_command_lists_and_changes_models() -> None:
             self.changes: list[tuple[str | None, str | None]] = []
             self.models_response: ModelsResponse | None = None
             self.output_modalities: tuple[Literal["text", "audio"], ...] = ("text",)
+            self.new_thread_calls = 0
 
         @property
         def thread_id(self) -> str:
@@ -1771,6 +1801,9 @@ async def test_process_model_command_lists_and_changes_models() -> None:
                 ("audio",) if self.output_modalities == ("text",) else ("text",)
             )
             return self.output_modalities
+
+        async def new_thread(self) -> None:
+            self.new_thread_calls += 1
 
         async def change_model(
             self,
@@ -1843,6 +1876,10 @@ async def test_process_model_command_lists_and_changes_models() -> None:
         session=session,
     )
     assert changed == "openai/gpt-5.4 does not support audio responses"
+
+    changed = await process._handle_process_model_command("/new", session=session)
+    assert changed == "New thread"
+    assert session.new_thread_calls == 1
 
 
 @pytest.mark.asyncio
@@ -2578,10 +2615,17 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
         type=AGENT_EVENT_THREAD_STATUS,
         thread_id="/threads/remote.thread",
         status="Reviewing changes",
+        total_bytes=240,
+        lines_added=3,
+        lines_removed=1,
     ).model_dump(mode="json")
     room.messaging.handlers[0](_RoomMessage(status_payload))
 
     assert session.thread_status_text == "Reviewing changes"
+    assert session.thread_status is not None
+    assert session.thread_status.total_bytes == 240
+    assert session.thread_status.lines_added == 3
+    assert session.thread_status.lines_removed == 1
     assert await session.receive() == status_payload
 
     local_turn_start = TurnStart(
@@ -2916,11 +2960,18 @@ async def test_process_use_chat_channel_client_starts_default_new_thread_with_me
         content=[AgentTextContent(type="text", text="hello")],
     )
     await session.close()
-    start_task = asyncio.create_task(client.start_thread(start_thread))
+    pending_sessions = []
+    start_task = asyncio.create_task(
+        client.start_thread(start_thread, on_pending_session=pending_sessions.append)
+    )
     await asyncio.sleep(0)
 
     assert room.messaging.sent_payloads[0]["type"] == AGENT_MESSAGE_THREAD_START
     assert room.messaging.sent_payloads[0]["message_id"] == "start-thread-1"
+    assert len(pending_sessions) == 1
+    assert [message.message_id for message in pending_sessions[0].messages] == [
+        "start-thread-1"
+    ]
 
     room.messaging.handlers[0](
         _RoomMessage(
@@ -3234,8 +3285,9 @@ async def test_run_agent_room_session_cleans_up_on_cancellation() -> None:
 
 
 class _FakeParticipant:
-    def __init__(self) -> None:
-        self.id = "participant-1"
+    def __init__(self, *, id: str = "participant-1", role: str = "user") -> None:
+        self.id = id
+        self.role = role
         self.attributes: dict[str, object] = {}
 
     def get_attribute(self, name: str):
@@ -3274,10 +3326,35 @@ class _FakeProcessProtocol:
     token = "token"
 
 
+class _FakeMessagingClient:
+    def __init__(self) -> None:
+        self.remote_participants: list[_FakeParticipant] = [
+            _FakeParticipant(id="agent-1", role="agent")
+        ]
+        self.remote_participants[0].attributes.update(
+            {
+                "name": "testcli",
+                "supports_agent_messages": True,
+            }
+        )
+        self.sent_messages: list[dict[str, object]] = []
+
+    async def send_message(self, *, to, type: str, message: dict, attachment=None):
+        self.sent_messages.append(
+            {
+                "to": to,
+                "type": type,
+                "message": message,
+                "attachment": attachment,
+            }
+        )
+
+
 class _FakeProcessRoomClient(RoomClient):
     def __init__(self) -> None:
         self._local_participant = _FakeParticipant()
         self._protocol = _FakeProcessProtocol()
+        self._messaging = _FakeMessagingClient()
 
     @property
     def local_participant(self):
@@ -3286,6 +3363,10 @@ class _FakeProcessRoomClient(RoomClient):
     @property
     def protocol(self):
         return self._protocol
+
+    @property
+    def messaging(self):
+        return self._messaging
 
 
 class _FakeProcessThreadAdapter:
@@ -3330,7 +3411,42 @@ class _FakeProcessThreadAdapter:
 
 
 class _FakeDatasetThreadStorage(_FakeProcessThreadAdapter):
-    pass
+    upsert_calls: list[dict[str, object]] = []
+
+    @classmethod
+    def reset_calls(cls) -> None:
+        cls.upsert_calls = []
+
+    @classmethod
+    async def upsert_thread(
+        cls,
+        *,
+        room,
+        thread_dir: str,
+        path: str,
+        name: str | None = None,
+        created_at: str | None = None,
+        modified_at: str | None = None,
+    ) -> None:
+        cls.upsert_calls.append(
+            {
+                "room": room,
+                "thread_dir": thread_dir,
+                "path": path,
+                "name": name,
+                "created_at": created_at,
+                "modified_at": modified_at,
+            }
+        )
+
+    @classmethod
+    async def watch_threads(cls, *, room, thread_dir: str, poll_interval: float = 1.0):
+        del room
+        del thread_dir
+        del poll_interval
+        await asyncio.Event().wait()
+        if False:
+            yield
 
 
 class _SteeringRecordingAdapter:
@@ -3426,6 +3542,265 @@ async def _wait_for(predicate, *, timeout: float = 1) -> None:
         if asyncio.get_running_loop().time() >= deadline:
             raise asyncio.TimeoutError()
         await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+async def test_process_thread_sidebar_applies_watch_events_without_relisting() -> None:
+    watch_events: asyncio.Queue[ThreadListEvent] = asyncio.Queue()
+
+    class _WatchStorage:
+        list_calls = 0
+
+        @classmethod
+        async def list_threads(cls, *, room, thread_dir: str, limit: int, offset: int):
+            del room
+            del thread_dir
+            del limit
+            del offset
+            cls.list_calls += 1
+            return type(
+                "_Page",
+                (),
+                {
+                    "threads": [],
+                },
+            )()
+
+        @classmethod
+        async def watch_threads(cls, *, room, thread_dir: str):
+            del room
+            del thread_dir
+            while True:
+                yield await watch_events.get()
+
+    sidebar = process._ProcessThreadSidebar(
+        room=_FakeProcessRoomClient(),
+        storage_class=_WatchStorage,
+        thread_dir="dataset://agents/testcli/threads",
+        current_thread_path=lambda: None,
+        switch_thread=lambda _path: asyncio.sleep(0),
+        delete_thread=lambda _path: asyncio.sleep(0),
+        rename_thread=lambda _path, _name: asyncio.sleep(0),
+    )
+    await sidebar.start()
+    try:
+        await _wait_for(lambda: _WatchStorage.list_calls == 1)
+        watch_events.put_nowait(
+            ThreadListEvent(
+                type="upserted",
+                path="dataset://agents/testcli/threads/new",
+                entry=ThreadListEntry(
+                    name="New Thread",
+                    path="dataset://agents/testcli/threads/new",
+                    created_at="2026-05-13T08:55:00Z",
+                    modified_at="2026-05-13T08:55:00Z",
+                ),
+            )
+        )
+        await _wait_for(
+            lambda: [entry.name for entry in sidebar._entries] == ["New Thread"]
+        )
+        assert _WatchStorage.list_calls == 1
+    finally:
+        await sidebar.close()
+
+
+@pytest.mark.asyncio
+async def test_process_agent_thread_control_messages_mutate_thread_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeAdapter:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+
+        def default_model(self) -> str:
+            return "gpt-5.5"
+
+        def create_session(self, *, usage_callback=None) -> AgentSessionContext:
+            del usage_callback
+            return AgentSessionContext()
+
+    class _ThreadStorage:
+        delete_calls: list[dict[str, object]] = []
+        rename_calls: list[dict[str, object]] = []
+
+        @classmethod
+        async def watch_threads(cls, *, room, thread_dir: str):
+            del room
+            del thread_dir
+            await asyncio.Future()
+            yield
+
+        @classmethod
+        async def delete_thread(cls, *, room, thread_dir: str, path: str) -> None:
+            cls.delete_calls.append(
+                {"room": room, "thread_dir": thread_dir, "path": path}
+            )
+
+        @classmethod
+        async def rename_thread(
+            cls, *, room, thread_dir: str, path: str, name: str
+        ) -> None:
+            cls.rename_calls.append(
+                {"room": room, "thread_dir": thread_dir, "path": path, "name": name}
+            )
+
+    monkeypatch.setattr(process, "OpenAIResponsesAdapter", _FakeAdapter)
+    monkeypatch.setattr(
+        process,
+        "_thread_storage_class_for_backend",
+        lambda thread_storage: _ThreadStorage if thread_storage == "dataset" else None,
+    )
+
+    agent_cls = process.build_process_agent(
+        model="gpt-5.5",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+        thread_storage="dataset",
+        thread_dir="dataset://agents/testcli/threads",
+    )
+    agent = agent_cls()
+    room = _FakeProcessRoomClient()
+
+    async def _skip_install_requirements() -> None:
+        return None
+
+    monkeypatch.setattr(agent, "install_requirements", _skip_install_requirements)
+
+    await agent.start(room=room)  # type: ignore[arg-type]
+    try:
+        await agent._supervisor.route(
+            Message(
+                data=process.DeleteThread(
+                    type=AGENT_MESSAGE_THREAD_DELETE,
+                    thread_id="dataset://agents/testcli/threads/first",
+                )
+            )
+        )
+        await agent._supervisor.route(
+            Message(
+                data=process.RenameThread(
+                    type=AGENT_MESSAGE_THREAD_RENAME,
+                    thread_id="dataset://agents/testcli/threads/first",
+                    name="  First Renamed  ",
+                )
+            )
+        )
+    finally:
+        await agent.stop()
+
+    assert _ThreadStorage.delete_calls == [
+        {
+            "room": room,
+            "thread_dir": "dataset://agents/testcli/threads",
+            "path": "dataset://agents/testcli/threads/first",
+        }
+    ]
+    assert _ThreadStorage.rename_calls == [
+        {
+            "room": room,
+            "thread_dir": "dataset://agents/testcli/threads",
+            "path": "dataset://agents/testcli/threads/first",
+            "name": "First Renamed",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_process_thread_sidebar_can_send_control_messages_locally() -> None:
+    deleted_paths: list[str] = []
+
+    async def delete_thread(path: str) -> None:
+        deleted_paths.append(path)
+
+    sidebar = process._ProcessThreadSidebar(
+        room=_FakeProcessRoomClient(),
+        storage_class=object(),
+        thread_dir="dataset://agents/testcli/threads",
+        current_thread_path=lambda: "dataset://agents/testcli/threads/first",
+        switch_thread=lambda _path: asyncio.sleep(0),
+        delete_thread=delete_thread,
+        rename_thread=lambda _path, _name: asyncio.sleep(0),
+    )
+    sidebar._entries = [
+        ThreadListEntry(
+            name="First",
+            path="dataset://agents/testcli/threads/first",
+            created_at="2026-05-13T08:55:00Z",
+            modified_at="2026-05-13T08:55:00Z",
+        ),
+    ]
+
+    await sidebar.handle_key("backspace", None)
+    await sidebar.handle_key("backspace", None)
+
+    assert deleted_paths == ["dataset://agents/testcli/threads/first"]
+
+
+@pytest.mark.asyncio
+async def test_process_thread_sidebar_keeps_focused_selection_and_handles_clicks() -> (
+    None
+):
+    opened_paths: list[str] = []
+    deleted_paths: list[str] = []
+    renamed_threads: list[tuple[str, str]] = []
+
+    async def switch_thread(path: str) -> None:
+        opened_paths.append(path)
+
+    sidebar = process._ProcessThreadSidebar(
+        room=_FakeProcessRoomClient(),
+        storage_class=object(),
+        thread_dir="dataset://agents/testcli/threads",
+        current_thread_path=lambda: "dataset://agents/testcli/threads/first",
+        switch_thread=switch_thread,
+        delete_thread=lambda path: deleted_paths.append(path) or asyncio.sleep(0),
+        rename_thread=lambda path, name: (
+            renamed_threads.append((path, name)) or asyncio.sleep(0)
+        ),
+    )
+    sidebar._entries = [
+        ThreadListEntry(
+            name="First",
+            path="dataset://agents/testcli/threads/first",
+            created_at="2026-05-13T08:55:00Z",
+            modified_at="2026-05-13T08:55:00Z",
+        ),
+        ThreadListEntry(
+            name="Second",
+            path="dataset://agents/testcli/threads/second",
+            created_at="2026-05-13T08:56:00Z",
+            modified_at="2026-05-13T08:56:00Z",
+        ),
+    ]
+
+    sidebar.render(focused=False)
+    assert sidebar._selected_index == 0
+
+    await sidebar.handle_key("down", None)
+    rendered = sidebar.render(focused=True)
+    assert sidebar._selected_index == 1
+    assert "focused" not in rendered.plain
+
+    await sidebar.handle_click(0, 4)
+    assert sidebar._selected_index == 0
+    assert opened_paths == ["dataset://agents/testcli/threads/first"]
+
+    await sidebar.handle_key("r", None)
+    for character in " Renamed":
+        await sidebar.handle_key(character, character)
+    await sidebar.handle_key("enter", None)
+    assert renamed_threads == [
+        ("dataset://agents/testcli/threads/first", "First Renamed")
+    ]
+
+    await sidebar.handle_key("backspace", None)
+    await sidebar.handle_key("backspace", None)
+    assert deleted_paths == ["dataset://agents/testcli/threads/first"]
 
 
 @pytest.mark.asyncio
