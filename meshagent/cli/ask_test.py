@@ -1,12 +1,16 @@
 import asyncio
+import base64
+import io
 
 import pytest
 import typer
+from PIL import Image
 
 from meshagent.agents import AgentSessionContext
 from meshagent.agents.adapter import LLMAdapter
 from meshagent.agents.messages import (
     AGENT_EVENT_THREAD_EVENT,
+    AGENT_EVENT_THREAD_STATUS,
     AGENT_EVENT_TEXT_CONTENT_DELTA,
     AGENT_EVENT_TEXT_CONTENT_ENDED,
     AGENT_EVENT_TEXT_CONTENT_STARTED,
@@ -16,13 +20,18 @@ from meshagent.agents.messages import (
     AGENT_EVENT_TURN_START_ACCEPTED,
     AGENT_EVENT_TURN_START_REJECTED,
     AGENT_EVENT_TURN_STARTED,
+    AgentError,
+    AgentGeneratedImage,
     AgentThreadEvent,
+    AgentThreadStatus,
     AgentTextContentDelta,
     AgentTextContentEnded,
     AgentTextContentStarted,
     AgentToolCallEnded,
     AgentToolCallStarted,
+    TurnEnded,
     TurnStart,
+    TurnStarted,
 )
 from meshagent.api import Participant, RoomException
 from meshagent.cli import ask as ask_module
@@ -105,6 +114,36 @@ class _FakeTTY:
 
     def isatty(self) -> bool:
         return self._is_tty
+
+
+async def _local_chat_session(
+    send_message,
+) -> tuple[ask_module.LocalChatClient, ask_module._AgentMessageSession]:
+    events: asyncio.Queue[ask_module.Message] = asyncio.Queue()
+
+    def _send(message: ask_module.Message) -> None:
+        if message.data.type == "meshagent.agent.thread.close":
+            return
+        send_message(message.data, events)
+
+    client = ask_module.LocalChatClient(
+        thread_path="/threads/test.thread",
+        send_message=_send,
+        events=events,
+    )
+    await client.start()
+    session = ask_module._AgentMessageSession(
+        client=client.thread_session,
+        model=None,
+    )
+    return client, session
+
+
+def _queue_agent_event(
+    events: asyncio.Queue[ask_module.Message],
+    message,
+) -> None:
+    events.put_nowait(ask_module.Message(data=message))
 
 
 def test_build_ask_instructions_includes_preamble_rule_by_default() -> None:
@@ -195,6 +234,22 @@ def test_format_ask_tool_call_entry_prefixes_path_only_log_headline() -> None:
     assert text.splitlines()[0] == "Output: /tmp/pie_chart.svg"
 
 
+def test_format_ask_tool_call_entry_uses_friendly_openai_shell_fallback() -> None:
+    text = ask_module._format_ask_tool_call_entry_text(
+        toolkit="openai",
+        tool="shell",
+        arguments=None,
+        logs=[],
+        error_message=None,
+    )
+
+    assert text == "Explored"
+
+
+def test_thread_event_entry_text_uses_friendly_openai_shell_fallback() -> None:
+    assert ask_module._friendly_ask_thread_event_text("Ran openai: shell") == "Explored"
+
+
 def test_format_ask_tool_call_entry_keeps_parsed_summary_headline() -> None:
     text = ask_module._format_ask_tool_call_entry_text(
         toolkit="shell",
@@ -212,6 +267,38 @@ def test_format_ask_tool_call_entry_keeps_parsed_summary_headline() -> None:
         "match 3",
         "match 4",
     ]
+
+
+def test_merge_ask_tool_call_arguments_delta_restores_streamed_shell_command() -> None:
+    arguments = ask_module._merge_ask_tool_call_arguments_delta(
+        tool="shell",
+        arguments=None,
+        delta_text='{"action":{"command":"ls /data"}}',
+    )
+
+    text = ask_module._format_ask_tool_call_entry_text(
+        toolkit="openai",
+        tool="shell",
+        arguments=arguments,
+        logs=[],
+        error_message=None,
+    )
+
+    assert text.splitlines() == ["Explored", "  └ List data"]
+
+
+def test_format_ask_tool_call_entry_uses_ended_tool_metadata_without_started_state() -> (
+    None
+):
+    text = ask_module._format_ask_tool_call_entry_text(
+        toolkit="openai",
+        tool="shell",
+        arguments={"action": {"command": "ls /data"}},
+        logs=[],
+        error_message=None,
+    )
+
+    assert text.splitlines() == ["Explored", "  └ List data"]
 
 
 def test_format_ask_tool_call_entry_cleans_exception_error_message() -> None:
@@ -324,305 +411,240 @@ async def test_ask_session_reuses_process_for_multiple_prompts() -> None:
 
 @pytest.mark.asyncio
 async def test_agent_message_session_orders_inputs_by_accepted_events() -> None:
-    class _FakeChannelClient:
-        has_thread_path = True
-        thread_path = "/threads/test.thread"
-        thread_status_text = None
-        queued_message_labels: tuple[str, ...] = ()
+    def _send(payload, events: asyncio.Queue[ask_module.Message]) -> None:
+        assert isinstance(payload, TurnStart)
+        _queue_agent_event(
+            events,
+            ask_module.TurnStartAccepted(
+                type=AGENT_EVENT_TURN_START_ACCEPTED,
+                thread_id=payload.thread_id,
+                source_message_id="remote-message-1",
+                sender_name="remote-user",
+                content=[ask_module.AgentTextContent(type="text", text="remote first")],
+            ),
+        )
+        _queue_agent_event(
+            events,
+            ask_module.TurnStartAccepted(
+                type=AGENT_EVENT_TURN_START_ACCEPTED,
+                thread_id=payload.thread_id,
+                source_message_id=payload.message_id,
+            ),
+        )
+        _queue_agent_event(
+            events,
+            TurnStarted(
+                type=AGENT_EVENT_TURN_STARTED,
+                thread_id=payload.thread_id,
+                turn_id="turn-1",
+                source_message_id=payload.message_id,
+            ),
+        )
+        _queue_agent_event(
+            events,
+            AgentTextContentDelta(
+                type=AGENT_EVENT_TEXT_CONTENT_DELTA,
+                thread_id=payload.thread_id,
+                turn_id="turn-1",
+                item_id="text-1",
+                text="response",
+            ),
+        )
+        _queue_agent_event(
+            events,
+            TurnEnded(
+                type=AGENT_EVENT_TURN_ENDED,
+                thread_id=payload.thread_id,
+                turn_id="turn-1",
+                error=None,
+            ),
+        )
 
-        def __init__(self) -> None:
-            self.events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
-
-        async def send(self, payload) -> None:
-            assert isinstance(payload, TurnStart)
-            self.events.put_nowait(
-                {
-                    "type": AGENT_EVENT_TURN_START_ACCEPTED,
-                    "thread_id": payload.thread_id,
-                    "source_message_id": "remote-message-1",
-                    "sender_name": "remote-user",
-                    "content": [{"type": "text", "text": "remote first"}],
-                }
-            )
-            self.events.put_nowait(
-                {
-                    "type": AGENT_EVENT_TURN_START_ACCEPTED,
-                    "thread_id": payload.thread_id,
-                    "source_message_id": payload.message_id,
-                }
-            )
-            self.events.put_nowait(
-                {
-                    "type": AGENT_EVENT_TURN_STARTED,
-                    "thread_id": payload.thread_id,
-                    "turn_id": "turn-1",
-                    "source_message_id": payload.message_id,
-                }
-            )
-            self.events.put_nowait(
-                {
-                    "type": AGENT_EVENT_TEXT_CONTENT_DELTA,
-                    "thread_id": payload.thread_id,
-                    "turn_id": "turn-1",
-                    "item_id": "text-1",
-                    "text": "response",
-                }
-            )
-            self.events.put_nowait(
-                {
-                    "type": AGENT_EVENT_TURN_ENDED,
-                    "thread_id": payload.thread_id,
-                    "turn_id": "turn-1",
-                    "error": None,
-                }
-            )
-
-        async def start_thread(self, payload) -> None:
-            raise AssertionError("start_thread should not be called")
-
-        async def receive(self) -> dict[str, object]:
-            return await self.events.get()
-
-        def clear_applied_queued_agent_inputs(self) -> None:
-            pass
-
-        async def close(self) -> None:
-            pass
-
-    session = ask_module._AgentMessageSession(
-        client=_FakeChannelClient(),
-        model=None,
-    )
-
-    result = await session.ask(prompt="local second")
+    client, session = await _local_chat_session(_send)
+    try:
+        result = await session.ask(prompt="local second")
+    finally:
+        await client.close()
 
     assert result == "response"
     assert [(message.role, message.text) for message in session.messages] == [
         ("remote-user", "remote first"),
         ("you", "local second"),
+        ("assistant", "response"),
     ]
 
 
 @pytest.mark.asyncio
 async def test_agent_message_session_sends_selected_output_modalities() -> None:
-    class _FakeChannelClient:
-        has_thread_path = True
-        thread_path = "/threads/test.thread"
-        thread_status_text = None
-        queued_message_labels: tuple[str, ...] = ()
+    sent_payload: TurnStart | None = None
 
-        def __init__(self) -> None:
-            self.events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
-            self.payload: TurnStart | None = None
+    def _send(payload, events: asyncio.Queue[ask_module.Message]) -> None:
+        nonlocal sent_payload
+        assert isinstance(payload, TurnStart)
+        sent_payload = payload
+        _queue_agent_event(
+            events,
+            TurnStarted(
+                type=AGENT_EVENT_TURN_STARTED,
+                thread_id=payload.thread_id,
+                turn_id="turn-1",
+                source_message_id=payload.message_id,
+            ),
+        )
+        _queue_agent_event(
+            events,
+            TurnEnded(
+                type=AGENT_EVENT_TURN_ENDED,
+                thread_id=payload.thread_id,
+                turn_id="turn-1",
+                error=None,
+            ),
+        )
 
-        async def send(self, payload) -> None:
-            assert isinstance(payload, TurnStart)
-            self.payload = payload
-            self.events.put_nowait(
-                {
-                    "type": AGENT_EVENT_TURN_STARTED,
-                    "thread_id": payload.thread_id,
-                    "turn_id": "turn-1",
-                    "source_message_id": payload.message_id,
-                }
-            )
-            self.events.put_nowait(
-                {
-                    "type": AGENT_EVENT_TURN_ENDED,
-                    "thread_id": payload.thread_id,
-                    "turn_id": "turn-1",
-                    "error": None,
-                }
-            )
-
-        async def start_thread(self, payload) -> None:
-            raise AssertionError("start_thread should not be called")
-
-        async def receive(self) -> dict[str, object]:
-            return await self.events.get()
-
-        def clear_applied_queued_agent_inputs(self) -> None:
-            pass
-
-        async def close(self) -> None:
-            pass
-
-    client = _FakeChannelClient()
-    session = ask_module._AgentMessageSession(
-        client=client,
-        model=None,
-    )
+    client, session = await _local_chat_session(_send)
     session.set_output_modalities(("audio",))
 
-    result = await session.ask(prompt="local second")
+    try:
+        result = await session.ask(prompt="local second")
+    finally:
+        await client.close()
 
     assert result == ""
-    assert client.payload is not None
-    assert client.payload.output_modalities == ["audio"]
+    assert sent_payload is not None
+    assert sent_payload.output_modalities == ["audio"]
 
 
 @pytest.mark.asyncio
 async def test_agent_message_session_eagerly_records_local_start_message() -> None:
     session: ask_module._AgentMessageSession | None = None
 
-    class _FakeChannelClient:
-        has_thread_path = True
-        thread_path = "/threads/test.thread"
-        thread_status_text = None
-        queued_message_labels: tuple[str, ...] = ()
+    def _send(payload, events: asyncio.Queue[ask_module.Message]) -> None:
+        assert isinstance(payload, TurnStart)
+        assert session is not None
+        assert [(message.role, message.text) for message in session.messages] == [
+            ("you", "local second"),
+        ]
+        _queue_agent_event(
+            events,
+            ask_module.TurnStartAccepted(
+                type=AGENT_EVENT_TURN_START_ACCEPTED,
+                thread_id=payload.thread_id,
+                source_message_id=payload.message_id,
+                content=[ask_module.AgentTextContent(type="text", text="local second")],
+            ),
+        )
+        _queue_agent_event(
+            events,
+            TurnStarted(
+                type=AGENT_EVENT_TURN_STARTED,
+                thread_id=payload.thread_id,
+                turn_id="turn-1",
+                source_message_id=payload.message_id,
+            ),
+        )
+        _queue_agent_event(
+            events,
+            AgentTextContentDelta(
+                type=AGENT_EVENT_TEXT_CONTENT_DELTA,
+                thread_id=payload.thread_id,
+                turn_id="turn-1",
+                item_id="text-1",
+                text="response",
+            ),
+        )
+        _queue_agent_event(
+            events,
+            TurnEnded(
+                type=AGENT_EVENT_TURN_ENDED,
+                thread_id=payload.thread_id,
+                turn_id="turn-1",
+                error=None,
+            ),
+        )
 
-        def __init__(self) -> None:
-            self.events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    client, session = await _local_chat_session(_send)
 
-        async def send(self, payload) -> None:
-            assert isinstance(payload, TurnStart)
-            assert session is not None
-            assert [(message.role, message.text) for message in session.messages] == [
-                ("you", "local second"),
-            ]
-            self.events.put_nowait(
-                {
-                    "type": AGENT_EVENT_TURN_START_ACCEPTED,
-                    "thread_id": payload.thread_id,
-                    "source_message_id": payload.message_id,
-                    "content": [{"type": "text", "text": "local second"}],
-                }
-            )
-            self.events.put_nowait(
-                {
-                    "type": AGENT_EVENT_TURN_STARTED,
-                    "thread_id": payload.thread_id,
-                    "turn_id": "turn-1",
-                    "source_message_id": payload.message_id,
-                }
-            )
-            self.events.put_nowait(
-                {
-                    "type": AGENT_EVENT_TEXT_CONTENT_DELTA,
-                    "thread_id": payload.thread_id,
-                    "turn_id": "turn-1",
-                    "item_id": "text-1",
-                    "text": "response",
-                }
-            )
-            self.events.put_nowait(
-                {
-                    "type": AGENT_EVENT_TURN_ENDED,
-                    "thread_id": payload.thread_id,
-                    "turn_id": "turn-1",
-                    "error": None,
-                }
-            )
-
-        async def start_thread(self, payload) -> None:
-            raise AssertionError("start_thread should not be called")
-
-        async def receive(self) -> dict[str, object]:
-            return await self.events.get()
-
-        def clear_applied_queued_agent_inputs(self) -> None:
-            pass
-
-        async def close(self) -> None:
-            pass
-
-    session = ask_module._AgentMessageSession(
-        client=_FakeChannelClient(),
-        model=None,
-    )
-
-    result = await session.ask(prompt="local second")
+    try:
+        result = await session.ask(prompt="local second")
+    finally:
+        await client.close()
 
     assert result == "response"
     assert [(message.role, message.text) for message in session.messages] == [
         ("you", "local second"),
+        ("assistant", "response"),
     ]
 
 
 @pytest.mark.asyncio
 async def test_agent_message_session_emits_intermediate_agent_events() -> None:
-    class _FakeChannelClient:
-        has_thread_path = True
-        thread_path = "/threads/test.thread"
-        thread_status_text = None
-        queued_message_labels: tuple[str, ...] = ()
-
-        def __init__(self) -> None:
-            self.events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
-
-        async def send(self, payload) -> None:
-            assert isinstance(payload, TurnStart)
-            self.events.put_nowait(
-                {
-                    "type": AGENT_EVENT_TURN_START_ACCEPTED,
-                    "thread_id": payload.thread_id,
-                    "source_message_id": payload.message_id,
-                    "content": [{"type": "text", "text": "local prompt"}],
-                }
-            )
-            self.events.put_nowait(
-                {
-                    "type": AGENT_EVENT_TURN_STARTED,
-                    "thread_id": payload.thread_id,
-                    "turn_id": "turn-1",
-                    "source_message_id": payload.message_id,
-                }
-            )
-            self.events.put_nowait(
-                {
-                    "type": AGENT_EVENT_TOOL_CALL_STARTED,
-                    "thread_id": payload.thread_id,
-                    "turn_id": "turn-1",
-                    "item_id": "tool-1",
-                    "toolkit": "shell",
-                    "tool": "shell",
-                    "arguments": {"command": "ruff check"},
-                }
-            )
-            self.events.put_nowait(
-                {
-                    "type": AGENT_EVENT_THREAD_EVENT,
-                    "thread_id": payload.thread_id,
-                    "event": {"headline": "Ran ruff check"},
-                }
-            )
-            self.events.put_nowait(
-                {
-                    "type": AGENT_EVENT_TOOL_CALL_ENDED,
-                    "thread_id": payload.thread_id,
-                    "turn_id": "turn-1",
-                    "item_id": "tool-1",
-                    "error": None,
-                }
-            )
-            self.events.put_nowait(
-                {
-                    "type": AGENT_EVENT_TURN_ENDED,
-                    "thread_id": payload.thread_id,
-                    "turn_id": "turn-1",
-                    "error": None,
-                }
-            )
-
-        async def start_thread(self, payload) -> None:
-            raise AssertionError("start_thread should not be called")
-
-        async def receive(self) -> dict[str, object]:
-            return await self.events.get()
-
-        def clear_applied_queued_agent_inputs(self) -> None:
-            pass
-
-        async def close(self) -> None:
-            pass
+    def _send(payload, events: asyncio.Queue[ask_module.Message]) -> None:
+        assert isinstance(payload, TurnStart)
+        _queue_agent_event(
+            events,
+            ask_module.TurnStartAccepted(
+                type=AGENT_EVENT_TURN_START_ACCEPTED,
+                thread_id=payload.thread_id,
+                source_message_id=payload.message_id,
+                content=[ask_module.AgentTextContent(type="text", text="local prompt")],
+            ),
+        )
+        _queue_agent_event(
+            events,
+            TurnStarted(
+                type=AGENT_EVENT_TURN_STARTED,
+                thread_id=payload.thread_id,
+                turn_id="turn-1",
+                source_message_id=payload.message_id,
+            ),
+        )
+        _queue_agent_event(
+            events,
+            AgentToolCallStarted(
+                type=AGENT_EVENT_TOOL_CALL_STARTED,
+                thread_id=payload.thread_id,
+                turn_id="turn-1",
+                item_id="tool-1",
+                toolkit="shell",
+                tool="shell",
+                arguments={"command": "ruff check"},
+            ),
+        )
+        _queue_agent_event(
+            events,
+            AgentThreadEvent(
+                type=AGENT_EVENT_THREAD_EVENT,
+                thread_id=payload.thread_id,
+                event={"headline": "Ran ruff check"},
+            ),
+        )
+        _queue_agent_event(
+            events,
+            AgentToolCallEnded(
+                type=AGENT_EVENT_TOOL_CALL_ENDED,
+                thread_id=payload.thread_id,
+                turn_id="turn-1",
+                item_id="tool-1",
+                error=None,
+            ),
+        )
+        _queue_agent_event(
+            events,
+            TurnEnded(
+                type=AGENT_EVENT_TURN_ENDED,
+                thread_id=payload.thread_id,
+                turn_id="turn-1",
+                error=None,
+            ),
+        )
 
     emitted: list[object] = []
-    session = ask_module._AgentMessageSession(
-        client=_FakeChannelClient(),
-        model=None,
-    )
+    client, session = await _local_chat_session(_send)
 
-    result = await session.ask(prompt="local prompt", on_message=emitted.append)
+    try:
+        result = await session.ask(prompt="local prompt", on_message=emitted.append)
+    finally:
+        await client.close()
 
     assert result == ""
     assert any(isinstance(message, AgentToolCallStarted) for message in emitted)
@@ -632,48 +654,28 @@ async def test_agent_message_session_emits_intermediate_agent_events() -> None:
 
 @pytest.mark.asyncio
 async def test_agent_message_session_raises_turn_start_rejection() -> None:
-    class _FakeChannelClient:
-        has_thread_path = True
-        thread_path = "/threads/test.thread"
-        thread_status_text = None
-        queued_message_labels: tuple[str, ...] = ()
+    def _send(payload, events: asyncio.Queue[ask_module.Message]) -> None:
+        assert isinstance(payload, TurnStart)
+        _queue_agent_event(
+            events,
+            ask_module.TurnStartRejected(
+                type=AGENT_EVENT_TURN_START_REJECTED,
+                thread_id=payload.thread_id,
+                source_message_id=payload.message_id,
+                error=AgentError(
+                    message="dataset thread storage requires a dataset:// thread id",
+                    code="thread_process_creation_failed",
+                ),
+            ),
+        )
 
-        def __init__(self) -> None:
-            self.events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    client, session = await _local_chat_session(_send)
 
-        async def send(self, payload) -> None:
-            assert isinstance(payload, TurnStart)
-            self.events.put_nowait(
-                {
-                    "type": AGENT_EVENT_TURN_START_REJECTED,
-                    "thread_id": payload.thread_id,
-                    "source_message_id": payload.message_id,
-                    "error": {
-                        "message": "dataset thread storage requires a dataset:// thread id",
-                        "code": "thread_process_creation_failed",
-                    },
-                }
-            )
-
-        async def start_thread(self, payload) -> None:
-            raise AssertionError("start_thread should not be called")
-
-        async def receive(self) -> dict[str, object]:
-            return await self.events.get()
-
-        def clear_applied_queued_agent_inputs(self) -> None:
-            pass
-
-        async def close(self) -> None:
-            pass
-
-    session = ask_module._AgentMessageSession(
-        client=_FakeChannelClient(),
-        model=None,
-    )
-
-    with pytest.raises(RoomException) as exc_info:
-        await session.ask(prompt="local second")
+    try:
+        with pytest.raises(RoomException) as exc_info:
+            await session.ask(prompt="local second")
+    finally:
+        await client.close()
 
     assert exc_info.value.code == "thread_process_creation_failed"
     assert (
@@ -684,29 +686,14 @@ async def test_agent_message_session_raises_turn_start_rejection() -> None:
 def test_agent_message_session_labels_loaded_local_participant_messages_as_you() -> (
     None
 ):
-    class _FakeChannelClient:
-        has_thread_path = True
-        thread_path = "/threads/test.thread"
-        thread_status_text = None
-        queued_message_labels: tuple[str, ...] = ()
-
-        async def send(self, payload) -> None:
-            del payload
-
-        async def start_thread(self, payload) -> None:
-            raise AssertionError("start_thread should not be called")
-
-        async def receive(self) -> dict[str, object]:
-            raise AssertionError("receive should not be called")
-
-        def clear_applied_queued_agent_inputs(self) -> None:
-            pass
-
-        async def close(self) -> None:
-            pass
-
+    events: asyncio.Queue[ask_module.Message] = asyncio.Queue()
+    client = ask_module.LocalChatClient(
+        thread_path="/threads/test.thread",
+        send_message=lambda message: None,
+        events=events,
+    )
     session = ask_module._AgentMessageSession(
-        client=_FakeChannelClient(),
+        client=client.thread_session,
         model=None,
         local_participant_name="local-user",
     )
@@ -734,6 +721,177 @@ def test_agent_message_session_labels_loaded_local_participant_messages_as_you()
         ("you", "local prompt"),
         ("remote-user", "remote prompt"),
     ]
+
+
+def test_agent_message_session_labels_remote_sent_messages_with_sender_name() -> None:
+    client = ask_module.LocalChatClient(
+        thread_path="/threads/test.thread",
+        send_message=lambda message: None,
+        events=asyncio.Queue(),
+    )
+    session = ask_module._AgentMessageSession(
+        client=client.thread_session,
+        model=None,
+        local_participant_name="local-user",
+    )
+
+    session.add_agent_message(
+        ask_module.TurnStart(
+            type=ask_module.AGENT_MESSAGE_TURN_START,
+            thread_id="/threads/test.thread",
+            message_id="remote-message",
+            sender_name="remote-user",
+            content=[ask_module.AgentTextContent(type="text", text="remote prompt")],
+        )
+    )
+
+    assert [(message.role, message.text) for message in session.messages] == [
+        ("remote-user", "remote prompt"),
+    ]
+
+
+def test_agent_thread_status_accepts_missing_status_for_clear_events() -> None:
+    message = AgentThreadStatus.model_validate(
+        {
+            "type": AGENT_EVENT_THREAD_STATUS,
+            "thread_id": "/threads/test.thread",
+        }
+    )
+
+    assert message.status is None
+
+
+def _png_bytes(color: str) -> bytes:
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (16, 16), color).save(image_buffer, format="PNG")
+    return image_buffer.getvalue()
+
+
+def _png_data_uri(color: str) -> str:
+    image_data = _png_bytes(color)
+    return f"data:image/png;base64,{base64.b64encode(image_data).decode('ascii')}"
+
+
+def test_agent_message_session_renders_image_generation_data_uri_as_ascii() -> None:
+    image_uri = _png_data_uri("red")
+    client = ask_module.LocalChatClient(
+        thread_path="/threads/test.thread",
+        send_message=lambda message: None,
+        events=asyncio.Queue(),
+    )
+    session = ask_module._AgentMessageSession(
+        client=client.thread_session,
+        model=None,
+    )
+
+    session.add_agent_message(
+        ask_module.AgentImageGenerationCompleted(
+            type=ask_module.AGENT_EVENT_IMAGE_GENERATION_COMPLETED,
+            thread_id="/threads/test.thread",
+            turn_id="turn-1",
+            item_id="image-1",
+            images=[AgentGeneratedImage(uri=image_uri, mime_type="image/png")],
+        )
+    )
+
+    assert len(session.messages) == 1
+    assert session.messages[0].role == "assistant"
+    assert session.messages[0].kind == "image"
+    assert session.messages[0].text.strip() != ""
+    assert "\x1b[" in session.messages[0].text
+
+
+def test_agent_message_session_keeps_latest_image_generation_preview_or_final() -> None:
+    first_uri = _png_data_uri("red")
+    latest_uri = _png_data_uri("blue")
+    final_uri = _png_data_uri("green")
+    client = ask_module.LocalChatClient(
+        thread_path="/threads/test.thread",
+        send_message=lambda message: None,
+        events=asyncio.Queue(),
+    )
+    session = ask_module._AgentMessageSession(
+        client=client.thread_session,
+        model=None,
+    )
+
+    session.add_agent_message(
+        ask_module.AgentImageGenerationPartial(
+            type=ask_module.AGENT_EVENT_IMAGE_GENERATION_PARTIAL,
+            thread_id="/threads/test.thread",
+            turn_id="turn-1",
+            item_id="image-1",
+            image=AgentGeneratedImage(uri=first_uri, mime_type="image/png"),
+        )
+    )
+    first_preview = session.messages[0].text
+    session.add_agent_message(
+        ask_module.AgentImageGenerationPartial(
+            type=ask_module.AGENT_EVENT_IMAGE_GENERATION_PARTIAL,
+            thread_id="/threads/test.thread",
+            turn_id="turn-1",
+            item_id="image-1",
+            image=AgentGeneratedImage(uri=latest_uri, mime_type="image/png"),
+        )
+    )
+    latest_preview = session.messages[0].text
+    session.add_agent_message(
+        ask_module.AgentImageGenerationCompleted(
+            type=ask_module.AGENT_EVENT_IMAGE_GENERATION_COMPLETED,
+            thread_id="/threads/test.thread",
+            turn_id="turn-1",
+            item_id="image-1",
+            images=[AgentGeneratedImage(uri=final_uri, mime_type="image/png")],
+        )
+    )
+
+    assert len(session.messages) == 1
+    assert session.messages[0].kind == "image"
+    assert first_preview != latest_preview
+    assert session.messages[0].text not in {first_preview, latest_preview}
+
+
+class _FakeImageDatasetRows:
+    def __init__(self, rows: list[dict]) -> None:
+        self._rows = rows
+
+    def to_pylist(self) -> list[dict]:
+        return self._rows
+
+
+class _FakeImageDatasets:
+    async def search(self, **kwargs):
+        assert kwargs == {
+            "table": "images",
+            "namespace": ["agents", "demo"],
+            "where": {"id": "image-1"},
+            "limit": 1,
+            "select": ["data", "mime_type"],
+        }
+        return _FakeImageDatasetRows(
+            [{"data": _png_bytes("green"), "mime_type": "image/png"}]
+        )
+
+
+class _FakeImageRoom:
+    def __init__(self) -> None:
+        self.datasets = _FakeImageDatasets()
+
+
+@pytest.mark.asyncio
+async def test_ascii_image_renderer_loads_dataset_uri_from_image_dataset_client() -> (
+    None
+):
+    image_dataset_client = ask_module.ImageDatasetClient(_FakeImageRoom())
+
+    image_ascii = await ask_module._ascii_image_from_uri_async(
+        "dataset://agents/demo/images?id=image-1",
+        image_dataset_client=image_dataset_client,
+    )
+
+    assert image_ascii is not None
+    assert image_ascii.strip() != ""
+    assert "\x1b[" in image_ascii
 
 
 @pytest.mark.asyncio
