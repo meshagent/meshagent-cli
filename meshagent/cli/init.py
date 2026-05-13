@@ -99,9 +99,155 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from pathlib import Path
 
 from aiohttp import web
 from meshagent.api import RoomClient, WebSocketClientProtocol, websocket_room_url
+from meshagent.tools import FunctionTool, Toolkit, ToolContext
+from meshagent.tools.hosting import _start_hosted_toolkit
+
+
+CONTENT_PATH = Path(__file__).with_name("dev-content.json")
+TOOLKIT_NAME = "meshagent.init.python-content"
+
+
+def default_content() -> dict:
+    return {
+        "activeId": "hero",
+        "items": {
+            "hero": {
+                "id": "hero",
+                "headline": "hello from meshagent init",
+                "body": "Run ./scripts/dev.sh to let the local MeshAgent toolkit update this content.",
+            }
+        },
+    }
+
+
+def read_content_sync() -> dict:
+    try:
+        return json.loads(CONTENT_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return default_content()
+
+
+async def read_content() -> dict:
+    return await asyncio.to_thread(read_content_sync)
+
+
+async def write_content(content: dict) -> dict:
+    def _write() -> None:
+        CONTENT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CONTENT_PATH.write_text(json.dumps(content, indent=2) + "\\n", encoding="utf-8")
+
+    await asyncio.to_thread(_write)
+    return content
+
+
+class CreateContentTool(FunctionTool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="create",
+            title="Create local web content",
+            description="Creates a local Python content record rendered by the dev app.",
+            input_schema={
+                "type": "object",
+                "required": ["id", "headline", "body"],
+                "additionalProperties": False,
+                "properties": {
+                    "id": {"type": "string"},
+                    "headline": {"type": "string"},
+                    "body": {"type": "string"},
+                },
+            },
+        )
+
+    async def execute(
+        self, context: ToolContext, *, id: str, headline: str, body: str
+    ) -> dict:
+        content = await read_content()
+        content.setdefault("items", {})[id] = {
+            "id": id,
+            "headline": headline,
+            "body": body,
+        }
+        content["activeId"] = id
+        await write_content(content)
+        return {"ok": True, "item": content["items"][id]}
+
+
+class UpdateContentTool(FunctionTool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="update",
+            title="Update local web content",
+            description="Updates a local Python content record rendered by the dev app.",
+            input_schema={
+                "type": "object",
+                "required": ["id"],
+                "additionalProperties": False,
+                "properties": {
+                    "id": {"type": "string"},
+                    "headline": {"type": "string"},
+                    "body": {"type": "string"},
+                },
+            },
+        )
+
+    async def execute(
+        self,
+        context: ToolContext,
+        *,
+        id: str,
+        headline: str | None = None,
+        body: str | None = None,
+    ) -> dict:
+        content = await read_content()
+        items = content.setdefault("items", {})
+        existing = items.get(id, {"id": id, "headline": "", "body": ""})
+        if headline is not None:
+            existing["headline"] = headline
+        if body is not None:
+            existing["body"] = body
+        items[id] = existing
+        content["activeId"] = id
+        await write_content(content)
+        return {"ok": True, "item": existing}
+
+
+class SearchContentTool(FunctionTool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="search",
+            title="Search local web content",
+            description="Searches content records currently available to the local Python app.",
+            input_schema={
+                "type": "object",
+                "required": ["query"],
+                "additionalProperties": False,
+                "properties": {"query": {"type": "string"}},
+            },
+        )
+
+    async def execute(self, context: ToolContext, *, query: str) -> dict:
+        content = await read_content()
+        normalized_query = str(query or "").lower()
+        results = [
+            item
+            for item in content.get("items", {}).values()
+            if normalized_query in f"{item.get('headline', '')}\\n{item.get('body', '')}".lower()
+        ]
+        return {"ok": True, "results": results}
+
+
+class PythonContentToolkit(Toolkit):
+    def __init__(self) -> None:
+        super().__init__(
+            name=TOOLKIT_NAME,
+            title="Python Local Content Toolkit",
+            description="Local-only create, update, and search tools for Python dev app content.",
+            tools=[CreateContentTool(), UpdateContentTool(), SearchContentTool()],
+        )
 
 
 async def health(request: web.Request) -> web.Response:
@@ -109,8 +255,12 @@ async def health(request: web.Request) -> web.Response:
 
 
 async def index(request: web.Request) -> web.Response:
+    content = read_content_sync()
+    active_item = content.get("items", {}).get(content.get("activeId")) or content.get(
+        "items", {}
+    ).get("hero", {})
     return web.Response(
-        text="hello from meshagent init\\n",
+        text=f"{active_item.get('headline', 'hello from meshagent init')}\\n{active_item.get('body', '')}\\n",
         content_type="text/plain",
     )
 
@@ -123,12 +273,11 @@ async def ping(request: web.Request) -> web.Response:
     return web.json_response({"pong": True})
 
 
-async def publish_dev_ready_marker() -> None:
-    ready_path = os.environ.get("MESHAGENT_INIT_DEV_READY_PATH")
+async def run_dev_content_toolkit() -> None:
     probe = os.environ.get("MESHAGENT_INIT_DEV_PROBE")
     room_name = os.environ.get("MESHAGENT_ROOM")
     token = os.environ.get("MESHAGENT_TOKEN")
-    if not ready_path or not probe or not room_name or not token:
+    if not probe or not room_name or not token:
         return
 
     protocol = WebSocketClientProtocol(
@@ -136,20 +285,61 @@ async def publish_dev_ready_marker() -> None:
         token=token,
     )
     async with RoomClient(protocol_factory=protocol.create_factory()) as room:
-        payload = {
-            "probe": probe,
-            "room": room.room_name,
-            "language": "python",
-            "focus": "webserver",
-        }
-        await room.storage.upload(
-            path=ready_path,
-            data=(json.dumps(payload) + "\\n").encode("utf-8"),
-            overwrite=True,
-            mime_type="application/json",
+        hosted_toolkit = await _start_hosted_toolkit(
+            room=room,
+            toolkit=PythonContentToolkit(),
         )
-        print(f"MeshAgent init dev probe wrote: {ready_path} {probe}")
-        await room.wait_for_close()
+        try:
+            proof_id = "meshagent-init-proof"
+            created = await room.agents.invoke_tool(
+                toolkit=TOOLKIT_NAME,
+                tool="create",
+                input={
+                    "id": proof_id,
+                    "headline": "Local dev content created through MeshAgent",
+                    "body": "This text was created by the local Python content toolkit.",
+                },
+            )
+            print(f"MeshAgent init dev toolkit create: {json.dumps(created.json)}")
+
+            headline = f"MeshAgent local dev proof {probe}"
+            updated = await room.agents.invoke_tool(
+                toolkit=TOOLKIT_NAME,
+                tool="update",
+                input={
+                    "id": proof_id,
+                    "headline": headline,
+                    "body": "The room invoked the local Python toolkit, and the toolkit updated dev-content.json.",
+                },
+            )
+            print(f"MeshAgent init dev toolkit update: {json.dumps(updated.json)}")
+
+            searched = await room.agents.invoke_tool(
+                toolkit=TOOLKIT_NAME,
+                tool="search",
+                input={"query": probe},
+            )
+            print(f"MeshAgent init dev toolkit search: {json.dumps(searched.json)}")
+
+            content = await read_content()
+            active_item = content.get("items", {}).get(content.get("activeId"))
+            search_results = searched.json.get("results", [])
+            if active_item.get("headline") != headline or not any(
+                item.get("headline") == headline for item in search_results
+            ):
+                raise RuntimeError("Local Python content toolkit proof failed.")
+
+            print(f"MeshAgent init dev toolkit proof wrote: dev-content.json {probe}")
+            hold_seconds = float(
+                os.environ.get("MESHAGENT_INIT_DEV_TOOLKIT_HOLD_SECONDS") or "0"
+            )
+            if hold_seconds > 0:
+                print(
+                    f"MeshAgent init dev toolkit holding registration for {hold_seconds}s"
+                )
+                await asyncio.sleep(hold_seconds)
+        finally:
+            await hosted_toolkit.stop()
 
 
 async def main() -> None:
@@ -165,7 +355,7 @@ async def main() -> None:
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
     print(f"Serving on 0.0.0.0:{port}")
-    asyncio.create_task(publish_dev_ready_marker())
+    asyncio.create_task(run_dev_content_toolkit())
 
     await asyncio.Event().wait()
 
@@ -180,8 +370,90 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from pathlib import Path
 
 from meshagent.api import RoomClient, WebSocketClientProtocol, websocket_room_url
+from meshagent.tools import FunctionTool, Toolkit, ToolContext
+from meshagent.tools.hosting import _start_hosted_toolkit
+
+
+PROOF_PATH = Path(__file__).with_name("agent-proof.json")
+TOOLKIT_NAME = "meshagent.init.python-agent"
+
+
+class PingTool(FunctionTool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="ping",
+            title="Ping local agent",
+            description="Checks that the local Python backend agent toolkit is reachable.",
+            input_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {},
+            },
+        )
+
+    async def execute(self, context: ToolContext) -> dict:
+        return {"pong": True}
+
+
+class StatusTool(FunctionTool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="status",
+            title="Read local agent status",
+            description="Returns a minimal status payload from the local Python backend agent.",
+            input_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {},
+            },
+        )
+
+    async def execute(self, context: ToolContext) -> dict:
+        return {"ready": True, "language": "python", "focus": "backend-agent"}
+
+
+class EchoTool(FunctionTool):
+    def __init__(self) -> None:
+        super().__init__(
+            name="echo",
+            title="Echo a message",
+            description="Echoes a message through the local Python backend agent.",
+            input_schema={
+                "type": "object",
+                "required": ["message"],
+                "additionalProperties": False,
+                "properties": {"message": {"type": "string"}},
+            },
+        )
+
+    async def execute(self, context: ToolContext, *, message: str) -> dict:
+        return {"echo": message}
+
+
+class PythonAgentToolkit(Toolkit):
+    def __init__(self) -> None:
+        super().__init__(
+            name=TOOLKIT_NAME,
+            title="Python Local Agent Toolkit",
+            description="Local-only ping, status, and echo tools for the Python backend agent.",
+            tools=[PingTool(), StatusTool(), EchoTool()],
+        )
+
+
+async def write_agent_proof(probe: str, echo: str) -> None:
+    payload = {
+        "probe": probe,
+        "echo": echo,
+        "tools": ["ping", "status", "echo"],
+    }
+    await asyncio.to_thread(
+        PROOF_PATH.write_text,
+        json.dumps(payload, indent=2) + "\\n",
+        "utf-8",
+    )
 
 
 async def main() -> None:
@@ -198,29 +470,54 @@ async def main() -> None:
     )
     async with RoomClient(protocol_factory=protocol.create_factory()) as room:
         print(f"Connected to MeshAgent room: {room.room_name}")
-        await publish_dev_ready_marker(room)
-        await room.wait_for_close()
+        await run_agent_toolkit_proof(room)
 
 
-async def publish_dev_ready_marker(room: RoomClient) -> None:
-    ready_path = os.environ.get("MESHAGENT_INIT_DEV_READY_PATH")
+async def run_agent_toolkit_proof(room: RoomClient) -> None:
     probe = os.environ.get("MESHAGENT_INIT_DEV_PROBE")
-    if not ready_path or not probe:
-        return
-
-    payload = {
-        "probe": probe,
-        "room": room.room_name,
-        "language": "python",
-        "focus": "backend-agent",
-    }
-    await room.storage.upload(
-        path=ready_path,
-        data=(json.dumps(payload) + "\\n").encode("utf-8"),
-        overwrite=True,
-        mime_type="application/json",
+    hosted_toolkit = await _start_hosted_toolkit(
+        room=room,
+        toolkit=PythonAgentToolkit(),
     )
-    print(f"MeshAgent init dev probe wrote: {ready_path} {probe}")
+    try:
+        if not probe:
+            await room.wait_for_close()
+            return
+
+        pinged = await room.agents.invoke_tool(
+            toolkit=TOOLKIT_NAME,
+            tool="ping",
+            input={},
+        )
+        print(f"MeshAgent init dev toolkit ping: {json.dumps(pinged.json)}")
+
+        status = await room.agents.invoke_tool(
+            toolkit=TOOLKIT_NAME,
+            tool="status",
+            input={},
+        )
+        print(f"MeshAgent init dev toolkit status: {json.dumps(status.json)}")
+
+        message = f"MeshAgent local dev proof {probe}"
+        echoed = await room.agents.invoke_tool(
+            toolkit=TOOLKIT_NAME,
+            tool="echo",
+            input={"message": message},
+        )
+        print(f"MeshAgent init dev toolkit echo: {json.dumps(echoed.json)}")
+        if echoed.json.get("echo") != message:
+            raise RuntimeError("Local Python agent toolkit proof failed.")
+
+        await write_agent_proof(probe, message)
+        print(f"MeshAgent init dev toolkit proof wrote: agent-proof.json {probe}")
+        hold_seconds = float(
+            os.environ.get("MESHAGENT_INIT_DEV_TOOLKIT_HOLD_SECONDS") or "0"
+        )
+        if hold_seconds > 0:
+            print(f"MeshAgent init dev toolkit holding registration for {hold_seconds}s")
+            await asyncio.sleep(hold_seconds)
+    finally:
+        await hosted_toolkit.stop()
 
 
 if __name__ == "__main__":
@@ -239,6 +536,7 @@ requires-python = ">=3.13"
 dependencies = [
   "aiohttp[speedups]~=3.13.0",
   "meshagent-api=={__version__}",
+  "meshagent-tools=={__version__}",
 ]
 
 [tool.setuptools]
@@ -256,6 +554,7 @@ version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
   "meshagent-api=={__version__}",
+  "meshagent-tools=={__version__}",
 ]
 
 [tool.setuptools]
@@ -346,6 +645,19 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 IMAGE_TAG="${IMAGE_TAG:-meshagent-init-python-agent:dev}"
 meshagent deploy . --tag "$IMAGE_TAG" --meshagent-token agentDefault --wait
+"""
+
+PYTHON_DEV_CONTENT_JSON = """\
+{
+  "activeId": "hero",
+  "items": {
+    "hero": {
+      "id": "hero",
+      "headline": "hello from meshagent init",
+      "body": "Run ./scripts/dev.sh to let the local MeshAgent toolkit update this content."
+    }
+  }
+}
 """
 
 NODE_DEV_CONTENT_JSON = """\
@@ -593,6 +905,168 @@ async function runDevContentToolkit(focus, existingRoom) {
 }
 """
 
+NODE_AGENT_TOOLKIT = """\
+const fs = require("node:fs");
+const path = require("node:path");
+const { JsonContent, RoomClient, Tool, Toolkit, startHostedToolkit } = require("@meshagent/meshagent");
+
+const proofDisplayPath = "__PROOF_PATH__";
+const proofPath = path.join(__dirname, proofDisplayPath.split("/").pop());
+const toolkitName = "__TOOLKIT_NAME__";
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function writeAgentProof({ probe, echo }) {
+  const payload = {
+    probe,
+    echo,
+    tools: ["ping", "status", "echo"],
+  };
+  await fs.promises.mkdir(path.dirname(proofPath), { recursive: true });
+  await fs.promises.writeFile(proofPath, `${JSON.stringify(payload, null, 2)}\\n`, "utf8");
+  return payload;
+}
+
+class __CLASS_PREFIX__PingTool extends Tool {
+  constructor() {
+    super({
+      name: "ping",
+      title: "Ping local agent",
+      description: "Checks that the local __LANGUAGE_LABEL__ backend agent toolkit is reachable.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {},
+      },
+    });
+  }
+
+  async execute() {
+    return new JsonContent({ json: { pong: true } });
+  }
+}
+
+class __CLASS_PREFIX__StatusTool extends Tool {
+  constructor() {
+    super({
+      name: "status",
+      title: "Read local agent status",
+      description: "Returns a minimal status payload from the local __LANGUAGE_LABEL__ backend agent.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {},
+      },
+    });
+  }
+
+  async execute() {
+    return new JsonContent({ json: { ready: true, language: "__LANGUAGE_ID__", focus: "backend-agent" } });
+  }
+}
+
+class __CLASS_PREFIX__EchoTool extends Tool {
+  constructor() {
+    super({
+      name: "echo",
+      title: "Echo a message",
+      description: "Echoes a message through the local __LANGUAGE_LABEL__ backend agent.",
+      inputSchema: {
+        type: "object",
+        required: ["message"],
+        additionalProperties: false,
+        properties: {
+          message: { type: "string" },
+        },
+      },
+    });
+  }
+
+  async execute({ message }) {
+    return new JsonContent({ json: { echo: message } });
+  }
+}
+
+class __CLASS_PREFIX__AgentToolkit extends Toolkit {
+  constructor() {
+    super({
+      name: toolkitName,
+      title: "__LANGUAGE_LABEL__ Local Agent Toolkit",
+      description: "Local-only ping, status, and echo tools for the __LANGUAGE_LABEL__ backend agent.",
+      tools: [
+        new __CLASS_PREFIX__PingTool(),
+        new __CLASS_PREFIX__StatusTool(),
+        new __CLASS_PREFIX__EchoTool(),
+      ],
+    });
+  }
+}
+
+async function runDevAgentToolkit(existingRoom) {
+  const probe = process.env.MESHAGENT_INIT_DEV_PROBE;
+  if (!process.env.MESHAGENT_ROOM || !process.env.MESHAGENT_TOKEN) {
+    return;
+  }
+
+  const room = existingRoom ?? new RoomClient();
+  if (!existingRoom) {
+    await room.start();
+  }
+  const hostedToolkit = await startHostedToolkit({
+    room,
+    toolkit: new __CLASS_PREFIX__AgentToolkit(),
+    public_: true,
+  });
+
+  try {
+    if (!probe) {
+      await new Promise(() => {});
+      return;
+    }
+
+    const pinged = await room.agents.invokeTool({
+      toolkit: toolkitName,
+      tool: "ping",
+      arguments: {},
+    });
+    console.log(`MeshAgent init dev toolkit ping: ${JSON.stringify(pinged.json)}`);
+
+    const status = await room.agents.invokeTool({
+      toolkit: toolkitName,
+      tool: "status",
+      arguments: {},
+    });
+    console.log(`MeshAgent init dev toolkit status: ${JSON.stringify(status.json)}`);
+
+    const message = `MeshAgent local dev proof ${probe}`;
+    const echoed = await room.agents.invokeTool({
+      toolkit: toolkitName,
+      tool: "echo",
+      arguments: { message },
+    });
+    console.log(`MeshAgent init dev toolkit echo: ${JSON.stringify(echoed.json)}`);
+    if (echoed.json?.echo !== message) {
+      throw new Error("Local __LANGUAGE_LABEL__ agent toolkit proof did not echo the probe.");
+    }
+
+    await writeAgentProof({ probe, echo: message });
+    console.log(`MeshAgent init dev toolkit proof wrote: ${proofDisplayPath} ${probe}`);
+    const holdSeconds = Number.parseFloat(process.env.MESHAGENT_INIT_DEV_TOOLKIT_HOLD_SECONDS ?? "0");
+    if (Number.isFinite(holdSeconds) && holdSeconds > 0) {
+      console.log(`MeshAgent init dev toolkit holding registration for ${holdSeconds}s`);
+      await sleep(holdSeconds * 1000);
+    }
+  } finally {
+    await hostedToolkit.stop();
+    if (!existingRoom) {
+      room.dispose();
+    }
+  }
+}
+"""
+
 
 def _node_dev_content_toolkit(
     *,
@@ -606,6 +1080,23 @@ def _node_dev_content_toolkit(
         .replace("__CLASS_PREFIX__", class_prefix)
         .replace("__TOOLKIT_NAME__", toolkit_name)
         .replace("__CONTENT_PATH__", content_path)
+    )
+
+
+def _node_agent_toolkit(
+    *,
+    language_label: str,
+    language_id: str,
+    class_prefix: str,
+    toolkit_name: str,
+    proof_path: str,
+) -> str:
+    return (
+        NODE_AGENT_TOOLKIT.replace("__LANGUAGE_LABEL__", language_label)
+        .replace("__LANGUAGE_ID__", language_id)
+        .replace("__CLASS_PREFIX__", class_prefix)
+        .replace("__TOOLKIT_NAME__", toolkit_name)
+        .replace("__PROOF_PATH__", proof_path)
     )
 
 
@@ -674,16 +1165,18 @@ runDevContentToolkit("webserver").catch((error) => {
 def _node_agent_source(
     *,
     language_label: str,
+    language_id: str,
     class_prefix: str,
     toolkit_name: str,
-    content_path: str,
+    proof_path: str,
 ) -> str:
     return (
-        _node_dev_content_toolkit(
+        _node_agent_toolkit(
             language_label=language_label,
+            language_id=language_id,
             class_prefix=class_prefix,
             toolkit_name=toolkit_name,
-            content_path=content_path,
+            proof_path=proof_path,
         )
         + """
 
@@ -698,8 +1191,7 @@ async function main() {
   await room.start();
   console.log(`Connected to MeshAgent room: ${room.roomName}`);
   try {
-    await runDevContentToolkit("backend-agent", room);
-    await new Promise(() => {});
+    await runDevAgentToolkit(room);
   } finally {
     room.dispose();
   }
@@ -764,9 +1256,10 @@ JAVASCRIPT_WEBSERVER = _node_webserver_source(
 
 JAVASCRIPT_AGENT = _node_agent_source(
     language_label="JavaScript",
+    language_id="javascript",
     class_prefix="JavaScript",
-    toolkit_name="meshagent.init.javascript-content",
-    content_path="dev-content.json",
+    toolkit_name="meshagent.init.javascript-agent",
+    proof_path="agent-proof.json",
 )
 
 JAVASCRIPT_DOCKERFILE = f"""\
@@ -889,9 +1382,10 @@ TYPESCRIPT_WEBSERVER = "// @ts-nocheck\n" + _node_webserver_source(
 
 TYPESCRIPT_AGENT = "// @ts-nocheck\n" + _node_agent_source(
     language_label="TypeScript",
+    language_id="typescript",
     class_prefix="TypeScript",
-    toolkit_name="meshagent.init.typescript-content",
-    content_path="src/dev-content.json",
+    toolkit_name="meshagent.init.typescript-agent",
+    proof_path="src/agent-proof.json",
 )
 
 TYPESCRIPT_DOCKERFILE = f"""\
@@ -1319,6 +1813,7 @@ DOTNET_CSPROJ = f"""\
 DOTNET_AGENT_CSPROJ = f"""\
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <OutputType>Exe</OutputType>
     <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -1481,7 +1976,22 @@ NUGET_PACKAGES="${NUGET_PACKAGES:-$ROOT/.nuget/packages}"
 DOTNET_NOLOGO="${DOTNET_NOLOGO:-1}"
 DOTNET_SKIP_FIRST_TIME_EXPERIENCE="${DOTNET_SKIP_FIRST_TIME_EXPERIENCE:-1}"
 export DOTNET_CLI_HOME NUGET_PACKAGES DOTNET_NOLOGO DOTNET_SKIP_FIRST_TIME_EXPERIENCE
-dotnet restore
+if command -v dotnet >/dev/null 2>&1; then
+  dotnet restore
+elif command -v docker >/dev/null 2>&1; then
+  docker run --rm \
+    -e DOTNET_CLI_HOME=/src/.dotnet-home \
+    -e NUGET_PACKAGES=/src/.nuget/packages \
+    -e DOTNET_NOLOGO=1 \
+    -e DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
+    -v "$ROOT:/src" \
+    -w /src \
+    mcr.microsoft.com/dotnet/sdk:9.0 \
+    dotnet restore
+else
+  echo "Neither dotnet nor docker is installed. Install the .NET SDK 9.0 or Docker, then rerun this script." >&2
+  exit 127
+fi
 """
 
 DOTNET_DEV_SCRIPT = """\
@@ -1494,7 +2004,28 @@ NUGET_PACKAGES="${NUGET_PACKAGES:-$ROOT/.nuget/packages}"
 DOTNET_NOLOGO="${DOTNET_NOLOGO:-1}"
 DOTNET_SKIP_FIRST_TIME_EXPERIENCE="${DOTNET_SKIP_FIRST_TIME_EXPERIENCE:-1}"
 export DOTNET_CLI_HOME NUGET_PACKAGES DOTNET_NOLOGO DOTNET_SKIP_FIRST_TIME_EXPERIENCE
-meshagent room connect -- dotnet run
+if command -v dotnet >/dev/null 2>&1; then
+  meshagent room connect -- dotnet run
+elif command -v docker >/dev/null 2>&1; then
+  meshagent room connect -- docker run --rm \
+    -e MESHAGENT_API_URL \
+    -e MESHAGENT_PROJECT_ID \
+    -e MESHAGENT_ROOM \
+    -e MESHAGENT_TOKEN \
+    -e MESHAGENT_INIT_DEV_PROBE \
+    -e MESHAGENT_INIT_DEV_READY_PATH \
+    -e DOTNET_CLI_HOME=/src/.dotnet-home \
+    -e NUGET_PACKAGES=/src/.nuget/packages \
+    -e DOTNET_NOLOGO=1 \
+    -e DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
+    -v "$ROOT:/src" \
+    -w /src \
+    mcr.microsoft.com/dotnet/sdk:9.0 \
+    dotnet run
+else
+  echo "Neither dotnet nor docker is installed. Install the .NET SDK 9.0 or Docker, then rerun this script." >&2
+  exit 127
+fi
 """
 
 DOTNET_WEBSERVER_DEPLOY_SCRIPT = """\
@@ -1910,6 +2441,7 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         files={
             "pyproject.toml": PYTHON_WEBSERVER_PYPROJECT,
             "server.py": PYTHON_WEBSERVER,
+            "dev-content.json": PYTHON_DEV_CONTENT_JSON,
             "Dockerfile": PYTHON_DOCKERFILE,
             ".dockerignore": PYTHON_DOCKERIGNORE,
             "scripts/install.sh": PYTHON_INSTALL_SCRIPT,
@@ -1958,7 +2490,6 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
             "package.json": JAVASCRIPT_AGENT_PACKAGE_JSON,
             ".npmrc": NPMRC,
             "server.js": JAVASCRIPT_AGENT,
-            "dev-content.json": NODE_DEV_CONTENT_JSON,
             "Dockerfile": JAVASCRIPT_AGENT_DOCKERFILE,
             ".dockerignore": JAVASCRIPT_DOCKERIGNORE,
         },
@@ -1990,7 +2521,6 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
             ".npmrc": NPMRC,
             "tsconfig.json": TYPESCRIPT_TSCONFIG,
             "src/server.ts": TYPESCRIPT_AGENT,
-            "src/dev-content.json": NODE_DEV_CONTENT_JSON,
             "Dockerfile": TYPESCRIPT_AGENT_DOCKERFILE,
             ".dockerignore": JAVASCRIPT_DOCKERIGNORE,
         },
