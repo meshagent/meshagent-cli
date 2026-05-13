@@ -2384,7 +2384,27 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"
 export PUB_CACHE
-if command -v flutter >/dev/null 2>&1; then
+if [ -n "${MESHAGENT_INIT_DEV_PROBE:-}" ] && [ -n "${MESHAGENT_INIT_DEV_READY_PATH:-}" ]; then
+  if command -v dart >/dev/null 2>&1; then
+    meshagent room connect -- dart run tool/dev_room_proof.dart
+  elif command -v docker >/dev/null 2>&1; then
+    meshagent room connect -- docker run --rm \
+      -e MESHAGENT_API_URL \
+      -e MESHAGENT_PROJECT_ID \
+      -e MESHAGENT_ROOM \
+      -e MESHAGENT_TOKEN \
+      -e MESHAGENT_INIT_DEV_PROBE \
+      -e MESHAGENT_INIT_DEV_READY_PATH \
+      -e PUB_CACHE=/app/.pub-cache \
+      -v "$ROOT:/app" \
+      -w /app \
+      ghcr.io/cirruslabs/flutter:stable \
+      dart run tool/dev_room_proof.dart
+  else
+    echo "Neither dart nor docker is installed. Install the Flutter SDK or Docker, then rerun this script." >&2
+    exit 127
+  fi
+elif command -v flutter >/dev/null 2>&1; then
   meshagent room connect -- sh -c 'dart run tool/dev_room_proof.dart & flutter run -d web-server --web-hostname 0.0.0.0 --web-port 3000'
 elif command -v docker >/dev/null 2>&1; then
   meshagent room connect -- docker run --rm \

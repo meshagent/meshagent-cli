@@ -674,6 +674,7 @@ def test_init_creates_flutter_webserver_non_interactively(tmp_path) -> None:
     assert "ghcr.io/cirruslabs/flutter:stable" in install_sh
     assert "flutter pub get" in install_sh
     assert "meshagent room connect -- sh -c" in dev_sh
+    assert "MESHAGENT_INIT_DEV_PROBE" in dev_sh
     assert "meshagent room connect -- docker run --rm" in dev_sh
     assert "-p 3000:3000" in dev_sh
     assert "-e MESHAGENT_API_URL" in dev_sh
