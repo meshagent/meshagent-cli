@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
+import io
 import inspect
 import logging
 import os
+import re
 import sys
 import time
 import uuid
@@ -43,6 +47,7 @@ from meshagent.agents.messages import (
     AGENT_EVENT_TEXT_CONTENT_DELTA,
     AGENT_EVENT_TEXT_CONTENT_ENDED,
     AGENT_EVENT_TEXT_CONTENT_STARTED,
+    AGENT_EVENT_TOOL_CALL_ARGUMENTS_DELTA,
     AGENT_EVENT_TOOL_CALL_APPROVAL_REQUESTED,
     AGENT_EVENT_TOOL_CALL_ENDED,
     AGENT_EVENT_TOOL_CALL_IN_PROGRESS,
@@ -89,6 +94,7 @@ from meshagent.agents.messages import (
     AgentTextContentStarted,
     AgentThreadStatus,
     AgentThreadEvent,
+    AgentToolCallArgumentsDelta,
     AgentToolCallApprovalRequested,
     AgentToolCallEnded,
     AgentToolCallInProgress,
@@ -109,6 +115,13 @@ from meshagent.agents.messages import (
     TurnSteered,
     parse_agent_message,
 )
+from meshagent.agents.chat_client import (
+    ChatThreadSession,
+    LocalChatClient,
+    MessagingChatClient,
+)
+from meshagent.agents.images_dataset import ImageDatasetClient, ImageDatasetRecord
+from meshagent.agents.tool_call_accumulator import tool_arguments_from_delta_text
 from meshagent.agents.process import (
     AgentSupervisor,
     LLMAgentProcess,
@@ -138,6 +151,7 @@ _ASK_TERMINAL_STATUS_STATES = {
     "canceled",
 }
 _ASK_TOOL_LOG_RENDER_LIMIT = 4
+_ASK_IMAGE_RENDER_COLUMNS = 72
 _ASK_PASS_THROUGH_AGENT_EVENT_TYPES = {
     AGENT_EVENT_AUDIO_GENERATION_COMPLETED,
     AGENT_EVENT_AUDIO_GENERATION_DELTA,
@@ -161,6 +175,7 @@ _ASK_PASS_THROUGH_AGENT_EVENT_TYPES = {
     AGENT_EVENT_TEXT_CONTENT_ENDED,
     AGENT_EVENT_TEXT_CONTENT_STARTED,
     AGENT_EVENT_THREAD_EVENT,
+    AGENT_EVENT_TOOL_CALL_ARGUMENTS_DELTA,
     AGENT_EVENT_TOOL_CALL_APPROVAL_REQUESTED,
     AGENT_EVENT_TOOL_CALL_ENDED,
     AGENT_EVENT_TOOL_CALL_IN_PROGRESS,
@@ -323,6 +338,15 @@ def _format_ask_tool_call_entry_text(
     if headline == raw_headline and log_lines:
         headline = _ask_log_headline(log_lines.pop(0))
         log_limit -= 1
+    elif (
+        headline == raw_headline
+        and not failed
+        and completed
+        and arguments is None
+        and toolkit.strip().casefold() == "openai"
+        and tool.strip().casefold() in {"shell", "local_shell", "code_interpreter"}
+    ):
+        headline = "Explored"
 
     detail_lines = [headline]
     detail_lines.extend(log_lines[:log_limit])
@@ -330,6 +354,26 @@ def _format_ask_tool_call_entry_text(
     if error_line is not None:
         detail_lines.append(error_line)
     return "\n".join(detail_lines)
+
+
+def _merge_ask_tool_call_arguments_delta(
+    *,
+    tool: str,
+    arguments: dict[str, Any] | None,
+    delta_text: str,
+) -> dict[str, Any] | None:
+    return tool_arguments_from_delta_text(
+        tool=tool,
+        current=arguments,
+        text=delta_text,
+    )
+
+
+def _friendly_ask_thread_event_text(value: str) -> str:
+    normalized = value.strip()
+    if normalized.casefold() == "ran openai: shell":
+        return "Explored"
+    return normalized
 
 
 def _ask_feed_previous_participant_role(
@@ -357,10 +401,12 @@ class _AskConversationMessage:
     message_id: str
     role: str
     text: str
+    kind: Literal["text", "image"] = "text"
 
 
 @dataclass(frozen=True, slots=True)
 class _PendingSteerCallback:
+    message: TurnSteer
     prompt: str
     on_accepted: Callable[[], Awaitable[None] | None] | None
     on_applied: Callable[[], Awaitable[None] | None] | None
@@ -376,7 +422,13 @@ class _AskExternalThreadState(Protocol):
     def queued_message_labels(self) -> tuple[str, ...]: ...
 
     @property
-    def messages(self) -> tuple[_AskConversationMessage, ...]: ...
+    def messages(self) -> tuple[AgentMessage, ...]: ...
+
+
+@runtime_checkable
+class _AskImageDatasetProvider(Protocol):
+    @property
+    def image_dataset_client(self) -> ImageDatasetClient | None: ...
 
 
 class _AgentMessageChannelClient(Protocol):
@@ -392,11 +444,14 @@ class _AgentMessageChannelClient(Protocol):
     @property
     def queued_message_labels(self) -> tuple[str, ...]: ...
 
+    @property
+    def messages(self) -> tuple[AgentMessage, ...]: ...
+
+    def add_agent_message(self, message: AgentMessage) -> None: ...
+
     def clear_applied_queued_agent_inputs(self) -> None: ...
 
     async def send(self, payload: Any) -> None: ...
-
-    async def start_thread(self, payload: Any) -> None: ...
 
     async def receive(self) -> dict[str, Any]: ...
 
@@ -422,6 +477,279 @@ def _thread_status_text(status: object) -> str | None:
     if normalized == "":
         return None
     return normalized
+
+
+def _agent_message_content_text(
+    content: list[AgentTextContent | AgentFileContent],
+) -> str:
+    text_parts: list[str] = []
+    for item in content:
+        if isinstance(item, AgentTextContent) and item.text.strip() != "":
+            text_parts.append(item.text)
+            continue
+        if isinstance(item, AgentFileContent) and item.url.strip() != "":
+            image_ascii = _ascii_image_from_uri(item.url)
+            if image_ascii is not None:
+                text_parts.append(image_ascii)
+            else:
+                text_parts.append(f"[attachment] {item.url}")
+    return "\n\n".join(text_parts).strip()
+
+
+def _image_bytes_from_data_uri(uri: str) -> bytes | None:
+    record = _image_record_from_data_uri(uri)
+    return None if record is None else record.data
+
+
+def _image_record_from_data_uri(
+    uri: str,
+    *,
+    fallback_mime_type: str | None = None,
+) -> ImageDatasetRecord | None:
+    match = re.fullmatch(r"data:([^;,]*)(?:;[^,]*)?;base64,(.*)", uri, re.S)
+    if match is None:
+        return None
+    mime_type = match.group(1).strip() or (fallback_mime_type or "image/png")
+    if not mime_type.startswith("image/"):
+        return None
+    try:
+        data = base64.b64decode(match.group(2), validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    return ImageDatasetRecord(data=data, mime_type=mime_type)
+
+
+async def _image_record_from_uri(
+    uri: str | None,
+    *,
+    image_dataset_client: ImageDatasetClient | None = None,
+    fallback_mime_type: str | None = None,
+) -> ImageDatasetRecord | None:
+    if not isinstance(uri, str):
+        return None
+    normalized_uri = uri.strip()
+    record = _image_record_from_data_uri(
+        normalized_uri,
+        fallback_mime_type=fallback_mime_type,
+    )
+    if record is not None:
+        return record
+    if image_dataset_client is None:
+        return None
+    try:
+        return await image_dataset_client.read_record_from_uri(
+            normalized_uri,
+            fallback_mime_type=fallback_mime_type,
+        )
+    except Exception:
+        return None
+
+
+def _ascii_image_from_record(
+    record: ImageDatasetRecord,
+    *,
+    columns: int = _ASK_IMAGE_RENDER_COLUMNS,
+) -> str | None:
+    if not record.mime_type.startswith("image/"):
+        return None
+    if len(record.data) == 0:
+        return None
+    try:
+        import ascii_magic
+        from PIL import Image
+
+        with Image.open(io.BytesIO(record.data)) as image:
+            art = ascii_magic.from_pillow_image(image)
+            rendered = art.to_terminal(columns=columns, monochrome=False)
+    except Exception:
+        return None
+    normalized = rendered.strip("\n")
+    return normalized if normalized.strip() != "" else None
+
+
+def _ascii_image_from_uri(
+    uri: str | None,
+    *,
+    columns: int = _ASK_IMAGE_RENDER_COLUMNS,
+) -> str | None:
+    if not isinstance(uri, str):
+        return None
+    record = _image_record_from_data_uri(uri.strip())
+    if record is None:
+        return None
+    return _ascii_image_from_record(record, columns=columns)
+
+
+def _dataset_image_attachment_uri(text: str) -> str | None:
+    match = re.fullmatch(r"\[attachment\]\s+(dataset://\S+)", text.strip())
+    if match is None:
+        return None
+    uri = match.group(1).strip()
+    if ImageDatasetClient.dataset_uri_reference(uri) is None:
+        return None
+    return uri
+
+
+async def _ascii_image_from_uri_async(
+    uri: str | None,
+    *,
+    image_dataset_client: ImageDatasetClient | None = None,
+    fallback_mime_type: str | None = None,
+    columns: int = _ASK_IMAGE_RENDER_COLUMNS,
+) -> str | None:
+    record = await _image_record_from_uri(
+        uri,
+        image_dataset_client=image_dataset_client,
+        fallback_mime_type=fallback_mime_type,
+    )
+    if record is None:
+        return None
+    return _ascii_image_from_record(record, columns=columns)
+
+
+def _image_dataset_client_from_agent_client(
+    client: _AgentMessageChannelClient,
+) -> ImageDatasetClient | None:
+    if not isinstance(client, ChatThreadSession):
+        return None
+    chat_client = client.client
+    if not isinstance(chat_client, MessagingChatClient):
+        return None
+    return ImageDatasetClient(chat_client.room)
+
+
+def _role_for_sender(
+    sender_name: object,
+    *,
+    local_participant_name: str | None,
+    default: str,
+) -> str:
+    if not isinstance(sender_name, str):
+        return default
+    normalized_sender_name = sender_name.strip()
+    if normalized_sender_name == "":
+        return default
+    if normalized_sender_name == local_participant_name:
+        return "you"
+    return normalized_sender_name
+
+
+def _ask_conversation_message_from_agent_message(
+    message: AgentMessage,
+    *,
+    local_participant_name: str | None,
+) -> _AskConversationMessage | None:
+    if isinstance(message, (TurnStart, TurnSteer)):
+        text = _agent_message_content_text(message.content)
+        if text == "":
+            return None
+        return _AskConversationMessage(
+            message_id=message.message_id,
+            role=_role_for_sender(
+                message.sender_name,
+                local_participant_name=local_participant_name,
+                default="you",
+            ),
+            text=text,
+        )
+    if isinstance(message, (TurnStartAccepted, TurnSteerAccepted)):
+        text = _agent_message_content_text(message.content)
+        if text == "":
+            return None
+        return _AskConversationMessage(
+            message_id=message.source_message_id,
+            role=_role_for_sender(
+                message.sender_name,
+                local_participant_name=local_participant_name,
+                default="user",
+            ),
+            text=text,
+        )
+    if isinstance(message, AgentTextContentDelta):
+        return _AskConversationMessage(
+            message_id=message.item_id,
+            role=_role_for_sender(
+                message.sender_name,
+                local_participant_name=local_participant_name,
+                default="assistant",
+            ),
+            text=message.text,
+        )
+    if isinstance(message, AgentAudioTranscriptionDelta):
+        return _AskConversationMessage(
+            message_id=message.item_id,
+            role=message.role
+            or _role_for_sender(
+                message.sender_name,
+                local_participant_name=local_participant_name,
+                default="assistant",
+            ),
+            text=message.text,
+        )
+    if isinstance(message, AgentFileContentDelta):
+        image_ascii = _ascii_image_from_uri(message.url)
+        return _AskConversationMessage(
+            message_id=message.item_id,
+            role=_role_for_sender(
+                message.sender_name,
+                local_participant_name=local_participant_name,
+                default="assistant",
+            ),
+            text=image_ascii or f"[attachment] {message.url}",
+            kind="image" if image_ascii is not None else "text",
+        )
+    if isinstance(message, AgentImageGenerationPartial):
+        if message.image is None:
+            return None
+        image_ascii = _ascii_image_from_uri(message.image.uri)
+        if image_ascii is None:
+            return None
+        return _AskConversationMessage(
+            message_id=message.item_id,
+            role="assistant",
+            text=image_ascii,
+            kind="image",
+        )
+    if isinstance(message, AgentImageGenerationCompleted):
+        images = [
+            image_ascii
+            for image in message.images
+            if (image_ascii := _ascii_image_from_uri(image.uri)) is not None
+        ]
+        if len(images) == 0:
+            return None
+        return _AskConversationMessage(
+            message_id=message.item_id,
+            role="assistant",
+            text="\n\n".join(images),
+            kind="image",
+        )
+    return None
+
+
+def _ask_conversation_messages_from_agent_messages(
+    messages: Sequence[AgentMessage],
+    *,
+    local_participant_name: str | None,
+) -> tuple[_AskConversationMessage, ...]:
+    conversation_messages: list[_AskConversationMessage] = []
+    seen_message_ids: set[str] = set()
+    for message in messages:
+        conversation_message = _ask_conversation_message_from_agent_message(
+            message,
+            local_participant_name=local_participant_name,
+        )
+        if conversation_message is None:
+            continue
+        if conversation_message.message_id in seen_message_ids:
+            continue
+        seen_message_ids.add(conversation_message.message_id)
+        conversation_messages.append(conversation_message)
+    return tuple(conversation_messages)
+
+
+def _ask_conversation_message_render_window(height: int) -> int:
+    return max(24, min(160, max(1, height) * 4))
 
 
 async def _maybe_await(callback_result: Any) -> None:
@@ -593,55 +921,6 @@ class _StatusAwareLLMAdapter(LLMAdapter[Any]):
         )
 
 
-class _LocalAgentMessageChannelClient:
-    def __init__(
-        self,
-        *,
-        thread_path: str,
-        send_message: Callable[[Message], None],
-        events: asyncio.Queue[Message],
-        on_close: Callable[[], None] | None = None,
-    ) -> None:
-        self._thread_path = thread_path
-        self._send_message = send_message
-        self._events = events
-        self._on_close = on_close
-
-    @property
-    def has_thread_path(self) -> bool:
-        return True
-
-    @property
-    def thread_path(self) -> str:
-        return self._thread_path
-
-    @property
-    def thread_status_text(self) -> str | None:
-        return None
-
-    @property
-    def queued_message_labels(self) -> tuple[str, ...]:
-        return ()
-
-    def clear_applied_queued_agent_inputs(self) -> None:
-        return
-
-    async def send(self, payload: Any) -> None:
-        self._send_message(Message(data=payload))
-
-    async def start_thread(self, payload: Any) -> None:
-        del payload
-        raise RoomException("local agent message client already has a thread")
-
-    async def receive(self) -> dict[str, Any]:
-        event = await self._events.get()
-        return event.data.model_dump(mode="python")
-
-    async def close(self) -> None:
-        if self._on_close is not None:
-            self._on_close()
-
-
 class _AgentMessageSession:
     def __init__(
         self,
@@ -649,12 +928,19 @@ class _AgentMessageSession:
         client: _AgentMessageChannelClient,
         model: str | None,
         model_provider: Callable[[], AgentModelChanged | None] | None = None,
+        start_thread_callback: Callable[
+            [StartThread], Awaitable[_AgentMessageChannelClient]
+        ]
+        | None = None,
         current_working_directory: str | None = None,
         local_participant_name: str | None = None,
+        image_dataset_client: ImageDatasetClient | None = None,
     ) -> None:
         self._client = client
         self._model = model
         self._model_provider = model_provider
+        self._start_thread_callback = start_thread_callback
+        self._image_dataset_client = image_dataset_client
         self._output_modalities: tuple[Literal["text", "audio"], ...] | None = None
         self._current_working_directory = os.path.abspath(
             current_working_directory or os.getcwd()
@@ -667,9 +953,6 @@ class _AgentMessageSession:
         )
         self._active_turn_id: str | None = None
         self._thread_status_text: str | None = None
-        self._messages: list[_AskConversationMessage] = []
-        self._message_ids: set[str] = set()
-        self._pending_input_messages: dict[str, _AskConversationMessage] = {}
         self._pending_steer_callbacks: dict[str, _PendingSteerCallback] = {}
 
     @property
@@ -686,6 +969,12 @@ class _AgentMessageSession:
     def queued_message_labels(self) -> tuple[str, ...]:
         return self._client.queued_message_labels
 
+    @property
+    def image_dataset_client(self) -> ImageDatasetClient | None:
+        if self._image_dataset_client is not None:
+            return self._image_dataset_client
+        return _image_dataset_client_from_agent_client(self._client)
+
     def set_output_modalities(
         self, output_modalities: tuple[Literal["text", "audio"], ...] | None
     ) -> None:
@@ -693,97 +982,13 @@ class _AgentMessageSession:
 
     @property
     def messages(self) -> tuple[_AskConversationMessage, ...]:
-        return tuple(self._messages)
-
-    def add_message(
-        self,
-        *,
-        message_id: str,
-        role: str,
-        text: str,
-        before_pending_inputs: bool = False,
-    ) -> None:
-        normalized_message_id = message_id.strip()
-        normalized_text = text.strip()
-        if normalized_message_id == "" or normalized_text == "":
-            return
-        if normalized_message_id in self._message_ids:
-            return
-        self._message_ids.add(normalized_message_id)
-        message = _AskConversationMessage(
-            message_id=normalized_message_id,
-            role=role.strip() or "user",
-            text=normalized_text,
+        return _ask_conversation_messages_from_agent_messages(
+            self._client.messages,
+            local_participant_name=self._local_participant_name,
         )
-        if before_pending_inputs:
-            pending_input_ids = set(self._pending_input_messages)
-            for index, existing in enumerate(self._messages):
-                if existing.message_id in pending_input_ids:
-                    self._messages.insert(index, message)
-                    return
-        self._messages.append(message)
 
     def add_agent_message(self, message: AgentMessage) -> None:
-        if isinstance(message, (TurnStart, TurnSteer)):
-            text = self._agent_input_content_text(message.content)
-            if text == "":
-                return
-            role = self._role_for_sender(message.sender_name, default="user")
-            self.add_message(message_id=message.message_id, role=role, text=text)
-            return
-
-        if isinstance(message, AgentTextContentDelta):
-            role = self._role_for_sender(message.sender_name, default="assistant")
-            self.add_message(
-                message_id=message.item_id,
-                role=role,
-                text=message.text,
-            )
-            return
-
-        if isinstance(message, AgentAudioTranscriptionDelta):
-            role = message.role or self._role_for_sender(
-                message.sender_name,
-                default="assistant",
-            )
-            self.add_message(
-                message_id=message.item_id,
-                role=role,
-                text=message.text,
-            )
-            return
-
-        if isinstance(message, AgentFileContentDelta):
-            role = self._role_for_sender(message.sender_name, default="assistant")
-            self.add_message(
-                message_id=message.item_id,
-                role=role,
-                text=f"[attachment] {message.url}",
-            )
-
-    def _role_for_sender(self, sender_name: object, *, default: str) -> str:
-        if not isinstance(sender_name, str):
-            return default
-        normalized_sender_name = sender_name.strip()
-        if normalized_sender_name == "":
-            return default
-        if normalized_sender_name == self._local_participant_name:
-            return "you"
-        return normalized_sender_name
-
-    @staticmethod
-    def _agent_input_content_text(
-        content: list[AgentTextContent | AgentFileContent],
-    ) -> str:
-        text_parts: list[str] = []
-        for item in content:
-            if isinstance(item, AgentTextContent) and item.text.strip() != "":
-                text_parts.append(item.text)
-                continue
-            if isinstance(item, AgentFileContent) and item.url.strip() != "":
-                text_parts.append(f"[attachment] {item.url}")
-
-        return "\n\n".join(text_parts).strip()
+        self._client.add_agent_message(message)
 
     async def close(self, *, close_client: bool = True) -> None:
         self._pending_steer_callbacks.clear()
@@ -834,20 +1039,14 @@ class _AgentMessageSession:
                 start_thread_args["output_modalities"] = list(output_modalities)
             input_message = StartThread.model_validate(start_thread_args)
 
-        self._pending_input_messages[input_message.message_id] = (
-            _AskConversationMessage(
-                message_id=input_message.message_id,
-                role="you",
-                text=prompt,
-            )
-        )
-        self.add_message(
-            message_id=input_message.message_id,
-            role="you",
-            text=prompt,
-        )
         if isinstance(input_message, StartThread):
-            await self._client.start_thread(input_message)
+            if self._start_thread_callback is None:
+                raise RoomException("chat client cannot start a new thread")
+            self._client = await self._start_thread_callback(input_message)
+            if self._image_dataset_client is None:
+                self._image_dataset_client = _image_dataset_client_from_agent_client(
+                    self._client
+                )
         else:
             await self._client.send(input_message)
 
@@ -871,7 +1070,7 @@ class _AgentMessageSession:
 
                 if event_type == AGENT_EVENT_TURN_START_ACCEPTED:
                     turn_start_accepted = TurnStartAccepted.model_validate(payload)
-                    self._add_accepted_agent_input(turn_start_accepted)
+                    self._client.add_agent_message(turn_start_accepted)
                     await _emit_agent_message(on_message, turn_start_accepted)
                     continue
 
@@ -915,11 +1114,7 @@ class _AgentMessageSession:
                     )
                     if pending_callbacks is None:
                         continue
-                    self.add_message(
-                        message_id=steer_applied.source_message_id,
-                        role="you",
-                        text=pending_callbacks.prompt,
-                    )
+                    self._client.add_agent_message(pending_callbacks.message)
                     if pending_callbacks.on_applied is not None:
                         await _maybe_await(pending_callbacks.on_applied())
                     await _emit_agent_message(on_message, steer_applied)
@@ -1016,6 +1211,7 @@ class _AgentMessageSession:
                                 AgentReasoningContentStarted,
                                 AgentTextContentEnded,
                                 AgentTextContentStarted,
+                                AgentToolCallArgumentsDelta,
                                 AgentToolCallApprovalRequested,
                                 AgentToolCallEnded,
                                 AgentToolCallInProgress,
@@ -1047,7 +1243,6 @@ class _AgentMessageSession:
         finally:
             self._active_turn_id = None
             self._pending_steer_callbacks.clear()
-            self._pending_input_messages.clear()
             self._thread_status_text = None
             self._client.clear_applied_queued_agent_inputs()
             await _emit_agent_message(
@@ -1058,31 +1253,6 @@ class _AgentMessageSession:
                     status=None,
                 ),
             )
-
-    def _add_accepted_agent_input(self, accepted: TurnStartAccepted) -> None:
-        pending_input = self._pending_input_messages.pop(
-            accepted.source_message_id,
-            None,
-        )
-        if pending_input is not None:
-            self.add_message(
-                message_id=pending_input.message_id,
-                role=pending_input.role,
-                text=pending_input.text,
-            )
-            return
-
-        text = self._agent_input_content_text(accepted.content)
-        if text == "":
-            return
-
-        role = self._role_for_sender(accepted.sender_name, default="user")
-        self.add_message(
-            message_id=accepted.source_message_id,
-            role=role,
-            text=text,
-            before_pending_inputs=True,
-        )
 
     def steer(
         self,
@@ -1107,6 +1277,7 @@ class _AgentMessageSession:
             ],
         )
         self._pending_steer_callbacks[turn_steer.message_id] = _PendingSteerCallback(
+            message=turn_steer,
             prompt=prompt,
             on_accepted=on_accepted,
             on_applied=on_applied,
@@ -1183,13 +1354,13 @@ class _AskSession:
             ),
         )
         self._supervisor = _AskSupervisor(process=self._process)
-        self._channel_client = _LocalAgentMessageChannelClient(
+        self._channel_client = LocalChatClient(
             thread_path=self._thread_id,
             send_message=self._supervisor.send,
             events=self._supervisor.events,
         )
         self._session = _AgentMessageSession(
-            client=self._channel_client,
+            client=self._channel_client.thread_session,
             model=model,
             current_working_directory=resolved_current_working_directory,
         )
@@ -1219,10 +1390,12 @@ class _AskSession:
         await self.stop()
 
     async def start(self) -> None:
+        await self._channel_client.start()
         await self._supervisor.start()
 
     async def stop(self) -> None:
         await self._session.close()
+        await self._channel_client.close()
         await self._supervisor.stop()
 
     async def ask(
@@ -1518,12 +1691,15 @@ async def _run_ask_tui(
         role: str
         text: str = ""
         pending: bool = False
+        kind: Literal["text", "image"] = "text"
+        message_id: str | None = None
 
     @dataclass(slots=True)
     class _AskToolCallState:
         toolkit: str
         tool: str
         arguments: dict[str, Any] | None = None
+        argument_delta_text: str = ""
         logs: list[str] | None = None
 
     @dataclass(slots=True)
@@ -1757,6 +1933,7 @@ async def _run_ask_tui(
             self._queued_turns: list[_QueuedAskTurn] = []
             self._external_queued_messages: list[str] = []
             self._rendered_session_message_ids: set[str] = set()
+            self._pending_session_image_message_ids: set[str] = set()
             self._external_thread_active = False
             self._active_assistant_entry: _AskFeedEntry | None = None
             self._status_text: str | None = None
@@ -2116,6 +2293,7 @@ async def _run_ask_tui(
         async def _finalize_active_assistant(self) -> None:
             active_text = self._active_assistant_text
             active_name = self._active_assistant_name
+            active_item_id = self._active_assistant_item_id
             await self._stop_active_assistant_stream()
             with self.batch_update():
                 if self._active_assistant_event_break is not None:
@@ -2132,9 +2310,12 @@ async def _run_ask_tui(
                         _AskFeedEntry(
                             role=active_name or "agent",
                             text=active_text,
+                            message_id=active_item_id,
                         )
                     )
                     self._render_feed()
+                    if active_item_id is not None:
+                        self._rendered_session_message_ids.add(active_item_id)
             self._active_assistant_text = ""
             self._active_assistant_name = None
             self._active_assistant_item_id = None
@@ -2416,6 +2597,46 @@ async def _run_ask_tui(
             if isinstance(message, AgentAudioGenerationStarted):
                 self._audio_error_reported = False
                 return
+            if isinstance(message, AgentFileContentDelta):
+                await self._finalize_active_assistant()
+                await self._append_image_or_attachment_entry(
+                    role=_role_for_sender(
+                        message.sender_name,
+                        local_participant_name=None,
+                        default="assistant",
+                    ),
+                    uri=message.url,
+                    message_id=message.item_id,
+                )
+                return
+            if isinstance(message, AgentImageGenerationPartial):
+                await self._finalize_active_assistant()
+                if message.image is not None:
+                    await self._append_image_or_attachment_entry(
+                        role="assistant",
+                        uri=message.image.uri,
+                        fallback_mime_type=message.image.mime_type,
+                        message_id=message.item_id,
+                    )
+                return
+            if isinstance(message, AgentImageGenerationCompleted):
+                await self._finalize_active_assistant()
+                await self._append_image_or_attachment_entry(
+                    role="assistant",
+                    uri=[image.uri for image in message.images],
+                    message_id=message.item_id,
+                )
+                return
+            if isinstance(message, AgentImageGenerationFailed):
+                await self._finalize_active_assistant()
+                if message.error is not None:
+                    self._append_event_entry(
+                        f"Image generation failed: {message.error.message}"
+                    )
+                return
+            if isinstance(message, AgentImageGenerationStarted):
+                await self._finalize_active_assistant()
+                return
             if isinstance(message, AgentReasoningContentStarted):
                 await self._finalize_active_assistant()
                 self._reasoning_parts[message.item_id] = []
@@ -2447,6 +2668,20 @@ async def _run_ask_tui(
                     arguments=message.arguments,
                     logs=[],
                 )
+                return
+            if isinstance(message, AgentToolCallArgumentsDelta):
+                await self._finalize_active_assistant()
+                state = self._tool_calls.get(message.item_id)
+                if state is None:
+                    return
+                state.argument_delta_text += message.delta
+                arguments = _merge_ask_tool_call_arguments_delta(
+                    tool=state.tool,
+                    arguments=state.arguments,
+                    delta_text=state.argument_delta_text,
+                )
+                if arguments is not None:
+                    state.arguments = arguments
                 return
             if isinstance(message, AgentToolCallLogDelta):
                 await self._finalize_active_assistant()
@@ -2484,18 +2719,106 @@ async def _run_ask_tui(
             self._render_feed()
             self._scroll_to_end()
 
+        async def _append_image_or_attachment_entry(
+            self,
+            *,
+            role: str,
+            uri: str | Sequence[str] | None,
+            fallback_mime_type: str | None = None,
+            message_id: str | None = None,
+        ) -> None:
+            uris = [uri] if isinstance(uri, str) or uri is None else list(uri)
+            image_parts: list[str] = []
+            attachment_parts: list[str] = []
+            image_dataset_client = (
+                self._session.image_dataset_client
+                if isinstance(self._session, _AskImageDatasetProvider)
+                else None
+            )
+            for item_uri in uris:
+                image_ascii = await _ascii_image_from_uri_async(
+                    item_uri,
+                    image_dataset_client=image_dataset_client,
+                    fallback_mime_type=fallback_mime_type,
+                )
+                if image_ascii is not None:
+                    image_parts.append(image_ascii)
+                    continue
+                if isinstance(item_uri, str) and item_uri.strip() != "":
+                    attachment_parts.append(f"[attachment] {item_uri.strip()}")
+            if len(image_parts) > 0:
+                entry = _AskFeedEntry(
+                    role=role,
+                    text="\n\n".join(image_parts),
+                    kind="image",
+                    message_id=message_id,
+                )
+            elif len(attachment_parts) > 0:
+                entry = _AskFeedEntry(
+                    role=role,
+                    text="\n\n".join(attachment_parts),
+                    message_id=message_id,
+                )
+            else:
+                return
+            self._append_or_replace_feed_entry(entry)
+            self._render_feed()
+            self._scroll_to_end()
+
+        def _append_or_replace_feed_entry(self, entry: _AskFeedEntry) -> bool:
+            if entry.message_id is not None:
+                for index, existing in enumerate(self._entries):
+                    if existing.message_id != entry.message_id:
+                        continue
+                    if existing == entry:
+                        return False
+                    self._entries[index] = entry
+                    if index < self._rendered_entry_count:
+                        self._reset_rendered_feed()
+                    return True
+            self._entries.append(entry)
+            return True
+
+        async def _hydrate_session_image_entry(
+            self,
+            *,
+            message: _AskConversationMessage,
+            uri: str,
+        ) -> None:
+            try:
+                await self._append_image_or_attachment_entry(
+                    role=message.role,
+                    uri=uri,
+                    message_id=message.message_id,
+                )
+            finally:
+                self._pending_session_image_message_ids.discard(message.message_id)
+
+        def _reset_rendered_feed(self) -> None:
+            if self._feed_view is not None:
+                self._feed_view.remove_children()
+            self._rendered_entry_count = 0
+
         def _tool_call_entry_text(
             self,
             message: AgentToolCallEnded,
             state: _AskToolCallState | None,
         ) -> str:
-            tool = "tool"
-            toolkit = ""
+            tool = message.tool.strip() if isinstance(message.tool, str) else "tool"
+            if tool == "":
+                tool = "tool"
+            toolkit = (
+                message.toolkit.strip() if isinstance(message.toolkit, str) else ""
+            )
             arguments: dict[str, Any] | None = None
             logs: list[str] = []
             if state is not None:
-                tool = state.tool.strip() or tool
-                toolkit = state.toolkit.strip()
+                state_tool = state.tool.strip()
+                if state_tool != "":
+                    tool = state_tool
+                state_toolkit = state.toolkit.strip()
+                if state_toolkit != "":
+                    toolkit = state_toolkit
                 arguments = state.arguments
                 if state.logs is not None:
                     logs = state.logs
@@ -2522,7 +2845,7 @@ async def _run_ask_tui(
             ):
                 value = event.get(key)
                 if isinstance(value, str) and value.strip() != "":
-                    return value.strip()
+                    return _friendly_ask_thread_event_text(value)
             return ""
 
         def _resize_input(self, input_view: TextArea) -> None:
@@ -2597,17 +2920,65 @@ async def _run_ask_tui(
                 for queued_turn in self._queued_turns
                 if queued_turn.message_id is not None
             }
+            session_messages = self._session.messages
+            visible_count = _ask_conversation_message_render_window(self.size.height)
+            start_index = max(0, len(session_messages) - visible_count)
+            if len(self._rendered_session_message_ids) == 0:
+                for message in session_messages[:start_index]:
+                    self._rendered_session_message_ids.add(message.message_id)
+
             changed = False
-            for message in self._session.messages:
-                if message.message_id in self._rendered_session_message_ids:
-                    continue
+            for message in session_messages[start_index:]:
                 if message.message_id in queued_message_ids:
                     continue
-                self._rendered_session_message_ids.add(message.message_id)
-                self._entries.append(
-                    _AskFeedEntry(role=message.role, text=message.text)
+                if message.message_id == self._active_assistant_item_id:
+                    continue
+                entry = _AskFeedEntry(
+                    role=message.role,
+                    text=message.text,
+                    kind=message.kind,
+                    message_id=message.message_id,
                 )
-                changed = True
+                dataset_image_uri = _dataset_image_attachment_uri(message.text)
+                if (
+                    dataset_image_uri is not None
+                    and isinstance(self._session, _AskImageDatasetProvider)
+                    and self._session.image_dataset_client is not None
+                    and message.message_id
+                    not in self._pending_session_image_message_ids
+                ):
+                    self._pending_session_image_message_ids.add(message.message_id)
+                    task = asyncio.create_task(
+                        self._hydrate_session_image_entry(
+                            message=message,
+                            uri=dataset_image_uri,
+                        )
+                    )
+                    task.add_done_callback(_consume_task_exception)
+                if message.message_id in self._rendered_session_message_ids:
+                    existing_entry = next(
+                        (
+                            existing
+                            for existing in self._entries
+                            if existing.message_id == message.message_id
+                        ),
+                        None,
+                    )
+                    if (
+                        existing_entry is not None
+                        and existing_entry.kind == "image"
+                        and dataset_image_uri is not None
+                    ):
+                        continue
+                    if any(
+                        existing.message_id == message.message_id
+                        for existing in self._entries
+                    ) and self._append_or_replace_feed_entry(entry):
+                        changed = True
+                    continue
+                if self._append_or_replace_feed_entry(entry):
+                    changed = True
+                self._rendered_session_message_ids.add(message.message_id)
             if changed:
                 self._render_feed()
                 self._scroll_to_end()
@@ -2935,6 +3306,14 @@ async def _run_ask_tui(
                         no_wrap=False,
                         overflow="fold",
                     ),
+                    classes="feed-entry-body",
+                )
+            elif entry.kind == "image" and body_text.strip() != "":
+                image_text = Text.from_ansi(body_text)
+                image_text.no_wrap = False
+                image_text.overflow = "fold"
+                body_widget = Static(
+                    image_text,
                     classes="feed-entry-body",
                 )
             elif entry.role != "you" and body_text.strip() != "":

@@ -123,6 +123,7 @@ from meshagent.agents.messages import (
     TurnSteerAccepted,
     TurnSteerRejected,
 )
+from meshagent.agents.chat_client import ChatThreadSession, MessagingChatClient
 from meshagent.agents.process import ContentScheme, Message, agent_provider_info
 
 from meshagent.api import RequiredToolkit, RequiredSchema
@@ -469,105 +470,11 @@ async def _run_process_run_tui(
         await session.close()
 
 
-class _ProcessUseChatChannelClient:
-    def __init__(
-        self,
-        *,
-        room: RoomClient,
-        participant_name: str,
-        thread_path: str,
-        timeout: float = 30,
-    ) -> None:
-        self._room = room
-        self._participant_name = participant_name
-        self._thread_path = thread_path
-        self._timeout = timeout
-        self._participant: RemoteParticipant | None = None
-        self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-
-    @property
-    def thread_path(self) -> str:
-        return self._thread_path
-
-    async def __aenter__(self) -> "_ProcessUseChatChannelClient":
-        await self.start()
-        return self
-
-    async def __aexit__(self, exc_type, exc, exc_tb) -> None:
-        del exc_type, exc, exc_tb
-        await self.stop()
-
-    async def start(self) -> None:
-        self._room.messaging.on("message", self._on_message)
-        if not self._room.messaging.is_enabled:
-            await self._room.messaging.enable()
-        try:
-            await self._wait_for_participant()
-        except Exception:
-            self._room.messaging.off("message", self._on_message)
-            raise
-
-    async def close(self) -> None:
-        await self.stop()
-
-    async def stop(self) -> None:
-        self._room.messaging.off("message", self._on_message)
-
-    async def _wait_for_participant(self) -> None:
-        try:
-            async with asyncio.timeout(self._timeout):
-                while self._participant is None:
-                    for participant in self._room.messaging.get_participants():
-                        if participant.get_attribute("name") != self._participant_name:
-                            continue
-                        self._participant = participant
-                        return
-                    await asyncio.sleep(1)
-        except asyncio.TimeoutError as exc:
-            raise RoomException(
-                f"timed out waiting for {self._participant_name}"
-            ) from exc
-
-    def _on_message(self, message) -> None:
-        if self._participant is None:
-            return
-        if message.from_participant_id != self._participant.id:
-            return
-        if message.type != "agent-message":
-            return
-        raw_message = message.message
-        if not isinstance(raw_message, dict):
-            return
-        raw_payload = (
-            raw_message
-            if isinstance(raw_message.get("type"), str)
-            else raw_message.get("payload")
-        )
-        if not isinstance(raw_payload, dict):
-            return
-        if raw_payload.get("thread_id") != self._thread_path:
-            return
-        self._events.put_nowait(raw_payload)
-
-    async def send(self, payload) -> None:
-        if self._participant is None:
-            raise RoomException("process use chat channel client not started")
-        await self._room.messaging.send_message(
-            to=self._participant,
-            type="agent-message",
-            message=payload.model_dump(mode="json"),
-            attachment=None,
-        )
-
-    async def receive(self) -> dict[str, Any]:
-        return await self._events.get()
-
-
 class _ChatChannelUseSession:
     def __init__(
         self,
         *,
-        chat_client: _ProcessUseChatChannelClient,
+        chat_client: ChatThreadSession,
         current_working_directory: str | None = None,
     ) -> None:
         self._chat_client = chat_client
@@ -764,7 +671,7 @@ class _ChatChannelUseSession:
 
 
 async def _close_process_use_chat_client(
-    client: _ProcessUseChatChannelClient | None,
+    client: ChatThreadSession | None,
 ) -> None:
     if client is None:
         return
@@ -790,7 +697,7 @@ async def _open_process_use_chat_session(
     room: str,
     participant_name: str,
     thread_path: str | None,
-) -> tuple[RoomClient, _ProcessUseChatChannelClient]:
+) -> tuple[RoomClient, ChatThreadSession]:
     connection = await account_client.connect_room(project_id=project_id, room=room)
     user_client = RoomClient(
         protocol_factory=WebSocketClientProtocol(
@@ -798,7 +705,8 @@ async def _open_process_use_chat_session(
             token=connection.jwt,
         ).create_factory(),
     )
-    chat_client: _ProcessUseChatChannelClient | None = None
+    chat_client: MessagingChatClient | None = None
+    chat_session: ChatThreadSession | None = None
     try:
         await user_client.__aenter__()
         local_user_name = user_client.local_participant.get_attribute("name")
@@ -808,15 +716,20 @@ async def _open_process_use_chat_session(
                 f".threads/{participant_name}/{local_user_name}.thread"
             )
 
-        chat_client = _ProcessUseChatChannelClient(
+        chat_client = MessagingChatClient(
             room=user_client,
             participant_name=participant_name,
-            thread_path=resolved_thread_path,
         )
         await chat_client.__aenter__()
-        return user_client, chat_client
+        chat_session = await chat_client.open_thread(
+            resolved_thread_path,
+            close_client_on_close=True,
+        )
+        return user_client, chat_session
     except Exception:
-        await _close_process_use_chat_client(chat_client)
+        await _close_process_use_chat_client(chat_session)
+        if chat_session is None and chat_client is not None:
+            await chat_client.__aexit__(None, None, None)
         await _close_process_use_room_client(user_client)
         raise
 
@@ -833,7 +746,7 @@ async def _run_process_use_tui(
     from meshagent.cli import ask as ask_module
 
     user_client: RoomClient | None = None
-    chat_client: _ProcessUseChatChannelClient | None = None
+    chat_client: ChatThreadSession | None = None
     session: _ChatChannelUseSession | None = None
     try:
         user_client, chat_client = await _open_process_use_chat_session(
@@ -2097,7 +2010,7 @@ def build_process_agent(
 ):
     from meshagent.agents import (
         MeshDocumentThreadStorage,
-        ChatChannel,
+        MessagingChatChannel,
         MailChannel,
         QueueChannel,
         SingleRoomAgent,
@@ -2215,7 +2128,7 @@ def build_process_agent(
             self._client_rules = client_rules if len(client_rules) > 0 else None
             self._supervisor: AgentSupervisor | None = None
             self._exposed_toolkits = []
-            self._chat_channel: ChatChannel | None = None
+            self._chat_channel: MessagingChatChannel | None = None
             self._mail_channels: list[MailChannel] = []
             self._queue_channels: list[QueueChannel] = []
             self._toolkit_channels: list[ToolkitChannel] = []
@@ -2282,7 +2195,7 @@ def build_process_agent(
             if require_mcp:
                 await room.local_participant.set_attribute("supports_mcp", True)
             if _has_chat_channel(channels=resolved_channels):
-                self._chat_channel = ChatChannel(
+                self._chat_channel = MessagingChatChannel(
                     room=room,
                     threading_mode=self._resolved_threading_mode,
                     thread_dir=thread_dir,
@@ -4518,7 +4431,7 @@ async def chat_with(
     thread_path: Optional[str],
     message: Optional[str] = None,
 ):
-    from meshagent.agents.chat import ChatBotClient
+    from meshagent.cli import ask as ask_module
 
     try:
         from textual import events
@@ -4566,6 +4479,83 @@ async def chat_with(
             os.environ["TEXTUAL"] = ",".join(filtered)
 
     caret = "›"
+
+    class _ChatWithClient:
+        def __init__(
+            self,
+            *,
+            room: RoomClient,
+            participant_name: str,
+            thread_path: str,
+        ) -> None:
+            self.room = room
+            self.participant_name = participant_name
+            self.thread_path = thread_path
+            self._client = MessagingChatClient(
+                room=room,
+                participant_name=participant_name,
+            )
+            self._thread: ChatThreadSession | None = None
+            self._session: ask_module._AgentMessageSession | None = None
+            self._doc = None
+            self._responses: asyncio.Queue[str] = asyncio.Queue()
+
+        @property
+        def doc(self):
+            return self._doc
+
+        @property
+        def thread_status_text(self) -> str | None:
+            if self._thread is None:
+                return None
+            return self._thread.thread_status_text
+
+        async def __aenter__(self) -> "_ChatWithClient":
+            self._doc = await self.room.sync.open(path=self.thread_path)
+            await self._client.__aenter__()
+            local_participant_name = self.room.local_participant.get_attribute("name")
+            self._thread = await self._client.open_thread(
+                self.thread_path,
+                local_participant_name=local_participant_name,
+                close_client_on_close=True,
+            )
+            self._session = ask_module._AgentMessageSession(
+                client=self._thread,
+                model=None,
+                local_participant_name=local_participant_name,
+            )
+            return self
+
+        async def __aexit__(self, exc_type, exc, exc_tb) -> None:
+            del exc_type, exc, exc_tb
+            if self._thread is not None:
+                await self._thread.__aexit__(None, None, None)
+                self._thread = None
+            if self._doc is not None:
+                await self.room.sync.close(path=self.thread_path)
+                self._doc = None
+
+        async def clear(self) -> None:
+            return
+
+        async def cancel(self) -> None:
+            if self._session is not None:
+                self._session.interrupt()
+
+        async def send_approval_decision(
+            self, *, approval_id: str, approve: bool
+        ) -> None:
+            del approval_id, approve
+            raise RoomException("tool approval is not available on this chat client")
+
+        async def send(self, *, text: str) -> None:
+            if self._session is None:
+                raise RoomException("chat client not started")
+            response = await self._session.ask(prompt=text)
+            self._responses.put_nowait(response)
+
+        async def receive(self) -> str:
+            return await self._responses.get()
 
     class RoomConnectTextualApp(App[None]):
         CSS = """
@@ -4920,7 +4910,7 @@ async def chat_with(
         def __init__(
             self,
             *,
-            chat_client: ChatBotClient,
+            chat_client: _ChatWithClient,
             participant_name: str,
             local_user_name: str,
         ) -> None:
@@ -5254,7 +5244,7 @@ async def chat_with(
             self._render_from_thread_document()
 
         def _bind_thread_document_events(self) -> None:
-            doc = getattr(self._chat_client, "_doc", None)
+            doc = self._chat_client.doc
             if doc is None:
                 return
 
@@ -5291,7 +5281,7 @@ async def chat_with(
             if self._messages_view is None:
                 return
 
-            doc = getattr(self._chat_client, "_doc", None)
+            doc = self._chat_client.doc
             if doc is None:
                 self._pending_approval_items = []
                 self._selected_pending_approval_index = 0
@@ -5363,7 +5353,7 @@ async def chat_with(
             return False
 
         def _active_thread_status_text(self) -> str | None:
-            return None
+            return ask_module._thread_status_text(self._chat_client.thread_status_text)
 
         def _render_thread_status_item(self, status_text: str) -> RenderableType:
             table = Table.grid(expand=True, padding=(0, 0))
@@ -5855,7 +5845,7 @@ async def chat_with(
 
     account_client = None
     user_client: RoomClient | None = None
-    chat_client: ChatBotClient | None = None
+    chat_client: _ChatWithClient | None = None
 
     def _queue_status(
         status_queue: "asyncio.Queue[tuple[str, str]] | None",
@@ -5867,7 +5857,7 @@ async def chat_with(
             return
         status_queue.put_nowait((status, message))
 
-    async def _close_chat_client(client: ChatBotClient | None) -> None:
+    async def _close_chat_client(client: _ChatWithClient | None) -> None:
         if client is None:
             return
         try:
@@ -5940,9 +5930,9 @@ async def chat_with(
     async def _prepare_chat_session(
         *,
         status_queue: "asyncio.Queue[tuple[str, str]] | None",
-    ) -> tuple[RoomClient, ChatBotClient, str]:
+    ) -> tuple[RoomClient, _ChatWithClient, str]:
         prepared_user_client = await _open_user_client(status_queue=status_queue)
-        prepared_chat_client: ChatBotClient | None = None
+        prepared_chat_client: _ChatWithClient | None = None
         try:
             _queue_status(
                 status_queue,
@@ -5965,7 +5955,7 @@ async def chat_with(
                 status="opening_thread",
                 message="opening chat thread",
             )
-            prepared_chat_client = ChatBotClient(
+            prepared_chat_client = _ChatWithClient(
                 room=prepared_user_client,
                 participant_name=participant_name,
                 thread_path=resolved_thread_path,
@@ -6047,7 +6037,7 @@ async def chat_with(
                     f".threads/{participant_name}/{local_user_name}.thread"
                 )
 
-            chat_client = ChatBotClient(
+            chat_client = _ChatWithClient(
                 room=user_client,
                 participant_name=participant_name,
                 thread_path=resolved_thread_path,

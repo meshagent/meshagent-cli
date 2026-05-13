@@ -581,7 +581,7 @@ async def test_process_agent_uses_shared_decision_adapter_for_threaded_channels(
             return False
 
     monkeypatch.setattr(chatbot, "OpenAIResponsesAdapter", _FakeDecisionAdapter)
-    monkeypatch.setattr(meshagent.agents, "ChatChannel", _RecordingChatChannel)
+    monkeypatch.setattr(meshagent.agents, "MessagingChatChannel", _RecordingChatChannel)
     monkeypatch.setattr(meshagent.agents, "QueueChannel", _RecordingQueueChannel)
     monkeypatch.setattr(meshagent.agents, "MailChannel", _RecordingMailChannel)
 
@@ -1511,6 +1511,7 @@ async def test_process_run_starts_room_agent_and_uses_ask_tui(
     assert process_agent.started_room is room_client
     assert captured["process_tui_kwargs"] == {
         "bot": process_agent,
+        "room": room_client,
         "model": ["gpt-5.5"],
         "thread_path": None,
         "thread_storage": "meshdocument",
@@ -1666,12 +1667,17 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
 
     async def fake_run_ask_tui(**kwargs):
         captured.update(kwargs)
+        captured["image_dataset_client"] = kwargs[
+            "session"
+        ]._session.image_dataset_client
 
     bot = _DummyBot()
+    room = object()
     monkeypatch.setattr(ask_module, "_run_ask_tui", fake_run_ask_tui)
 
     await process._run_process_run_tui(
         bot=bot,
+        room=room,
         model=["gpt-realtime", "gpt-5.4"],
         thread_path="/threads/process-run.thread",
         thread_storage="meshdocument",
@@ -1686,6 +1692,8 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
     assert captured["title"] == "meshagent process run"
     assert captured["command_handler"] is not None
     assert captured["model_label_provider"]() == "openai-realtime/gpt-realtime"
+    assert isinstance(captured["image_dataset_client"], process.ImageDatasetClient)
+    assert captured["image_dataset_client"]._room is room
     command_options = captured["command_options_provider"]("/model")
     assert [option.command for option in command_options] == [
         "/model openai-realtime/gpt-realtime",
@@ -1976,6 +1984,7 @@ async def test_process_run_session_uses_thread_status_messages() -> None:
         def __init__(self) -> None:
             self.events: asyncio.Queue[Message] = asyncio.Queue()
             self.sent_messages: list[Message] = []
+            self.processes = []
 
         def subscribe_local_events(self):
             return self.events
@@ -2037,6 +2046,9 @@ async def test_process_run_session_uses_thread_status_messages() -> None:
                     )
                 )
 
+        async def route(self, message: Message) -> None:
+            self.send(message)
+
     class _DummyBot:
         def __init__(self) -> None:
             self._supervisor = _DummySupervisor()
@@ -2057,7 +2069,10 @@ async def test_process_run_session_uses_thread_status_messages() -> None:
         if isinstance(message, AgentThreadStatus):
             statuses.append(message.status)
 
-    result = await session.ask(prompt="hello local", on_message=_on_message)
+    try:
+        result = await session.ask(prompt="hello local", on_message=_on_message)
+    finally:
+        await session.close()
 
     assert result == "local response"
     assert statuses == ["Working", "Planning", "Running tools", None]
@@ -2172,7 +2187,7 @@ async def test_process_use_requires_room(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 @pytest.mark.asyncio
-async def test_chatbot_use_keeps_legacy_chat_with_path(
+async def test_chatbot_use_routes_to_chat_with_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
@@ -2263,6 +2278,7 @@ async def test_process_use_tui_uses_chat_channel_session(
             self.events: asyncio.Queue[dict[str, object]] = asyncio.Queue()
             self.exit_calls = 0
             self.accepted_input_callback = None
+            self._messages = []
 
         def set_accepted_input_callback(self, callback) -> None:
             self.accepted_input_callback = callback
@@ -2301,6 +2317,13 @@ async def test_process_use_tui_uses_chat_channel_session(
 
         async def receive(self) -> dict[str, object]:
             return await self.events.get()
+
+        @property
+        def messages(self):
+            return tuple(self._messages)
+
+        def add_agent_message(self, message) -> None:
+            self._messages.append(message)
 
         def clear_applied_queued_agent_inputs(self) -> None:
             pass
@@ -2537,19 +2560,19 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
             self.message = {"payload": payload}
 
     room = _Room()
-    client = process._ProcessUseChatChannelClient(
+    client = process.MessagingChatClient(
         room=room,
         participant_name="remote-helper",
-        thread_path="/threads/remote.thread",
         timeout=0.1,
     )
 
     await client.start()
+    session = await client.open_thread("/threads/remote.thread")
     assert isinstance(
         OpenThread.model_validate(room.messaging.sent_payloads[0]), OpenThread
     )
     assert room.messaging.sent_payloads[0]["type"] == AGENT_MESSAGE_THREAD_OPEN
-    assert client.thread_status_text is None
+    assert session.thread_status_text is None
 
     status_payload = AgentThreadStatus(
         type=AGENT_EVENT_THREAD_STATUS,
@@ -2558,8 +2581,8 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
     ).model_dump(mode="json")
     room.messaging.handlers[0](_RoomMessage(status_payload))
 
-    assert client.thread_status_text == "Reviewing changes"
-    assert await client.receive() == status_payload
+    assert session.thread_status_text == "Reviewing changes"
+    assert await session.receive() == status_payload
 
     local_turn_start = TurnStart(
         type=AGENT_MESSAGE_TURN_START,
@@ -2567,7 +2590,8 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
         message_id="message-1",
         content=[AgentTextContent(type="text", text="queued prompt")],
     )
-    await client.send(local_turn_start)
+    await session.send(local_turn_start)
+    assert session.messages == (local_turn_start,)
 
     accepted_payload = {
         "type": AGENT_EVENT_TURN_START_ACCEPTED,
@@ -2578,8 +2602,8 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
     }
     room.messaging.handlers[0](_RoomMessage(accepted_payload))
 
-    assert client.queued_message_labels == ("self: queued prompt",)
-    assert await client.receive() == accepted_payload
+    assert session.queued_message_labels == ("self: queued prompt",)
+    assert await session.receive() == accepted_payload
 
     applied_payload = {
         "type": AGENT_EVENT_TURN_STARTED,
@@ -2589,8 +2613,33 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
     }
     room.messaging.handlers[0](_RoomMessage(applied_payload))
 
-    assert client.queued_message_labels == ()
-    assert await client.receive() == applied_payload
+    assert session.queued_message_labels == ()
+    assert await session.receive() == applied_payload
+
+    text_delta_payload_1 = AgentTextContentDelta(
+        type=AGENT_EVENT_TEXT_CONTENT_DELTA,
+        thread_id="/threads/remote.thread",
+        turn_id="turn-1",
+        item_id="item-1",
+        text="Hello ",
+    ).model_dump(mode="json")
+    room.messaging.handlers[0](_RoomMessage(text_delta_payload_1))
+    assert await session.receive() == text_delta_payload_1
+
+    text_delta_payload_2 = AgentTextContentDelta(
+        type=AGENT_EVENT_TEXT_CONTENT_DELTA,
+        thread_id="/threads/remote.thread",
+        turn_id="turn-1",
+        item_id="item-1",
+        text="world",
+    ).model_dump(mode="json")
+    room.messaging.handlers[0](_RoomMessage(text_delta_payload_2))
+    assert await session.receive() == text_delta_payload_2
+
+    assert len(session.messages) == 2
+    accumulated_delta = session.messages[1]
+    assert isinstance(accumulated_delta, AgentTextContentDelta)
+    assert accumulated_delta.text == "Hello world"
 
     ended_payload = {
         "type": AGENT_EVENT_TURN_ENDED,
@@ -2599,16 +2648,107 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
     }
     room.messaging.handlers[0](_RoomMessage(ended_payload))
 
-    assert client.queued_message_labels == ()
-    assert client.thread_status_text is None
-    assert await client.receive() == ended_payload
+    assert session.queued_message_labels == ()
+    assert session.thread_status_text is None
+    assert await session.receive() == ended_payload
 
+    await session.close()
     await client.stop()
     assert isinstance(
         CloseThread.model_validate(room.messaging.sent_payloads[-1]),
         CloseThread,
     )
     assert room.messaging.sent_payloads[-1]["type"] == AGENT_MESSAGE_THREAD_CLOSE
+
+
+@pytest.mark.asyncio
+async def test_process_use_chat_channel_client_routes_multiple_threads() -> None:
+    class _Participant:
+        id = "agent-1"
+
+        def get_attribute(self, name: str):
+            if name == "name":
+                return "remote-helper"
+            return None
+
+    class _Messaging:
+        def __init__(self) -> None:
+            self.is_enabled = True
+            self.handlers: list[object] = []
+            self.sent_payloads: list[object] = []
+            self.participant = _Participant()
+
+        def on(self, event: str, handler) -> None:
+            assert event == "message"
+            self.handlers.append(handler)
+
+        def off(self, event: str, handler) -> None:
+            assert event == "message"
+            self.handlers.remove(handler)
+
+        def get_participants(self) -> list[_Participant]:
+            return [self.participant]
+
+        async def enable(self) -> None:
+            self.is_enabled = True
+
+        async def send_message(
+            self,
+            *,
+            to,
+            type: str,
+            message: dict[str, object],
+            attachment,
+        ) -> None:
+            assert to is self.participant
+            assert type == "agent-message"
+            assert attachment is None
+            self.sent_payloads.append(message)
+
+    class _Room:
+        def __init__(self) -> None:
+            self.messaging = _Messaging()
+
+    class _RoomMessage:
+        from_participant_id = "agent-1"
+        type = "agent-message"
+
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.message = {"payload": payload}
+
+    room = _Room()
+    client = process.MessagingChatClient(
+        room=room,
+        participant_name="remote-helper",
+        timeout=0.1,
+    )
+
+    await client.start()
+    first = await client.open_thread("/threads/first.thread")
+    second = await client.open_thread("/threads/second.thread")
+
+    first_status = AgentThreadStatus(
+        type=AGENT_EVENT_THREAD_STATUS,
+        thread_id="/threads/first.thread",
+        status="First",
+    ).model_dump(mode="json")
+    second_status = AgentThreadStatus(
+        type=AGENT_EVENT_THREAD_STATUS,
+        thread_id="/threads/second.thread",
+        status="Second",
+    ).model_dump(mode="json")
+
+    room.messaging.handlers[0](_RoomMessage(second_status))
+    room.messaging.handlers[0](_RoomMessage(first_status))
+
+    assert first.thread_status_text == "First"
+    assert second.thread_status_text == "Second"
+    assert await first.receive() == first_status
+    assert await second.receive() == second_status
+
+    await first.close()
+    await second.close()
+    await client.stop()
 
 
 @pytest.mark.asyncio
@@ -2677,20 +2817,21 @@ async def test_process_use_chat_channel_client_resolves_studio_thread_path(
             self.messaging = _Messaging()
 
     room = _Room()
-    client = process._ProcessUseChatChannelClient(
+    client = process.MessagingChatClient(
         room=room,
         participant_name="remote-helper",
-        thread_path=None,
         timeout=0.1,
     )
 
     await client.start()
+    session = await client.open_resolved_thread(None)
 
-    assert client.thread_path == expected_thread_path
+    assert session.thread_path == expected_thread_path
     assert OpenThread.model_validate(room.messaging.sent_payloads[0]).thread_id == (
         expected_thread_path
     )
 
+    await session.close()
     await client.stop()
 
 
@@ -2758,15 +2899,15 @@ async def test_process_use_chat_channel_client_starts_default_new_thread_with_me
             self.message = {"payload": payload}
 
     room = _Room()
-    client = process._ProcessUseChatChannelClient(
+    client = process.MessagingChatClient(
         room=room,
         participant_name="remote-helper",
-        thread_path=None,
         timeout=0.1,
     )
 
     await client.start()
-    assert client.has_thread_path is False
+    session = await client.open_resolved_thread(None)
+    assert session.has_thread_path is False
     assert room.messaging.sent_payloads == []
 
     start_thread = StartThread(
@@ -2774,6 +2915,7 @@ async def test_process_use_chat_channel_client_starts_default_new_thread_with_me
         message_id="start-thread-1",
         content=[AgentTextContent(type="text", text="hello")],
     )
+    await session.close()
     start_task = asyncio.create_task(client.start_thread(start_thread))
     await asyncio.sleep(0)
 
@@ -2790,14 +2932,15 @@ async def test_process_use_chat_channel_client_starts_default_new_thread_with_me
             }
         )
     )
-    await start_task
+    session = await start_task
 
-    assert client.thread_path == ".threads/remote-helper/new.thread"
+    assert session.thread_path == ".threads/remote-helper/new.thread"
     assert room.messaging.sent_payloads[1]["type"] == AGENT_MESSAGE_THREAD_OPEN
     assert room.messaging.sent_payloads[1]["thread_id"] == (
         ".threads/remote-helper/new.thread"
     )
 
+    await session.close()
     await client.stop()
 
 
@@ -2856,16 +2999,16 @@ async def test_process_use_chat_channel_client_uses_main_thread_for_default_new_
             self.messaging = _Messaging()
 
     room = _Room()
-    client = process._ProcessUseChatChannelClient(
+    client = process.MessagingChatClient(
         room=room,
         participant_name="remote-helper",
-        thread_path=None,
         timeout=0.1,
     )
 
     await client.start()
+    session = await client.open_resolved_thread(None)
 
-    assert client.thread_path == ".threads/remote-helper/main.thread"
+    assert session.thread_path == ".threads/remote-helper/main.thread"
     assert room.messaging.sent_payloads == [
         {
             "type": AGENT_MESSAGE_THREAD_OPEN,
@@ -2875,6 +3018,7 @@ async def test_process_use_chat_channel_client_uses_main_thread_for_default_new_
         }
     ]
 
+    await session.close()
     await client.stop()
 
 
@@ -2936,16 +3080,18 @@ async def test_process_use_chat_channel_client_reports_accepted_remote_inputs() 
             self.message = {"payload": payload}
 
     room = _Room()
-    client = process._ProcessUseChatChannelClient(
+    client = process.MessagingChatClient(
         room=room,
         participant_name="remote-helper",
-        thread_path="/threads/remote.thread",
-        local_participant_name="local-user",
         timeout=0.1,
     )
-    client.set_accepted_input_callback(accepted_inputs.append)
 
     await client.start()
+    session = await client.open_thread(
+        "/threads/remote.thread",
+        local_participant_name="local-user",
+    )
+    session.set_accepted_input_callback(accepted_inputs.append)
     accepted_payload = {
         "type": AGENT_EVENT_TURN_START_ACCEPTED,
         "thread_id": "/threads/remote.thread",
@@ -3010,6 +3156,7 @@ async def test_process_use_chat_channel_client_reports_accepted_remote_inputs() 
     assert accepted_inputs[2].role == "remote-helper"
     assert accepted_inputs[2].text == "remote response"
 
+    await session.close()
     await client.stop()
 
 
