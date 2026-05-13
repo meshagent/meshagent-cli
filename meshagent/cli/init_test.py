@@ -367,27 +367,47 @@ def test_init_creates_react_webserver_non_interactively(tmp_path) -> None:
     assert (tmp_path / "tsconfig.json").is_file()
     assert (tmp_path / "vite.config.ts").is_file()
     assert (tmp_path / "index.html").is_file()
+    assert (tmp_path / "scripts" / "dev-content-toolkit.js").is_file()
+    assert (tmp_path / "src" / "dev-content.json").is_file()
     assert (tmp_path / "src" / "main.tsx").is_file()
     package_json = (tmp_path / "package.json").read_text(encoding="utf-8")
     npmrc = (tmp_path / ".npmrc").read_text(encoding="utf-8")
     dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    main_tsx = (tmp_path / "src" / "main.tsx").read_text(encoding="utf-8")
+    dev_content = (tmp_path / "src" / "dev-content.json").read_text(encoding="utf-8")
     assert "cache=.npm-cache" in npmrc
     assert "audit=false" in npmrc
     assert '"react"' in package_json
     assert '"vite"' in package_json
     assert (
         '"dev": "meshagent room connect -- sh -c '
-        "'node scripts/dev-room-proof.js & vite --host 0.0.0.0'\"" in package_json
+        "'node scripts/dev-content-toolkit.js & vite --host 0.0.0.0'\"" in package_json
     )
     assert "@meshagent/meshagent" in package_json
     assert (
         '"deploy": "meshagent deploy . --tag meshagent-init-react:dev --public --liveness /health --room-mount /:/data:rw --wait"'
         in package_json
     )
-    dev_probe = (tmp_path / "scripts" / "dev-room-proof.js").read_text(encoding="utf-8")
-    assert "RoomClient" in dev_probe
-    assert "MESHAGENT_INIT_DEV_READY_PATH" in dev_probe
-    assert "room.storage.upload" in dev_probe
+    dev_toolkit = (tmp_path / "scripts" / "dev-content-toolkit.js").read_text(
+        encoding="utf-8"
+    )
+    assert "createRequire" in dev_toolkit
+    assert "RoomClient" in dev_toolkit
+    assert "startHostedToolkit" in dev_toolkit
+    assert "public_: true" in dev_toolkit
+    assert "MESHAGENT_INIT_DEV_TOOLKIT_HOLD_SECONDS" in dev_toolkit
+    assert "class ReactContentToolkit extends Toolkit" in dev_toolkit
+    assert 'name: "create"' in dev_toolkit
+    assert 'name: "update"' in dev_toolkit
+    assert 'name: "search"' in dev_toolkit
+    assert "room.agents.invokeTool" in dev_toolkit
+    assert "meshagent-init-proof" in dev_toolkit
+    assert "src/dev-content.json" in dev_toolkit
+    assert "MESHAGENT_INIT_DEV_PROBE" in dev_toolkit
+    assert "room.storage.upload" not in dev_toolkit
+    assert 'import devContent from "./dev-content.json"' in main_tsx
+    assert "content.items[content.activeId]" in main_tsx
+    assert "hello from meshagent init" in dev_content
     assert "nginx:1.27-alpine" in dockerfile
     assert "listen 80" in dockerfile
     assert "location = /status" in dockerfile
