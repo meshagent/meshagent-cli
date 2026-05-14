@@ -236,12 +236,6 @@ app.add_lazy_command(
     help="Run a webserver agent in a room",
     hidden=True,
 )
-app.add_lazy_command(
-    name="codex",
-    module="meshagent.cli.codex",
-    help="Codex-backed agents",
-    hidden=True,
-)
 if not os.getenv("MESHAGENT_CLI_BUILD"):
     app.add_lazy_command(
         name="test",

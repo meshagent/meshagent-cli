@@ -20,6 +20,7 @@ from meshagent.agents.messages import (
     AGENT_EVENT_TURN_START_ACCEPTED,
     AGENT_EVENT_TURN_START_REJECTED,
     AGENT_EVENT_TURN_STARTED,
+    AGENT_MESSAGE_THREAD_START,
     AgentError,
     AgentGeneratedImage,
     AgentThreadEvent,
@@ -29,6 +30,7 @@ from meshagent.agents.messages import (
     AgentTextContentStarted,
     AgentToolCallEnded,
     AgentToolCallStarted,
+    StartThread,
     TurnEnded,
     TurnStart,
     TurnStarted,
@@ -574,6 +576,23 @@ async def test_agent_message_session_eagerly_records_local_start_message() -> No
         ("you", "local second"),
         ("assistant", "response"),
     ]
+
+
+def test_ask_conversation_messages_render_new_thread_start_message() -> None:
+    message = StartThread(
+        type=AGENT_MESSAGE_THREAD_START,
+        content=[ask_module.AgentTextContent(type="text", text="hello")],
+    )
+
+    rendered = ask_module._ask_conversation_messages_from_agent_messages(
+        [message],
+        local_participant_name=None,
+    )
+
+    assert len(rendered) == 1
+    assert rendered[0].message_id == message.message_id
+    assert rendered[0].role == "you"
+    assert rendered[0].text == "hello"
 
 
 @pytest.mark.asyncio

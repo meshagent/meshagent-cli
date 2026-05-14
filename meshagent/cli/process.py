@@ -1,5 +1,7 @@
 import typer
 import click
+import contextlib
+import inspect
 from rich import print
 from typing import (
     Annotated,
@@ -132,6 +134,7 @@ from meshagent.agents.messages import (
     AGENT_EVENT_FILE_CONTENT_DELTA,
     AGENT_EVENT_MODEL_CHANGED,
     AGENT_EVENT_TEXT_CONTENT_DELTA,
+    AGENT_EVENT_THREAD_STARTED,
     AGENT_MESSAGE_MODEL_CHANGE,
     AGENT_MESSAGE_MODELS_REQUEST,
     AGENT_MESSAGE_MODELS_RESPONSE,
@@ -142,6 +145,7 @@ from meshagent.agents.messages import (
     AgentError,
     AgentAudioFormat,
     AgentMessage,
+    AgentThreadStatus,
     AgentModelInfo,
     AgentModelChanged,
     AgentProviderInfo,
@@ -149,10 +153,13 @@ from meshagent.agents.messages import (
     AgentTextContent,
     AgentTextContentDelta,
     ChangeModel,
+    DeleteThread,
     ModelsRequest,
     ModelsResponse,
     OpenThread,
+    RenameThread,
     StartThread,
+    ThreadStarted,
     TurnStart,
 )
 from meshagent.agents.chat_client import (
@@ -162,6 +169,7 @@ from meshagent.agents.chat_client import (
 )
 from meshagent.agents.process import ContentScheme, Message
 from meshagent.agents.images_dataset import ImageDatasetClient, ImagesDataset
+from meshagent.agents.thread_storage import ThreadListEntry, ThreadListEvent
 
 from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.api.messaging import FileContent
@@ -201,6 +209,35 @@ def _thread_status_text(status: object) -> str | None:
     if normalized == "":
         return None
     return normalized
+
+
+def _format_grouped_status_digits(value: int) -> str:
+    text = str(value)
+    parts: list[str] = []
+    for index, char in enumerate(text):
+        if index > 0 and (len(text) - index) % 3 == 0:
+            parts.append(",")
+        parts.append(char)
+    return "".join(parts)
+
+
+def _format_thread_status_text(
+    text: str,
+    *,
+    total_bytes: int | None = None,
+    lines_added: int | None = None,
+    lines_removed: int | None = None,
+) -> str:
+    if lines_added is not None or lines_removed is not None:
+        parts = [text]
+        if lines_added is not None:
+            parts.append(f"+{_format_grouped_status_digits(lines_added)}")
+        if lines_removed is not None:
+            parts.append(f"-{_format_grouped_status_digits(lines_removed)}")
+        return " ".join(parts)
+    if total_bytes is not None and total_bytes > 100:
+        return f"{text} {_format_grouped_status_digits(total_bytes)} bytes"
+    return text
 
 
 def _consume_task_exception(task: asyncio.Task[Any]) -> None:
@@ -247,6 +284,27 @@ def _pending_agent_message_label(payload: dict[str, Any]) -> str | None:
     if label == "":
         return None
     return label
+
+
+def _start_thread_list_name(start_thread: StartThread) -> str:
+    if isinstance(start_thread.name, str) and start_thread.name.strip() != "":
+        return start_thread.name.strip()
+
+    text_parts: list[str] = []
+    attachment_count = 0
+    for item in start_thread.content or []:
+        if isinstance(item, AgentTextContent) and item.text.strip() != "":
+            text_parts.append(item.text.strip())
+        elif isinstance(item, AgentFileContent):
+            attachment_count += 1
+    text = " ".join(text_parts).strip()
+    if text != "":
+        words = re.findall(r"[A-Za-z0-9']+", text)
+        if len(words) > 0:
+            return " ".join(words[:6]).title()
+    if attachment_count > 0:
+        return "Attachment Thread"
+    return "New Chat"
 
 
 def _process_run_thread_id(
@@ -423,13 +481,41 @@ def _mesh_document_agent_messages(
     return messages
 
 
-def _thread_agent_messages_from_storage(thread_storage: object) -> list[AgentMessage]:
+async def _thread_agent_messages_from_storage(
+    thread_storage: object,
+) -> list[AgentMessage]:
     from meshagent.agents.dataset_thread_storage import DatasetThreadStorage
+    from meshagent.agents.process import AsyncReadyThreadStorage
     from meshagent.agents.process_thread_adapter import MeshDocumentThreadStorage
 
     if isinstance(thread_storage, (DatasetThreadStorage, MeshDocumentThreadStorage)):
+        if isinstance(thread_storage, AsyncReadyThreadStorage):
+            await thread_storage.wait_until_ready()
         return thread_storage.agent_messages()
     return []
+
+
+def _thread_storage_class_for_backend(thread_storage: "ThreadStorageBackend"):
+    if thread_storage == "dataset":
+        from meshagent.agents.dataset_thread_storage import DatasetThreadStorage
+
+        return DatasetThreadStorage
+    if thread_storage == "meshdocument":
+        from meshagent.agents.process_thread_adapter import MeshDocumentThreadStorage
+
+        return MeshDocumentThreadStorage
+    return None
+
+
+def _thread_storage_class_for_path(*, thread_path: str):
+    if thread_path.strip().startswith("dataset://"):
+        from meshagent.agents.dataset_thread_storage import DatasetThreadStorage
+
+        return DatasetThreadStorage
+
+    from meshagent.agents.process_thread_adapter import MeshDocumentThreadStorage
+
+    return MeshDocumentThreadStorage
 
 
 async def _load_thread_agent_messages(
@@ -437,28 +523,17 @@ async def _load_thread_agent_messages(
     room: RoomClient,
     thread_path: str,
 ) -> list[AgentMessage]:
-    from meshagent.agents.dataset_thread_storage import DatasetThreadStorage
-
     normalized_path = thread_path.strip()
     if normalized_path == "" or normalized_path.startswith("tmp://"):
         return []
 
-    if normalized_path.startswith("dataset://"):
-        storage = DatasetThreadStorage(room=room, path=normalized_path)
-        await storage.start()
-        try:
-            return storage.agent_messages()
-        finally:
-            await storage.stop()
-
-    document = await room.sync.open(path=normalized_path)
+    storage_class = _thread_storage_class_for_path(thread_path=normalized_path)
+    storage = storage_class(room=room, path=normalized_path)
+    await storage.start()
     try:
-        return _mesh_document_agent_messages(
-            document=document,
-            thread_path=normalized_path,
-        )
+        return storage.agent_messages()
     finally:
-        await room.sync.close(path=normalized_path)
+        await storage.stop()
 
 
 class _ProcessRunSession:
@@ -476,30 +551,14 @@ class _ProcessRunSession:
         initial_model: AgentModelChanged | None = None,
         image_dataset_client: ImageDatasetClient | None = None,
     ) -> None:
-        from meshagent.cli import ask as ask_module
-
         self._bot = bot
-        self._thread_id = _process_run_thread_id(
-            thread_path=thread_path,
-            thread_storage=thread_storage,
-            agent_name=agent_name,
-            thread_dir=thread_dir,
-            threading_mode=threading_mode,
-        )
-        self._open_on_start = not (
-            threading_mode == "default-new"
-            and (thread_path is None or thread_path.strip() == "")
-        )
+        self._model = model
+        self._thread_storage = thread_storage
+        self._thread_dir = thread_dir
+        self._threading_mode = threading_mode
+        self._current_working_directory = current_working_directory
+        self._image_dataset_client = image_dataset_client
         self._agent_name = _normalized_annotation_string(agent_name)
-        events = bot._supervisor.subscribe_local_events()
-        channel_client = LocalChatClient(
-            thread_path=self._thread_id,
-            send_message=bot._supervisor.send,
-            events=events,
-            on_close=lambda: bot._supervisor.unsubscribe_local_events(events),
-        )
-        self._channel_client = channel_client
-        self._chat_session = channel_client.thread_session
         self._current_model: AgentModelChanged | None = initial_model
         self._models_response: ModelsResponse | None = None
         self._output_modalities: tuple[OutputModality, ...] = (
@@ -508,15 +567,58 @@ class _ProcessRunSession:
             else ("text",)
         )
         self._timeout = 30
+        self._thread_generation = 0
+        resolved_thread_path = _process_run_thread_id(
+            thread_path=thread_path,
+            thread_storage=thread_storage,
+            agent_name=agent_name,
+            thread_dir=thread_dir,
+            threading_mode=threading_mode,
+        )
+        open_on_start = not (
+            threading_mode == "default-new"
+            and (thread_path is None or thread_path.strip() == "")
+        )
+        self._configure_thread(
+            thread_path=resolved_thread_path if open_on_start else None,
+            open_on_start=open_on_start,
+        )
+
+    def _configure_thread(
+        self, *, thread_path: str | None, open_on_start: bool
+    ) -> None:
+        from meshagent.cli import ask as ask_module
+
+        self._thread_id = thread_path
+        self._open_on_start = open_on_start
+        events = self._bot._supervisor.subscribe_local_events()
+        channel_client = LocalChatClient(
+            thread_path=self._thread_id,
+            send_message=self._bot._supervisor.send,
+            events=events,
+            on_close=lambda: self._bot._supervisor.unsubscribe_local_events(events),
+        )
+        self._channel_client = channel_client
+        self._chat_session = channel_client.thread_session
         self._session = ask_module._AgentMessageSession(
             client=self._chat_session,
-            model=model,
-            current_working_directory=current_working_directory,
+            model=self._model,
+            current_working_directory=self._current_working_directory,
             model_provider=lambda: self._current_model,
-            image_dataset_client=image_dataset_client,
+            image_dataset_client=self._image_dataset_client,
+            start_thread_callback=self._start_thread,
         )
         self._sync_turn_output_modalities()
         self._started = False
+
+    async def _start_thread(self, start_thread: StartThread) -> ChatThreadSession:
+        new_session = await self._channel_client.start_thread(start_thread)
+        self._chat_session = new_session
+        self._thread_id = new_session.thread_path
+        self._sync_turn_output_modalities()
+        if self._models_response is not None:
+            self._apply_models_response(self._models_response)
+        return new_session
 
     @property
     def current_working_directory(self) -> str:
@@ -540,7 +642,15 @@ class _ProcessRunSession:
 
     @property
     def thread_id(self) -> str:
+        if self._chat_session.has_thread_path:
+            return self._chat_session.thread_path
+        if self._thread_id is None:
+            raise RoomException("chat thread session not started")
         return self._thread_id
+
+    @property
+    def thread_generation(self) -> int:
+        return self._thread_generation
 
     @property
     def models_response(self) -> ModelsResponse | None:
@@ -587,7 +697,10 @@ class _ProcessRunSession:
             thread_storage = agent_process.thread_storage
             if thread_storage is None:
                 break
-            for message in _thread_agent_messages_from_storage(thread_storage):
+            storage_messages = _thread_agent_messages_from_storage(thread_storage)
+            if inspect.isawaitable(storage_messages):
+                storage_messages = await storage_messages
+            for message in storage_messages:
                 self._chat_session.add_agent_message(
                     self._stored_agent_message_with_sender(message)
                 )
@@ -606,6 +719,33 @@ class _ProcessRunSession:
     async def close(self) -> None:
         await self._session.close()
         await self._channel_client.close()
+
+    async def switch_thread(self, thread_path: str) -> None:
+        normalized_path = thread_path.strip()
+        if normalized_path == "" or normalized_path == self._thread_id:
+            return
+        await self.close()
+        self._thread_generation += 1
+        previous_models_response = self._models_response
+        self._configure_thread(thread_path=normalized_path, open_on_start=True)
+        await self.start()
+        if previous_models_response is not None:
+            self._apply_models_response(previous_models_response)
+
+    async def new_thread(self) -> None:
+        await self.close()
+        self._thread_generation += 1
+        previous_models_response = self._models_response
+        self._configure_thread(thread_path=None, open_on_start=False)
+        await self.start()
+        if previous_models_response is not None:
+            self._apply_models_response(previous_models_response)
+
+    async def delete_thread(self, thread_path: str) -> None:
+        await self._chat_session.delete_thread(thread_path)
+
+    async def rename_thread(self, thread_path: str, name: str) -> None:
+        await self._chat_session.rename_thread(thread_path, name)
 
     async def ask(
         self,
@@ -658,10 +798,12 @@ class _ProcessRunSession:
 
     def _apply_models_response(self, response: ModelsResponse) -> None:
         self._models_response = response
-        active_model = _active_model_from_models_response(
-            response,
-            thread_id=self._thread_id,
-        )
+        active_model = None
+        if self._chat_session.has_thread_path:
+            active_model = _active_model_from_models_response(
+                response,
+                thread_id=self._chat_session.thread_path,
+            )
         if active_model is not None:
             self._current_model = active_model
         self._output_modalities = self._supported_selected_output_modalities(
@@ -782,6 +924,11 @@ async def _handle_process_model_command(
 ) -> str | None:
     parts = command.strip().split()
     command_name = parts[0] if parts else ""
+    if command_name == "/new":
+        if len(parts) != 1:
+            return "Usage: /new"
+        await session.new_thread()
+        return "New thread"
     if command_name == "/provider":
         response = session.models_response
         if response is None:
@@ -935,6 +1082,341 @@ async def _request_initial_models(*, session: Any) -> None:
         return
 
 
+class _ProcessThreadSidebar:
+    def __init__(
+        self,
+        *,
+        room: RoomClient,
+        storage_class: Any,
+        thread_dir: str,
+        current_thread_path: Callable[[], str | None],
+        switch_thread: Callable[[str], Awaitable[None]],
+        delete_thread: Callable[[str], Awaitable[None]],
+        rename_thread: Callable[[str, str], Awaitable[None]],
+    ) -> None:
+        self._room = room
+        self._storage_class = storage_class
+        self._thread_dir = thread_dir
+        self._current_thread_path = current_thread_path
+        self._switch_thread = switch_thread
+        self._delete_thread = delete_thread
+        self._rename_thread = rename_thread
+        self._entries: list[ThreadListEntry] = []
+        self._selected_index = 0
+        self._message: str | None = None
+        self._confirm_delete_path: str | None = None
+        self._rename_path: str | None = None
+        self._rename_value = ""
+        self._refresh_task: asyncio.Task[None] | None = None
+        self._watch_task: asyncio.Task[None] | None = None
+
+    async def start(self) -> None:
+        self._refresh_task = asyncio.create_task(self.refresh())
+        self._watch_task = asyncio.create_task(self._watch_threads())
+
+    async def close(self) -> None:
+        tasks = [
+            task
+            for task in (self._refresh_task, self._watch_task)
+            if task is not None and not task.done()
+        ]
+        for task in tasks:
+            task.cancel()
+        if len(tasks) > 0:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._refresh_task = None
+        self._watch_task = None
+
+    async def refresh(self) -> None:
+        try:
+            page = await self._storage_class.list_threads(
+                room=self._room,
+                thread_dir=self._thread_dir,
+                limit=100,
+                offset=0,
+            )
+            self._entries = page.threads
+            self._sync_selection()
+            if self._message is not None and self._message.startswith(
+                "Unable to load threads:"
+            ):
+                self._message = None
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._message = f"Unable to load threads: {exc}"
+
+    async def _watch_threads(self) -> None:
+        try:
+            async for event in self._storage_class.watch_threads(
+                room=self._room,
+                thread_dir=self._thread_dir,
+            ):
+                self._apply_thread_list_event(event)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._message = f"Thread watch stopped: {exc}"
+
+    def _apply_thread_list_event(self, event: ThreadListEvent) -> None:
+        if event.type == "deleted":
+            self._entries = [
+                entry for entry in self._entries if entry.path != event.path
+            ]
+            if self._confirm_delete_path == event.path:
+                self._confirm_delete_path = None
+            if self._rename_path == event.path:
+                self._rename_path = None
+                self._rename_value = ""
+            self._sync_selection()
+            return
+
+        entry = event.entry
+        if entry is None:
+            return
+        entries_by_path = {existing.path: existing for existing in self._entries}
+        entries_by_path[entry.path] = entry
+        self._entries = _sort_process_thread_entries(entries_by_path.values())
+        if self._message is not None and self._message.startswith(
+            "Thread watch stopped:"
+        ):
+            self._message = None
+        self._sync_selection()
+
+    def _sync_selection(self) -> None:
+        current_path = self._current_thread_path()
+        if current_path is not None:
+            for index, entry in enumerate(self._entries):
+                if entry.path == current_path:
+                    self._selected_index = index
+                    return
+        if len(self._entries) == 0:
+            self._selected_index = 0
+        else:
+            self._selected_index = min(self._selected_index, len(self._entries) - 1)
+
+    def render(self, focused: bool):
+        from rich.text import Text
+
+        if not focused:
+            self._sync_selection()
+        text = Text()
+        title_style = "bold #7dd3fc" if focused else "bold #9aa5b8"
+        text.append("Threads", style=title_style)
+        text.append("\n")
+        if self._message is not None:
+            text.append(self._message, style="#9aa5b8")
+            text.append("\n")
+        if self._rename_path is not None:
+            text.append("Rename: ", style="bold #e5e7eb")
+            text.append(self._rename_value or " ", style="#cfd3dc")
+            text.append("\n")
+        elif self._confirm_delete_path is not None:
+            text.append("Backspace again to delete", style="bold #fca5a5")
+            text.append("\n")
+        text.append("Tab focus  Enter open  r rename\n", style="#6f7b90")
+        text.append("Backspace delete\n\n", style="#6f7b90")
+
+        if len(self._entries) == 0:
+            if self._refresh_task is not None and not self._refresh_task.done():
+                text.append("Loading threads...", style="#9aa5b8")
+                return text
+            text.append("No threads", style="#9aa5b8")
+            return text
+
+        current_path = self._current_thread_path()
+        for index, entry in enumerate(self._entries[:100]):
+            selected = focused and index == self._selected_index
+            current = current_path == entry.path
+            prefix = "› " if selected else "  "
+            style = "bold #e5e7eb" if selected else "#cfd3dc"
+            if current and not selected:
+                style = "#7dd3fc"
+            text.append(prefix, style="#7dd3fc" if selected else "#6f7b90")
+            name = " ".join(entry.name.split()) or entry.path
+            if len(name) > 28:
+                name = f"{name[:25].rstrip()}..."
+            text.append(name, style=style)
+            if current:
+                text.append(" *", style="#7dd3fc")
+            text.append("\n")
+        return text
+
+    async def handle_key(self, key: str, character: str | None) -> bool:
+        if self._rename_path is not None:
+            return await self._handle_rename_key(key=key, character=character)
+        if key == "up":
+            self._move_selection(-1)
+            return True
+        if key == "down":
+            self._move_selection(1)
+            return True
+        if key == "enter":
+            await self._open_selected_thread()
+            return True
+        if key == "backspace":
+            await self._confirm_or_delete_selected_thread()
+            return True
+        if key == "r":
+            self._begin_rename_selected_thread()
+            return True
+        return False
+
+    async def handle_click(self, x: int, y: int) -> bool:
+        del x
+        visible_entries = self._entries[:100]
+        entry_index = y - self._entry_line_offset()
+        if entry_index < 0 or entry_index >= len(visible_entries):
+            return False
+        self._selected_index = entry_index
+        self._confirm_delete_path = None
+        await self._open_selected_thread()
+        return True
+
+    def _entry_line_offset(self) -> int:
+        offset = 4
+        if self._message is not None:
+            offset += 1
+        if self._rename_path is not None or self._confirm_delete_path is not None:
+            offset += 1
+        return offset
+
+    def _move_selection(self, delta: int) -> None:
+        if len(self._entries) == 0:
+            return
+        self._selected_index = max(
+            0,
+            min(len(self._entries) - 1, self._selected_index + delta),
+        )
+        self._confirm_delete_path = None
+
+    def _selected_entry(self) -> ThreadListEntry | None:
+        if len(self._entries) == 0:
+            return None
+        if self._selected_index < 0 or self._selected_index >= len(self._entries):
+            return None
+        return self._entries[self._selected_index]
+
+    async def _open_selected_thread(self) -> None:
+        entry = self._selected_entry()
+        if entry is None:
+            return
+        self._confirm_delete_path = None
+        await self._switch_thread(entry.path)
+        self._message = f"Opened {entry.name}"
+
+    async def _confirm_or_delete_selected_thread(self) -> None:
+        entry = self._selected_entry()
+        if entry is None:
+            return
+        if self._confirm_delete_path != entry.path:
+            self._confirm_delete_path = entry.path
+            self._message = None
+            return
+        deleted_current = self._current_thread_path() == entry.path
+        await self._delete_thread(entry.path)
+        self._confirm_delete_path = None
+        self._message = f"Deleted {entry.name}"
+        self._entries = [
+            existing for existing in self._entries if existing.path != entry.path
+        ]
+        self._sync_selection()
+        next_entry = self._selected_entry()
+        if deleted_current and next_entry is not None:
+            await self._switch_thread(next_entry.path)
+
+    def _begin_rename_selected_thread(self) -> None:
+        entry = self._selected_entry()
+        if entry is None:
+            return
+        self._rename_path = entry.path
+        self._rename_value = entry.name
+        self._confirm_delete_path = None
+
+    async def _handle_rename_key(self, *, key: str, character: str | None) -> bool:
+        if key == "escape":
+            self._rename_path = None
+            self._rename_value = ""
+            return True
+        if key == "enter":
+            await self._commit_rename()
+            return True
+        if key == "backspace":
+            self._rename_value = self._rename_value[:-1]
+            return True
+        if character is not None and character.isprintable():
+            self._rename_value += character
+            return True
+        if key == "space":
+            self._rename_value += " "
+            return True
+        return True
+
+    async def _commit_rename(self) -> None:
+        if self._rename_path is None:
+            return
+        name = " ".join(self._rename_value.split())
+        if name == "":
+            self._message = "Thread name cannot be empty"
+            return
+        rename_path = self._rename_path
+        await self._rename_thread(rename_path, name)
+        self._message = f"Renamed to {name}"
+        self._entries = [
+            (
+                ThreadListEntry(
+                    path=entry.path,
+                    name=name,
+                    created_at=entry.created_at,
+                    modified_at=entry.modified_at,
+                )
+                if entry.path == rename_path
+                else entry
+            )
+            for entry in self._entries
+        ]
+        self._rename_path = None
+        self._rename_value = ""
+        self._sync_selection()
+
+
+def _process_session_thread_path(session: Any) -> str | None:
+    try:
+        if isinstance(session, (_ProcessRunSession, _ChatChannelUseSession)):
+            return session.thread_id
+    except RoomException:
+        return None
+    return None
+
+
+def _thread_list_entry_datetime(value: str) -> datetime:
+    raw = value.strip()
+    if raw == "":
+        return datetime.min.replace(tzinfo=timezone.utc)
+    normalized = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _sort_process_thread_entries(
+    entries: Iterable[ThreadListEntry],
+) -> list[ThreadListEntry]:
+    return sorted(
+        entries,
+        key=lambda entry: (
+            _thread_list_entry_datetime(entry.modified_at),
+            _thread_list_entry_datetime(entry.created_at),
+            entry.path,
+        ),
+        reverse=True,
+    )
+
+
 async def _run_process_run_tui(
     *,
     bot: Any,
@@ -1007,6 +1489,7 @@ async def _run_process_run_tui(
         initial_model=initial_model,
         image_dataset_client=ImageDatasetClient(room) if room is not None else None,
     )
+    thread_sidebar: _ProcessThreadSidebar | None = None
     try:
         await session.start()
         if len(configured_models) > 0:
@@ -1041,6 +1524,19 @@ async def _run_process_run_tui(
             click.echo()
             return
 
+        storage_class = _thread_storage_class_for_backend(thread_storage)
+        if room is not None and storage_class is not None and thread_dir is not None:
+            thread_sidebar = _ProcessThreadSidebar(
+                room=room,
+                storage_class=storage_class,
+                thread_dir=thread_dir,
+                current_thread_path=lambda: _process_session_thread_path(session),
+                switch_thread=session.switch_thread,
+                delete_thread=session.delete_thread,
+                rename_thread=session.rename_thread,
+            )
+            await thread_sidebar.start()
+
         await ask_module._run_ask_tui(
             model=display_model,
             session=session,
@@ -1060,8 +1556,19 @@ async def _run_process_run_tui(
                 current_output_modalities=session.output_modalities,
             ),
             output_label_provider=lambda: session.output_modalities_label,
+            side_panel_renderer=(
+                thread_sidebar.render if thread_sidebar is not None else None
+            ),
+            side_panel_key_handler=(
+                thread_sidebar.handle_key if thread_sidebar is not None else None
+            ),
+            side_panel_mouse_handler=(
+                thread_sidebar.handle_click if thread_sidebar is not None else None
+            ),
         )
     finally:
+        if thread_sidebar is not None:
+            await thread_sidebar.close()
         await session.close()
 
 
@@ -1072,25 +1579,79 @@ class _ChatChannelUseSession:
         chat_client: ChatThreadSession,
         current_working_directory: str | None = None,
     ) -> None:
-        from meshagent.cli import ask as ask_module
-
         self._chat_client = chat_client
+        self._current_working_directory = current_working_directory
+        self._thread_generation = 0
         current_model = chat_client.current_model
         self._output_modalities: tuple[OutputModality, ...] = (
             tuple(current_model.output_modalities)
             if current_model is not None
             else ("text",)
         )
-        self._session = ask_module._AgentMessageSession(
-            client=chat_client,
+        self._session = self._build_session()
+        self._sync_turn_output_modalities()
+        self._started = False
+
+    def _build_session(self):
+        from meshagent.cli import ask as ask_module
+
+        return ask_module._AgentMessageSession(
+            client=self._chat_client,
             model=None,
-            current_working_directory=current_working_directory,
-            local_participant_name=chat_client.local_participant_name,
+            current_working_directory=self._current_working_directory,
+            local_participant_name=self._chat_client.local_participant_name,
             model_provider=lambda: self._chat_client.current_model,
             start_thread_callback=self._start_thread,
         )
+
+    @property
+    def thread_generation(self) -> int:
+        return self._thread_generation
+
+    async def switch_thread(self, thread_path: str) -> None:
+        normalized_path = thread_path.strip()
+        if normalized_path == "" or (
+            self._chat_client.has_thread_path
+            and normalized_path == self._chat_client.thread_path
+        ):
+            return
+        pending_session = self._chat_client
+        await self._session.close(close_client=False)
+        await pending_session.close(close_client=False)
+        new_session = await pending_session.client.open_thread(
+            normalized_path,
+            local_participant_name=pending_session.local_participant_name,
+            close_client_on_close=True,
+        )
+        self._chat_client = new_session
+        self._session = self._build_session()
         self._sync_turn_output_modalities()
         self._started = False
+        self._thread_generation += 1
+        await self.start()
+        if self._chat_client.has_thread_path:
+            await self.request_models()
+
+    async def new_thread(self) -> None:
+        pending_session = self._chat_client
+        await self._session.close(close_client=False)
+        await pending_session.close(close_client=False)
+        new_session = pending_session.client.create_thread_session(
+            local_participant_name=pending_session.local_participant_name,
+            close_client_on_close=True,
+        )
+        self._chat_client = new_session
+        self._session = self._build_session()
+        self._sync_turn_output_modalities()
+        self._started = False
+        self._thread_generation += 1
+        await self.start()
+
+    async def delete_thread(self, thread_path: str) -> None:
+        await self._chat_client.delete_thread(thread_path)
+
+    async def rename_thread(self, thread_path: str, name: str) -> None:
+        await self._chat_client.rename_thread(thread_path, name)
 
     @property
     def current_working_directory(self) -> str:
@@ -1135,12 +1696,20 @@ class _ChatChannelUseSession:
     async def _start_thread(self, start_thread: StartThread) -> ChatThreadSession:
         pending_session = self._chat_client
         await pending_session.close(close_client=False)
+
+        def _adopt_pending_session(new_session: ChatThreadSession) -> None:
+            self._chat_client = new_session
+            self._session.replace_client(new_session)
+            self._sync_turn_output_modalities()
+
         new_session = await pending_session.client.start_thread(
             start_thread,
             local_participant_name=pending_session.local_participant_name,
             close_client_on_close=True,
+            on_pending_session=_adopt_pending_session,
         )
         self._chat_client = new_session
+        self._session.replace_client(new_session)
         self._sync_turn_output_modalities()
         return new_session
 
@@ -1159,6 +1728,8 @@ class _ChatChannelUseSession:
 
     async def close(self) -> None:
         await self._session.close(close_client=False)
+        if isinstance(self._chat_client, ChatThreadSession):
+            await self._chat_client.close(close_client=False)
 
     async def ask(
         self,
@@ -1296,6 +1867,27 @@ async def _close_process_use_room_client(client: RoomClient | None) -> None:
         pass
 
 
+async def _open_process_room_client(
+    *,
+    account_client: Any,
+    project_id: str,
+    room: str,
+) -> RoomClient:
+    connection = await account_client.connect_room(project_id=project_id, room=room)
+    user_client = RoomClient(
+        protocol_factory=WebSocketClientProtocol(
+            url=websocket_room_url(room_name=room),
+            token=connection.jwt,
+        ).create_factory(),
+    )
+    try:
+        await user_client.__aenter__()
+        return user_client
+    except Exception:
+        await _close_process_use_room_client(user_client)
+        raise
+
+
 async def _open_process_use_chat_session(
     *,
     account_client: Any,
@@ -1304,12 +1896,10 @@ async def _open_process_use_chat_session(
     participant_name: str,
     thread_path: str | None,
 ) -> tuple[RoomClient, ChatThreadSession]:
-    connection = await account_client.connect_room(project_id=project_id, room=room)
-    user_client = RoomClient(
-        protocol_factory=WebSocketClientProtocol(
-            url=websocket_room_url(room_name=room),
-            token=connection.jwt,
-        ).create_factory(),
+    user_client = await _open_process_room_client(
+        account_client=account_client,
+        project_id=project_id,
+        room=room,
     )
     chat_client: MessagingChatClient | None = None
     chat_session: ChatThreadSession | None = None
@@ -1335,6 +1925,54 @@ async def _open_process_use_chat_session(
         raise
 
 
+def _thread_dir_from_thread_list_path(thread_list_path: str) -> str | None:
+    normalized_path = thread_list_path.strip().rstrip("/")
+    if normalized_path == "":
+        return None
+    if "/" not in normalized_path:
+        return None
+    return normalized_path.rsplit("/", 1)[0]
+
+
+def _process_use_thread_sidebar_options(
+    *,
+    room: RoomClient,
+    agent_name: str,
+) -> tuple[Any, str] | None:
+    if not isinstance(room, RoomClient):
+        return None
+    participant: RemoteParticipant | None = None
+    for candidate in room.messaging.get_participants():
+        if candidate.get_attribute("name") != agent_name:
+            continue
+        participant = candidate
+        break
+    if participant is None:
+        return None
+
+    thread_dir = _normalized_annotation_string(
+        participant.get_attribute("meshagent.chatbot.thread-dir")
+    )
+    thread_list_path = _normalized_annotation_string(
+        participant.get_attribute("meshagent.chatbot.thread-list")
+    )
+    if thread_dir is None and thread_list_path is not None:
+        thread_dir = _thread_dir_from_thread_list_path(thread_list_path)
+    if thread_dir is None:
+        return None
+    if thread_dir.startswith("tmp://"):
+        return None
+    if thread_dir.startswith("dataset://") or (
+        thread_list_path is not None and thread_list_path.startswith("dataset://")
+    ):
+        storage_class = _thread_storage_class_for_backend("dataset")
+    else:
+        storage_class = _thread_storage_class_for_backend("meshdocument")
+    if storage_class is None:
+        return None
+    return storage_class, thread_dir
+
+
 async def _run_process_use_tui(
     *,
     account_client: Any,
@@ -1354,6 +1992,7 @@ async def _run_process_use_tui(
     user_client: RoomClient | None = None
     chat_client: ChatThreadSession | None = None
     session: _ChatChannelUseSession | None = None
+    thread_sidebar: _ProcessThreadSidebar | None = None
     try:
         user_client, chat_client = await _open_process_use_chat_session(
             account_client=account_client,
@@ -1380,6 +2019,27 @@ async def _run_process_use_tui(
             click.echo()
             return
 
+        sidebar_options = _process_use_thread_sidebar_options(
+            room=user_client,
+            agent_name=agent_name,
+        )
+        if sidebar_options is not None:
+            storage_class, thread_dir = sidebar_options
+            thread_sidebar = _ProcessThreadSidebar(
+                room=user_client,
+                storage_class=storage_class,
+                thread_dir=thread_dir,
+                current_thread_path=lambda: (
+                    _process_session_thread_path(session)
+                    if session is not None
+                    else None
+                ),
+                switch_thread=session.switch_thread,
+                delete_thread=session.delete_thread,
+                rename_thread=session.rename_thread,
+            )
+            await thread_sidebar.start()
+
         await ask_module._run_ask_tui(
             model="remote",
             session=session,
@@ -1401,8 +2061,19 @@ async def _run_process_use_tui(
             output_label_provider=lambda: (
                 session.output_modalities_label if session is not None else "text"
             ),
+            side_panel_renderer=(
+                thread_sidebar.render if thread_sidebar is not None else None
+            ),
+            side_panel_key_handler=(
+                thread_sidebar.handle_key if thread_sidebar is not None else None
+            ),
+            side_panel_mouse_handler=(
+                thread_sidebar.handle_click if thread_sidebar is not None else None
+            ),
         )
     finally:
+        if thread_sidebar is not None:
+            await thread_sidebar.close()
         if session is not None:
             await session.close()
         await _close_process_use_chat_client(chat_client)
@@ -1712,6 +2383,14 @@ def _resolve_process_threading_options(
 
     if threading_mode == "none" and thread_storage not in ("dataset", "none"):
         return threading_mode, thread_dir
+
+    if thread_storage == "dataset":
+        return threading_mode, _dataset_thread_url_for_path(path=default_thread_dir)
+    if thread_storage == "none":
+        return threading_mode, _thread_url_for_path(
+            scheme="tmp",
+            path=default_thread_dir,
+        )
 
     return threading_mode, default_thread_dir
 
@@ -2700,14 +3379,27 @@ def _process_agent_annotations(
     if thread_storage == "dataset":
         normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
         if normalized_thread_dir is not None:
+            storage_class = _thread_storage_class_for_backend(thread_storage)
             if threading_mode == "none":
                 annotations["meshagent.chatbot.thread-path"] = (
-                    _dataset_thread_url_for_path(path=f"{normalized_thread_dir}/main")
+                    _process_thread_path_for_dir(
+                        thread_dir=normalized_thread_dir,
+                        thread_storage=thread_storage,
+                    )
                 )
             else:
-                annotations["meshagent.chatbot.thread-dir"] = (
-                    _dataset_thread_url_for_path(path=normalized_thread_dir)
+                thread_dir_url = (
+                    normalized_thread_dir
+                    if normalized_thread_dir.startswith("dataset://")
+                    else _dataset_thread_url_for_path(path=normalized_thread_dir)
                 )
+                annotations["meshagent.chatbot.thread-dir"] = thread_dir_url
+                if storage_class is not None:
+                    annotations["meshagent.chatbot.thread-list"] = (
+                        storage_class.thread_list_path_for_dir(
+                            thread_dir=thread_dir_url
+                        )
+                    )
     elif thread_storage == "none":
         normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
         if normalized_thread_dir is not None:
@@ -4579,6 +5271,80 @@ def build_process_agent(
             super().__init__()
             self._agent = agent
             self._local_event_queues: list[asyncio.Queue[Message]] = []
+            self._thread_delete_watch_task: asyncio.Task[None] | None = None
+
+        async def on_start(self) -> None:
+            await super().on_start()
+            storage_class = _thread_storage_class_for_backend(thread_storage)
+            if storage_class is None or thread_dir is None:
+                return
+            self._thread_delete_watch_task = asyncio.create_task(
+                self._watch_thread_deletes(storage_class=storage_class)
+            )
+
+        async def on_stop(self) -> None:
+            watch_task = self._thread_delete_watch_task
+            self._thread_delete_watch_task = None
+            if watch_task is not None:
+                watch_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await watch_task
+            await super().on_stop()
+
+        async def _watch_thread_deletes(self, *, storage_class) -> None:
+            if thread_dir is None:
+                return
+            try:
+                async for event in storage_class.watch_threads(
+                    room=self._agent.room,
+                    thread_dir=thread_dir,
+                ):
+                    if event.type != "deleted":
+                        continue
+                    async with self._route_lock:
+                        await self._stop_thread_process(thread_id=event.path)
+            except asyncio.CancelledError:
+                raise
+            except Exception as ex:
+                logger.debug("thread delete watch stopped: %s", ex)
+
+        async def on_thread_deleted(
+            self,
+            *,
+            delete_thread: DeleteThread,
+            sender: Participant | None,
+        ) -> None:
+            del sender
+            storage_class = _thread_storage_class_for_backend(thread_storage)
+            normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
+            if storage_class is None or normalized_thread_dir is None:
+                return
+            await storage_class.delete_thread(
+                room=self._agent.room,
+                thread_dir=normalized_thread_dir,
+                path=delete_thread.thread_id,
+            )
+
+        async def on_thread_renamed(
+            self,
+            *,
+            rename_thread: RenameThread,
+            sender: Participant | None,
+        ) -> None:
+            del sender
+            storage_class = _thread_storage_class_for_backend(thread_storage)
+            normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
+            if storage_class is None or normalized_thread_dir is None:
+                return
+            name = " ".join(rename_thread.name.split())
+            if name == "":
+                return
+            await storage_class.rename_thread(
+                room=self._agent.room,
+                thread_dir=normalized_thread_dir,
+                path=rename_thread.thread_id,
+                name=name,
+            )
 
         def subscribe_local_events(self) -> asyncio.Queue[Message]:
             queue: asyncio.Queue[Message] = asyncio.Queue()
@@ -4589,33 +5355,95 @@ def build_process_agent(
             if queue in self._local_event_queues:
                 self._local_event_queues.remove(queue)
 
+        def _send_to_local_event_queues(self, message: Message) -> None:
+            for queue in [*self._local_event_queues]:
+                queue.put_nowait(message)
+
         def send(self, message: Message) -> None:
             if message.source is not None:
-                for queue in [*self._local_event_queues]:
-                    queue.put_nowait(message)
+                self._send_to_local_event_queues(message)
             super().send(message)
+
+        def _emit_thread_started(
+            self,
+            *,
+            start_thread: StartThread,
+            sender: Participant | None,
+            thread_id: str,
+            realtime_connection: AgentRealtimeConnectionInfo | None = None,
+        ) -> None:
+            thread_started = ThreadStarted(
+                type=AGENT_EVENT_THREAD_STARTED,
+                source_message_id=start_thread.message_id,
+                thread_id=thread_id,
+                realtime_connection=realtime_connection,
+            )
+            self._send_to_local_event_queues(
+                Message(data=thread_started, sender=sender)
+            )
+            self._send_to_channels(Message(data=thread_started, sender=sender))
+
+        async def create_thread_id(
+            self,
+            *,
+            start_thread: StartThread,
+            sender: Participant | None,
+        ) -> str:
+            del start_thread
+            del sender
+            normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
+            if normalized_thread_dir is not None:
+                return _new_process_thread_path_for_dir(
+                    thread_dir=normalized_thread_dir,
+                    thread_storage=thread_storage,
+                )
+            generated_path = f"process-run/{uuid.uuid4()}"
+            if thread_storage == "dataset":
+                return _dataset_thread_url_for_path(path=generated_path)
+            if thread_storage == "none":
+                return _thread_url_for_path(scheme="tmp", path=generated_path)
+            return f"/{generated_path}.thread"
+
+        async def on_thread_started(
+            self,
+            *,
+            thread_id: str,
+            start_thread: StartThread,
+            sender: Participant | None,
+        ) -> None:
+            del sender
+            storage_class = _thread_storage_class_for_backend(thread_storage)
+            normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
+            if storage_class is None or normalized_thread_dir is None:
+                return
+            await storage_class.upsert_thread(
+                room=self._agent.room,
+                thread_dir=normalized_thread_dir,
+                path=thread_id,
+                name=_start_thread_list_name(start_thread),
+            )
 
         async def on_models_request(self, message: Message) -> None:
             if not isinstance(message.data, ModelsRequest):
                 return
             default_model = default_provider.adapter.default_model()
-            self._send_to_channels(
-                Message(
-                    data=ModelsResponse(
-                        type=AGENT_MESSAGE_MODELS_RESPONSE,
-                        source_message_id=message.data.message_id,
-                        providers=[
-                            agent_provider_info(
-                                provider=provider,
-                                current_provider=default_provider.name,
-                                current_model=default_model,
-                            )
-                            for provider in llm_providers
-                        ],
-                    ),
-                    sender=message.sender,
-                )
+            response_message = Message(
+                data=ModelsResponse(
+                    type=AGENT_MESSAGE_MODELS_RESPONSE,
+                    source_message_id=message.data.message_id,
+                    providers=[
+                        agent_provider_info(
+                            provider=provider,
+                            current_provider=default_provider.name,
+                            current_model=default_model,
+                        )
+                        for provider in llm_providers
+                    ],
+                ),
+                sender=message.sender,
             )
+            self._send_to_local_event_queues(response_message)
+            self._send_to_channels(response_message)
 
         async def validate_turn_start(self, turn_start: TurnStart) -> AgentError | None:
             provider = default_provider
@@ -6592,6 +7420,7 @@ async def chat_with(
         from rich.padding import Padding
         from rich.panel import Panel
         from rich.rule import Rule
+        from rich.style import Style
         from rich.table import Table
         from rich.text import Text
     except ImportError as exc:
@@ -6624,6 +7453,18 @@ async def chat_with(
 
     caret = "›"
 
+    @dataclass(frozen=True, slots=True)
+    class _ThreadDetailEntry:
+        index: int
+        item: Element
+
+    @dataclass(frozen=True, slots=True)
+    class _ThreadDetailGroup:
+        id: str
+        indexes: tuple[int, ...]
+        items: tuple[Element, ...]
+        collapsed_text: str
+
     class _ChatWithClient:
         def __init__(
             self,
@@ -6653,6 +7494,12 @@ async def chat_with(
             if self._thread is None:
                 return None
             return self._thread.thread_status_text
+
+        @property
+        def thread_status(self) -> AgentThreadStatus | None:
+            if self._thread is None:
+                return None
+            return self._thread.thread_status
 
         async def __aenter__(self) -> "_ChatWithClient":
             self._doc = await self.room.sync.open(path=self.thread_path)
@@ -7089,6 +7936,7 @@ async def chat_with(
             self._has_active_events = False
             self._pending_approval_items: list[tuple[str, str, str]] = []
             self._selected_pending_approval_index = 0
+            self._expanded_detail_group_ids: set[str] = set()
 
         def compose(self) -> ComposeResult:
             with VerticalScroll(id="messages-scroll"):
@@ -7164,6 +8012,13 @@ async def chat_with(
 
         async def action_reject_selected_approval(self) -> None:
             await self._submit_selected_approval_decision(approve=False)
+
+        def action_toggle_detail_group(self, group_id: str) -> None:
+            if group_id in self._expanded_detail_group_ids:
+                self._expanded_detail_group_ids.remove(group_id)
+            else:
+                self._expanded_detail_group_ids.add(group_id)
+            self._render_from_thread_document()
 
         async def on_key(self, event: events.Key) -> None:
             selected = self._selected_pending_approval()
@@ -7466,10 +8321,26 @@ async def chat_with(
             self._render_approval_menu()
             rendered_items: list[RenderableType] = []
             last_index = len(items) - 1
-            for index, item in enumerate(items):
+            for entry in self._thread_feed_entries(items):
+                if isinstance(entry, _ThreadDetailGroup):
+                    expanded = entry.id in self._expanded_detail_group_ids
+                    rendered_items.append(
+                        self._render_detail_group_header(entry, expanded=expanded)
+                    )
+                    if not expanded:
+                        continue
+                    for index, item in zip(entry.indexes, entry.items, strict=True):
+                        for renderable in self._render_thread_item(
+                            item,
+                            is_last_item=index == last_index,
+                            has_active_event=self._has_active_events,
+                        ):
+                            rendered_items.append(renderable)
+                    continue
+
                 for renderable in self._render_thread_item(
-                    item,
-                    is_last_item=index == last_index,
+                    entry.item,
+                    is_last_item=entry.index == last_index,
                     has_active_event=self._has_active_events,
                 ):
                     rendered_items.append(renderable)
@@ -7497,7 +8368,357 @@ async def chat_with(
             return False
 
         def _active_thread_status_text(self) -> str | None:
-            return _thread_status_text(self._chat_client.thread_status_text)
+            status = self._chat_client.thread_status
+            if status is None:
+                return _thread_status_text(self._chat_client.thread_status_text)
+            text = _thread_status_text(status.status)
+            if text is None:
+                return None
+            return _format_thread_status_text(
+                text,
+                total_bytes=status.total_bytes,
+                lines_added=status.lines_added,
+                lines_removed=status.lines_removed,
+            )
+
+        def _thread_feed_entries(
+            self, items
+        ) -> list[_ThreadDetailEntry | _ThreadDetailGroup]:
+            entries: list[_ThreadDetailEntry | _ThreadDetailGroup] = []
+            index = 0
+            item_count = len(items)
+            while index < item_count:
+                next_user_index = self._next_user_message_index(items, index + 1)
+                segment_end = (
+                    next_user_index if next_user_index is not None else item_count
+                )
+                detail_indexes: set[int] = set()
+                self._add_detail_indexes_for_segment(
+                    items, start=index, end=segment_end, detail_indexes=detail_indexes
+                )
+                grouped_indexes = tuple(sorted(detail_indexes))
+                grouped_items = tuple(
+                    item
+                    for detail_index in grouped_indexes
+                    if isinstance(item := items[detail_index], Element)
+                )
+                inserted_group = False
+                for segment_index in range(index, segment_end):
+                    item = items[segment_index]
+                    if not isinstance(item, Element):
+                        continue
+                    if segment_index not in detail_indexes:
+                        entries.append(_ThreadDetailEntry(segment_index, item))
+                        continue
+                    if inserted_group or len(grouped_items) == 0:
+                        continue
+                    next_message = self._next_non_detail_item(
+                        items,
+                        detail_indexes=detail_indexes,
+                        start=segment_index + 1,
+                        end=segment_end,
+                    )
+                    entries.append(
+                        self._detail_group_for_items(
+                            indexes=grouped_indexes,
+                            items=grouped_items,
+                            next_item=next_message,
+                        )
+                    )
+                    inserted_group = True
+                index = segment_end
+            return entries
+
+        def _next_non_detail_item(
+            self, items, *, detail_indexes: set[int], start: int, end: int
+        ) -> Element | None:
+            for index in range(start, end):
+                item = items[index]
+                if index not in detail_indexes and isinstance(item, Element):
+                    return item
+            return None
+
+        def _next_user_message_index(self, items, start: int) -> int | None:
+            for index in range(start, len(items)):
+                item = items[index]
+                if isinstance(item, Element) and self._is_user_message(item):
+                    return index
+            return None
+
+        def _add_detail_indexes_for_segment(
+            self, items, *, start: int, end: int, detail_indexes: set[int]
+        ) -> None:
+            final_agent_message_index = self._final_agent_message_index_for_segment(
+                items, start=start, end=end
+            )
+            for index in range(start, end):
+                item = items[index]
+                if not isinstance(item, Element):
+                    continue
+                if self._is_intrinsic_detail(item):
+                    detail_indexes.add(index)
+                    continue
+                if (
+                    index != final_agent_message_index
+                    and self._can_collapse_as_commentary(item)
+                ):
+                    detail_indexes.add(index)
+
+        def _final_agent_message_index_for_segment(
+            self, items, *, start: int, end: int
+        ) -> int:
+            explicit_final_index = -1
+            for index in range(start, end):
+                item = items[index]
+                if (
+                    isinstance(item, Element)
+                    and self._can_render_as_final_answer(item)
+                    and self._item_string_attribute(item, "phase") == "final_answer"
+                ):
+                    explicit_final_index = index
+            if explicit_final_index != -1:
+                return explicit_final_index
+
+            inferred_final_index = -1
+            for index in range(start, end):
+                item = items[index]
+                if isinstance(item, Element) and self._can_render_as_final_answer(item):
+                    inferred_final_index = index
+            return inferred_final_index
+
+        def _detail_group_for_items(
+            self,
+            *,
+            indexes: tuple[int, ...],
+            items: tuple[Element, ...],
+            next_item: Element | None,
+        ) -> _ThreadDetailGroup:
+            first = items[0]
+            first_index = indexes[0] if len(indexes) > 0 else 0
+            group_id = ":".join(
+                (
+                    "details",
+                    self._item_string_attribute(first, "turn_id"),
+                    self._item_string_attribute(first, "id")
+                    or self._item_string_attribute(first, "item_id")
+                    or str(first_index),
+                    self._item_string_attribute(first, "created_at"),
+                )
+            )
+            return _ThreadDetailGroup(
+                id=group_id,
+                indexes=indexes,
+                items=items,
+                collapsed_text=self._detail_group_collapsed_text(
+                    items, next_item=next_item
+                ),
+            )
+
+        def _detail_group_collapsed_text(
+            self, items: tuple[Element, ...], *, next_item: Element | None
+        ) -> str:
+            first = items[0]
+            if self._detail_group_has_final_response(items, next_item=next_item):
+                end = (
+                    self._item_created_at(next_item) if next_item is not None else None
+                )
+                active_turn_id = self._active_thread_status_turn_id()
+                first_turn_id = self._item_string_attribute(first, "turn_id")
+                if (
+                    active_turn_id is not None
+                    and first_turn_id != ""
+                    and first_turn_id == active_turn_id
+                ):
+                    end = datetime.now(timezone.utc)
+                start = self._item_created_at(first)
+                if start is not None and end is not None:
+                    return (
+                        f"Worked for {self._format_detail_group_duration(end - start)}"
+                    )
+                return "Worked"
+
+            collapsed_item = self._detail_group_collapsed_item(items)
+            text = (
+                self._detail_item_text(collapsed_item)
+                if collapsed_item is not None
+                else ""
+            )
+            first_line = self._first_non_empty_line(text)
+            return first_line if first_line is not None else "Working"
+
+        def _detail_group_has_final_response(
+            self, items: tuple[Element, ...], *, next_item: Element | None
+        ) -> bool:
+            return (
+                next_item is not None
+                and self._can_render_as_final_answer(next_item)
+                and self._items_share_turn(items[0], next_item)
+            )
+
+        def _detail_group_collapsed_item(
+            self, items: tuple[Element, ...]
+        ) -> Element | None:
+            for item in reversed(items):
+                if (
+                    self._can_collapse_as_commentary(item)
+                    and self._item_string_attribute(item, "text").strip() != ""
+                ):
+                    return item
+            for item in reversed(items):
+                if (
+                    item.tag_name == "reasoning"
+                    and self._detail_item_text(item).strip() != ""
+                ):
+                    return item
+            for item in reversed(items):
+                if self._detail_item_text(item).strip() != "":
+                    return item
+            return None
+
+        def _is_intrinsic_detail(self, item: Element) -> bool:
+            if item.tag_name in {"event", "reasoning", "exec", "ui"}:
+                return True
+            return (
+                self._can_collapse_as_commentary(item)
+                and self._item_string_attribute(item, "phase") == "commentary"
+            )
+
+        def _can_collapse_as_commentary(self, item: Element) -> bool:
+            if item.tag_name != "message":
+                return False
+            if self._item_string_attribute(item, "phase") == "final_answer":
+                return False
+            if self._message_role(item) not in {"agent", "assistant"}:
+                return False
+            return not self._message_has_attachments(item)
+
+        def _can_render_as_final_answer(self, item: Element) -> bool:
+            if item.tag_name != "message":
+                return False
+            if self._message_role(item) not in {"agent", "assistant"}:
+                return False
+            if self._item_string_attribute(item, "phase") == "commentary":
+                return False
+            return self._item_string_attribute(
+                item, "text"
+            ).strip() != "" or self._message_has_attachments(item)
+
+        def _is_user_message(self, item: Element) -> bool:
+            return item.tag_name == "message" and self._message_role(item) == "user"
+
+        def _message_role(self, item: Element) -> str:
+            role = self._item_string_attribute(item, "role").lower()
+            if role in {"user", "agent", "assistant"}:
+                return role
+            author = self._item_string_attribute(item, "author_name")
+            return "user" if author == self._local_user_name else "agent"
+
+        def _message_has_attachments(self, item: Element) -> bool:
+            for child in item.get_children():
+                if isinstance(child, Element) and child.tag_name in {"file", "image"}:
+                    return True
+            return False
+
+        def _items_share_turn(self, left: Element, right: Element) -> bool:
+            left_turn_id = self._item_string_attribute(left, "turn_id")
+            right_turn_id = self._item_string_attribute(right, "turn_id")
+            if left_turn_id == "" or right_turn_id == "":
+                return True
+            return left_turn_id == right_turn_id
+
+        def _active_thread_status_turn_id(self) -> str | None:
+            status = self._chat_client.thread_status
+            if status is None or status.turn_id is None:
+                return None
+            normalized = status.turn_id.strip()
+            return normalized if normalized != "" else None
+
+        def _item_string_attribute(self, item: Element, name: str) -> str:
+            value = item.get_attribute(name)
+            return value.strip() if isinstance(value, str) else ""
+
+        def _item_created_at(self, item: Element | None) -> datetime | None:
+            if item is None:
+                return None
+            created_at = self._item_string_attribute(item, "created_at")
+            if created_at == "":
+                return None
+            try:
+                parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            except Exception:
+                return None
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed
+
+        def _detail_item_text(self, item: Element | None) -> str:
+            if item is None:
+                return ""
+            if item.tag_name == "reasoning":
+                return self._item_string_attribute(
+                    item, "summary"
+                ) or self._item_string_attribute(item, "text")
+            if item.tag_name == "event":
+                return (
+                    self._item_string_attribute(item, "headline")
+                    or self._item_string_attribute(item, "summary")
+                    or self._item_string_attribute(item, "name")
+                    or self._item_string_attribute(item, "details")
+                )
+            return self._item_string_attribute(item, "text")
+
+        def _first_non_empty_line(self, text: str) -> str | None:
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped != "":
+                    return stripped
+            return None
+
+        def _format_detail_group_duration(self, duration) -> str:
+            seconds = int(duration.total_seconds())
+            if seconds < 0:
+                seconds = 0
+            if seconds < 60:
+                return f"{seconds}s"
+            minutes = seconds // 60
+            remaining_seconds = seconds % 60
+            if minutes < 60:
+                if remaining_seconds == 0:
+                    return f"{minutes}m"
+                return f"{minutes}m {remaining_seconds}s"
+            hours = minutes // 60
+            remaining_minutes = minutes % 60
+            if remaining_minutes == 0:
+                return f"{hours}h"
+            return f"{hours}h {remaining_minutes}m"
+
+        def _render_detail_group_header(
+            self, group: _ThreadDetailGroup, *, expanded: bool
+        ) -> RenderableType:
+            table = Table.grid(expand=True, padding=(0, 0))
+            table.add_column(width=2, no_wrap=True)
+            table.add_column(ratio=1)
+            table.add_column(width=2, no_wrap=True)
+
+            marker = "▾" if expanded else "▸"
+            label = Text()
+            label.append(f"{marker} ", style="dim")
+            label.append(group.collapsed_text, style="bold magenta")
+            label.stylize(
+                Style(
+                    underline=not expanded,
+                    meta={
+                        "@click": (
+                            "app.toggle_detail_group",
+                            (group.id,),
+                        )
+                    },
+                )
+            )
+            table.add_row(Text("  "), Text(" "), Text("  "))
+            table.add_row(Text("  "), label, Text("  "))
+            table.add_row(Text("  "), Text(" "), Text("  "))
+            return table
 
         def _render_thread_status_item(self, status_text: str) -> RenderableType:
             table = Table.grid(expand=True, padding=(0, 0))
@@ -8747,6 +9968,87 @@ async def run(
         return
 
     finally:
+        await account_client.close()
+
+
+@app.async_command(
+    "threads",
+    help="List threads for a process-backed agent.",
+)
+async def list_threads_command(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    agent_name: Annotated[
+        Optional[str], typer.Option(..., help="Name of the agent to list threads for")
+    ] = None,
+    thread_dir: ThreadDirOption = None,
+    thread_storage: ThreadStorageOption = "meshdocument",
+    limit: Annotated[int, typer.Option("--limit", help="Maximum threads to show")] = 20,
+    offset: Annotated[int, typer.Option("--offset", help="Thread list offset")] = 0,
+):
+    runtime = _current_command_runtime()
+    if runtime != "process":
+        print("[bold red]threads is only supported for process agents[/bold red]")
+        raise typer.Exit(1)
+    if agent_name is None or agent_name.strip() == "":
+        print("[bold red]--agent-name must be specified for process threads[/bold red]")
+        raise typer.Exit(1)
+
+    storage_class = _thread_storage_class_for_backend(thread_storage)
+    if storage_class is None:
+        print(
+            "[bold red]thread listing is not available for --thread-storage=none[/bold red]"
+        )
+        raise typer.Exit(1)
+
+    resolved_threading_mode, resolved_thread_dir = _resolve_process_threading_options(
+        agent_name=agent_name,
+        threading_mode="default-new",
+        thread_dir=thread_dir,
+        thread_storage=thread_storage,
+    )
+    del resolved_threading_mode
+    if resolved_thread_dir is None:
+        print("[bold red]unable to resolve a thread directory[/bold red]")
+        raise typer.Exit(1)
+
+    room = _require_resolved_room(resolve_room(room))
+    account_client = await get_client()
+    user_client: RoomClient | None = None
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        user_client = await _open_process_room_client(
+            account_client=account_client,
+            project_id=project_id,
+            room=room,
+        )
+        page = await storage_class.list_threads(
+            room=user_client,
+            thread_dir=resolved_thread_dir,
+            limit=limit,
+            offset=offset,
+        )
+        if page.total == 0:
+            print("No threads found.")
+            return
+
+        from rich.table import Table
+
+        table = Table(title=f"{agent_name.strip()} threads")
+        table.add_column("Name")
+        table.add_column("Path")
+        table.add_column("Modified")
+        for entry in page.threads:
+            table.add_row(entry.name, entry.path, entry.modified_at)
+        print(table)
+        if page.offset + len(page.threads) < page.total:
+            print(
+                f"Showing {page.offset + 1}-{page.offset + len(page.threads)} "
+                f"of {page.total} threads."
+            )
+    finally:
+        await _close_process_use_room_client(user_client)
         await account_client.close()
 
 

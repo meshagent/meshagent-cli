@@ -43,7 +43,6 @@ all = [
   "meshagent-computers==0.40.2",
   "meshagent-openai==0.40.2",
   "meshagent-anthropic==0.40.2",
-  "meshagent-codex==0.40.2",
   "meshagent-otel==0.40.2",
   "meshagent-mcp==0.40.2",
   "meshagent-tools==0.40.2",
