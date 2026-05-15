@@ -294,7 +294,7 @@ class InitExistingProjectApp(App[None]):
         self._clear_error()
         self._hide_input()
         self._set_text(
-            title="MeshAgent Init",
+            title="MeshAgent Create",
             message="This directory already contains project files.",
             help_text="Choose an option. Esc or Ctrl+C cancels.",
         )
@@ -317,7 +317,7 @@ class InitExistingProjectApp(App[None]):
         self._clear_error()
         self._hide_options()
         self._set_text(
-            title="MeshAgent Init",
+            title="MeshAgent Create",
             message="Enter a folder name for the new project.",
             help_text="Type a folder name and press Enter. Esc goes back.",
         )
@@ -510,7 +510,7 @@ class InitWizardApp(App[None]):
         self._selected_language_id = None
         self._selected_language_label = None
         self._set_text(
-            title="MeshAgent Init",
+            title="MeshAgent Create",
             message="Choose the language for the project.",
             help_text="Use Up/Down and Enter. Esc or Ctrl+C cancels.",
         )
@@ -528,7 +528,7 @@ class InitWizardApp(App[None]):
         self._mode = "focus"
         language_label = self._selected_language_label or "the selected language"
         self._set_text(
-            title="MeshAgent Init",
+            title="MeshAgent Create",
             message=f"Choose what you want to build for {language_label}.",
             help_text=(
                 "Web server creates an HTTP app. Backend agent creates a "

@@ -19,7 +19,7 @@ def test_doctor_recommends_init_for_empty_project(tmp_path) -> None:
     assert result.exit_code == 0
     assert "Detected project: Unknown" in result.output
     assert "No identifiable deployable project was detected" in result.output
-    assert "meshagent init" in result.output
+    assert "meshagent create" in result.output
     assert "Python backend agent project" in result.output
     assert "Deployment checks" in result.output
     assert "Project detection check" in result.output

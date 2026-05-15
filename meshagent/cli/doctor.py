@@ -1746,13 +1746,13 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
         click.echo("")
         click.echo("Recommended next steps:")
         click.echo("1. Create a minimal deployable Python backend agent project:")
-        click.echo("   meshagent init")
+        click.echo("   meshagent create")
         click.echo("2. Re-run doctor and address remaining findings:")
         click.echo("   meshagent doctor")
         click.echo("3. Deployment checks:")
         click.echo(
             "   - Project detection check: no recognizable application code or "
-            "deployment metadata was found in this directory. Run `meshagent init` "
+            "deployment metadata was found in this directory. Run `meshagent create` "
             "to create a minimal Python backend agent project, then deploy the "
             "generated project."
         )

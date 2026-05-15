@@ -119,7 +119,7 @@ def default_content() -> dict:
         "items": {
             "hero": {
                 "id": "hero",
-                "headline": "hello from meshagent init",
+                "headline": "hello from meshagent create",
                 "body": "Run ./scripts/dev.sh to let the local MeshAgent toolkit update this content.",
             }
         },
@@ -257,7 +257,7 @@ async def index(request: web.Request) -> web.Response:
         "items", {}
     ).get("hero", {})
     return web.Response(
-        text=f"{active_item.get('headline', 'hello from meshagent init')}\\n{active_item.get('body', '')}\\n",
+        text=f"{active_item.get('headline', 'hello from meshagent create')}\\n{active_item.get('body', '')}\\n",
         content_type="text/plain",
     )
 
@@ -297,7 +297,7 @@ async def run_dev_content_toolkit() -> None:
                     "body": "This text was created by the local Python content toolkit.",
                 },
             )
-            print(f"MeshAgent init dev toolkit create: {json.dumps(created.json)}")
+            print(f"MeshAgent create dev toolkit create: {json.dumps(created.json)}")
 
             headline = f"MeshAgent local dev proof {probe}"
             updated = await room.agents.invoke_tool(
@@ -309,14 +309,14 @@ async def run_dev_content_toolkit() -> None:
                     "body": "The room invoked the local Python toolkit, and the toolkit updated dev-content.json.",
                 },
             )
-            print(f"MeshAgent init dev toolkit update: {json.dumps(updated.json)}")
+            print(f"MeshAgent create dev toolkit update: {json.dumps(updated.json)}")
 
             searched = await room.agents.invoke_tool(
                 toolkit=TOOLKIT_NAME,
                 tool="search",
                 input={"query": probe},
             )
-            print(f"MeshAgent init dev toolkit search: {json.dumps(searched.json)}")
+            print(f"MeshAgent create dev toolkit search: {json.dumps(searched.json)}")
 
             content = await read_content()
             active_item = content.get("items", {}).get(content.get("activeId"))
@@ -326,13 +326,13 @@ async def run_dev_content_toolkit() -> None:
             ):
                 raise RuntimeError("Local Python content toolkit proof failed.")
 
-            print(f"MeshAgent init dev toolkit proof wrote: dev-content.json {probe}")
+            print(f"MeshAgent create dev toolkit proof wrote: dev-content.json {probe}")
             hold_seconds = float(
                 os.environ.get("MESHAGENT_INIT_DEV_TOOLKIT_HOLD_SECONDS") or "0"
             )
             if hold_seconds > 0:
                 print(
-                    f"MeshAgent init dev toolkit holding registration for {hold_seconds}s"
+                    f"MeshAgent create dev toolkit holding registration for {hold_seconds}s"
                 )
                 await asyncio.sleep(hold_seconds)
         finally:
@@ -486,14 +486,14 @@ async def run_agent_toolkit_proof(room: RoomClient) -> None:
             tool="ping",
             input={},
         )
-        print(f"MeshAgent init dev toolkit ping: {json.dumps(pinged.json)}")
+        print(f"MeshAgent create dev toolkit ping: {json.dumps(pinged.json)}")
 
         status = await room.agents.invoke_tool(
             toolkit=TOOLKIT_NAME,
             tool="status",
             input={},
         )
-        print(f"MeshAgent init dev toolkit status: {json.dumps(status.json)}")
+        print(f"MeshAgent create dev toolkit status: {json.dumps(status.json)}")
 
         message = f"MeshAgent local dev proof {probe}"
         echoed = await room.agents.invoke_tool(
@@ -501,17 +501,17 @@ async def run_agent_toolkit_proof(room: RoomClient) -> None:
             tool="echo",
             input={"message": message},
         )
-        print(f"MeshAgent init dev toolkit echo: {json.dumps(echoed.json)}")
+        print(f"MeshAgent create dev toolkit echo: {json.dumps(echoed.json)}")
         if echoed.json.get("echo") != message:
             raise RuntimeError("Local Python agent toolkit proof failed.")
 
         await write_agent_proof(probe, message)
-        print(f"MeshAgent init dev toolkit proof wrote: agent-proof.json {probe}")
+        print(f"MeshAgent create dev toolkit proof wrote: agent-proof.json {probe}")
         hold_seconds = float(
             os.environ.get("MESHAGENT_INIT_DEV_TOOLKIT_HOLD_SECONDS") or "0"
         )
         if hold_seconds > 0:
-            print(f"MeshAgent init dev toolkit holding registration for {hold_seconds}s")
+            print(f"MeshAgent create dev toolkit holding registration for {hold_seconds}s")
             await asyncio.sleep(hold_seconds)
     finally:
         await hosted_toolkit.stop()
@@ -654,7 +654,7 @@ PYTHON_DEV_CONTENT_JSON = """\
   "items": {
     "hero": {
       "id": "hero",
-      "headline": "hello from meshagent init",
+      "headline": "hello from meshagent create",
       "body": "Run ./scripts/dev.sh to let the local MeshAgent toolkit update this content."
     }
   }
@@ -667,7 +667,7 @@ NODE_DEV_CONTENT_JSON = """\
   "items": {
     "hero": {
       "id": "hero",
-      "headline": "hello from meshagent init",
+      "headline": "hello from meshagent create",
       "body": "Run npm run dev to let the local MeshAgent toolkit update this content."
     }
   }
@@ -689,7 +689,7 @@ function defaultContent() {
     items: {
       hero: {
         id: "hero",
-        headline: "hello from meshagent init",
+        headline: "hello from meshagent create",
         body: "Run npm run dev to let the local MeshAgent toolkit update this content.",
       },
     },
@@ -852,7 +852,7 @@ async function runDevContentToolkit(focus, existingRoom) {
         body: `This text was created by the local __LANGUAGE_LABEL__ content toolkit for ${focus}.`,
       },
     });
-    console.log(`MeshAgent init dev toolkit create: ${JSON.stringify(created.json)}`);
+    console.log(`MeshAgent create dev toolkit create: ${JSON.stringify(created.json)}`);
 
     const headline = `MeshAgent local dev proof ${probe}`;
     const updated = await room.agents.invokeTool({
@@ -864,14 +864,14 @@ async function runDevContentToolkit(focus, existingRoom) {
         body: `The room invoked the local __LANGUAGE_LABEL__ toolkit for ${focus}, and the toolkit updated ${contentDisplayPath}.`,
       },
     });
-    console.log(`MeshAgent init dev toolkit update: ${JSON.stringify(updated.json)}`);
+    console.log(`MeshAgent create dev toolkit update: ${JSON.stringify(updated.json)}`);
 
     const searched = await room.agents.invokeTool({
       toolkit: toolkitName,
       tool: "search",
       arguments: { query: probe },
     });
-    console.log(`MeshAgent init dev toolkit search: ${JSON.stringify(searched.json)}`);
+    console.log(`MeshAgent create dev toolkit search: ${JSON.stringify(searched.json)}`);
 
     const content = await readContent();
     const activeItem = content.items?.[content.activeId];
@@ -883,10 +883,10 @@ async function runDevContentToolkit(focus, existingRoom) {
       throw new Error("Local content toolkit proof did not update searchable web content.");
     }
 
-    console.log(`MeshAgent init dev toolkit proof wrote: ${contentDisplayPath} ${probe}`);
+    console.log(`MeshAgent create dev toolkit proof wrote: ${contentDisplayPath} ${probe}`);
     const holdSeconds = Number.parseFloat(process.env.MESHAGENT_INIT_DEV_TOOLKIT_HOLD_SECONDS ?? "0");
     if (Number.isFinite(holdSeconds) && holdSeconds > 0) {
-      console.log(`MeshAgent init dev toolkit holding registration for ${holdSeconds}s`);
+      console.log(`MeshAgent create dev toolkit holding registration for ${holdSeconds}s`);
       await sleep(holdSeconds * 1000);
     }
   } finally {
@@ -1024,14 +1024,14 @@ async function runDevAgentToolkit(existingRoom) {
       tool: "ping",
       arguments: {},
     });
-    console.log(`MeshAgent init dev toolkit ping: ${JSON.stringify(pinged.json)}`);
+    console.log(`MeshAgent create dev toolkit ping: ${JSON.stringify(pinged.json)}`);
 
     const status = await room.agents.invokeTool({
       toolkit: toolkitName,
       tool: "status",
       arguments: {},
     });
-    console.log(`MeshAgent init dev toolkit status: ${JSON.stringify(status.json)}`);
+    console.log(`MeshAgent create dev toolkit status: ${JSON.stringify(status.json)}`);
 
     const message = `MeshAgent local dev proof ${probe}`;
     const echoed = await room.agents.invokeTool({
@@ -1039,16 +1039,16 @@ async function runDevAgentToolkit(existingRoom) {
       tool: "echo",
       arguments: { message },
     });
-    console.log(`MeshAgent init dev toolkit echo: ${JSON.stringify(echoed.json)}`);
+    console.log(`MeshAgent create dev toolkit echo: ${JSON.stringify(echoed.json)}`);
     if (echoed.json?.echo !== message) {
       throw new Error("Local __LANGUAGE_LABEL__ agent toolkit proof did not echo the probe.");
     }
 
     await writeAgentProof({ probe, echo: message });
-    console.log(`MeshAgent init dev toolkit proof wrote: ${proofDisplayPath} ${probe}`);
+    console.log(`MeshAgent create dev toolkit proof wrote: ${proofDisplayPath} ${probe}`);
     const holdSeconds = Number.parseFloat(process.env.MESHAGENT_INIT_DEV_TOOLKIT_HOLD_SECONDS ?? "0");
     if (Number.isFinite(holdSeconds) && holdSeconds > 0) {
-      console.log(`MeshAgent init dev toolkit holding registration for ${holdSeconds}s`);
+      console.log(`MeshAgent create dev toolkit holding registration for ${holdSeconds}s`);
       await sleep(holdSeconds * 1000);
     }
   } finally {
@@ -1136,7 +1136,7 @@ const server = http.createServer(async (request, response) => {
       const content = await readContent();
       const activeItem = content.items?.[content.activeId] ?? content.items?.hero;
       response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-      response.end(`${activeItem?.headline ?? "hello from meshagent init"}\\n${activeItem?.body ?? ""}\\n`);
+      response.end(`${activeItem?.headline ?? "hello from meshagent create"}\\n${activeItem?.body ?? ""}\\n`);
       return;
     }
 
@@ -1156,7 +1156,7 @@ server.listen(port, "0.0.0.0", () => {
 });
 
 runDevContentToolkit("webserver").catch((error) => {
-  console.error("Unable to run MeshAgent init dev content toolkit proof:", error);
+  console.error("Unable to run MeshAgent create dev content toolkit proof:", error);
   process.exitCode = 1;
 });
 """
@@ -1467,7 +1467,7 @@ async function readContent() {
       items: {
         hero: {
           id: "hero",
-          headline: "hello from meshagent init",
+          headline: "hello from meshagent create",
           body: "Run npm run dev to let the local MeshAgent toolkit update this content.",
         },
       },
@@ -1621,7 +1621,7 @@ async function main() {
         body: "This text was created by the local React content toolkit.",
       },
     });
-    console.log(`MeshAgent init dev toolkit create: ${JSON.stringify(created.json)}`);
+    console.log(`MeshAgent create dev toolkit create: ${JSON.stringify(created.json)}`);
 
     const headline = `MeshAgent local dev proof ${probe}`;
     const updated = await room.agents.invokeTool({
@@ -1633,14 +1633,14 @@ async function main() {
         body: "The room invoked the local toolkit, and the toolkit updated src/dev-content.json.",
       },
     });
-    console.log(`MeshAgent init dev toolkit update: ${JSON.stringify(updated.json)}`);
+    console.log(`MeshAgent create dev toolkit update: ${JSON.stringify(updated.json)}`);
 
     const searched = await room.agents.invokeTool({
       toolkit: toolkitName,
       tool: "search",
       arguments: { query: probe },
     });
-    console.log(`MeshAgent init dev toolkit search: ${JSON.stringify(searched.json)}`);
+    console.log(`MeshAgent create dev toolkit search: ${JSON.stringify(searched.json)}`);
 
     const content = await readContent();
     const activeItem = content.items?.[content.activeId];
@@ -1652,10 +1652,10 @@ async function main() {
       throw new Error("Local React content toolkit proof did not update searchable web content.");
     }
 
-    console.log(`MeshAgent init dev toolkit proof wrote: src/dev-content.json ${probe}`);
+    console.log(`MeshAgent create dev toolkit proof wrote: src/dev-content.json ${probe}`);
     const holdSeconds = Number.parseFloat(process.env.MESHAGENT_INIT_DEV_TOOLKIT_HOLD_SECONDS ?? "0");
     if (Number.isFinite(holdSeconds) && holdSeconds > 0) {
-      console.log(`MeshAgent init dev toolkit holding registration for ${holdSeconds}s`);
+      console.log(`MeshAgent create dev toolkit holding registration for ${holdSeconds}s`);
       await sleep(holdSeconds * 1000);
     }
   } finally {
@@ -1665,7 +1665,7 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error("Unable to run MeshAgent init dev content toolkit proof:", error);
+  console.error("Unable to run MeshAgent create dev content toolkit proof:", error);
   process.exitCode = 1;
 });
 """
@@ -1676,7 +1676,7 @@ REACT_DEV_CONTENT_JSON = """\
   "items": {
     "hero": {
       "id": "hero",
-      "headline": "hello from meshagent init",
+      "headline": "hello from meshagent create",
       "body": "Run npm run dev to let the local MeshAgent toolkit update this content."
     }
   }
@@ -1721,7 +1721,7 @@ REACT_INDEX_HTML = """\
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MeshAgent Init</title>
+    <title>MeshAgent Create</title>
   </head>
   <body>
     <div id="root"></div>
@@ -1840,7 +1840,7 @@ app.Urls.Add($"http://0.0.0.0:{port}");
 app.MapGet("/health", () => Results.Text("ok\\n", "text/plain"));
 app.MapGet("/status", () => Results.Text("ready\\n", "text/plain"));
 app.MapGet("/api/ping", () => Results.Json(new { pong = true }));
-app.MapGet("/", () => Results.Text("hello from meshagent init\\n", "text/plain"));
+app.MapGet("/", () => Results.Text("hello from meshagent create\\n", "text/plain"));
 
 _ = PublishDevReadyMarkerAsync("webserver");
 
@@ -1874,7 +1874,7 @@ static async Task PublishDevReadyMarkerAsync(string focus)
         Encoding.UTF8.GetBytes(payload),
         overwrite: true,
         mimeType: "application/json");
-    Console.WriteLine($"MeshAgent init dev probe wrote: {readyPath} {probe}");
+    Console.WriteLine($"MeshAgent create dev probe wrote: {readyPath} {probe}");
     await room.WaitForCloseAsync();
 }
 """
@@ -1921,7 +1921,7 @@ static async Task PublishDevReadyMarkerAsync(RoomClient room)
         Encoding.UTF8.GetBytes(payload),
         overwrite: true,
         mimeType: "application/json");
-    Console.WriteLine($"MeshAgent init dev probe wrote: {readyPath} {probe}");
+    Console.WriteLine($"MeshAgent create dev probe wrote: {readyPath} {probe}");
 }
 """
 
@@ -2082,7 +2082,7 @@ Future<bool> publishDevReadyMarker(RoomClient room) async {
     overwrite: true,
     mimeType: 'application/json',
   );
-  print('MeshAgent init dev probe wrote: $readyPath $probe');
+  print('MeshAgent create dev probe wrote: $readyPath $probe');
   return true;
 }
 
@@ -2213,7 +2213,7 @@ Future<void> main() async {
     overwrite: true,
     mimeType: 'application/json',
   );
-  print('MeshAgent init dev probe wrote: $readyPath $probe');
+  print('MeshAgent create dev probe wrote: $readyPath $probe');
   room.dispose();
 }
 
@@ -2243,11 +2243,11 @@ class MeshAgentInitApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'MeshAgent Init',
+      title: 'MeshAgent Create',
       home: Scaffold(
         body: Center(
           child: Text(
-            'hello from meshagent init',
+            'hello from meshagent create',
             style: Theme.of(context).textTheme.headlineMedium,
           ),
         ),
@@ -2265,7 +2265,7 @@ FLUTTER_INDEX_HTML = """\
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MeshAgent Init</title>
+  <title>MeshAgent Create</title>
 </head>
 <body>
   <script src="flutter_bootstrap.js" async></script>
@@ -2795,7 +2795,7 @@ def _run_init_tui(
     language_choices: Sequence[tuple[str, str, str, tuple[str, ...]]],
     focus_choices: Sequence[tuple[str, str, str]],
 ) -> tuple[str, str] | None:
-    from meshagent.cli.tui.init import (
+    from meshagent.cli.tui.create import (
         InitFocusChoice,
         InitLanguageChoice,
         run_init_wizard_tui,
@@ -2823,7 +2823,7 @@ def _run_init_tui(
 
 
 def _run_existing_project_tui() -> ExistingProjectSelection | None:
-    from meshagent.cli.tui.init import run_existing_project_init_tui
+    from meshagent.cli.tui.create import run_existing_project_init_tui
 
     result = asyncio.run(run_existing_project_init_tui())
     if result.status != "completed" or result.action is None:
@@ -2881,7 +2881,7 @@ def _print_created_report(*, template: InitTemplate) -> None:
 
 
 @click.command(
-    "init",
+    "create",
     help="Create a minimal deployable hello world project.",
 )
 @click.option(
@@ -2915,7 +2915,7 @@ def _print_created_report(*, template: InitTemplate) -> None:
     required=False,
     type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
 )
-def init_command(
+def create_command(
     path: Path | None = None,
     language: str | None = None,
     focus: str | None = None,
@@ -2926,7 +2926,7 @@ def init_command(
     root = (path or Path.cwd()).resolve()
     root.mkdir(parents=True, exist_ok=True)
 
-    click.echo("meshagent init")
+    click.echo("meshagent create")
     click.echo(f"Project: {root}")
 
     is_interactive_stdio = _stdio_is_interactive()

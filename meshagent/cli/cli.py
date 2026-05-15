@@ -105,9 +105,9 @@ app.add_lazy_command(
     hidden=True,
 )
 app.add_lazy_command(
-    name="init",
-    module="meshagent.cli.init",
-    attribute="init_command",
+    name="create",
+    module="meshagent.cli.create",
+    attribute="create_command",
     help="Create a minimal deployable hello world project",
     hidden=True,
 )

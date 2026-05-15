@@ -45,6 +45,7 @@ def test_root_help_hides_legacy_command_namespaces() -> None:
     assert result.exit_code == 0
     assert "│ build" in result.output
     assert "│ deploy" in result.output
+    assert "│ create" not in result.output
     assert "│ doctor" not in result.output
     assert "│ init" not in result.output
     assert "│ launch" in result.output
@@ -55,7 +56,7 @@ def test_root_help_hides_legacy_command_namespaces() -> None:
     assert "│ image" not in result.output
 
 
-def test_root_registers_init_and_doctor_as_hidden_commands() -> None:
+def test_root_registers_create_and_doctor_as_hidden_commands() -> None:
     registrations = {
         registration.name: registration
         for registration in cli.app.registered_lazy_commands
@@ -63,8 +64,9 @@ def test_root_registers_init_and_doctor_as_hidden_commands() -> None:
 
     assert registrations["doctor"].module == "meshagent.cli.doctor"
     assert registrations["doctor"].hidden is True
-    assert registrations["init"].module == "meshagent.cli.init"
-    assert registrations["init"].hidden is True
+    assert registrations["create"].module == "meshagent.cli.create"
+    assert registrations["create"].hidden is True
+    assert "init" not in registrations
 
 
 def test_app_prints_room_exception_without_traceback(capsys) -> None:

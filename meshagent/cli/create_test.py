@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from click.testing import CliRunner
 
-from meshagent.cli import init as init_module
+from meshagent.cli import create as create_module
 from meshagent.cli.doctor import diagnose_project
-from meshagent.cli.init import init_command
+from meshagent.cli.create import create_command
 
 
 def _assert_node_content_toolkit(
@@ -59,11 +59,11 @@ def _assert_node_agent_toolkit(
 def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> None:
     (tmp_path / ".gitkeep").write_text("", encoding="utf-8")
 
-    result = CliRunner().invoke(init_command, [str(tmp_path)])
+    result = CliRunner().invoke(create_command, [str(tmp_path)])
     diagnosis = diagnose_project(tmp_path)
 
     assert result.exit_code == 0
-    assert "meshagent init" in result.output
+    assert "meshagent create" in result.output
     assert "Created a minimal deployable Python backend agent" in result.output
     assert "meshagent doctor" in result.output
     assert "MESHAGENT_ROOM=<room> ./scripts/dev.sh" in result.output
@@ -134,7 +134,7 @@ def test_init_renders_meshagent_image_prefix_from_environment(
     monkeypatch.setenv("MESHAGENT_IMAGE_PREFIX", "registry.example.com/custom")
 
     result = CliRunner().invoke(
-        init_command,
+        create_command,
         [
             "--language",
             "python",
@@ -153,7 +153,7 @@ def test_init_renders_meshagent_image_prefix_from_environment(
 
 def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     result = CliRunner().invoke(
-        init_command,
+        create_command,
         [
             "--language",
             "python",
@@ -201,7 +201,7 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     assert "MESHAGENT_INIT_DEV_PROBE" in server_py
     assert "room.agents.invoke_tool" in server_py
     assert "room.storage.upload" not in server_py
-    assert "hello from meshagent init" in dev_content
+    assert "hello from meshagent create" in dev_content
     assert "python-sdk-slim" in dockerfile
     assert "FROM scratch" in dockerfile
     assert "LABEL meshagent.runtime=python" in dockerfile
@@ -222,7 +222,7 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
 
 def test_init_creates_javascript_webserver_non_interactively(tmp_path) -> None:
     result = CliRunner().invoke(
-        init_command,
+        create_command,
         [
             "--language",
             "javascript",
@@ -263,7 +263,7 @@ def test_init_creates_javascript_webserver_non_interactively(tmp_path) -> None:
     assert '"@vercel/ncc"' in package_text
     assert "@meshagent/meshagent" in package_text
     server_text = server_js.read_text(encoding="utf-8")
-    assert "hello from meshagent init" in server_text
+    assert "hello from meshagent create" in server_text
     assert 'request.url === "/status"' in server_text
     assert 'request.url === "/api/ping"' in server_text
     _assert_node_content_toolkit(
@@ -273,7 +273,7 @@ def test_init_creates_javascript_webserver_non_interactively(tmp_path) -> None:
         content_path="dev-content.json",
     )
     assert "await readContent()" in server_text
-    assert "hello from meshagent init" in dev_content
+    assert "hello from meshagent create" in dev_content
     assert "node-sdk" in dockerfile_text
     assert "RUN npm run build" in dockerfile_text
     assert "COPY --from=build /app/dist/index.js /app/index.js" in dockerfile_text
@@ -284,7 +284,7 @@ def test_init_creates_javascript_webserver_non_interactively(tmp_path) -> None:
 
 def test_init_creates_javascript_backend_agent_non_interactively(tmp_path) -> None:
     result = CliRunner().invoke(
-        init_command,
+        create_command,
         [
             "--language",
             "javascript",
@@ -333,7 +333,7 @@ def test_init_creates_javascript_backend_agent_non_interactively(tmp_path) -> No
 
 def test_init_creates_typescript_webserver_non_interactively(tmp_path) -> None:
     result = CliRunner().invoke(
-        init_command,
+        create_command,
         [
             "--language",
             "typescript",
@@ -381,7 +381,7 @@ def test_init_creates_typescript_webserver_non_interactively(tmp_path) -> None:
         content_path="src/dev-content.json",
     )
     assert "await readContent()" in server_ts
-    assert "hello from meshagent init" in (
+    assert "hello from meshagent create" in (
         tmp_path / "src" / "dev-content.json"
     ).read_text(encoding="utf-8")
     assert "node-sdk" in dockerfile_text
@@ -397,7 +397,7 @@ def test_init_creates_typescript_webserver_non_interactively(tmp_path) -> None:
 
 def test_init_creates_typescript_backend_agent_non_interactively(tmp_path) -> None:
     result = CliRunner().invoke(
-        init_command,
+        create_command,
         [
             "--language",
             "ts",
@@ -449,7 +449,7 @@ def test_init_creates_typescript_backend_agent_non_interactively(tmp_path) -> No
 
 def test_init_creates_react_webserver_non_interactively(tmp_path) -> None:
     result = CliRunner().invoke(
-        init_command,
+        create_command,
         [
             "--language",
             "react",
@@ -510,7 +510,7 @@ def test_init_creates_react_webserver_non_interactively(tmp_path) -> None:
     assert "room.storage.upload" not in dev_toolkit
     assert 'import devContent from "./dev-content.json"' in main_tsx
     assert "content.items[content.activeId]" in main_tsx
-    assert "hello from meshagent init" in dev_content
+    assert "hello from meshagent create" in dev_content
     assert "nginx:1.27-alpine" in dockerfile
     assert "listen 80" in dockerfile
     assert "location = /status" in dockerfile
@@ -523,7 +523,7 @@ def test_init_creates_react_webserver_non_interactively(tmp_path) -> None:
 
 def test_init_rejects_react_backend_agent(tmp_path) -> None:
     result = CliRunner().invoke(
-        init_command,
+        create_command,
         [
             "--language",
             "react",
@@ -543,7 +543,7 @@ def test_init_rejects_react_backend_agent(tmp_path) -> None:
 
 def test_init_creates_dotnet_backend_agent_non_interactively(tmp_path) -> None:
     result = CliRunner().invoke(
-        init_command,
+        create_command,
         [
             "--language",
             ".NET",
@@ -598,7 +598,7 @@ def test_init_creates_dotnet_backend_agent_non_interactively(tmp_path) -> None:
 
 def test_init_creates_dotnet_webserver_non_interactively(tmp_path) -> None:
     result = CliRunner().invoke(
-        init_command,
+        create_command,
         [
             "--language",
             "dotnet",
@@ -650,7 +650,7 @@ def test_init_creates_dotnet_webserver_non_interactively(tmp_path) -> None:
 
 def test_init_creates_flutter_webserver_non_interactively(tmp_path) -> None:
     result = CliRunner().invoke(
-        init_command,
+        create_command,
         [
             "--language",
             "flutter",
@@ -710,7 +710,7 @@ def test_init_creates_flutter_webserver_non_interactively(tmp_path) -> None:
 
 def test_init_creates_dart_backend_agent_non_interactively(tmp_path) -> None:
     result = CliRunner().invoke(
-        init_command,
+        create_command,
         [
             "--language",
             "dart",
@@ -771,7 +771,7 @@ def test_init_creates_dart_backend_agent_non_interactively(tmp_path) -> None:
 
 def test_init_rejects_unknown_language(tmp_path) -> None:
     result = CliRunner().invoke(
-        init_command,
+        create_command,
         ["--language", "rust", "--no-interactive", str(tmp_path)],
     )
 
@@ -785,7 +785,7 @@ def test_init_rejects_unknown_language(tmp_path) -> None:
 
 def test_init_rejects_unknown_focus(tmp_path) -> None:
     result = CliRunner().invoke(
-        init_command,
+        create_command,
         ["--focus", "desktop", "--no-interactive", str(tmp_path)],
     )
 
@@ -798,7 +798,7 @@ def test_init_rejects_unknown_focus(tmp_path) -> None:
 def test_init_launches_tui_when_tty_and_language_or_focus_missing(
     tmp_path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(init_module, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(create_module, "_stdio_is_interactive", lambda: True)
 
     captured_languages: list[tuple[str, str, str, tuple[str, ...]]] = []
     captured_focuses: list[tuple[str, str, str]] = []
@@ -808,9 +808,9 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
         captured_focuses.extend(focus_choices)
         return "javascript", "backend-agent"
 
-    monkeypatch.setattr(init_module, "_run_init_tui", fake_run_init_tui)
+    monkeypatch.setattr(create_module, "_run_init_tui", fake_run_init_tui)
 
-    result = CliRunner().invoke(init_command, [str(tmp_path)])
+    result = CliRunner().invoke(create_command, [str(tmp_path)])
 
     assert result.exit_code == 0
     assert [choice[0] for choice in captured_languages] == [
@@ -840,7 +840,7 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
 
 
 def test_init_tui_language_screen_lists_languages_only(monkeypatch) -> None:
-    from meshagent.cli.tui.init import (
+    from meshagent.cli.tui.create import (
         InitFocusChoice,
         InitLanguageChoice,
         InitWizardApp,
@@ -903,7 +903,7 @@ def test_init_tui_language_screen_lists_languages_only(monkeypatch) -> None:
 def test_init_tui_focus_screen_asks_for_webserver_or_backend_agent(
     monkeypatch,
 ) -> None:
-    from meshagent.cli.tui.init import (
+    from meshagent.cli.tui.create import (
         InitFocusChoice,
         InitLanguageChoice,
         InitWizardApp,
@@ -965,7 +965,7 @@ def test_init_tui_focus_screen_asks_for_webserver_or_backend_agent(
 def test_init_tui_existing_project_screen_offers_doctor_or_subfolder(
     monkeypatch,
 ) -> None:
-    from meshagent.cli.tui.init import (
+    from meshagent.cli.tui.create import (
         INIT_EXISTING_DOCTOR_OPTION_ID,
         INIT_EXISTING_SUBFOLDER_OPTION_ID,
         InitExistingProjectApp,
@@ -998,7 +998,7 @@ def test_init_tui_existing_project_screen_offers_doctor_or_subfolder(
     app._show_existing_project_choice()
 
     assert captured == {
-        "title": "MeshAgent Init",
+        "title": "MeshAgent Create",
         "message": "This directory already contains project files.",
         "help_text": "Choose an option. Esc or Ctrl+C cancels.",
         "options": [
@@ -1015,7 +1015,7 @@ def test_init_tui_existing_project_screen_offers_doctor_or_subfolder(
 def test_init_tui_existing_project_subfolder_prompt_accepts_folder_name(
     monkeypatch,
 ) -> None:
-    from meshagent.cli.tui.init import (
+    from meshagent.cli.tui.create import (
         EXISTING_ACTION_SUBFOLDER,
         InitExistingProjectApp,
     )
@@ -1041,7 +1041,7 @@ def test_init_tui_existing_project_subfolder_prompt_accepts_folder_name(
 def test_init_tui_existing_project_subfolder_prompt_rejects_paths(
     monkeypatch,
 ) -> None:
-    from meshagent.cli.tui.init import InitExistingProjectApp
+    from meshagent.cli.tui.create import InitExistingProjectApp
 
     app = InitExistingProjectApp()
     errors: list[str] = []
@@ -1061,22 +1061,22 @@ def test_init_existing_code_interactive_can_run_doctor_here(
     (tmp_path / "server.py").write_text("print('already here')\n", encoding="utf-8")
     doctor_paths: list[object] = []
 
-    monkeypatch.setattr(init_module, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(create_module, "_stdio_is_interactive", lambda: True)
     monkeypatch.setattr(
-        init_module,
+        create_module,
         "_run_existing_project_tui",
-        lambda: init_module.ExistingProjectSelection(action="run-doctor"),
+        lambda: create_module.ExistingProjectSelection(action="run-doctor"),
     )
-    monkeypatch.setattr(init_module, "_run_doctor", doctor_paths.append)
+    monkeypatch.setattr(create_module, "_run_doctor", doctor_paths.append)
     monkeypatch.setattr(
-        init_module,
+        create_module,
         "_run_init_tui",
         lambda *, language_choices, focus_choices: (_ for _ in ()).throw(
             AssertionError("language/focus TUI should not launch")
         ),
     )
 
-    result = CliRunner().invoke(init_command, [str(tmp_path)])
+    result = CliRunner().invoke(create_command, [str(tmp_path)])
 
     assert result.exit_code == 0
     assert doctor_paths == [tmp_path.resolve()]
@@ -1089,22 +1089,22 @@ def test_init_existing_code_interactive_creates_project_in_subfolder(
 ) -> None:
     (tmp_path / "server.py").write_text("print('already here')\n", encoding="utf-8")
 
-    monkeypatch.setattr(init_module, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(create_module, "_stdio_is_interactive", lambda: True)
     monkeypatch.setattr(
-        init_module,
+        create_module,
         "_run_existing_project_tui",
-        lambda: init_module.ExistingProjectSelection(
+        lambda: create_module.ExistingProjectSelection(
             action="create-subfolder",
             subfolder_name="hello-agent",
         ),
     )
     monkeypatch.setattr(
-        init_module,
+        create_module,
         "_run_init_tui",
         lambda *, language_choices, focus_choices: ("typescript", "backend-agent"),
     )
 
-    result = CliRunner().invoke(init_command, [str(tmp_path)])
+    result = CliRunner().invoke(create_command, [str(tmp_path)])
     project_root = tmp_path / "hello-agent"
 
     assert result.exit_code == 0
@@ -1125,17 +1125,17 @@ def test_init_existing_code_interactive_rejects_existing_subfolder(
     (tmp_path / "server.py").write_text("print('already here')\n", encoding="utf-8")
     (tmp_path / "hello-agent").mkdir()
 
-    monkeypatch.setattr(init_module, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(create_module, "_stdio_is_interactive", lambda: True)
     monkeypatch.setattr(
-        init_module,
+        create_module,
         "_run_existing_project_tui",
-        lambda: init_module.ExistingProjectSelection(
+        lambda: create_module.ExistingProjectSelection(
             action="create-subfolder",
             subfolder_name="hello-agent",
         ),
     )
 
-    result = CliRunner().invoke(init_command, [str(tmp_path)])
+    result = CliRunner().invoke(create_command, [str(tmp_path)])
 
     assert result.exit_code == 1
     assert "Subfolder already exists" in result.output
@@ -1143,9 +1143,9 @@ def test_init_existing_code_interactive_rejects_existing_subfolder(
 
 
 def test_init_no_interactive_bypasses_tui_even_when_tty(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(init_module, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(create_module, "_stdio_is_interactive", lambda: True)
     monkeypatch.setattr(
-        init_module,
+        create_module,
         "_run_init_tui",
         lambda *, language_choices, focus_choices: (_ for _ in ()).throw(
             AssertionError("TUI should not launch")
@@ -1153,7 +1153,7 @@ def test_init_no_interactive_bypasses_tui_even_when_tty(tmp_path, monkeypatch) -
     )
 
     result = CliRunner().invoke(
-        init_command,
+        create_command,
         [
             "--no-interactive",
             "--language",
@@ -1170,7 +1170,7 @@ def test_init_no_interactive_bypasses_tui_even_when_tty(tmp_path, monkeypatch) -
 
 
 def test_init_interactive_requires_tty_when_language_missing(tmp_path) -> None:
-    result = CliRunner().invoke(init_command, ["--interactive", str(tmp_path)])
+    result = CliRunner().invoke(create_command, ["--interactive", str(tmp_path)])
 
     assert result.exit_code == 1
     assert "Interactive mode requires a TTY" in result.output
@@ -1181,7 +1181,7 @@ def test_init_recommends_doctor_for_existing_code(tmp_path) -> None:
     (tmp_path / "server.py").write_text("print('already here')\n", encoding="utf-8")
 
     result = CliRunner().invoke(
-        init_command,
+        create_command,
         [
             "--language",
             "javascript",
@@ -1193,7 +1193,7 @@ def test_init_recommends_doctor_for_existing_code(tmp_path) -> None:
     )
 
     assert result.exit_code == 0
-    assert "meshagent init" in result.output
+    assert "meshagent create" in result.output
     assert "Existing application code" in result.output
     assert "No files were written" in result.output
     assert "meshagent doctor" in result.output
