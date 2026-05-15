@@ -103,6 +103,13 @@ def test_room_agents_help_lists_call_command() -> None:
     assert "│ call" in result.output
 
 
+def test_agents_help_lists_use_command() -> None:
+    result = CliRunner().invoke(async_typer.get_command(cli.app), ["agents", "--help"])
+
+    assert result.exit_code == 0
+    assert "│ use" in result.output
+
+
 def test_room_agents_call_help_lists_call_targets() -> None:
     result = CliRunner().invoke(
         async_typer.get_command(cli.app), ["room", "agents", "call", "--help"]
