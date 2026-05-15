@@ -64,7 +64,7 @@ DEFAULT_FOCUS = AGENT_FOCUS
 
 
 @dataclass(frozen=True, slots=True)
-class InitTemplate:
+class CreateTemplate:
     language_id: str
     focus_id: str
     label: str
@@ -74,14 +74,14 @@ class InitTemplate:
 
 
 @dataclass(frozen=True, slots=True)
-class InitLanguage:
+class CreateLanguage:
     id: str
     label: str
     description: str
 
 
 @dataclass(frozen=True, slots=True)
-class InitFocus:
+class CreateFocus:
     id: str
     label: str
     description: str
@@ -110,7 +110,7 @@ from meshagent.tools.hosting import _start_hosted_toolkit
 
 
 CONTENT_PATH = Path(__file__).with_name("dev-content.json")
-TOOLKIT_NAME = "meshagent.init.python-content"
+TOOLKIT_NAME = "meshagent.create.python-content"
 
 
 def default_content() -> dict:
@@ -271,7 +271,7 @@ async def ping(request: web.Request) -> web.Response:
 
 
 async def run_dev_content_toolkit() -> None:
-    probe = os.environ.get("MESHAGENT_INIT_DEV_PROBE")
+    probe = os.environ.get("MESHAGENT_CREATE_DEV_PROBE")
     room_name = os.environ.get("MESHAGENT_ROOM")
     token = os.environ.get("MESHAGENT_TOKEN")
     if not probe or not room_name or not token:
@@ -287,7 +287,7 @@ async def run_dev_content_toolkit() -> None:
             toolkit=PythonContentToolkit(),
         )
         try:
-            proof_id = "meshagent-init-proof"
+            proof_id = "meshagent-create-proof"
             created = await room.agents.invoke_tool(
                 toolkit=TOOLKIT_NAME,
                 tool="create",
@@ -328,7 +328,7 @@ async def run_dev_content_toolkit() -> None:
 
             print(f"MeshAgent create dev toolkit proof wrote: dev-content.json {probe}")
             hold_seconds = float(
-                os.environ.get("MESHAGENT_INIT_DEV_TOOLKIT_HOLD_SECONDS") or "0"
+                os.environ.get("MESHAGENT_CREATE_DEV_TOOLKIT_HOLD_SECONDS") or "0"
             )
             if hold_seconds > 0:
                 print(
@@ -377,7 +377,7 @@ from meshagent.tools.hosting import _start_hosted_toolkit
 
 
 PROOF_PATH = Path(__file__).with_name("agent-proof.json")
-TOOLKIT_NAME = "meshagent.init.python-agent"
+TOOLKIT_NAME = "meshagent.create.python-agent"
 
 
 class PingTool(FunctionTool):
@@ -471,7 +471,7 @@ async def main() -> None:
 
 
 async def run_agent_toolkit_proof(room: RoomClient) -> None:
-    probe = os.environ.get("MESHAGENT_INIT_DEV_PROBE")
+    probe = os.environ.get("MESHAGENT_CREATE_DEV_PROBE")
     hosted_toolkit = await _start_hosted_toolkit(
         room=room,
         toolkit=PythonAgentToolkit(),
@@ -508,7 +508,7 @@ async def run_agent_toolkit_proof(room: RoomClient) -> None:
         await write_agent_proof(probe, message)
         print(f"MeshAgent create dev toolkit proof wrote: agent-proof.json {probe}")
         hold_seconds = float(
-            os.environ.get("MESHAGENT_INIT_DEV_TOOLKIT_HOLD_SECONDS") or "0"
+            os.environ.get("MESHAGENT_CREATE_DEV_TOOLKIT_HOLD_SECONDS") or "0"
         )
         if hold_seconds > 0:
             print(f"MeshAgent create dev toolkit holding registration for {hold_seconds}s")
@@ -527,7 +527,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "meshagent-init-python-webserver"
+name = "meshagent-create-python-webserver"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
@@ -548,7 +548,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "meshagent-init-python-agent"
+name = "meshagent-create-python-agent"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
@@ -635,7 +635,7 @@ PYTHON_WEBSERVER_DEPLOY_SCRIPT = """\
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-IMAGE_TAG="${IMAGE_TAG:-meshagent-init-python-webserver:dev}"
+IMAGE_TAG="${IMAGE_TAG:-meshagent-create-python-webserver:dev}"
 meshagent deploy . --tag "$IMAGE_TAG" --public --liveness /health --wait
 """
 
@@ -644,7 +644,7 @@ PYTHON_AGENT_DEPLOY_SCRIPT = """\
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-IMAGE_TAG="${IMAGE_TAG:-meshagent-init-python-agent:dev}"
+IMAGE_TAG="${IMAGE_TAG:-meshagent-create-python-agent:dev}"
 meshagent deploy . --tag "$IMAGE_TAG" --meshagent-token agentDefault --wait
 """
 
@@ -826,7 +826,7 @@ class __CLASS_PREFIX__ContentToolkit extends Toolkit {
 }
 
 async function runDevContentToolkit(focus, existingRoom) {
-  const probe = process.env.MESHAGENT_INIT_DEV_PROBE;
+  const probe = process.env.MESHAGENT_CREATE_DEV_PROBE;
   if (!probe || !process.env.MESHAGENT_ROOM || !process.env.MESHAGENT_TOKEN) {
     return;
   }
@@ -842,7 +842,7 @@ async function runDevContentToolkit(focus, existingRoom) {
   });
 
   try {
-    const proofId = "meshagent-init-proof";
+    const proofId = "meshagent-create-proof";
     const created = await room.agents.invokeTool({
       toolkit: toolkitName,
       tool: "create",
@@ -884,7 +884,7 @@ async function runDevContentToolkit(focus, existingRoom) {
     }
 
     console.log(`MeshAgent create dev toolkit proof wrote: ${contentDisplayPath} ${probe}`);
-    const holdSeconds = Number.parseFloat(process.env.MESHAGENT_INIT_DEV_TOOLKIT_HOLD_SECONDS ?? "0");
+    const holdSeconds = Number.parseFloat(process.env.MESHAGENT_CREATE_DEV_TOOLKIT_HOLD_SECONDS ?? "0");
     if (Number.isFinite(holdSeconds) && holdSeconds > 0) {
       console.log(`MeshAgent create dev toolkit holding registration for ${holdSeconds}s`);
       await sleep(holdSeconds * 1000);
@@ -998,7 +998,7 @@ class __CLASS_PREFIX__AgentToolkit extends Toolkit {
 }
 
 async function runDevAgentToolkit(existingRoom) {
-  const probe = process.env.MESHAGENT_INIT_DEV_PROBE;
+  const probe = process.env.MESHAGENT_CREATE_DEV_PROBE;
   if (!process.env.MESHAGENT_ROOM || !process.env.MESHAGENT_TOKEN) {
     return;
   }
@@ -1046,7 +1046,7 @@ async function runDevAgentToolkit(existingRoom) {
 
     await writeAgentProof({ probe, echo: message });
     console.log(`MeshAgent create dev toolkit proof wrote: ${proofDisplayPath} ${probe}`);
-    const holdSeconds = Number.parseFloat(process.env.MESHAGENT_INIT_DEV_TOOLKIT_HOLD_SECONDS ?? "0");
+    const holdSeconds = Number.parseFloat(process.env.MESHAGENT_CREATE_DEV_TOOLKIT_HOLD_SECONDS ?? "0");
     if (Number.isFinite(holdSeconds) && holdSeconds > 0) {
       console.log(`MeshAgent create dev toolkit holding registration for ${holdSeconds}s`);
       await sleep(holdSeconds * 1000);
@@ -1208,14 +1208,14 @@ main().catch((error) => {
 
 JAVASCRIPT_PACKAGE_JSON = f"""\
 {{
-  "name": "meshagent-init-javascript",
+  "name": "meshagent-create-javascript",
   "version": "0.1.0",
   "private": true,
   "type": "commonjs",
   "scripts": {{
     "build": "ncc build server.js -o dist",
     "dev": "meshagent room connect -- node server.js",
-    "deploy": "meshagent deploy . --tag meshagent-init-javascript:dev --public --liveness /health --wait",
+    "deploy": "meshagent deploy . --tag meshagent-create-javascript:dev --public --liveness /health --wait",
     "start": "node dist/index.js"
   }},
   "dependencies": {{
@@ -1229,14 +1229,14 @@ JAVASCRIPT_PACKAGE_JSON = f"""\
 
 JAVASCRIPT_AGENT_PACKAGE_JSON = f"""\
 {{
-  "name": "meshagent-init-javascript-agent",
+  "name": "meshagent-create-javascript-agent",
   "version": "0.1.0",
   "private": true,
   "type": "commonjs",
   "scripts": {{
     "build": "ncc build server.js -o dist",
     "dev": "meshagent room connect -- node server.js",
-    "deploy": "meshagent deploy . --tag meshagent-init-javascript-agent:dev --meshagent-token agentDefault --wait",
+    "deploy": "meshagent deploy . --tag meshagent-create-javascript-agent:dev --meshagent-token agentDefault --wait",
     "start": "node dist/index.js"
   }},
   "dependencies": {{
@@ -1251,7 +1251,7 @@ JAVASCRIPT_AGENT_PACKAGE_JSON = f"""\
 JAVASCRIPT_WEBSERVER = _node_webserver_source(
     language_label="JavaScript",
     class_prefix="JavaScript",
-    toolkit_name="meshagent.init.javascript-content",
+    toolkit_name="meshagent.create.javascript-content",
     content_path="dev-content.json",
 )
 
@@ -1259,7 +1259,7 @@ JAVASCRIPT_AGENT = _node_agent_source(
     language_label="JavaScript",
     language_id="javascript",
     class_prefix="JavaScript",
-    toolkit_name="meshagent.init.javascript-agent",
+    toolkit_name="meshagent.create.javascript-agent",
     proof_path="agent-proof.json",
 )
 
@@ -1313,14 +1313,14 @@ audit=false
 
 TYPESCRIPT_PACKAGE_JSON = f"""\
 {{
-  "name": "meshagent-init-typescript",
+  "name": "meshagent-create-typescript",
   "version": "0.1.0",
   "private": true,
   "type": "commonjs",
   "scripts": {{
     "build": "ncc build src/server.ts -o dist",
     "dev": "meshagent room connect -- tsx src/server.ts",
-    "deploy": "meshagent deploy . --tag meshagent-init-typescript:dev --public --liveness /health --wait",
+    "deploy": "meshagent deploy . --tag meshagent-create-typescript:dev --public --liveness /health --wait",
     "start": "node dist/index.js"
   }},
   "dependencies": {{
@@ -1337,14 +1337,14 @@ TYPESCRIPT_PACKAGE_JSON = f"""\
 
 TYPESCRIPT_AGENT_PACKAGE_JSON = f"""\
 {{
-  "name": "meshagent-init-typescript-agent",
+  "name": "meshagent-create-typescript-agent",
   "version": "0.1.0",
   "private": true,
   "type": "commonjs",
   "scripts": {{
     "build": "ncc build src/server.ts -o dist",
     "dev": "meshagent room connect -- tsx src/server.ts",
-    "deploy": "meshagent deploy . --tag meshagent-init-typescript-agent:dev --meshagent-token agentDefault --wait",
+    "deploy": "meshagent deploy . --tag meshagent-create-typescript-agent:dev --meshagent-token agentDefault --wait",
     "start": "node dist/index.js"
   }},
   "dependencies": {{
@@ -1377,7 +1377,7 @@ TYPESCRIPT_TSCONFIG = """\
 TYPESCRIPT_WEBSERVER = "// @ts-nocheck\n" + _node_webserver_source(
     language_label="TypeScript",
     class_prefix="TypeScript",
-    toolkit_name="meshagent.init.typescript-content",
+    toolkit_name="meshagent.create.typescript-content",
     content_path="src/dev-content.json",
 )
 
@@ -1385,7 +1385,7 @@ TYPESCRIPT_AGENT = "// @ts-nocheck\n" + _node_agent_source(
     language_label="TypeScript",
     language_id="typescript",
     class_prefix="TypeScript",
-    toolkit_name="meshagent.init.typescript-agent",
+    toolkit_name="meshagent.create.typescript-agent",
     proof_path="src/agent-proof.json",
 )
 
@@ -1424,14 +1424,14 @@ CMD ["index.js"]
 
 REACT_PACKAGE_JSON = f"""\
 {{
-  "name": "meshagent-init-react",
+  "name": "meshagent-create-react",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {{
     "build": "vite build",
     "dev": "meshagent room connect -- sh -c 'node scripts/dev-content-toolkit.js & vite --host 0.0.0.0'",
-    "deploy": "meshagent deploy . --tag meshagent-init-react:dev --public --liveness /health --room-mount /:/data:rw --wait"
+    "deploy": "meshagent deploy . --tag meshagent-create-react:dev --public --liveness /health --room-mount /:/data:rw --wait"
   }},
   "dependencies": {{
     "@meshagent/meshagent": "^{__version__}",
@@ -1456,7 +1456,7 @@ const { JsonContent, RoomClient, Tool, Toolkit, startHostedToolkit } = require("
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const contentPath = path.join(projectRoot, "src", "dev-content.json");
-const toolkitName = "meshagent.init.react-content";
+const toolkitName = "meshagent.create.react-content";
 
 async function readContent() {
   try {
@@ -1597,7 +1597,7 @@ class ReactContentToolkit extends Toolkit {
 }
 
 async function main() {
-  const probe = process.env.MESHAGENT_INIT_DEV_PROBE;
+  const probe = process.env.MESHAGENT_CREATE_DEV_PROBE;
   if (!probe || !process.env.MESHAGENT_ROOM || !process.env.MESHAGENT_TOKEN) {
     return;
   }
@@ -1611,7 +1611,7 @@ async function main() {
   });
 
   try {
-    const proofId = "meshagent-init-proof";
+    const proofId = "meshagent-create-proof";
     const created = await room.agents.invokeTool({
       toolkit: toolkitName,
       tool: "create",
@@ -1653,7 +1653,7 @@ async function main() {
     }
 
     console.log(`MeshAgent create dev toolkit proof wrote: src/dev-content.json ${probe}`);
-    const holdSeconds = Number.parseFloat(process.env.MESHAGENT_INIT_DEV_TOOLKIT_HOLD_SECONDS ?? "0");
+    const holdSeconds = Number.parseFloat(process.env.MESHAGENT_CREATE_DEV_TOOLKIT_HOLD_SECONDS ?? "0");
     if (Number.isFinite(holdSeconds) && holdSeconds > 0) {
       console.log(`MeshAgent create dev toolkit holding registration for ${holdSeconds}s`);
       await sleep(holdSeconds * 1000);
@@ -1848,8 +1848,8 @@ await app.RunAsync();
 
 static async Task PublishDevReadyMarkerAsync(string focus)
 {
-    var readyPath = Environment.GetEnvironmentVariable("MESHAGENT_INIT_DEV_READY_PATH");
-    var probe = Environment.GetEnvironmentVariable("MESHAGENT_INIT_DEV_PROBE");
+    var readyPath = Environment.GetEnvironmentVariable("MESHAGENT_CREATE_DEV_READY_PATH");
+    var probe = Environment.GetEnvironmentVariable("MESHAGENT_CREATE_DEV_PROBE");
     if (
         string.IsNullOrWhiteSpace(readyPath)
         || string.IsNullOrWhiteSpace(probe)
@@ -1902,8 +1902,8 @@ await Task.Delay(Timeout.InfiniteTimeSpan);
 
 static async Task PublishDevReadyMarkerAsync(RoomClient room)
 {
-    var readyPath = Environment.GetEnvironmentVariable("MESHAGENT_INIT_DEV_READY_PATH");
-    var probe = Environment.GetEnvironmentVariable("MESHAGENT_INIT_DEV_PROBE");
+    var readyPath = Environment.GetEnvironmentVariable("MESHAGENT_CREATE_DEV_READY_PATH");
+    var probe = Environment.GetEnvironmentVariable("MESHAGENT_CREATE_DEV_PROBE");
     if (string.IsNullOrWhiteSpace(readyPath) || string.IsNullOrWhiteSpace(probe))
     {
         return;
@@ -2008,7 +2008,7 @@ DOTNET_WEBSERVER_DEPLOY_SCRIPT = """\
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-IMAGE_TAG="${IMAGE_TAG:-meshagent-init-dotnet-webserver:dev}"
+IMAGE_TAG="${IMAGE_TAG:-meshagent-create-dotnet-webserver:dev}"
 meshagent deploy . --tag "$IMAGE_TAG" --public --liveness /health --wait
 """
 
@@ -2017,12 +2017,12 @@ DOTNET_AGENT_DEPLOY_SCRIPT = """\
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-IMAGE_TAG="${IMAGE_TAG:-meshagent-init-dotnet-agent:dev}"
+IMAGE_TAG="${IMAGE_TAG:-meshagent-create-dotnet-agent:dev}"
 meshagent deploy . --tag "$IMAGE_TAG" --meshagent-token agentDefault --wait
 """
 
 DART_AGENT_PUBSPEC = f"""\
-name: meshagent_init_dart_agent
+name: meshagent_create_dart_agent
 publish_to: "none"
 environment:
   sdk: ">=3.8.0 <4.0.0"
@@ -2064,8 +2064,8 @@ Future<void> main() async {
 }
 
 Future<bool> publishDevReadyMarker(RoomClient room) async {
-  final readyPath = Platform.environment['MESHAGENT_INIT_DEV_READY_PATH'];
-  final probe = Platform.environment['MESHAGENT_INIT_DEV_PROBE'];
+  final readyPath = Platform.environment['MESHAGENT_CREATE_DEV_READY_PATH'];
+  final probe = Platform.environment['MESHAGENT_CREATE_DEV_PROBE'];
   if (readyPath == null || readyPath.isEmpty || probe == null || probe.isEmpty) {
     return false;
   }
@@ -2152,12 +2152,12 @@ DART_AGENT_DEPLOY_SCRIPT = """\
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-IMAGE_TAG="${IMAGE_TAG:-meshagent-init-dart-agent:dev}"
+IMAGE_TAG="${IMAGE_TAG:-meshagent-create-dart-agent:dev}"
 meshagent deploy . --tag "$IMAGE_TAG" --meshagent-token agentDefault --wait
 """
 
 FLUTTER_PUBSPEC = f"""\
-name: meshagent_init_flutter
+name: meshagent_create_flutter
 description: A minimal deployable Flutter web app for MeshAgent.
 publish_to: "none"
 environment:
@@ -2177,8 +2177,8 @@ import 'dart:typed_data';
 import 'package:meshagent/meshagent.dart';
 
 Future<void> main() async {
-  final readyPath = Platform.environment['MESHAGENT_INIT_DEV_READY_PATH'];
-  final probe = Platform.environment['MESHAGENT_INIT_DEV_PROBE'];
+  final readyPath = Platform.environment['MESHAGENT_CREATE_DEV_READY_PATH'];
+  final probe = Platform.environment['MESHAGENT_CREATE_DEV_PROBE'];
   final roomName = Platform.environment['MESHAGENT_ROOM'];
   final token = Platform.environment['MESHAGENT_TOKEN'];
   if (
@@ -2234,11 +2234,11 @@ FLUTTER_MAIN = """\
 import 'package:flutter/material.dart';
 
 void main() {
-  runApp(const MeshAgentInitApp());
+  runApp(const MeshAgentCreateApp());
 }
 
-class MeshAgentInitApp extends StatelessWidget {
-  const MeshAgentInitApp({super.key});
+class MeshAgentCreateApp extends StatelessWidget {
+  const MeshAgentCreateApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -2332,7 +2332,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"
 export PUB_CACHE
-if [ -n "${MESHAGENT_INIT_DEV_PROBE:-}" ] && [ -n "${MESHAGENT_INIT_DEV_READY_PATH:-}" ]; then
+if [ -n "${MESHAGENT_CREATE_DEV_PROBE:-}" ] && [ -n "${MESHAGENT_CREATE_DEV_READY_PATH:-}" ]; then
   if command -v dart >/dev/null 2>&1; then
     meshagent room connect -- dart run tool/dev_room_proof.dart
   else
@@ -2352,7 +2352,7 @@ FLUTTER_DEPLOY_SCRIPT = """\
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-IMAGE_TAG="${IMAGE_TAG:-meshagent-init-flutter:dev}"
+IMAGE_TAG="${IMAGE_TAG:-meshagent-create-flutter:dev}"
 meshagent deploy . --tag "$IMAGE_TAG" --public --liveness /health --room-mount /:/data:rw --wait
 """
 
@@ -2393,54 +2393,54 @@ NPM_AGENT_NEXT_STEPS = (
     "npm run deploy",
 )
 
-LANGUAGES: Mapping[str, InitLanguage] = {
-    "python": InitLanguage(
+LANGUAGES: Mapping[str, CreateLanguage] = {
+    "python": CreateLanguage(
         id="python",
         label="Python",
         description="Python 3.13.",
     ),
-    "javascript": InitLanguage(
+    "javascript": CreateLanguage(
         id="javascript",
         label="JavaScript",
         description="Node.js/CommonJS.",
     ),
-    "typescript": InitLanguage(
+    "typescript": CreateLanguage(
         id="typescript",
         label="TypeScript",
         description="Node.js/TypeScript.",
     ),
-    "react": InitLanguage(
+    "react": CreateLanguage(
         id="react",
         label="React",
         description="React/Vite.",
     ),
-    "dotnet": InitLanguage(
+    "dotnet": CreateLanguage(
         id="dotnet",
         label=".NET",
         description=".NET.",
     ),
-    "dart-flutter": InitLanguage(
+    "dart-flutter": CreateLanguage(
         id="dart-flutter",
         label="Dart/Flutter",
         description="Dart or Flutter.",
     ),
 }
 
-FOCUSES: Mapping[str, InitFocus] = {
-    WEB_FOCUS: InitFocus(
+FOCUSES: Mapping[str, CreateFocus] = {
+    WEB_FOCUS: CreateFocus(
         id=WEB_FOCUS,
         label="Web server",
         description="HTTP app with a health endpoint and public route.",
     ),
-    AGENT_FOCUS: InitFocus(
+    AGENT_FOCUS: CreateFocus(
         id=AGENT_FOCUS,
         label="Backend agent",
         description="Headless RoomClient SDK service without a public port.",
     ),
 }
 
-TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
-    ("python", WEB_FOCUS): InitTemplate(
+TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
+    ("python", WEB_FOCUS): CreateTemplate(
         language_id="python",
         focus_id=WEB_FOCUS,
         label="Python web server",
@@ -2457,7 +2457,7 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         },
         next_steps=WEBSERVER_NEXT_STEPS,
     ),
-    ("python", AGENT_FOCUS): InitTemplate(
+    ("python", AGENT_FOCUS): CreateTemplate(
         language_id="python",
         focus_id=AGENT_FOCUS,
         label="Python backend agent",
@@ -2473,7 +2473,7 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         },
         next_steps=AGENT_NEXT_STEPS,
     ),
-    ("javascript", WEB_FOCUS): InitTemplate(
+    ("javascript", WEB_FOCUS): CreateTemplate(
         language_id="javascript",
         focus_id=WEB_FOCUS,
         label="JavaScript web server",
@@ -2488,7 +2488,7 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         },
         next_steps=NPM_WEBSERVER_NEXT_STEPS,
     ),
-    ("javascript", AGENT_FOCUS): InitTemplate(
+    ("javascript", AGENT_FOCUS): CreateTemplate(
         language_id="javascript",
         focus_id=AGENT_FOCUS,
         label="JavaScript backend agent",
@@ -2502,7 +2502,7 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         },
         next_steps=NPM_AGENT_NEXT_STEPS,
     ),
-    ("typescript", WEB_FOCUS): InitTemplate(
+    ("typescript", WEB_FOCUS): CreateTemplate(
         language_id="typescript",
         focus_id=WEB_FOCUS,
         label="TypeScript web server",
@@ -2518,7 +2518,7 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         },
         next_steps=NPM_WEBSERVER_NEXT_STEPS,
     ),
-    ("typescript", AGENT_FOCUS): InitTemplate(
+    ("typescript", AGENT_FOCUS): CreateTemplate(
         language_id="typescript",
         focus_id=AGENT_FOCUS,
         label="TypeScript backend agent",
@@ -2533,7 +2533,7 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         },
         next_steps=NPM_AGENT_NEXT_STEPS,
     ),
-    ("react", WEB_FOCUS): InitTemplate(
+    ("react", WEB_FOCUS): CreateTemplate(
         language_id="react",
         focus_id=WEB_FOCUS,
         label="React web server",
@@ -2552,7 +2552,7 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         },
         next_steps=NPM_STATIC_WEBSERVER_NEXT_STEPS,
     ),
-    ("dotnet", WEB_FOCUS): InitTemplate(
+    ("dotnet", WEB_FOCUS): CreateTemplate(
         language_id="dotnet",
         focus_id=WEB_FOCUS,
         label=".NET web server",
@@ -2568,7 +2568,7 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         },
         next_steps=WEBSERVER_NEXT_STEPS,
     ),
-    ("dotnet", AGENT_FOCUS): InitTemplate(
+    ("dotnet", AGENT_FOCUS): CreateTemplate(
         language_id="dotnet",
         focus_id=AGENT_FOCUS,
         label=".NET backend agent",
@@ -2584,7 +2584,7 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         },
         next_steps=AGENT_NEXT_STEPS,
     ),
-    ("dart-flutter", WEB_FOCUS): InitTemplate(
+    ("dart-flutter", WEB_FOCUS): CreateTemplate(
         language_id="dart-flutter",
         focus_id=WEB_FOCUS,
         label="Flutter web server",
@@ -2602,7 +2602,7 @@ TEMPLATES: Mapping[tuple[str, str], InitTemplate] = {
         },
         next_steps=STATIC_WEBSERVER_NEXT_STEPS,
     ),
-    ("dart-flutter", AGENT_FOCUS): InitTemplate(
+    ("dart-flutter", AGENT_FOCUS): CreateTemplate(
         language_id="dart-flutter",
         focus_id=AGENT_FOCUS,
         label="Dart backend agent",
@@ -2727,7 +2727,7 @@ def _resolve_focus_id(focus: str | None) -> str:
     return focus_id
 
 
-def _resolve_template(language_id: str, focus_id: str) -> InitTemplate:
+def _resolve_template(language_id: str, focus_id: str) -> CreateTemplate:
     template = TEMPLATES.get((language_id, focus_id))
     if template is not None:
         return template
@@ -2790,19 +2790,19 @@ def _focus_choices() -> Sequence[tuple[str, str, str]]:
     )
 
 
-def _run_init_tui(
+def _run_create_tui(
     *,
     language_choices: Sequence[tuple[str, str, str, tuple[str, ...]]],
     focus_choices: Sequence[tuple[str, str, str]],
 ) -> tuple[str, str] | None:
     from meshagent.cli.tui.create import (
-        InitFocusChoice,
-        InitLanguageChoice,
-        run_init_wizard_tui,
+        CreateFocusChoice,
+        CreateLanguageChoice,
+        run_create_wizard_tui,
     )
 
     languages = [
-        InitLanguageChoice(
+        CreateLanguageChoice(
             id=language_id,
             label=label,
             description=description,
@@ -2811,10 +2811,10 @@ def _run_init_tui(
         for language_id, label, description, focus_ids in language_choices
     ]
     focuses = [
-        InitFocusChoice(id=focus_id, label=label, description=description)
+        CreateFocusChoice(id=focus_id, label=label, description=description)
         for focus_id, label, description in focus_choices
     ]
-    result = asyncio.run(run_init_wizard_tui(languages=languages, focuses=focuses))
+    result = asyncio.run(run_create_wizard_tui(languages=languages, focuses=focuses))
     if result.status != "completed":
         return None
     if result.selected_language_id is None or result.selected_focus_id is None:
@@ -2823,9 +2823,9 @@ def _run_init_tui(
 
 
 def _run_existing_project_tui() -> ExistingProjectSelection | None:
-    from meshagent.cli.tui.create import run_existing_project_init_tui
+    from meshagent.cli.tui.create import run_existing_project_create_tui
 
-    result = asyncio.run(run_existing_project_init_tui())
+    result = asyncio.run(run_existing_project_create_tui())
     if result.status != "completed" or result.action is None:
         return None
     return ExistingProjectSelection(
@@ -2864,12 +2864,12 @@ def _run_doctor(root: Path) -> None:
     _print_report(diagnose_project(root))
 
 
-def _write_template(root: Path, template: InitTemplate) -> None:
+def _write_template(root: Path, template: CreateTemplate) -> None:
     for name, contents in template.files.items():
         _write_file(root / name, contents)
 
 
-def _print_created_report(*, template: InitTemplate) -> None:
+def _print_created_report(*, template: CreateTemplate) -> None:
     click.echo("")
     click.echo(f"Created a minimal deployable {template.label} hello world project:")
     for name in template.files:
@@ -2940,7 +2940,7 @@ def create_command(
         if interactive is not False and is_interactive_stdio:
             existing_project_selection = _run_existing_project_tui()
             if existing_project_selection is None:
-                click.echo("Init canceled.")
+                click.echo("Create canceled.")
                 return
             if existing_project_selection.action == "run-doctor":
                 click.echo("")
@@ -2969,12 +2969,12 @@ def create_command(
         stdin_is_tty=is_interactive_stdio,
         stdout_is_tty=is_interactive_stdio,
     ):
-        selection = _run_init_tui(
+        selection = _run_create_tui(
             language_choices=_language_choices(),
             focus_choices=_focus_choices(),
         )
         if selection is None:
-            click.echo("Init canceled.")
+            click.echo("Create canceled.")
             return
         language_id, focus_id = selection
     else:

@@ -17,16 +17,16 @@ def _assert_node_content_toolkit(
     assert "RoomClient" in source
     assert "startHostedToolkit" in source
     assert "public_: true" in source
-    assert "MESHAGENT_INIT_DEV_TOOLKIT_HOLD_SECONDS" in source
+    assert "MESHAGENT_CREATE_DEV_TOOLKIT_HOLD_SECONDS" in source
     assert f"class {class_prefix}ContentToolkit extends Toolkit" in source
     assert 'name: "create"' in source
     assert 'name: "update"' in source
     assert 'name: "search"' in source
     assert f'title: "{language_label} Local Content Toolkit"' in source
     assert "room.agents.invokeTool" in source
-    assert "meshagent-init-proof" in source
+    assert "meshagent-create-proof" in source
     assert content_path in source
-    assert "MESHAGENT_INIT_DEV_PROBE" in source
+    assert "MESHAGENT_CREATE_DEV_PROBE" in source
     assert "room.storage.upload" not in source
     assert "readContentSync" not in source
     assert "fs.readFileSync" not in source
@@ -43,7 +43,7 @@ def _assert_node_agent_toolkit(
     assert "RoomClient" in source
     assert "startHostedToolkit" in source
     assert "public_: true" in source
-    assert "MESHAGENT_INIT_DEV_TOOLKIT_HOLD_SECONDS" in source
+    assert "MESHAGENT_CREATE_DEV_TOOLKIT_HOLD_SECONDS" in source
     assert f"class {class_prefix}AgentToolkit extends Toolkit" in source
     assert 'name: "ping"' in source
     assert 'name: "status"' in source
@@ -51,7 +51,7 @@ def _assert_node_agent_toolkit(
     assert f'title: "{language_label} Local Agent Toolkit"' in source
     assert "room.agents.invokeTool" in source
     assert proof_path in source
-    assert "MESHAGENT_INIT_DEV_PROBE" in source
+    assert "MESHAGENT_CREATE_DEV_PROBE" in source
     assert "ContentToolkit" not in source
     assert "dev-content.json" not in source
 
@@ -112,7 +112,7 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     assert 'PIP_ONLY_BINARY="${PIP_ONLY_BINARY:-:all:}"' in install_sh
     assert 'meshagent room connect -- "$VENV_PYTHON" -u server.py' in dev_sh
     assert "./scripts/install.sh" not in dev_sh
-    assert "MESHAGENT_INIT_DEV_PROBE" in server_py
+    assert "MESHAGENT_CREATE_DEV_PROBE" in server_py
     assert "room.agents.invoke_tool" in server_py
     assert "room.storage.upload" not in server_py
     assert (
@@ -198,7 +198,7 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     assert 'name="search"' in server_py
     assert "_start_hosted_toolkit" in server_py
     assert "dev-content.json" in server_py
-    assert "MESHAGENT_INIT_DEV_PROBE" in server_py
+    assert "MESHAGENT_CREATE_DEV_PROBE" in server_py
     assert "room.agents.invoke_tool" in server_py
     assert "room.storage.upload" not in server_py
     assert "hello from meshagent create" in dev_content
@@ -256,7 +256,7 @@ def test_init_creates_javascript_webserver_non_interactively(tmp_path) -> None:
     assert '"build": "ncc build server.js -o dist"' in package_text
     assert '"dev": "meshagent room connect -- node server.js"' in package_text
     assert (
-        '"deploy": "meshagent deploy . --tag meshagent-init-javascript:dev --public --liveness /health --wait"'
+        '"deploy": "meshagent deploy . --tag meshagent-create-javascript:dev --public --liveness /health --wait"'
         in package_text
     )
     assert '"start": "node dist/index.js"' in package_text
@@ -310,7 +310,7 @@ def test_init_creates_javascript_backend_agent_non_interactively(tmp_path) -> No
     package_text = (tmp_path / "package.json").read_text(encoding="utf-8")
     assert '"dev": "meshagent room connect -- node server.js"' in package_text
     assert (
-        '"deploy": "meshagent deploy . --tag meshagent-init-javascript-agent:dev --meshagent-token agentDefault --wait"'
+        '"deploy": "meshagent deploy . --tag meshagent-create-javascript-agent:dev --meshagent-token agentDefault --wait"'
         in package_text
     )
     server_js = (tmp_path / "server.js").read_text(encoding="utf-8")
@@ -363,7 +363,7 @@ def test_init_creates_typescript_webserver_non_interactively(tmp_path) -> None:
     assert '"build": "ncc build src/server.ts -o dist"' in package_text
     assert '"dev": "meshagent room connect -- tsx src/server.ts"' in package_text
     assert (
-        '"deploy": "meshagent deploy . --tag meshagent-init-typescript:dev --public --liveness /health --wait"'
+        '"deploy": "meshagent deploy . --tag meshagent-create-typescript:dev --public --liveness /health --wait"'
         in package_text
     )
     assert '"start": "node dist/index.js"' in package_text
@@ -423,7 +423,7 @@ def test_init_creates_typescript_backend_agent_non_interactively(tmp_path) -> No
     package_text = (tmp_path / "package.json").read_text(encoding="utf-8")
     assert '"dev": "meshagent room connect -- tsx src/server.ts"' in package_text
     assert (
-        '"deploy": "meshagent deploy . --tag meshagent-init-typescript-agent:dev --meshagent-token agentDefault --wait"'
+        '"deploy": "meshagent deploy . --tag meshagent-create-typescript-agent:dev --meshagent-token agentDefault --wait"'
         in package_text
     )
     server_ts = (tmp_path / "src" / "server.ts").read_text(encoding="utf-8")
@@ -488,7 +488,7 @@ def test_init_creates_react_webserver_non_interactively(tmp_path) -> None:
     )
     assert "@meshagent/meshagent" in package_json
     assert (
-        '"deploy": "meshagent deploy . --tag meshagent-init-react:dev --public --liveness /health --room-mount /:/data:rw --wait"'
+        '"deploy": "meshagent deploy . --tag meshagent-create-react:dev --public --liveness /health --room-mount /:/data:rw --wait"'
         in package_json
     )
     dev_toolkit = (tmp_path / "scripts" / "dev-content-toolkit.js").read_text(
@@ -498,15 +498,15 @@ def test_init_creates_react_webserver_non_interactively(tmp_path) -> None:
     assert "RoomClient" in dev_toolkit
     assert "startHostedToolkit" in dev_toolkit
     assert "public_: true" in dev_toolkit
-    assert "MESHAGENT_INIT_DEV_TOOLKIT_HOLD_SECONDS" in dev_toolkit
+    assert "MESHAGENT_CREATE_DEV_TOOLKIT_HOLD_SECONDS" in dev_toolkit
     assert "class ReactContentToolkit extends Toolkit" in dev_toolkit
     assert 'name: "create"' in dev_toolkit
     assert 'name: "update"' in dev_toolkit
     assert 'name: "search"' in dev_toolkit
     assert "room.agents.invokeTool" in dev_toolkit
-    assert "meshagent-init-proof" in dev_toolkit
+    assert "meshagent-create-proof" in dev_toolkit
     assert "src/dev-content.json" in dev_toolkit
-    assert "MESHAGENT_INIT_DEV_PROBE" in dev_toolkit
+    assert "MESHAGENT_CREATE_DEV_PROBE" in dev_toolkit
     assert "room.storage.upload" not in dev_toolkit
     assert 'import devContent from "./dev-content.json"' in main_tsx
     assert "content.items[content.activeId]" in main_tsx
@@ -572,7 +572,7 @@ def test_init_creates_dotnet_backend_agent_non_interactively(tmp_path) -> None:
     assert '<Project Sdk="Microsoft.NET.Sdk">' in csproj
     assert "<OutputType>Exe</OutputType>" in csproj
     assert "RoomClient" in program_cs
-    assert "MESHAGENT_INIT_DEV_READY_PATH" in program_cs
+    assert "MESHAGENT_CREATE_DEV_READY_PATH" in program_cs
     assert "Storage.Upload" in program_cs
     assert "MapGet" not in program_cs
     assert "mcr.microsoft.com/dotnet/runtime:9.0" in dockerfile
@@ -625,7 +625,7 @@ def test_init_creates_dotnet_webserver_non_interactively(tmp_path) -> None:
     assert 'MapGet("/status"' in program_cs
     assert 'MapGet("/api/ping"' in program_cs
     assert "RoomClient" in program_cs
-    assert "MESHAGENT_INIT_DEV_READY_PATH" in program_cs
+    assert "MESHAGENT_CREATE_DEV_READY_PATH" in program_cs
     assert "Storage.Upload" in program_cs
     assert "mcr.microsoft.com/dotnet/aspnet:9.0" in dockerfile
     assert "EXPOSE 5000" in dockerfile
@@ -689,7 +689,7 @@ def test_init_creates_flutter_webserver_non_interactively(tmp_path) -> None:
     assert "The Flutter SDK is required on the host" in install_sh
     assert "flutter pub get" in install_sh
     assert "meshagent room connect -- sh -c" in dev_sh
-    assert "MESHAGENT_INIT_DEV_PROBE" in dev_sh
+    assert "MESHAGENT_CREATE_DEV_PROBE" in dev_sh
     assert "meshagent room connect -- docker run --rm" not in dev_sh
     assert "docker run" not in dev_sh
     assert "ghcr.io/cirruslabs/flutter:stable" not in dev_sh
@@ -699,7 +699,7 @@ def test_init_creates_flutter_webserver_non_interactively(tmp_path) -> None:
     assert "flutter run -d web-server" in dev_sh
     dev_probe = (tmp_path / "tool" / "dev_room_proof.dart").read_text(encoding="utf-8")
     assert "RoomClient" in dev_probe
-    assert "MESHAGENT_INIT_DEV_READY_PATH" in dev_probe
+    assert "MESHAGENT_CREATE_DEV_READY_PATH" in dev_probe
     assert "room.storage.upload" in dev_probe
     assert "room.dispose()" in dev_probe
     assert (
@@ -730,7 +730,7 @@ def test_init_creates_dart_backend_agent_non_interactively(tmp_path) -> None:
     assert "RoomClient" in (tmp_path / "bin" / "server.dart").read_text(
         encoding="utf-8"
     )
-    assert "MESHAGENT_INIT_DEV_READY_PATH" in (
+    assert "MESHAGENT_CREATE_DEV_READY_PATH" in (
         tmp_path / "bin" / "server.dart"
     ).read_text(encoding="utf-8")
     assert "room.storage.upload" in (tmp_path / "bin" / "server.dart").read_text(
@@ -803,12 +803,12 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
     captured_languages: list[tuple[str, str, str, tuple[str, ...]]] = []
     captured_focuses: list[tuple[str, str, str]] = []
 
-    def fake_run_init_tui(*, language_choices, focus_choices):
+    def fake_run_create_tui(*, language_choices, focus_choices):
         captured_languages.extend(language_choices)
         captured_focuses.extend(focus_choices)
         return "javascript", "backend-agent"
 
-    monkeypatch.setattr(create_module, "_run_init_tui", fake_run_init_tui)
+    monkeypatch.setattr(create_module, "_run_create_tui", fake_run_create_tui)
 
     result = CliRunner().invoke(create_command, [str(tmp_path)])
 
@@ -839,22 +839,50 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
     assert not (tmp_path / "server.py").exists()
 
 
+def test_create_tui_cancel_uses_create_wording(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(create_module, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(create_module, "_run_create_tui", lambda **_: None)
+
+    result = CliRunner().invoke(create_command, [str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Create canceled." in result.output
+    assert "Init canceled." not in result.output
+    assert not (tmp_path / "Dockerfile").exists()
+
+
+def test_create_existing_project_tui_cancel_uses_create_wording(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    (tmp_path / "server.py").write_text("print('already here')\n", encoding="utf-8")
+    monkeypatch.setattr(create_module, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(create_module, "_run_existing_project_tui", lambda: None)
+
+    result = CliRunner().invoke(create_command, [str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Create canceled." in result.output
+    assert "Init canceled." not in result.output
+    assert not (tmp_path / "Dockerfile").exists()
+
+
 def test_init_tui_language_screen_lists_languages_only(monkeypatch) -> None:
     from meshagent.cli.tui.create import (
-        InitFocusChoice,
-        InitLanguageChoice,
-        InitWizardApp,
+        CreateFocusChoice,
+        CreateLanguageChoice,
+        CreateWizardApp,
     )
 
-    app = InitWizardApp(
+    app = CreateWizardApp(
         languages=[
-            InitLanguageChoice(
+            CreateLanguageChoice(
                 id="python",
                 label="Python",
                 description="Python 3.13 service or RoomClient backend.",
                 focus_ids=("webserver", "backend-agent"),
             ),
-            InitLanguageChoice(
+            CreateLanguageChoice(
                 id="typescript",
                 label="TypeScript",
                 description="Node.js service or RoomClient backend in TypeScript.",
@@ -862,12 +890,12 @@ def test_init_tui_language_screen_lists_languages_only(monkeypatch) -> None:
             ),
         ],
         focuses=[
-            InitFocusChoice(
+            CreateFocusChoice(
                 id="webserver",
                 label="Web server",
                 description="HTTP app with a health endpoint.",
             ),
-            InitFocusChoice(
+            CreateFocusChoice(
                 id="backend-agent",
                 label="Backend agent",
                 description="RoomClient SDK service.",
@@ -904,14 +932,14 @@ def test_init_tui_focus_screen_asks_for_webserver_or_backend_agent(
     monkeypatch,
 ) -> None:
     from meshagent.cli.tui.create import (
-        InitFocusChoice,
-        InitLanguageChoice,
-        InitWizardApp,
+        CreateFocusChoice,
+        CreateLanguageChoice,
+        CreateWizardApp,
     )
 
-    app = InitWizardApp(
+    app = CreateWizardApp(
         languages=[
-            InitLanguageChoice(
+            CreateLanguageChoice(
                 id="python",
                 label="Python",
                 description="Python 3.13.",
@@ -919,12 +947,12 @@ def test_init_tui_focus_screen_asks_for_webserver_or_backend_agent(
             )
         ],
         focuses=[
-            InitFocusChoice(
+            CreateFocusChoice(
                 id="webserver",
                 label="Web server",
                 description="HTTP app with a health endpoint and public route.",
             ),
-            InitFocusChoice(
+            CreateFocusChoice(
                 id="backend-agent",
                 label="Backend agent",
                 description="Headless RoomClient SDK service without a public port.",
@@ -966,12 +994,12 @@ def test_init_tui_existing_project_screen_offers_doctor_or_subfolder(
     monkeypatch,
 ) -> None:
     from meshagent.cli.tui.create import (
-        INIT_EXISTING_DOCTOR_OPTION_ID,
-        INIT_EXISTING_SUBFOLDER_OPTION_ID,
-        InitExistingProjectApp,
+        CREATE_EXISTING_DOCTOR_OPTION_ID,
+        CREATE_EXISTING_SUBFOLDER_OPTION_ID,
+        CreateExistingProjectApp,
     )
 
-    app = InitExistingProjectApp()
+    app = CreateExistingProjectApp()
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(
@@ -1002,10 +1030,10 @@ def test_init_tui_existing_project_screen_offers_doctor_or_subfolder(
         "message": "This directory already contains project files.",
         "help_text": "Choose an option. Esc or Ctrl+C cancels.",
         "options": [
-            ("Run meshagent doctor here.", INIT_EXISTING_DOCTOR_OPTION_ID),
+            ("Run meshagent doctor here.", CREATE_EXISTING_DOCTOR_OPTION_ID),
             (
                 "Create a new project in a new subfolder.",
-                INIT_EXISTING_SUBFOLDER_OPTION_ID,
+                CREATE_EXISTING_SUBFOLDER_OPTION_ID,
             ),
             ("Cancel", "__init_cancel__"),
         ],
@@ -1017,10 +1045,10 @@ def test_init_tui_existing_project_subfolder_prompt_accepts_folder_name(
 ) -> None:
     from meshagent.cli.tui.create import (
         EXISTING_ACTION_SUBFOLDER,
-        InitExistingProjectApp,
+        CreateExistingProjectApp,
     )
 
-    app = InitExistingProjectApp()
+    app = CreateExistingProjectApp()
     exited = False
 
     def fake_exit() -> None:
@@ -1041,9 +1069,9 @@ def test_init_tui_existing_project_subfolder_prompt_accepts_folder_name(
 def test_init_tui_existing_project_subfolder_prompt_rejects_paths(
     monkeypatch,
 ) -> None:
-    from meshagent.cli.tui.create import InitExistingProjectApp
+    from meshagent.cli.tui.create import CreateExistingProjectApp
 
-    app = InitExistingProjectApp()
+    app = CreateExistingProjectApp()
     errors: list[str] = []
     monkeypatch.setattr(app, "_set_error_text", errors.append)
 
@@ -1070,7 +1098,7 @@ def test_init_existing_code_interactive_can_run_doctor_here(
     monkeypatch.setattr(create_module, "_run_doctor", doctor_paths.append)
     monkeypatch.setattr(
         create_module,
-        "_run_init_tui",
+        "_run_create_tui",
         lambda *, language_choices, focus_choices: (_ for _ in ()).throw(
             AssertionError("language/focus TUI should not launch")
         ),
@@ -1100,7 +1128,7 @@ def test_init_existing_code_interactive_creates_project_in_subfolder(
     )
     monkeypatch.setattr(
         create_module,
-        "_run_init_tui",
+        "_run_create_tui",
         lambda *, language_choices, focus_choices: ("typescript", "backend-agent"),
     )
 
@@ -1146,7 +1174,7 @@ def test_init_no_interactive_bypasses_tui_even_when_tty(tmp_path, monkeypatch) -
     monkeypatch.setattr(create_module, "_stdio_is_interactive", lambda: True)
     monkeypatch.setattr(
         create_module,
-        "_run_init_tui",
+        "_run_create_tui",
         lambda *, language_choices, focus_choices: (_ for _ in ()).throw(
             AssertionError("TUI should not launch")
         ),
