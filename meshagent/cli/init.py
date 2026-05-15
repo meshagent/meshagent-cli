@@ -101,6 +101,8 @@ import json
 import os
 from pathlib import Path
 
+import aiofiles
+import aiofiles.os
 from aiohttp import web
 from meshagent.api import RoomClient, WebSocketClientProtocol, websocket_room_url
 from meshagent.tools import FunctionTool, Toolkit, ToolContext
@@ -124,23 +126,18 @@ def default_content() -> dict:
     }
 
 
-def read_content_sync() -> dict:
+async def read_content() -> dict:
     try:
-        return json.loads(CONTENT_PATH.read_text(encoding="utf-8"))
+        async with aiofiles.open(CONTENT_PATH, encoding="utf-8") as handle:
+            return json.loads(await handle.read())
     except Exception:
         return default_content()
 
 
-async def read_content() -> dict:
-    return await asyncio.to_thread(read_content_sync)
-
-
 async def write_content(content: dict) -> dict:
-    def _write() -> None:
-        CONTENT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CONTENT_PATH.write_text(json.dumps(content, indent=2) + "\\n", encoding="utf-8")
-
-    await asyncio.to_thread(_write)
+    await aiofiles.os.makedirs(CONTENT_PATH.parent, exist_ok=True)
+    async with aiofiles.open(CONTENT_PATH, "w", encoding="utf-8") as handle:
+        await handle.write(json.dumps(content, indent=2) + "\\n")
     return content
 
 
@@ -255,7 +252,7 @@ async def health(request: web.Request) -> web.Response:
 
 
 async def index(request: web.Request) -> web.Response:
-    content = read_content_sync()
+    content = await read_content()
     active_item = content.get("items", {}).get(content.get("activeId")) or content.get(
         "items", {}
     ).get("hero", {})
@@ -372,6 +369,8 @@ import json
 import os
 from pathlib import Path
 
+import aiofiles
+import aiofiles.os
 from meshagent.api import RoomClient, WebSocketClientProtocol, websocket_room_url
 from meshagent.tools import FunctionTool, Toolkit, ToolContext
 from meshagent.tools.hosting import _start_hosted_toolkit
@@ -449,11 +448,9 @@ async def write_agent_proof(probe: str, echo: str) -> None:
         "echo": echo,
         "tools": ["ping", "status", "echo"],
     }
-    await asyncio.to_thread(
-        PROOF_PATH.write_text,
-        json.dumps(payload, indent=2) + "\\n",
-        "utf-8",
-    )
+    await aiofiles.os.makedirs(PROOF_PATH.parent, exist_ok=True)
+    async with aiofiles.open(PROOF_PATH, "w", encoding="utf-8") as handle:
+        await handle.write(json.dumps(payload, indent=2) + "\\n")
 
 
 async def main() -> None:
@@ -534,9 +531,11 @@ name = "meshagent-init-python-webserver"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
+  "aiofiles~=24.1",
   "aiohttp[speedups]~=3.13.0",
   "meshagent-api=={__version__}",
   "meshagent-tools=={__version__}",
+  "openai~=2.25.0",
 ]
 
 [tool.setuptools]
@@ -553,8 +552,10 @@ name = "meshagent-init-python-agent"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
+  "aiofiles~=24.1",
   "meshagent-api=={__version__}",
   "meshagent-tools=={__version__}",
+  "openai~=2.25.0",
 ]
 
 [tool.setuptools]
@@ -626,7 +627,7 @@ if [ ! -x "$VENV_PYTHON" ]; then
   echo "Missing $VENV_PYTHON. Run the install script first." >&2
   exit 1
 fi
-meshagent room connect -- "$VENV_PYTHON" server.py
+meshagent room connect -- "$VENV_PYTHON" -u server.py
 """
 
 PYTHON_WEBSERVER_DEPLOY_SCRIPT = """\
@@ -693,14 +694,6 @@ function defaultContent() {
       },
     },
   };
-}
-
-function readContentSync() {
-  try {
-    return JSON.parse(fs.readFileSync(contentPath, "utf8"));
-  } catch {
-    return defaultContent();
-  }
 }
 
 async function readContent() {
@@ -1119,35 +1112,43 @@ def _node_webserver_source(
 
 const port = Number(process.env.PORT || 3000);
 
-const server = http.createServer((request, response) => {
-  if (request.url === "/health") {
-    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-    response.end("ok\\n");
-    return;
-  }
+const server = http.createServer(async (request, response) => {
+  try {
+    if (request.url === "/health") {
+      response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+      response.end("ok\\n");
+      return;
+    }
 
-  if (request.url === "/status") {
-    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-    response.end("ready\\n");
-    return;
-  }
+    if (request.url === "/status") {
+      response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+      response.end("ready\\n");
+      return;
+    }
 
-  if (request.url === "/api/ping") {
-    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-    response.end(JSON.stringify({ pong: true }) + "\\n");
-    return;
-  }
+    if (request.url === "/api/ping") {
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ pong: true }) + "\\n");
+      return;
+    }
 
-  if (request.url === "/") {
-    const content = readContentSync();
-    const activeItem = content.items?.[content.activeId] ?? content.items?.hero;
-    response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-    response.end(`${activeItem?.headline ?? "hello from meshagent init"}\\n${activeItem?.body ?? ""}\\n`);
-    return;
-  }
+    if (request.url === "/") {
+      const content = await readContent();
+      const activeItem = content.items?.[content.activeId] ?? content.items?.hero;
+      response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+      response.end(`${activeItem?.headline ?? "hello from meshagent init"}\\n${activeItem?.body ?? ""}\\n`);
+      return;
+    }
 
-  response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-  response.end("not found\\n");
+    response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+    response.end("not found\\n");
+  } catch (error) {
+    console.error("Unable to handle request:", error);
+    if (!response.headersSent) {
+      response.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
+    }
+    response.end("internal server error\\n");
+  }
 });
 
 server.listen(port, "0.0.0.0", () => {
@@ -1978,18 +1979,8 @@ DOTNET_SKIP_FIRST_TIME_EXPERIENCE="${DOTNET_SKIP_FIRST_TIME_EXPERIENCE:-1}"
 export DOTNET_CLI_HOME NUGET_PACKAGES DOTNET_NOLOGO DOTNET_SKIP_FIRST_TIME_EXPERIENCE
 if command -v dotnet >/dev/null 2>&1; then
   dotnet restore
-elif command -v docker >/dev/null 2>&1; then
-  docker run --rm \
-    -e DOTNET_CLI_HOME=/src/.dotnet-home \
-    -e NUGET_PACKAGES=/src/.nuget/packages \
-    -e DOTNET_NOLOGO=1 \
-    -e DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
-    -v "$ROOT:/src" \
-    -w /src \
-    mcr.microsoft.com/dotnet/sdk:9.0 \
-    dotnet restore
 else
-  echo "Neither dotnet nor docker is installed. Install the .NET SDK 9.0 or Docker, then rerun this script." >&2
+  echo "The .NET SDK 9.0 is required on the host. Install dotnet, then rerun this script." >&2
   exit 127
 fi
 """
@@ -2006,24 +1997,8 @@ DOTNET_SKIP_FIRST_TIME_EXPERIENCE="${DOTNET_SKIP_FIRST_TIME_EXPERIENCE:-1}"
 export DOTNET_CLI_HOME NUGET_PACKAGES DOTNET_NOLOGO DOTNET_SKIP_FIRST_TIME_EXPERIENCE
 if command -v dotnet >/dev/null 2>&1; then
   meshagent room connect -- dotnet run
-elif command -v docker >/dev/null 2>&1; then
-  meshagent room connect -- docker run --rm \
-    -e MESHAGENT_API_URL \
-    -e MESHAGENT_PROJECT_ID \
-    -e MESHAGENT_ROOM \
-    -e MESHAGENT_TOKEN \
-    -e MESHAGENT_INIT_DEV_PROBE \
-    -e MESHAGENT_INIT_DEV_READY_PATH \
-    -e DOTNET_CLI_HOME=/src/.dotnet-home \
-    -e NUGET_PACKAGES=/src/.nuget/packages \
-    -e DOTNET_NOLOGO=1 \
-    -e DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 \
-    -v "$ROOT:/src" \
-    -w /src \
-    mcr.microsoft.com/dotnet/sdk:9.0 \
-    dotnet run
 else
-  echo "Neither dotnet nor docker is installed. Install the .NET SDK 9.0 or Docker, then rerun this script." >&2
+  echo "The .NET SDK 9.0 is required on the host. Install dotnet, then rerun this script." >&2
   exit 127
 fi
 """
@@ -2151,15 +2126,8 @@ PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"
 export PUB_CACHE
 if command -v dart >/dev/null 2>&1; then
   dart pub get
-elif command -v docker >/dev/null 2>&1; then
-  docker run --rm \
-    -e PUB_CACHE=/app/.pub-cache \
-    -v "$ROOT:/app" \
-    -w /app \
-    dart:stable \
-    dart pub get
 else
-  echo "Neither dart nor docker is installed. Install the Dart SDK or Docker, then rerun this script." >&2
+  echo "The Dart SDK is required on the host. Install dart, then rerun this script." >&2
   exit 127
 fi
 """
@@ -2173,21 +2141,8 @@ PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"
 export PUB_CACHE
 if command -v dart >/dev/null 2>&1; then
   meshagent room connect -- dart run bin/server.dart
-elif command -v docker >/dev/null 2>&1; then
-  meshagent room connect -- docker run --rm \
-    -e MESHAGENT_API_URL \
-    -e MESHAGENT_PROJECT_ID \
-    -e MESHAGENT_ROOM \
-    -e MESHAGENT_TOKEN \
-    -e MESHAGENT_INIT_DEV_PROBE \
-    -e MESHAGENT_INIT_DEV_READY_PATH \
-    -e PUB_CACHE=/app/.pub-cache \
-    -v "$ROOT:/app" \
-    -w /app \
-    dart:stable \
-    dart run bin/server.dart
 else
-  echo "Neither dart nor docker is installed. Install the Dart SDK or Docker, then rerun this script." >&2
+  echo "The Dart SDK is required on the host. Install dart, then rerun this script." >&2
   exit 127
 fi
 """
@@ -2364,15 +2319,8 @@ PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"
 export PUB_CACHE
 if command -v flutter >/dev/null 2>&1; then
   flutter pub get
-elif command -v docker >/dev/null 2>&1; then
-  docker run --rm \
-    -e PUB_CACHE=/app/.pub-cache \
-    -v "$ROOT:/app" \
-    -w /app \
-    ghcr.io/cirruslabs/flutter:stable \
-    flutter pub get
 else
-  echo "Neither flutter nor docker is installed. Install the Flutter SDK or Docker, then rerun this script." >&2
+  echo "The Flutter SDK is required on the host. Install flutter, then rerun this script." >&2
   exit 127
 fi
 """
@@ -2387,41 +2335,14 @@ export PUB_CACHE
 if [ -n "${MESHAGENT_INIT_DEV_PROBE:-}" ] && [ -n "${MESHAGENT_INIT_DEV_READY_PATH:-}" ]; then
   if command -v dart >/dev/null 2>&1; then
     meshagent room connect -- dart run tool/dev_room_proof.dart
-  elif command -v docker >/dev/null 2>&1; then
-    meshagent room connect -- docker run --rm \
-      -e MESHAGENT_API_URL \
-      -e MESHAGENT_PROJECT_ID \
-      -e MESHAGENT_ROOM \
-      -e MESHAGENT_TOKEN \
-      -e MESHAGENT_INIT_DEV_PROBE \
-      -e MESHAGENT_INIT_DEV_READY_PATH \
-      -e PUB_CACHE=/app/.pub-cache \
-      -v "$ROOT:/app" \
-      -w /app \
-      ghcr.io/cirruslabs/flutter:stable \
-      dart run tool/dev_room_proof.dart
   else
-    echo "Neither dart nor docker is installed. Install the Flutter SDK or Docker, then rerun this script." >&2
+    echo "The Dart SDK is required on the host for the Flutter dev proof. Install dart, then rerun this script." >&2
     exit 127
   fi
-elif command -v flutter >/dev/null 2>&1; then
+elif command -v flutter >/dev/null 2>&1 && command -v dart >/dev/null 2>&1; then
   meshagent room connect -- sh -c 'dart run tool/dev_room_proof.dart & flutter run -d web-server --web-hostname 0.0.0.0 --web-port 3000'
-elif command -v docker >/dev/null 2>&1; then
-  meshagent room connect -- docker run --rm \
-    -p 3000:3000 \
-    -e MESHAGENT_API_URL \
-    -e MESHAGENT_PROJECT_ID \
-    -e MESHAGENT_ROOM \
-    -e MESHAGENT_TOKEN \
-    -e MESHAGENT_INIT_DEV_PROBE \
-    -e MESHAGENT_INIT_DEV_READY_PATH \
-    -e PUB_CACHE=/app/.pub-cache \
-    -v "$ROOT:/app" \
-    -w /app \
-    ghcr.io/cirruslabs/flutter:stable \
-    sh -c 'dart run tool/dev_room_proof.dart & flutter run -d web-server --web-hostname 0.0.0.0 --web-port 3000'
 else
-  echo "Neither flutter nor docker is installed. Install the Flutter SDK or Docker, then rerun this script." >&2
+  echo "The Flutter SDK and Dart SDK are required on the host. Install flutter and dart, then rerun this script." >&2
   exit 127
 fi
 """

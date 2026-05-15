@@ -28,6 +28,9 @@ def _assert_node_content_toolkit(
     assert content_path in source
     assert "MESHAGENT_INIT_DEV_PROBE" in source
     assert "room.storage.upload" not in source
+    assert "readContentSync" not in source
+    assert "fs.readFileSync" not in source
+    assert "await fs.promises.readFile" in source
 
 
 def _assert_node_agent_toolkit(
@@ -81,7 +84,11 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     assert 'requires-python = ">=3.13"' in pyproject
     assert '"meshagent-api==' in pyproject
     assert '"meshagent-tools==' in pyproject
+    assert '"openai~=2.25.0"' in pyproject
     assert "aiohttp" not in pyproject
+    assert "aiofiles" in pyproject
+    assert "import aiofiles" in server_py
+    assert "asyncio.to_thread" not in server_py
     assert "from aiohttp import web" not in server_py
     assert "RoomClient(protocol_factory=protocol.create_factory())" in server_py
     assert "WebSocketClientProtocol" in server_py
@@ -103,7 +110,7 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     assert 'PYTHON="${PYTHON:-python3.13}"' in install_sh
     assert 'VENV="${VENV:-.venv}"' in install_sh
     assert 'PIP_ONLY_BINARY="${PIP_ONLY_BINARY:-:all:}"' in install_sh
-    assert 'meshagent room connect -- "$VENV_PYTHON" server.py' in dev_sh
+    assert 'meshagent room connect -- "$VENV_PYTHON" -u server.py' in dev_sh
     assert "./scripts/install.sh" not in dev_sh
     assert "MESHAGENT_INIT_DEV_PROBE" in server_py
     assert "room.agents.invoke_tool" in server_py
@@ -174,7 +181,13 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     assert '"aiohttp[speedups]~=3.13.0"' in pyproject
     assert '"meshagent-api==' in pyproject
     assert '"meshagent-tools==' in pyproject
+    assert '"openai~=2.25.0"' in pyproject
+    assert "aiofiles" in pyproject
     assert "from aiohttp import web" in server_py
+    assert "import aiofiles" in server_py
+    assert "read_content_sync" not in server_py
+    assert "asyncio.to_thread" not in server_py
+    assert "content = await read_content()" in server_py
     assert 'app.router.add_get("/status", status)' in server_py
     assert 'app.router.add_get("/api/ping", ping)' in server_py
     assert "RoomClient" in server_py
@@ -196,7 +209,7 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     assert 'PYTHON="${PYTHON:-python3.13}"' in install_sh
     assert 'VENV="${VENV:-.venv}"' in install_sh
     assert 'PIP_ONLY_BINARY="${PIP_ONLY_BINARY:-:all:}"' in install_sh
-    assert 'meshagent room connect -- "$VENV_PYTHON" server.py' in dev_sh
+    assert 'meshagent room connect -- "$VENV_PYTHON" -u server.py' in dev_sh
     assert "./scripts/install.sh" not in dev_sh
     assert (
         'meshagent deploy . --tag "$IMAGE_TAG" --public --liveness /health --wait'
@@ -259,7 +272,7 @@ def test_init_creates_javascript_webserver_non_interactively(tmp_path) -> None:
         class_prefix="JavaScript",
         content_path="dev-content.json",
     )
-    assert "readContentSync" in server_text
+    assert "await readContent()" in server_text
     assert "hello from meshagent init" in dev_content
     assert "node-sdk" in dockerfile_text
     assert "RUN npm run build" in dockerfile_text
@@ -367,7 +380,7 @@ def test_init_creates_typescript_webserver_non_interactively(tmp_path) -> None:
         class_prefix="TypeScript",
         content_path="src/dev-content.json",
     )
-    assert "readContentSync" in server_ts
+    assert "await readContent()" in server_ts
     assert "hello from meshagent init" in (
         tmp_path / "src" / "dev-content.json"
     ).read_text(encoding="utf-8")
@@ -567,16 +580,16 @@ def test_init_creates_dotnet_backend_agent_non_interactively(tmp_path) -> None:
     assert 'DOTNET_CLI_HOME="${DOTNET_CLI_HOME:-$ROOT/.dotnet-home}"' in install_sh
     assert 'NUGET_PACKAGES="${NUGET_PACKAGES:-$ROOT/.nuget/packages}"' in install_sh
     assert "command -v dotnet" in install_sh
-    assert "command -v docker" in install_sh
-    assert "mcr.microsoft.com/dotnet/sdk:9.0" in install_sh
+    assert "command -v docker" not in install_sh
+    assert "docker run" not in install_sh
+    assert "mcr.microsoft.com/dotnet/sdk:9.0" not in install_sh
+    assert "The .NET SDK 9.0 is required on the host" in install_sh
     assert "dotnet restore" in install_sh
     assert "meshagent room connect -- dotnet run" in dev_sh
-    assert "meshagent room connect -- docker run --rm" in dev_sh
-    assert "-e MESHAGENT_API_URL" in dev_sh
-    assert "-e MESHAGENT_PROJECT_ID" in dev_sh
-    assert "-e MESHAGENT_ROOM" in dev_sh
-    assert "-e MESHAGENT_TOKEN" in dev_sh
-    assert "mcr.microsoft.com/dotnet/sdk:9.0" in dev_sh
+    assert "command -v docker" not in dev_sh
+    assert "docker run" not in dev_sh
+    assert "mcr.microsoft.com/dotnet/sdk:9.0" not in dev_sh
+    assert "The .NET SDK 9.0 is required on the host" in dev_sh
     assert (
         'meshagent deploy . --tag "$IMAGE_TAG" --meshagent-token agentDefault --wait'
         in deploy_sh
@@ -619,16 +632,16 @@ def test_init_creates_dotnet_webserver_non_interactively(tmp_path) -> None:
     assert 'DOTNET_CLI_HOME="${DOTNET_CLI_HOME:-$ROOT/.dotnet-home}"' in install_sh
     assert 'NUGET_PACKAGES="${NUGET_PACKAGES:-$ROOT/.nuget/packages}"' in install_sh
     assert "command -v dotnet" in install_sh
-    assert "command -v docker" in install_sh
-    assert "mcr.microsoft.com/dotnet/sdk:9.0" in install_sh
+    assert "command -v docker" not in install_sh
+    assert "docker run" not in install_sh
+    assert "mcr.microsoft.com/dotnet/sdk:9.0" not in install_sh
+    assert "The .NET SDK 9.0 is required on the host" in install_sh
     assert "dotnet restore" in install_sh
     assert "meshagent room connect -- dotnet run" in dev_sh
-    assert "meshagent room connect -- docker run --rm" in dev_sh
-    assert "-e MESHAGENT_API_URL" in dev_sh
-    assert "-e MESHAGENT_PROJECT_ID" in dev_sh
-    assert "-e MESHAGENT_ROOM" in dev_sh
-    assert "-e MESHAGENT_TOKEN" in dev_sh
-    assert "mcr.microsoft.com/dotnet/sdk:9.0" in dev_sh
+    assert "command -v docker" not in dev_sh
+    assert "docker run" not in dev_sh
+    assert "mcr.microsoft.com/dotnet/sdk:9.0" not in dev_sh
+    assert "The .NET SDK 9.0 is required on the host" in dev_sh
     assert (
         'meshagent deploy . --tag "$IMAGE_TAG" --public --liveness /health --wait'
         in deploy_sh
@@ -670,18 +683,18 @@ def test_init_creates_flutter_webserver_non_interactively(tmp_path) -> None:
     assert "EXPOSE 80" in flutter_dockerfile
     assert 'PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"' in install_sh
     assert "command -v flutter" in install_sh
-    assert "command -v docker" in install_sh
-    assert "ghcr.io/cirruslabs/flutter:stable" in install_sh
+    assert "command -v docker" not in install_sh
+    assert "docker run" not in install_sh
+    assert "ghcr.io/cirruslabs/flutter:stable" not in install_sh
+    assert "The Flutter SDK is required on the host" in install_sh
     assert "flutter pub get" in install_sh
     assert "meshagent room connect -- sh -c" in dev_sh
     assert "MESHAGENT_INIT_DEV_PROBE" in dev_sh
-    assert "meshagent room connect -- docker run --rm" in dev_sh
-    assert "-p 3000:3000" in dev_sh
-    assert "-e MESHAGENT_API_URL" in dev_sh
-    assert "-e MESHAGENT_PROJECT_ID" in dev_sh
-    assert "-e MESHAGENT_ROOM" in dev_sh
-    assert "-e MESHAGENT_TOKEN" in dev_sh
-    assert "ghcr.io/cirruslabs/flutter:stable" in dev_sh
+    assert "meshagent room connect -- docker run --rm" not in dev_sh
+    assert "docker run" not in dev_sh
+    assert "ghcr.io/cirruslabs/flutter:stable" not in dev_sh
+    assert "command -v dart" in dev_sh
+    assert "The Flutter SDK and Dart SDK are required on the host" in dev_sh
     assert "dart run tool/dev_room_proof.dart" in dev_sh
     assert "flutter run -d web-server" in dev_sh
     dev_probe = (tmp_path / "tool" / "dev_room_proof.dart").read_text(encoding="utf-8")
@@ -740,16 +753,16 @@ def test_init_creates_dart_backend_agent_non_interactively(tmp_path) -> None:
     assert not (tmp_path / "Makefile").exists()
     assert 'PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"' in install_sh
     assert "command -v dart" in install_sh
-    assert "command -v docker" in install_sh
-    assert "dart:stable" in install_sh
+    assert "command -v docker" not in install_sh
+    assert "docker run" not in install_sh
+    assert "dart:stable" not in install_sh
+    assert "The Dart SDK is required on the host" in install_sh
     assert "dart pub get" in install_sh
     assert "meshagent room connect -- dart run bin/server.dart" in dev_sh
-    assert "meshagent room connect -- docker run --rm" in dev_sh
-    assert "-e MESHAGENT_API_URL" in dev_sh
-    assert "-e MESHAGENT_PROJECT_ID" in dev_sh
-    assert "-e MESHAGENT_ROOM" in dev_sh
-    assert "-e MESHAGENT_TOKEN" in dev_sh
-    assert "dart:stable" in dev_sh
+    assert "meshagent room connect -- docker run --rm" not in dev_sh
+    assert "docker run" not in dev_sh
+    assert "dart:stable" not in dev_sh
+    assert "The Dart SDK is required on the host" in dev_sh
     assert (
         'meshagent deploy . --tag "$IMAGE_TAG" --meshagent-token agentDefault --wait'
         in deploy_sh
