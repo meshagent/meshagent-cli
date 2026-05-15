@@ -3739,6 +3739,7 @@ async def test_process_thread_sidebar_can_send_control_messages_locally() -> Non
     await sidebar.handle_key("backspace", None)
 
     assert deleted_paths == ["dataset://agents/testcli/threads/first"]
+    assert sidebar._message is None
 
 
 @pytest.mark.asyncio
@@ -3789,6 +3790,7 @@ async def test_process_thread_sidebar_keeps_focused_selection_and_handles_clicks
     await sidebar.handle_click(0, 4)
     assert sidebar._selected_index == 0
     assert opened_paths == ["dataset://agents/testcli/threads/first"]
+    assert sidebar._message is None
 
     await sidebar.handle_key("r", None)
     for character in " Renamed":
@@ -3797,10 +3799,12 @@ async def test_process_thread_sidebar_keeps_focused_selection_and_handles_clicks
     assert renamed_threads == [
         ("dataset://agents/testcli/threads/first", "First Renamed")
     ]
+    assert sidebar._message is None
 
     await sidebar.handle_key("backspace", None)
     await sidebar.handle_key("backspace", None)
     assert deleted_paths == ["dataset://agents/testcli/threads/first"]
+    assert sidebar._message is None
 
 
 @pytest.mark.asyncio

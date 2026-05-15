@@ -2135,16 +2135,6 @@ async def _run_ask_tui(
         def _submit_side_panel_key(self, key: str, character: str | None) -> None:
             if self._side_panel_key_handler is None:
                 return
-            if self._pending and key not in {"up", "down"}:
-                self._entries.append(
-                    _AskFeedEntry(
-                        role="error",
-                        text="Wait for the current turn to finish before changing threads.",
-                    )
-                )
-                self._render_feed()
-                self._scroll_to_end()
-                return
             task = asyncio.create_task(
                 self._run_side_panel_key_handler(key=key, character=character)
             )
