@@ -340,6 +340,8 @@ async def _open_agent_use_chat_session(
     project_id: str,
     agent_name: str,
     thread_path: str | None,
+    load: bool,
+    since_turn: str | None,
 ) -> ChatThreadSession:
     connection = await account_client.connect_agent(
         project_id=project_id,
@@ -354,10 +356,14 @@ async def _open_agent_use_chat_session(
         await websocket_client.__aenter__()
         normalized_thread_path = thread_path.strip() if thread_path is not None else ""
         if normalized_thread_path != "":
-            chat_session = await websocket_client.open_thread(
-                normalized_thread_path,
+            chat_session = websocket_client.create_thread_session(
+                thread_path=normalized_thread_path,
                 local_participant_name="you",
                 close_client_on_close=True,
+            )
+            await chat_session.open(
+                load=True if load else None,
+                since_turn=since_turn,
             )
         else:
             chat_session = websocket_client.create_thread_session(
@@ -379,6 +385,9 @@ async def _run_agent_use_tui(
     agent_name: str,
     thread_path: str | None,
     message: str | None,
+    load: bool,
+    since_turn: str | None,
+    output: Literal["text", "json"],
 ) -> None:
     from meshagent.cli import ask as ask_module
     from meshagent.cli import process as process_module
@@ -401,6 +410,8 @@ async def _run_agent_use_tui(
             project_id=project_id,
             agent_name=agent_name,
             thread_path=thread_path,
+            load=load,
+            since_turn=since_turn,
         )
         session = _AgentUseSession(chat_client=chat_session)
         if chat_session.has_thread_path:
@@ -412,11 +423,22 @@ async def _run_agent_use_tui(
                 if isinstance(agent_message, AgentTextContentDelta):
                     click.echo(agent_message.text, nl=False)
 
-            await session.ask(
+            response_text = await session.ask(
                 prompt=message,
-                on_message=_write_message,
+                on_message=_write_message if output == "text" else None,
             )
-            click.echo()
+            if output == "json":
+                click.echo(
+                    json.dumps(
+                        {
+                            "thread_path": session.thread_id,
+                            "response": response_text,
+                        },
+                        indent=2,
+                    )
+                )
+            else:
+                click.echo()
             return
 
         await ask_module._run_ask_tui(
@@ -458,6 +480,13 @@ async def agent_create_command(
     configuration: Annotated[
         str, typer.Option(..., "--configuration", "-c", help="ManagedAgentSpec JSON")
     ],
+    thread_isolation: Annotated[
+        Optional[Literal["global", "participant"]],
+        typer.Option(
+            "--thread-isolation",
+            help="Thread isolation mode for the managed agent",
+        ),
+    ] = None,
     if_not_exists: Annotated[
         bool, typer.Option(help="Do not error if the agent already exists")
     ] = False,
@@ -468,6 +497,10 @@ async def agent_create_command(
         configuration_obj = ManagedAgentSpec.model_validate(
             _maybe_parse_json_object("configuration", configuration)
         )
+        if thread_isolation is not None:
+            configuration_obj = configuration_obj.model_copy(
+                update={"thread_isolation": thread_isolation}
+            )
 
         print(f"[bold green]Creating agent {configuration_obj.name}[/bold green]")
         agent = await account_client.create_agent(
@@ -516,6 +549,13 @@ async def agent_update_command(
         str,
         typer.Option(..., "--configuration", "-c", help="ManagedAgentSpec JSON"),
     ],
+    thread_isolation: Annotated[
+        Optional[Literal["global", "participant"]],
+        typer.Option(
+            "--thread-isolation",
+            help="Thread isolation mode for the managed agent",
+        ),
+    ] = None,
 ):
     account_client = await get_client()
     try:
@@ -526,6 +566,10 @@ async def agent_update_command(
         configuration_obj = ManagedAgentSpec.model_validate(
             _maybe_parse_json_object("configuration", configuration)
         )
+        if thread_isolation is not None:
+            configuration_obj = configuration_obj.model_copy(
+                update={"thread_isolation": thread_isolation}
+            )
 
         print(f"[bold green]Updating agent id={agent_id}...[/bold green]")
         await account_client.update_agent(
@@ -624,12 +668,27 @@ async def agent_use_command(
         Optional[str],
         typer.Option("--thread-path", help="Thread path to open"),
     ] = None,
+    load: Annotated[
+        bool,
+        typer.Option("--load", help="Replay persisted thread messages when opening"),
+    ] = False,
+    since_turn: Annotated[
+        Optional[str],
+        typer.Option(
+            "--since-turn",
+            help="Replay persisted thread messages starting with this turn id",
+        ),
+    ] = None,
     message: Annotated[
         Optional[str],
         typer.Option(
             "--message", "-m", help="Send one message without opening the TUI"
         ),
     ] = None,
+    o: Annotated[
+        Literal["text", "json"],
+        typer.Option("--output", "-o", help="Output format for one-shot messages"),
+    ] = "text",
 ):
     account_client = await get_client()
     try:
@@ -644,6 +703,9 @@ async def agent_use_command(
             agent_name=agent_name.strip(),
             thread_path=thread_path,
             message=message,
+            load=load,
+            since_turn=since_turn,
+            output=o,
         )
     except RoomException as ex:
         print(f"[red]{ex}[/red]")

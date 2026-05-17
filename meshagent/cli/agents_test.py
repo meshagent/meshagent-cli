@@ -183,6 +183,27 @@ async def test_agent_create_command_uses_configuration_name(
 
 
 @pytest.mark.asyncio
+async def test_agent_create_command_can_override_thread_isolation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeAgentClient()
+    _patch_agent_command(monkeypatch, client=client)
+    monkeypatch.setattr(agents, "print", lambda *args, **kwargs: None)
+
+    await agents.agent_create_command(
+        project_id="project-1",
+        configuration=_configuration_json(),
+        thread_isolation="participant",
+        if_not_exists=False,
+    )
+
+    configuration = client.create_agent_calls[0]["configuration"]
+    assert isinstance(configuration, ManagedAgentSpec)
+    assert configuration.thread_isolation == "participant"
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
 async def test_agent_update_command_uses_configuration_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -207,6 +228,28 @@ async def test_agent_update_command_uses_configuration_only(
             "configuration": _sample_configuration(),
         }
     ]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_agent_update_command_can_override_thread_isolation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeAgentClient()
+    client.get_agent_result = _sample_agent()
+    _patch_agent_command(monkeypatch, client=client)
+    monkeypatch.setattr(agents, "print", lambda *args, **kwargs: None)
+
+    await agents.agent_update_command(
+        project_id="project-1",
+        name="planner",
+        configuration=_configuration_json(),
+        thread_isolation="participant",
+    )
+
+    configuration = client.update_agent_calls[0]["configuration"]
+    assert isinstance(configuration, ManagedAgentSpec)
+    assert configuration.thread_isolation == "participant"
     assert client.closed is True
 
 
@@ -282,6 +325,9 @@ async def test_agent_use_command_runs_tui_with_resolved_project(
         project_id="project-1",
         thread_path=".threads/planner/main.thread",
         message="hello",
+        load=True,
+        since_turn="turn-1",
+        o="json",
     )
 
     assert calls == [
@@ -291,6 +337,9 @@ async def test_agent_use_command_runs_tui_with_resolved_project(
             "agent_name": "planner",
             "thread_path": ".threads/planner/main.thread",
             "message": "hello",
+            "load": True,
+            "since_turn": "turn-1",
+            "output": "json",
         }
     ]
     assert client.closed is True
