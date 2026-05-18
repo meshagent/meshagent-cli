@@ -4788,7 +4788,9 @@ def build_process_agent(
             if require_image_generation:
                 for provider in llm_providers:
                     if isinstance(provider.adapter, OpenAIResponsesAdapter):
-                        provider.adapter.set_images_dataset(ImagesDataset(room=room))
+                        provider.adapter.set_images_dataset(
+                            ImagesDataset(room.datasets)
+                        )
             if require_mcp:
                 await room.local_participant.set_attribute("supports_mcp", True)
             if _has_chat_channel(channels=resolved_channels):
@@ -5222,7 +5224,7 @@ def build_process_agent(
                 )
                 from meshagent.computers.agent import ComputerToolkit
 
-                images_dataset = ImagesDataset(room=self.room)
+                images_dataset = ImagesDataset(self.room.datasets)
                 computer_toolkit: ComputerToolkit | None = None
 
                 async def render_screen(image_bytes: bytes) -> None:

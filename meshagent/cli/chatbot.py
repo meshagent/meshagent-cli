@@ -2599,7 +2599,7 @@ def build_process_agent(
                 )
                 from meshagent.computers.agent import ComputerToolkit
 
-                images_dataset = ImagesDataset(room=self.room)
+                images_dataset = ImagesDataset(self.room.datasets)
                 computer_toolkit: ComputerToolkit | None = None
 
                 async def render_screen(image_bytes: bytes) -> None:
