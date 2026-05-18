@@ -521,7 +521,7 @@ async def agent_create_command(
         await account_client.close()
 
 
-@app.async_command("delete")
+@app.async_command("delete", help="Delete a managed agent from the project.")
 async def agent_delete_command(
     *,
     project_id: ProjectIdOption,
@@ -544,7 +544,7 @@ async def agent_delete_command(
         await account_client.close()
 
 
-@app.async_command("update")
+@app.async_command("update", help="Update a managed agent configuration.")
 async def agent_update_command(
     *,
     project_id: ProjectIdOption,
@@ -590,7 +590,7 @@ async def agent_update_command(
         await account_client.close()
 
 
-@app.async_command("list")
+@app.async_command("list", help="List managed agents in the project.")
 async def agent_list_command(
     *,
     project_id: ProjectIdOption,
@@ -644,7 +644,7 @@ async def agent_list_command(
         await account_client.close()
 
 
-@app.async_command("get")
+@app.async_command("get", help="Show a managed agent configuration.")
 async def agent_get_command(
     *,
     project_id: ProjectIdOption,

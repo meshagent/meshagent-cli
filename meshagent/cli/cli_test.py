@@ -110,6 +110,16 @@ def test_agents_help_lists_use_command() -> None:
     assert "│ use" in result.output
 
 
+def test_agent_help_lists_command_descriptions() -> None:
+    result = CliRunner().invoke(async_typer.get_command(cli.app), ["agent", "--help"])
+
+    assert result.exit_code == 0
+    assert "│ delete  Delete a managed agent from the project." in result.output
+    assert "│ update  Update a managed agent configuration." in result.output
+    assert "│ list    List managed agents in the project." in result.output
+    assert "│ get     Show a managed agent configuration." in result.output
+
+
 def test_room_agents_call_help_lists_call_targets() -> None:
     result = CliRunner().invoke(
         async_typer.get_command(cli.app), ["room", "agents", "call", "--help"]
