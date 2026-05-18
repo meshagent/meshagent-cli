@@ -1634,7 +1634,9 @@ class _ChatChannelUseSession:
         pending_session = self._chat_client
         await self._session.close(close_client=False)
         await pending_session.close(close_client=False)
-        new_session = pending_session.client.create_thread_session(
+        new_session = ChatThreadSession(
+            client=pending_session.client,
+            thread_path=None,
             local_participant_name=pending_session.local_participant_name,
             close_client_on_close=True,
         )
@@ -1886,6 +1888,44 @@ async def _open_process_room_client(
         raise
 
 
+def _process_use_remote_participant(
+    *,
+    room: RoomClient,
+    participant_name: str,
+) -> RemoteParticipant:
+    for participant in room.messaging.get_participants():
+        if participant.get_attribute("name") == participant_name:
+            return participant
+    raise RoomException(f"chat participant {participant_name} is not available")
+
+
+def _resolve_process_use_chat_thread_path(
+    *,
+    room: RoomClient,
+    participant_name: str,
+    thread_path: str | None,
+) -> str | None:
+    normalized_thread_path = _normalized_annotation_string(thread_path)
+    if normalized_thread_path is not None:
+        return normalized_thread_path
+
+    participant = _process_use_remote_participant(
+        room=room,
+        participant_name=participant_name,
+    )
+    if _participant_chat_threading_mode(
+        participant=participant
+    ) == "default-new" and _participant_supports_agent_messages(
+        participant=participant,
+    ):
+        return None
+
+    return _participant_chat_thread_path(
+        participant=participant,
+        participant_name=participant_name,
+    )
+
+
 async def _open_process_use_chat_session(
     *,
     account_client: Any,
@@ -1909,11 +1949,24 @@ async def _open_process_use_chat_session(
             participant_name=participant_name,
         )
         await chat_client.__aenter__()
-        chat_session = await chat_client.open_resolved_thread(
-            thread_path,
-            local_participant_name=local_participant_name,
-            close_client_on_close=True,
+        resolved_thread_path = _resolve_process_use_chat_thread_path(
+            room=user_client,
+            participant_name=participant_name,
+            thread_path=thread_path,
         )
+        if resolved_thread_path is None:
+            chat_session = ChatThreadSession(
+                client=chat_client,
+                thread_path=None,
+                local_participant_name=local_participant_name,
+                close_client_on_close=True,
+            )
+        else:
+            chat_session = await chat_client.open_thread(
+                resolved_thread_path,
+                local_participant_name=local_participant_name,
+                close_client_on_close=True,
+            )
         return user_client, chat_session
     except Exception:
         await _close_process_use_chat_client(chat_session)
@@ -4418,7 +4471,7 @@ def build_process_agent(
         Message,
         agent_provider_info,
     )
-    from meshagent.tools import Toolkit, ToolContext
+    from meshagent.tools import RoomToolContext, Toolkit
     from meshagent.tools.hosting import _RemoteToolkitWrapper, _start_hosted_toolkit
 
     requirements = []
@@ -5239,14 +5292,11 @@ def build_process_agent(
                         )
                     )
 
-            caller_context: dict[str, Any] | None = {
-                "thread_id": process.thread_id,
-            }
             required_toolkits = await self.get_required_toolkits(
-                context=ToolContext(
+                context=RoomToolContext(
+                    room=self.room,
                     caller=self.room.local_participant,
                     on_behalf_of=sender,
-                    caller_context=caller_context,
                     event_handler=handle_tool_event,
                 )
             )
@@ -5259,7 +5309,14 @@ def build_process_agent(
                 for channel in process.supervisor.channels:
                     if channel.state != "started":
                         continue
-                    combined_toolkits.extend(channel.get_agent_toolkits())
+                    turn_id = turns[-1].turn_id if len(turns) > 0 else None
+                    if process.thread_id is not None:
+                        combined_toolkits.extend(
+                            channel.get_turn_toolkits(
+                                thread_id=process.thread_id,
+                                turn_id=turn_id,
+                            )
+                        )
             if process.thread_storage is not None:
                 combined_toolkits.append(process.thread_storage.make_toolkit())
             return combined_toolkits

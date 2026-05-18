@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from meshagent.agents.chat_client import BaseChatClient
+from meshagent.agents.chat_client import BaseChatClient, ChatThreadSession
 from meshagent.agents.messages import (
     AGENT_EVENT_THREAD_STARTED,
     AGENT_MESSAGE_THREAD_START,
@@ -289,7 +289,9 @@ async def test_agent_use_session_starts_thread_without_stopping_websocket_client
     None
 ):
     client = _FakeWebSocketChatClient()
-    pending_session = client.create_thread_session(
+    pending_session = ChatThreadSession(
+        client=client,
+        thread_path=None,
         local_participant_name="you",
         close_client_on_close=True,
     )

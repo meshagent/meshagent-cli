@@ -46,14 +46,13 @@ from meshagent.api import RoomClient
 from meshagent.api.specs.service import ContainerSpec, ServiceMetadata, ServiceSpec
 from meshagent.cli.async_typer import get_command
 from meshagent.cli import chatbot
-from meshagent.cli import codex
 from meshagent.cli import cli as root_cli
 from meshagent.cli import mailbot
 from meshagent.cli import process
 from meshagent.cli import task_runner
 from meshagent.cli import worker
 from meshagent.computers.agent import ComputerToolkit
-from meshagent.tools import Toolkit
+from meshagent.tools import RoomToolContext, Toolkit
 from meshagent.tools import ContainerShellTool, ContainerToolkit, ProcessShellTool
 
 
@@ -331,12 +330,11 @@ def _chat_with_keyword_arguments(module) -> dict[int, set[str]]:
     return calls
 
 
-@pytest.mark.parametrize("module", [chatbot, codex])
-def test_chat_with_call_sites_match_chat_with_signature(module) -> None:
+def test_chat_with_call_sites_match_chat_with_signature() -> None:
     allowed_kwargs = set(inspect.signature(chatbot.chat_with).parameters)
     unexpected_by_line = {
         line: sorted(kwargs - allowed_kwargs)
-        for line, kwargs in _chat_with_keyword_arguments(module).items()
+        for line, kwargs in _chat_with_keyword_arguments(chatbot).items()
         if len(kwargs - allowed_kwargs) > 0
     }
 
@@ -944,18 +942,6 @@ def test_build_process_agent_groups_repeated_models_by_provider(
 
 def test_chatbot_agent_annotations_include_thread_dir() -> None:
     assert chatbot._chatbot_agent_annotations(
-        threading_mode="default-new",
-        thread_dir="/threads/helper",
-    ) == {
-        "meshagent.agent.type": "ChatBot",
-        "meshagent.chatbot.threading": "default-new",
-        "meshagent.chatbot.thread-dir": "/threads/helper",
-        "meshagent.chatbot.thread-list": "/threads/helper/index.threadl",
-    }
-
-
-def test_codex_chatbot_agent_annotations_include_thread_dir() -> None:
-    assert codex._chatbot_agent_annotations(
         threading_mode="default-new",
         thread_dir="/threads/helper",
     ) == {
@@ -2589,6 +2575,12 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
         def __init__(self) -> None:
             self.messaging = _Messaging()
 
+        def on(self, event: str, handler) -> None:
+            assert event in {"room.status", "connected", "disconnected", "reconnected"}
+
+        def off(self, event: str, handler) -> None:
+            assert event in {"room.status", "connected", "disconnected", "reconnected"}
+
     class _RoomMessage:
         from_participant_id = "agent-1"
         type = "agent-message"
@@ -2753,6 +2745,12 @@ async def test_process_use_chat_channel_client_routes_multiple_threads() -> None
         def __init__(self) -> None:
             self.messaging = _Messaging()
 
+        def on(self, event: str, handler) -> None:
+            assert event in {"room.status", "connected", "disconnected", "reconnected"}
+
+        def off(self, event: str, handler) -> None:
+            assert event in {"room.status", "connected", "disconnected", "reconnected"}
+
     class _RoomMessage:
         from_participant_id = "agent-1"
         type = "agent-message"
@@ -2860,6 +2858,12 @@ async def test_process_use_chat_channel_client_resolves_studio_thread_path(
         def __init__(self) -> None:
             self.messaging = _Messaging()
 
+        def on(self, event: str, handler) -> None:
+            assert event in {"room.status", "connected", "disconnected", "reconnected"}
+
+        def off(self, event: str, handler) -> None:
+            assert event in {"room.status", "connected", "disconnected", "reconnected"}
+
     room = _Room()
     client = process.MessagingChatClient(
         room=room,
@@ -2868,7 +2872,13 @@ async def test_process_use_chat_channel_client_resolves_studio_thread_path(
     )
 
     await client.start()
-    session = await client.open_resolved_thread(None)
+    resolved_thread_path = process._resolve_process_use_chat_thread_path(
+        room=room,
+        participant_name="remote-helper",
+        thread_path=None,
+    )
+    assert resolved_thread_path == expected_thread_path
+    session = await client.open_thread(resolved_thread_path)
 
     assert session.thread_path == expected_thread_path
     assert OpenThread.model_validate(room.messaging.sent_payloads[0]).thread_id == (
@@ -2935,6 +2945,12 @@ async def test_process_use_chat_channel_client_starts_default_new_thread_with_me
         def __init__(self) -> None:
             self.messaging = _Messaging()
 
+        def on(self, event: str, handler) -> None:
+            assert event in {"room.status", "connected", "disconnected", "reconnected"}
+
+        def off(self, event: str, handler) -> None:
+            assert event in {"room.status", "connected", "disconnected", "reconnected"}
+
     class _RoomMessage:
         from_participant_id = "agent-1"
         type = "agent-message"
@@ -2950,7 +2966,13 @@ async def test_process_use_chat_channel_client_starts_default_new_thread_with_me
     )
 
     await client.start()
-    session = await client.open_resolved_thread(None)
+    resolved_thread_path = process._resolve_process_use_chat_thread_path(
+        room=room,
+        participant_name="remote-helper",
+        thread_path=None,
+    )
+    assert resolved_thread_path is None
+    session = process.ChatThreadSession(client=client, thread_path=None)
     assert session.has_thread_path is False
     assert room.messaging.sent_payloads == []
 
@@ -3049,6 +3071,12 @@ async def test_process_use_chat_channel_client_uses_main_thread_for_default_new_
         def __init__(self) -> None:
             self.messaging = _Messaging()
 
+        def on(self, event: str, handler) -> None:
+            assert event in {"room.status", "connected", "disconnected", "reconnected"}
+
+        def off(self, event: str, handler) -> None:
+            assert event in {"room.status", "connected", "disconnected", "reconnected"}
+
     room = _Room()
     client = process.MessagingChatClient(
         room=room,
@@ -3057,17 +3085,19 @@ async def test_process_use_chat_channel_client_uses_main_thread_for_default_new_
     )
 
     await client.start()
-    session = await client.open_resolved_thread(None)
+    resolved_thread_path = process._resolve_process_use_chat_thread_path(
+        room=room,
+        participant_name="remote-helper",
+        thread_path=None,
+    )
+    assert resolved_thread_path == ".threads/remote-helper/main.thread"
+    session = await client.open_thread(resolved_thread_path)
 
     assert session.thread_path == ".threads/remote-helper/main.thread"
-    assert room.messaging.sent_payloads == [
-        {
-            "type": AGENT_MESSAGE_THREAD_OPEN,
-            "thread_id": ".threads/remote-helper/main.thread",
-            "message_id": room.messaging.sent_payloads[0]["message_id"],
-            "sender_name": None,
-        }
-    ]
+    assert len(room.messaging.sent_payloads) == 1
+    assert OpenThread.model_validate(room.messaging.sent_payloads[0]).thread_id == (
+        ".threads/remote-helper/main.thread"
+    )
 
     await session.close()
     await client.stop()
@@ -3122,6 +3152,12 @@ async def test_process_use_chat_channel_client_reports_accepted_remote_inputs() 
     class _Room:
         def __init__(self) -> None:
             self.messaging = _Messaging()
+
+        def on(self, event: str, handler) -> None:
+            assert event in {"room.status", "connected", "disconnected", "reconnected"}
+
+        def off(self, event: str, handler) -> None:
+            assert event in {"room.status", "connected", "disconnected", "reconnected"}
 
     class _RoomMessage:
         from_participant_id = "agent-1"
@@ -3903,7 +3939,7 @@ async def test_process_turn_toolkits_preserve_required_toolkit_names(
 
 
 @pytest.mark.asyncio
-async def test_process_turn_toolkits_include_thread_id_in_caller_context(
+async def test_process_turn_toolkits_pass_room_context_to_required_toolkits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent_cls = chatbot.build_process_agent(
@@ -3917,10 +3953,10 @@ async def test_process_turn_toolkits_include_thread_id_in_caller_context(
     agent = agent_cls()
     agent._room = _FakeProcessRoom()
 
-    caller_contexts: list[dict[str, object] | None] = []
+    contexts: list[RoomToolContext] = []
 
     async def _fake_get_required_toolkits(*, context):
-        caller_contexts.append(context.caller_context)
+        contexts.append(context)
         return []
 
     monkeypatch.setattr(agent, "get_required_toolkits", _fake_get_required_toolkits)
@@ -3938,7 +3974,9 @@ async def test_process_turn_toolkits_include_thread_id_in_caller_context(
         ],
     )
 
-    assert caller_contexts == [{"thread_id": "threads/example"}]
+    assert len(contexts) == 1
+    assert isinstance(contexts[0], RoomToolContext)
+    assert contexts[0].room is agent._room
 
 
 @pytest.mark.asyncio

@@ -2018,7 +2018,7 @@ def build_process_agent(
     )
     from meshagent.agents.messages import TurnStart, TurnSteer
     from meshagent.agents.process import AgentSupervisor, LLMAgentProcess
-    from meshagent.tools import Toolkit, ToolContext
+    from meshagent.tools import RoomToolContext, Toolkit
     from meshagent.tools.hosting import _RemoteToolkitWrapper, _start_hosted_toolkit
 
     requirements = []
@@ -2669,14 +2669,11 @@ def build_process_agent(
                         )
                     )
 
-            caller_context: dict[str, Any] | None = {
-                "thread_id": process.thread_id,
-            }
             required_toolkits = await self.get_required_toolkits(
-                context=ToolContext(
+                context=RoomToolContext(
+                    room=self.room,
                     caller=self.room.local_participant,
                     on_behalf_of=sender,
-                    caller_context=caller_context,
                     event_handler=handle_tool_event,
                 )
             )
@@ -2689,7 +2686,14 @@ def build_process_agent(
                 for channel in process.supervisor.channels:
                     if channel.state != "started":
                         continue
-                    combined_toolkits.extend(channel.get_agent_toolkits())
+                    turn_id = turns[-1].turn_id if len(turns) > 0 else None
+                    if process.thread_id is not None:
+                        combined_toolkits.extend(
+                            channel.get_turn_toolkits(
+                                thread_id=process.thread_id,
+                                turn_id=turn_id,
+                            )
+                        )
             if process.thread_storage is not None:
                 combined_toolkits.append(process.thread_storage.make_toolkit())
             return combined_toolkits

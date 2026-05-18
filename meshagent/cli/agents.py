@@ -197,7 +197,9 @@ class _AgentUseSession:
         pending_session = self._chat_client
         await self._session.close(close_client=False)
         await pending_session.close(close_client=False)
-        new_session = pending_session.client.create_thread_session(
+        new_session = ChatThreadSession(
+            client=pending_session.client,
+            thread_path=None,
             local_participant_name=pending_session.local_participant_name,
             close_client_on_close=True,
         )
@@ -356,7 +358,8 @@ async def _open_agent_use_chat_session(
         await websocket_client.__aenter__()
         normalized_thread_path = thread_path.strip() if thread_path is not None else ""
         if normalized_thread_path != "":
-            chat_session = websocket_client.create_thread_session(
+            chat_session = ChatThreadSession(
+                client=websocket_client,
                 thread_path=normalized_thread_path,
                 local_participant_name="you",
                 close_client_on_close=True,
@@ -366,7 +369,9 @@ async def _open_agent_use_chat_session(
                 since_turn=since_turn,
             )
         else:
-            chat_session = websocket_client.create_thread_session(
+            chat_session = ChatThreadSession(
+                client=websocket_client,
+                thread_path=None,
                 local_participant_name="you",
                 close_client_on_close=True,
             )

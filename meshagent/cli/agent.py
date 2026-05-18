@@ -51,9 +51,6 @@ async def invoke_tool(
     on_behalf_of_id: Annotated[
         Optional[str], typer.Option(..., help="Optional 'on_behalf_of' participant ID")
     ] = None,
-    caller_context: Annotated[
-        Optional[str], typer.Option(..., help="Optional JSON for caller context")
-    ] = None,
     timeout: Annotated[
         Optional[int],
         typer.Option(
@@ -102,14 +99,12 @@ async def invoke_tool(
                 raise typer.Exit(1)
 
             print("[bold green]Invoking tool...[/bold green]")
-            parsed_context = json.loads(caller_context) if caller_context else None
             response = await client.agents.invoke_tool(
                 toolkit=toolkit,
                 tool=tool,
                 input=json.loads(arguments),
                 participant_id=participant_id,
                 on_behalf_of_id=on_behalf_of_id,
-                caller_context=parsed_context,
             )
             if not isinstance(response, Content):
                 print("[bold green]Tool response stream opened[/bold green]")
@@ -162,14 +157,12 @@ async def list_toolkits_command(
                         "name": tk.name,
                         "title": tk.title,
                         "description": tk.description,
-                        "thumbnail_url": tk.thumbnail_url,
                         "tools": [
                             {
                                 "name": tool.name,
                                 "title": tool.title,
                                 "description": tool.description,
                                 "input_schema": tool.input_schema,
-                                "thumbnail_url": tool.thumbnail_url,
                                 "defs": tool.defs,
                             }
                             for tool in tk.tools
