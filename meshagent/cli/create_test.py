@@ -483,13 +483,37 @@ def test_init_creates_typescript_chatbot_non_interactively(tmp_path) -> None:
     assert "class TypeScriptChatbotToolkit extends Toolkit" in server_ts
     assert 'name: "chat"' in server_ts
     assert "function chatbotReply" in server_ts
+    assert "callMeshAgentLLM" in server_ts
+    assert "OPENAI_BASE_URL" in server_ts
+    assert "OPENAI_API_KEY" in server_ts
+    assert "/responses" in server_ts
+    assert "threadPathForSession" in server_ts
+    assert "room.sync.open" in server_ts
+    assert "threadPath" in server_ts
+    assert "threadMessages" in server_ts
+    assert "invokeRoomTool" in server_ts
+    assert "room.invoke" in server_ts
+    assert "roomToolCalls" in server_ts
+    assert "roomApiCalls" in server_ts
+    assert "meshagent_room_api_call" in server_ts
+    assert "room.storage.upload" in server_ts
+    assert "room.storage.download" in server_ts
+    assert "storage.upload" in server_ts
+    assert "storage.download" in server_ts
     assert "sessionId" in server_ts
     assert "messages" in server_ts
     assert "What did I just say?" in server_ts
     assert "Your previous message was:" in server_ts
+    assert "Summarize the contents of that file." in server_ts
+    assert "Room storage summary:" in server_ts
     assert "MeshAgent create dev chatbot turn 1:" in server_ts
     assert "MeshAgent create dev chatbot turn 2:" in server_ts
+    assert "MeshAgent create dev chatbot room tool:" in server_ts
+    assert "MeshAgent create dev chatbot storage write:" in server_ts
+    assert "MeshAgent create dev chatbot storage summary:" in server_ts
+    assert "MeshAgent create dev chatbot storage room tool:" in server_ts
     assert "chatbot-proof.json" in server_ts
+    assert "chatbot-storage-proof.json" in server_ts
     assert "server.listen" not in server_ts
     dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     assert "node-sdk" in dockerfile
