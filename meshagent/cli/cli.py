@@ -177,6 +177,17 @@ app.add_lazy_command(
     help="Create, list, and manage rooms in a project",
 )
 app.add_lazy_command(
+    name="agent",
+    module="meshagent.cli.agents",
+    help="Create, list, and manage managed agents in a project",
+)
+app.add_lazy_command(
+    name="agents",
+    module="meshagent.cli.agents",
+    help="Create, list, and manage managed agents in a project",
+    hidden=True,
+)
+app.add_lazy_command(
     name="mailbox",
     module="meshagent.cli.mailboxes",
     help="Manage mailboxes for your project",
