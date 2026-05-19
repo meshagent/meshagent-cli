@@ -483,7 +483,12 @@ def test_init_creates_typescript_chatbot_non_interactively(tmp_path) -> None:
     assert "class TypeScriptChatbotToolkit extends Toolkit" in server_ts
     assert 'name: "chat"' in server_ts
     assert "function chatbotReply" in server_ts
-    assert "MeshAgent create dev chatbot chat:" in server_ts
+    assert "sessionId" in server_ts
+    assert "messages" in server_ts
+    assert "What did I just say?" in server_ts
+    assert "Your previous message was:" in server_ts
+    assert "MeshAgent create dev chatbot turn 1:" in server_ts
+    assert "MeshAgent create dev chatbot turn 2:" in server_ts
     assert "chatbot-proof.json" in server_ts
     assert "server.listen" not in server_ts
     dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")

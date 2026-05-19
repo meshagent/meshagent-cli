@@ -6,23 +6,51 @@ const { JsonContent, RoomClient, Tool, Toolkit, startHostedToolkit } = require("
 const proofDisplayPath = "src/chatbot-proof.json";
 const proofPath = path.join(__dirname, proofDisplayPath.split("/").pop());
 const toolkitName = "meshagent.create.typescript-chatbot";
+const sessions = new Map();
 
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function chatbotReply(message) {
+function normalizeMessage(message) {
   const text = String(message ?? "").trim();
   if (text === "") {
-    return "Say something and I will echo it back.";
+    return "Say something.";
   }
-  return `You said: ${text}`;
+  return text;
 }
 
-async function writeChatbotProof({ probe, reply }) {
+function transcriptForSession(sessionId) {
+  const key = String(sessionId ?? "").trim() || "default";
+  if (!sessions.has(key)) {
+    sessions.set(key, []);
+  }
+  return sessions.get(key);
+}
+
+function chatbotReply({ sessionId, message }) {
+  const text = normalizeMessage(message);
+  const transcript = transcriptForSession(sessionId);
+  const previousUserMessage = [...transcript].reverse().find((item) => item.role === "user");
+  const reply = /^what did i just say\??$/i.test(text) && previousUserMessage
+    ? `Your previous message was: ${previousUserMessage.content}`
+    : `You said: ${text}`;
+
+  transcript.push({ role: "user", content: text });
+  transcript.push({ role: "assistant", content: reply });
+
+  return {
+    sessionId: String(sessionId ?? "").trim() || "default",
+    reply,
+    messages: transcript.map((item) => ({ ...item })),
+  };
+}
+
+async function writeChatbotProof({ probe, sessionId, messages }) {
   const payload = {
     probe,
-    reply,
+    sessionId,
+    messages,
     tools: ["chat"],
   };
   await fs.promises.mkdir(path.dirname(proofPath), { recursive: true });
@@ -38,17 +66,18 @@ class TypeScriptChatTool extends Tool {
       description: "Replies to a message with a minimal TypeScript chatbot response.",
       inputSchema: {
         type: "object",
-        required: ["message"],
+        required: ["sessionId", "message"],
         additionalProperties: false,
         properties: {
+          sessionId: { type: "string" },
           message: { type: "string" },
         },
       },
     });
   }
 
-  async execute({ message }) {
-    return new JsonContent({ json: { reply: chatbotReply(message) } });
+  async execute({ sessionId, message }) {
+    return new JsonContent({ json: chatbotReply({ sessionId, message }) });
   }
 }
 
@@ -85,18 +114,42 @@ async function runDevChatbotToolkit(existingRoom) {
       return;
     }
 
-    const message = `MeshAgent local dev proof ${probe}`;
-    const chatted = await room.agents.invokeTool({
+    const sessionId = `meshagent-create-chat-${probe}`;
+    const firstMessage = `MeshAgent local dev proof ${probe}`;
+    const firstTurn = await room.agents.invokeTool({
       toolkit: toolkitName,
       tool: "chat",
-      arguments: { message },
+      arguments: { sessionId, message: firstMessage },
     });
-    console.log(`MeshAgent create dev chatbot chat: ${JSON.stringify(chatted.json)}`);
-    if (chatted.json?.reply !== chatbotReply(message)) {
-      throw new Error("Local TypeScript chatbot proof did not reply to the probe.");
+    console.log(`MeshAgent create dev chatbot turn 1: ${JSON.stringify(firstTurn.json)}`);
+    if (firstTurn.json?.reply !== `You said: ${firstMessage}`) {
+      throw new Error("Local TypeScript chatbot proof did not reply to the first turn.");
     }
 
-    await writeChatbotProof({ probe, reply: chatted.json?.reply });
+    const secondMessage = "What did I just say?";
+    const secondTurn = await room.agents.invokeTool({
+      toolkit: toolkitName,
+      tool: "chat",
+      arguments: { sessionId, message: secondMessage },
+    });
+    console.log(`MeshAgent create dev chatbot turn 2: ${JSON.stringify(secondTurn.json)}`);
+    const expectedSecondReply = `Your previous message was: ${firstMessage}`;
+    if (secondTurn.json?.reply !== expectedSecondReply) {
+      throw new Error("Local TypeScript chatbot proof did not preserve the chat session.");
+    }
+
+    const messages = secondTurn.json?.messages ?? [];
+    const expectedMessages = [
+      { role: "user", content: firstMessage },
+      { role: "assistant", content: `You said: ${firstMessage}` },
+      { role: "user", content: secondMessage },
+      { role: "assistant", content: expectedSecondReply },
+    ];
+    if (JSON.stringify(messages) !== JSON.stringify(expectedMessages)) {
+      throw new Error("Local TypeScript chatbot proof did not produce the expected transcript.");
+    }
+
+    await writeChatbotProof({ probe, sessionId, messages });
     console.log(`MeshAgent create dev chatbot proof wrote: ${proofDisplayPath} ${probe}`);
     const holdSeconds = Number.parseFloat(process.env.MESHAGENT_CREATE_DEV_TOOLKIT_HOLD_SECONDS ?? "0");
     if (Number.isFinite(holdSeconds) && holdSeconds > 0) {
