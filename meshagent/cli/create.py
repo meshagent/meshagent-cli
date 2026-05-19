@@ -56,6 +56,7 @@ IGNORED_FILE_NAMES = {
 
 WEB_FOCUS = "webserver"
 AGENT_FOCUS = "backend-agent"
+CHATBOT_FOCUS = "chatbot"
 DEFAULT_LANGUAGE = "python"
 DEFAULT_FOCUS = AGENT_FOCUS
 CREATE_TEMPLATE_PACKAGE = "meshagent.cli.create_project_templates"
@@ -172,6 +173,11 @@ FOCUSES: Mapping[str, CreateFocus] = {
         id=AGENT_FOCUS,
         label="Backend agent",
         description="Headless RoomClient SDK service without a public port.",
+    ),
+    CHATBOT_FOCUS: CreateFocus(
+        id=CHATBOT_FOCUS,
+        label="Chatbot",
+        description="TypeScript RoomClient chatbot with one chat tool.",
     ),
 }
 
@@ -303,6 +309,21 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
                 ".dockerignore",
             ),
         ),
+        next_steps=NPM_AGENT_NEXT_STEPS,
+    ),
+    ("typescript", CHATBOT_FOCUS): CreateTemplate(
+        language_id="typescript",
+        focus_id=CHATBOT_FOCUS,
+        label="TypeScript chatbot",
+        description="Headless TypeScript RoomClient chatbot.",
+        files={
+            "package.json": "typescript/chatbot/package.json.template",
+            ".npmrc": "typescript/backend-agent/.npmrc.template",
+            "tsconfig.json": "typescript/backend-agent/tsconfig.json.template",
+            "src/server.ts": "typescript/chatbot/src/server.ts.template",
+            "Dockerfile": "typescript/backend-agent/Dockerfile.template",
+            ".dockerignore": "typescript/backend-agent/.dockerignore.template",
+        },
         next_steps=NPM_AGENT_NEXT_STEPS,
     ),
     ("react", WEB_FOCUS): CreateTemplate(
@@ -443,6 +464,8 @@ FOCUS_ALIASES = {
     "backend": AGENT_FOCUS,
     "backend-agent": AGENT_FOCUS,
     "backend_agent": AGENT_FOCUS,
+    "chat": CHATBOT_FOCUS,
+    "chatbot": CHATBOT_FOCUS,
     "roomclient": AGENT_FOCUS,
     "room-client": AGENT_FOCUS,
     "web": WEB_FOCUS,
@@ -705,6 +728,7 @@ def _print_created_report(*, template: CreateTemplate) -> None:
     default=None,
     help=(
         "Project focus for non-interactive use. Supported: webserver, backend-agent."
+        " TypeScript also supports chatbot."
     ),
 )
 @click.option(

@@ -447,6 +447,75 @@ def test_init_creates_typescript_backend_agent_non_interactively(tmp_path) -> No
     assert diagnosis.is_headless_backend_agent is True
 
 
+def test_init_creates_typescript_chatbot_non_interactively(tmp_path) -> None:
+    result = CliRunner().invoke(
+        create_command,
+        [
+            "--language",
+            "typescript",
+            "--focus",
+            "chatbot",
+            "--no-interactive",
+            str(tmp_path),
+        ],
+    )
+    diagnosis = diagnose_project(tmp_path)
+
+    assert result.exit_code == 0
+    assert "Created a minimal deployable TypeScript chatbot" in result.output
+    assert "MESHAGENT_ROOM=<room> npm run dev" in result.output
+    assert "npm run deploy" in result.output
+    assert "--public" not in result.output
+    assert "--liveness" not in result.output
+    assert (tmp_path / "package.json").is_file()
+    assert (tmp_path / ".npmrc").is_file()
+    assert (tmp_path / "tsconfig.json").is_file()
+    assert (tmp_path / "src" / "server.ts").is_file()
+    assert not (tmp_path / "src" / "dev-content.json").exists()
+    package_text = (tmp_path / "package.json").read_text(encoding="utf-8")
+    assert '"name": "meshagent-create-typescript-chatbot"' in package_text
+    assert (
+        '"deploy": "meshagent deploy . --tag meshagent-create-typescript-chatbot:dev --meshagent-token agentDefault --wait"'
+        in package_text
+    )
+    server_ts = (tmp_path / "src" / "server.ts").read_text(encoding="utf-8")
+    assert "class TypeScriptChatTool extends Tool" in server_ts
+    assert "class TypeScriptChatbotToolkit extends Toolkit" in server_ts
+    assert 'name: "chat"' in server_ts
+    assert "function chatbotReply" in server_ts
+    assert "MeshAgent create dev chatbot chat:" in server_ts
+    assert "chatbot-proof.json" in server_ts
+    assert "server.listen" not in server_ts
+    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    assert "node-sdk" in dockerfile
+    assert "FROM scratch" in dockerfile
+    assert "LABEL meshagent.runtime=node" in dockerfile
+    assert "EXPOSE" not in dockerfile
+    assert diagnosis.language == "TypeScript"
+    assert diagnosis.javascript_flavor == "Node.js/TypeScript"
+    assert diagnosis.sdk == "@meshagent/meshagent"
+    assert diagnosis.is_headless_backend_agent is True
+
+
+def test_init_rejects_non_typescript_chatbot(tmp_path) -> None:
+    result = CliRunner().invoke(
+        create_command,
+        [
+            "--language",
+            "javascript",
+            "--focus",
+            "chatbot",
+            "--no-interactive",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Unsupported template combination" in result.output
+    assert "JavaScript does not support chatbot" in result.output
+    assert not (tmp_path / "package.json").exists()
+
+
 def test_init_creates_react_webserver_non_interactively(tmp_path) -> None:
     result = CliRunner().invoke(
         create_command,
@@ -824,6 +893,7 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
     assert [choice[0] for choice in captured_focuses] == [
         "webserver",
         "backend-agent",
+        "chatbot",
     ]
     assert {choice[0]: choice[3] for choice in captured_languages}["react"] == (
         "webserver",
@@ -831,6 +901,7 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
     assert {choice[0]: choice[3] for choice in captured_languages}["typescript"] == (
         "webserver",
         "backend-agent",
+        "chatbot",
     )
     assert (tmp_path / "server.js").is_file()
     assert "@meshagent/meshagent" in (tmp_path / "package.json").read_text(

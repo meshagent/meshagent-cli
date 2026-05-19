@@ -534,7 +534,8 @@ class CreateWizardApp(App[None]):
             message=f"Choose what you want to build for {language_label}.",
             help_text=(
                 "Web server creates an HTTP app. Backend agent creates a "
-                "RoomClient SDK service. Esc goes back."
+                "RoomClient SDK service. Chatbot creates a TypeScript "
+                "RoomClient chat sample. Esc goes back."
             ),
         )
         options = [

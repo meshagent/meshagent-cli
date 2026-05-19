@@ -1,0 +1,134 @@
+// @ts-nocheck
+const fs = require("node:fs");
+const path = require("node:path");
+const { JsonContent, RoomClient, Tool, Toolkit, startHostedToolkit } = require("@meshagent/meshagent");
+
+const proofDisplayPath = "src/chatbot-proof.json";
+const proofPath = path.join(__dirname, proofDisplayPath.split("/").pop());
+const toolkitName = "meshagent.create.typescript-chatbot";
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function chatbotReply(message) {
+  const text = String(message ?? "").trim();
+  if (text === "") {
+    return "Say something and I will echo it back.";
+  }
+  return `You said: ${text}`;
+}
+
+async function writeChatbotProof({ probe, reply }) {
+  const payload = {
+    probe,
+    reply,
+    tools: ["chat"],
+  };
+  await fs.promises.mkdir(path.dirname(proofPath), { recursive: true });
+  await fs.promises.writeFile(proofPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  return payload;
+}
+
+class TypeScriptChatTool extends Tool {
+  constructor() {
+    super({
+      name: "chat",
+      title: "Chat with local bot",
+      description: "Replies to a message with a minimal TypeScript chatbot response.",
+      inputSchema: {
+        type: "object",
+        required: ["message"],
+        additionalProperties: false,
+        properties: {
+          message: { type: "string" },
+        },
+      },
+    });
+  }
+
+  async execute({ message }) {
+    return new JsonContent({ json: { reply: chatbotReply(message) } });
+  }
+}
+
+class TypeScriptChatbotToolkit extends Toolkit {
+  constructor() {
+    super({
+      name: toolkitName,
+      title: "TypeScript Local Chatbot Toolkit",
+      description: "Local-only chat tool for the TypeScript chatbot.",
+      tools: [new TypeScriptChatTool()],
+    });
+  }
+}
+
+async function runDevChatbotToolkit(existingRoom) {
+  const probe = process.env.MESHAGENT_CREATE_DEV_PROBE;
+  if (!process.env.MESHAGENT_ROOM || !process.env.MESHAGENT_TOKEN) {
+    return;
+  }
+
+  const room = existingRoom ?? new RoomClient();
+  if (!existingRoom) {
+    await room.start();
+  }
+  const hostedToolkit = await startHostedToolkit({
+    room,
+    toolkit: new TypeScriptChatbotToolkit(),
+    public_: true,
+  });
+
+  try {
+    if (!probe) {
+      await new Promise(() => {});
+      return;
+    }
+
+    const message = `MeshAgent local dev proof ${probe}`;
+    const chatted = await room.agents.invokeTool({
+      toolkit: toolkitName,
+      tool: "chat",
+      arguments: { message },
+    });
+    console.log(`MeshAgent create dev chatbot chat: ${JSON.stringify(chatted.json)}`);
+    if (chatted.json?.reply !== chatbotReply(message)) {
+      throw new Error("Local TypeScript chatbot proof did not reply to the probe.");
+    }
+
+    await writeChatbotProof({ probe, reply: chatted.json?.reply });
+    console.log(`MeshAgent create dev chatbot proof wrote: ${proofDisplayPath} ${probe}`);
+    const holdSeconds = Number.parseFloat(process.env.MESHAGENT_CREATE_DEV_TOOLKIT_HOLD_SECONDS ?? "0");
+    if (Number.isFinite(holdSeconds) && holdSeconds > 0) {
+      console.log(`MeshAgent create dev chatbot holding registration for ${holdSeconds}s`);
+      await sleep(holdSeconds * 1000);
+    }
+  } finally {
+    await hostedToolkit.stop();
+    if (!existingRoom) {
+      room.dispose();
+    }
+  }
+}
+
+async function main() {
+  if (!process.env.MESHAGENT_ROOM || !process.env.MESHAGENT_TOKEN) {
+    console.log("MeshAgent room environment is not set; waiting for deployment env.");
+    await new Promise(() => {});
+    return;
+  }
+
+  const room = new RoomClient();
+  await room.start();
+  console.log(`Connected to MeshAgent room: ${room.roomName}`);
+  try {
+    await runDevChatbotToolkit(room);
+  } finally {
+    room.dispose();
+  }
+}
+
+main().catch((error) => {
+  console.error("Unable to start MeshAgent RoomClient chatbot:", error);
+  process.exitCode = 1;
+});
