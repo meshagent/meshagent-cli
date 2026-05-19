@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 import click
+import aiohttp
 import pytest
 
 from meshagent.agents.context import AgentSessionContext
@@ -406,11 +407,11 @@ class _FakeRoom:
         self.local_participant = _FakeLocalParticipant(name=local_participant_name)
 
 
-def test_authorize_process_websocket_request_accepts_insecure_user_header() -> None:
+def test_authorize_process_websocket_request_accepts_iap_user_header() -> None:
     participant = process._authorize_process_websocket_request(
         request=_FakeRequest(headers={"X-MESHAGENT-USER": "caller"}),
         room=_FakeRoom(local_participant_name="agent"),
-        insecure=True,
+        websocket_auth="iap",
     )
 
     assert participant.id == "caller"
@@ -433,7 +434,7 @@ def test_authorize_process_websocket_request_requires_agent_grant(
             }
         ),
         room=_FakeRoom(local_participant_name="agent"),
-        insecure=False,
+        websocket_auth="jwt",
     )
 
     assert participant.id == "caller"
@@ -456,18 +457,18 @@ def test_authorize_process_websocket_request_rejects_wrong_agent_grant(
                 }
             ),
             room=_FakeRoom(local_participant_name="agent"),
-            insecure=False,
+            websocket_auth="jwt",
         )
 
 
-def test_process_run_websocket_headers_send_insecure_user() -> None:
+def test_process_run_websocket_headers_omit_auth_for_none() -> None:
     headers = process._process_run_websocket_headers(
         room=_FakeRoom(local_participant_name="agent"),
         user=" caller ",
-        insecure=True,
+        websocket_auth="none",
     )
 
-    assert headers == {"X-MESHAGENT-USER": "caller"}
+    assert headers == {}
 
 
 def test_process_run_websocket_headers_sign_agent_participant_token(
@@ -479,7 +480,7 @@ def test_process_run_websocket_headers_sign_agent_participant_token(
     headers = process._process_run_websocket_headers(
         room=_FakeRoom(local_participant_name="agent"),
         user="caller",
-        insecure=False,
+        websocket_auth="jwt",
     )
 
     token = headers["Authorization"].removeprefix("Bearer ")
@@ -489,6 +490,74 @@ def test_process_run_websocket_headers_sign_agent_participant_token(
         token=participant_token,
         agent_name="agent",
     )
+
+
+def test_process_use_websocket_headers_omit_auth_for_none() -> None:
+    headers = process._process_use_websocket_headers(
+        agent_name="remote-helper",
+        user=" caller ",
+        websocket_auth="none",
+    )
+
+    assert headers == {}
+
+
+def test_process_use_websocket_headers_set_iap_cookie() -> None:
+    headers = process._process_use_websocket_headers(
+        agent_name="remote-helper",
+        user=" caller ",
+        websocket_auth="iap",
+        iap_token="room-jwt",
+    )
+
+    assert headers == {"Cookie": "__meshagent_iap=room-jwt"}
+
+
+def test_process_use_websocket_headers_sign_agent_participant_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "test-secret-with-enough-bytes-for-hs256"
+    monkeypatch.setenv("MESHAGENT_SECRET", secret)
+
+    headers = process._process_use_websocket_headers(
+        agent_name="remote-helper",
+        user="caller",
+        websocket_auth="jwt",
+    )
+
+    token = headers["Authorization"].removeprefix("Bearer ")
+    participant_token = ParticipantToken.from_jwt(token, token=secret)
+    assert participant_token.name == "caller"
+    assert process._has_matching_agent_grant(
+        token=participant_token,
+        agent_name="remote-helper",
+    )
+
+
+@pytest.mark.asyncio
+async def test_process_websocket_channel_server_exposes_healthz(
+    unused_tcp_port: int,
+) -> None:
+    class _UnexpectedWebSocketChannel:
+        async def websocket_handler(self, _request):
+            raise AssertionError("/healthz should not be routed to websocket handler")
+
+    server = await process._start_process_websocket_channel_server(
+        config=process._WebSocketChannelConfig(
+            host="127.0.0.1",
+            port=unused_tcp_port,
+        ),
+        channel=_UnexpectedWebSocketChannel(),
+    )
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"http://127.0.0.1:{unused_tcp_port}/healthz"
+            ) as response:
+                assert response.status == 200
+                assert await response.text() == "ok\n"
+    finally:
+        await server.stop()
 
 
 @pytest.mark.asyncio
@@ -2296,6 +2365,139 @@ async def test_process_use_routes_to_chat_channel_ask_tui(
         "agent_name": "remote-helper",
         "thread_path": "/threads/remote.thread",
         "message": None,
+        "websocket_url": None,
+        "user": "you",
+        "websocket_auth": "iap",
+        "iap_token": None,
+    }
+    assert captured["account_closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_process_use_routes_to_websocket_with_none_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fail_get_client():
+        raise AssertionError("websocket process use should not open an API client")
+
+    async def fake_run_process_use_tui(**kwargs):
+        captured["process_use_kwargs"] = kwargs
+
+    monkeypatch.setattr(process, "get_client", fail_get_client)
+    monkeypatch.setattr(process, "resolve_room", lambda room_name=None: room_name)
+    monkeypatch.setattr(process, "_run_process_use_tui", fake_run_process_use_tui)
+
+    root_command = click.Command("meshagent")
+    process_command = click.Command("process")
+    use_command = click.Command("use")
+    with click.Context(root_command, info_name="meshagent") as root_context:
+        with click.Context(
+            process_command,
+            info_name="process",
+            parent=root_context,
+        ) as process_context:
+            with click.Context(
+                use_command,
+                info_name="use",
+                parent=process_context,
+            ):
+                await process.use(
+                    project_id=None,
+                    room="quickstart",
+                    agent_name="remote-helper",
+                    thread_path="/threads/remote.thread",
+                    message=None,
+                    websocket_url="ws://127.0.0.1:8080/",
+                    user="caller",
+                    websocket_auth="none",
+                )
+
+    assert captured["process_use_kwargs"] == {
+        "account_client": None,
+        "project_id": "",
+        "room": "quickstart",
+        "agent_name": "remote-helper",
+        "thread_path": "/threads/remote.thread",
+        "message": None,
+        "websocket_url": "ws://127.0.0.1:8080/",
+        "user": "caller",
+        "websocket_auth": "none",
+        "iap_token": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_process_use_routes_to_websocket_with_iap_cookie(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _Connection:
+        jwt = "room-connect-jwt"
+
+    class _DummyAccountClient:
+        async def connect_room(self, *, project_id: str, room: str):
+            captured["connect_project_id"] = project_id
+            captured["connect_room"] = room
+            return _Connection()
+
+        async def close(self) -> None:
+            captured["account_closed"] = True
+
+    async def fake_get_client():
+        return _DummyAccountClient()
+
+    async def fake_resolve_project_id(*, project_id=None):
+        del project_id
+        return "project-123"
+
+    async def fake_run_process_use_tui(**kwargs):
+        captured["process_use_kwargs"] = kwargs
+
+    monkeypatch.setattr(process, "get_client", fake_get_client)
+    monkeypatch.setattr(process, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(process, "resolve_room", lambda room_name=None: room_name)
+    monkeypatch.setattr(process, "_run_process_use_tui", fake_run_process_use_tui)
+
+    root_command = click.Command("meshagent")
+    process_command = click.Command("process")
+    use_command = click.Command("use")
+    with click.Context(root_command, info_name="meshagent") as root_context:
+        with click.Context(
+            process_command,
+            info_name="process",
+            parent=root_context,
+        ) as process_context:
+            with click.Context(
+                use_command,
+                info_name="use",
+                parent=process_context,
+            ):
+                await process.use(
+                    project_id=None,
+                    room="quickstart",
+                    agent_name="remote-helper",
+                    thread_path="/threads/remote.thread",
+                    message=None,
+                    websocket_url="wss://agent.example.com/",
+                    user="caller",
+                )
+
+    assert captured["connect_project_id"] == "project-123"
+    assert captured["connect_room"] == "quickstart"
+    assert captured["process_use_kwargs"] == {
+        "account_client": captured["process_use_kwargs"]["account_client"],
+        "project_id": "project-123",
+        "room": "quickstart",
+        "agent_name": "remote-helper",
+        "thread_path": "/threads/remote.thread",
+        "message": None,
+        "websocket_url": "wss://agent.example.com/",
+        "user": "caller",
+        "websocket_auth": "iap",
+        "iap_token": "room-connect-jwt",
     }
     assert captured["account_closed"] is True
 
@@ -2428,6 +2630,7 @@ async def test_process_use_tui_uses_chat_channel_session(
     class _DummyChatClient:
         def __init__(self) -> None:
             self.room = object()
+            self.client = self
             self.has_thread_path = True
             self.thread_path = "/threads/remote.thread"
             self.local_participant_name = "local-user"
@@ -2486,6 +2689,15 @@ async def test_process_use_tui_uses_chat_channel_session(
 
         def clear_applied_queued_agent_inputs(self) -> None:
             pass
+
+        async def list_threads(self, *, limit: int, offset: int):
+            del limit
+            del offset
+            return type("ThreadListResponse", (), {"threads": []})()
+
+        def add_event_listener(self, callback) -> None:
+            del callback
+            return None
 
         async def __aexit__(self, exc_type, exc, tb) -> None:
             del exc_type

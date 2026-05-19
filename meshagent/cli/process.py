@@ -213,6 +213,7 @@ from datetime import datetime, timezone
 from meshagent.api.client import ConflictError
 
 OutputModality = Literal["text", "audio"]
+WebSocketAuthMode = Literal["iap", "jwt", "none"]
 
 logger = logging.getLogger("process")
 
@@ -2084,7 +2085,8 @@ async def _open_process_run_websocket_chat_session(
     room: RoomClient,
     websocket_config: "_WebSocketChannelConfig",
     user: str,
-    insecure: bool,
+    websocket_auth: WebSocketAuthMode,
+    iap_token: str | None = None,
     thread_path: str | None,
     thread_storage: "ThreadStorageBackend",
     agent_name: str | None,
@@ -2094,7 +2096,8 @@ async def _open_process_run_websocket_chat_session(
     headers = _process_run_websocket_headers(
         room=room,
         user=user,
-        insecure=insecure,
+        websocket_auth=websocket_auth,
+        iap_token=iap_token,
     )
     chat_client = WebSocketChatClient(
         url=_websocket_client_url(websocket_config),
@@ -2113,6 +2116,95 @@ async def _open_process_run_websocket_chat_session(
         if threading_mode == "default-new" and (
             thread_path is None or thread_path.strip() == ""
         ):
+            return ChatThreadSession(
+                client=chat_client,
+                thread_path=None,
+                local_participant_name=local_participant_name,
+                close_client_on_close=True,
+            )
+        return await chat_client.open_thread(
+            resolved_thread_path,
+            local_participant_name=local_participant_name,
+            close_client_on_close=True,
+            load=True,
+        )
+    except Exception:
+        await chat_client.__aexit__(None, None, None)
+        raise
+
+
+def _normalize_process_use_websocket_url(websocket_url: str) -> str:
+    normalized = websocket_url.strip()
+    if normalized == "":
+        raise typer.BadParameter("--websocket-url cannot be empty")
+    parsed = urlparse(normalized)
+    if parsed.scheme not in ("ws", "wss") or parsed.netloc == "":
+        raise typer.BadParameter("--websocket-url must be a ws:// or wss:// URL")
+    return normalized
+
+
+def _websocket_iap_cookie_headers(
+    *,
+    token: str | None,
+) -> dict[str, str]:
+    if token is None or token.strip() == "":
+        raise typer.BadParameter(
+            "a room participant token is required for --websocket-auth=iap"
+        )
+    return {"Cookie": f"__meshagent_iap={token.strip()}"}
+
+
+def _process_use_websocket_headers(
+    *,
+    agent_name: str,
+    user: str,
+    websocket_auth: WebSocketAuthMode,
+    iap_token: str | None = None,
+) -> dict[str, str]:
+    normalized_user = user.strip()
+    if normalized_user == "":
+        raise typer.BadParameter("--user cannot be empty")
+    normalized_agent_name = agent_name.strip()
+    if normalized_agent_name == "":
+        raise typer.BadParameter("--agent-name cannot be empty")
+    if websocket_auth == "none":
+        return {}
+    if websocket_auth == "iap":
+        return _websocket_iap_cookie_headers(token=iap_token)
+
+    secret = os.getenv("MESHAGENT_SECRET")
+    if secret is None or secret == "":
+        raise typer.BadParameter(
+            "MESHAGENT_SECRET is required for --websocket-auth=jwt"
+        )
+    token = ParticipantToken(name=normalized_user)
+    token.add_agent_grant(normalized_agent_name)
+    return {"Authorization": f"Bearer {token.to_jwt(token=secret)}"}
+
+
+async def _open_process_use_websocket_chat_session(
+    *,
+    websocket_url: str,
+    agent_name: str,
+    user: str,
+    websocket_auth: WebSocketAuthMode,
+    iap_token: str | None = None,
+    thread_path: str | None,
+) -> ChatThreadSession:
+    local_participant_name = user.strip()
+    chat_client = WebSocketChatClient(
+        url=_normalize_process_use_websocket_url(websocket_url),
+        headers=_process_use_websocket_headers(
+            agent_name=agent_name,
+            user=user,
+            websocket_auth=websocket_auth,
+            iap_token=iap_token,
+        ),
+    )
+    try:
+        await chat_client.__aenter__()
+        resolved_thread_path = _normalized_annotation_string(thread_path)
+        if resolved_thread_path is None:
             return ChatThreadSession(
                 client=chat_client,
                 thread_path=None,
@@ -2180,12 +2272,16 @@ def _process_use_thread_sidebar_options(
 
 async def _run_process_use_tui(
     *,
-    account_client: Any,
+    account_client: Any | None,
     project_id: str,
     room: str,
     agent_name: str,
     thread_path: str | None,
     message: str | None,
+    websocket_url: str | None = None,
+    user: str = "you",
+    websocket_auth: WebSocketAuthMode = "jwt",
+    iap_token: str | None = None,
 ) -> None:
     from meshagent.cli import ask as ask_module
 
@@ -2199,13 +2295,25 @@ async def _run_process_use_tui(
     session: _ChatChannelUseSession | None = None
     thread_sidebar: _ProcessThreadSidebar | None = None
     try:
-        user_client, chat_client = await _open_process_use_chat_session(
-            account_client=account_client,
-            project_id=project_id,
-            room=room,
-            participant_name=agent_name,
-            thread_path=thread_path,
-        )
+        if websocket_url is None:
+            if account_client is None:
+                raise RoomException("process use account client is unavailable")
+            user_client, chat_client = await _open_process_use_chat_session(
+                account_client=account_client,
+                project_id=project_id,
+                room=room,
+                participant_name=agent_name,
+                thread_path=thread_path,
+            )
+        else:
+            chat_client = await _open_process_use_websocket_chat_session(
+                websocket_url=websocket_url,
+                agent_name=agent_name,
+                user=user,
+                websocket_auth=websocket_auth,
+                iap_token=iap_token,
+                thread_path=thread_path,
+            )
         session = _ChatChannelUseSession(chat_client=chat_client)
         await session.start()
         if chat_client.has_thread_path:
@@ -2803,25 +2911,28 @@ def _websocket_client_url(config: _WebSocketChannelConfig) -> str:
     host = _websocket_client_host(config.host)
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
-    return f"ws://{host}:{config.port}/"
+    return f"ws://{host}:{config.port}/messages"
 
 
 def _process_run_websocket_headers(
     *,
     room: RoomClient,
     user: str,
-    insecure: bool,
+    websocket_auth: WebSocketAuthMode,
+    iap_token: str | None = None,
 ) -> dict[str, str]:
     normalized_user = user.strip()
     if normalized_user == "":
         raise typer.BadParameter("--user cannot be empty")
-    if insecure:
-        return {"X-MESHAGENT-USER": normalized_user}
+    if websocket_auth == "none":
+        return {}
+    if websocket_auth == "iap":
+        return _websocket_iap_cookie_headers(token=iap_token)
 
     secret = os.getenv("MESHAGENT_SECRET")
     if secret is None or secret == "":
         raise typer.BadParameter(
-            "MESHAGENT_SECRET is required for websocket process run without --insecure"
+            "MESHAGENT_SECRET is required for --websocket-auth=jwt"
         )
     local_agent_name = _local_process_participant_name(room)
     if local_agent_name is None:
@@ -2889,9 +3000,18 @@ def _authorize_process_websocket_request(
     *,
     request: web.Request,
     room: RoomClient,
-    insecure: bool,
+    websocket_auth: WebSocketAuthMode,
 ) -> Participant:
-    if insecure:
+    if websocket_auth == "none":
+        return Participant(
+            id="websocket-user",
+            attributes={
+                "name": "websocket-user",
+                "role": "user",
+            },
+        )
+
+    if websocket_auth == "iap":
         user_name = request.headers.get("X-MESHAGENT-USER")
         if user_name is None or user_name.strip() == "":
             raise web.HTTPUnauthorized(text="X-MESHAGENT-USER header is required")
@@ -2936,8 +3056,8 @@ async def _start_process_websocket_channel_server(
     channel,
 ) -> _WebSocketChannelServer:
     app = web.Application()
-    app.router.add_get("/", channel.websocket_handler)
-    app.router.add_get("/{tail:.*}", channel.websocket_handler)
+    app.router.add_get("/healthz", _process_websocket_channel_healthz)
+    app.router.add_get("/messages", channel.websocket_handler)
     runner = web.AppRunner(app)
     await runner.setup()
     try:
@@ -2947,6 +3067,10 @@ async def _start_process_websocket_channel_server(
         await runner.cleanup()
         raise
     return _WebSocketChannelServer(runner=runner)
+
+
+async def _process_websocket_channel_healthz(_request: web.Request) -> web.Response:
+    return web.Response(text="ok\n")
 
 
 def _has_chat_channel(*, channels: list[str]) -> bool:
@@ -4072,7 +4196,7 @@ def _build_runtime_agent(
     shell_set_env: Optional[list[str]],
     log_llm_requests: Optional[bool],
     channels: Optional[list[str]],
-    websocket_insecure: bool = False,
+    websocket_auth: WebSocketAuthMode = "jwt",
     voice: str | None = None,
     turn_detection: Literal[
         "none", "automatic"
@@ -4173,7 +4297,7 @@ def _build_runtime_agent(
         builder_kwargs["verbose_dataset"] = verbose_dataset
         builder_kwargs["save_audio_input"] = save_audio_input
         builder_kwargs["preamble_rule"] = preamble_rule
-        builder_kwargs["websocket_insecure"] = websocket_insecure
+        builder_kwargs["websocket_auth"] = websocket_auth
     return builder(**builder_kwargs)
 
 
@@ -4833,7 +4957,7 @@ def build_process_agent(
     shell_copy_env: Optional[list[str]] = None,
     shell_set_env: Optional[list[str]] = None,
     channels: Optional[list[str]] = None,
-    websocket_insecure: bool = False,
+    websocket_auth: WebSocketAuthMode = "jwt",
     transcription_model: str | None = DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL,
     voice: str | None = None,
     turn_detection: Literal[
@@ -5257,7 +5381,7 @@ def build_process_agent(
                         authorize=lambda request: _authorize_process_websocket_request(
                             request=request,
                             room=room,
-                            insecure=websocket_insecure,
+                            websocket_auth=websocket_auth,
                         ),
                         threading_mode=self._resolved_threading_mode,
                         thread_dir=thread_dir,
@@ -6396,16 +6520,13 @@ async def join(
     max_output_tokens: MaxOutputTokensOption = 32000,
     reasoning_effort: ReasoningEffortOption = None,
     channel: ChannelOption = [],
-    insecure: Annotated[
-        bool,
+    websocket_auth: Annotated[
+        WebSocketAuthMode,
         typer.Option(
-            "--insecure",
-            help=(
-                "For websocket channels, accept X-MESHAGENT-USER instead of "
-                "requiring a MESHAGENT_SECRET-signed participant token."
-            ),
+            "--websocket-auth",
+            help=("Authentication mode for websocket channels: jwt, iap, or none."),
         ),
-    ] = False,
+    ] = "jwt",
     skill_dir: Annotated[
         list[str],
         typer.Option(..., help="an agent skills directory"),
@@ -6592,7 +6713,7 @@ async def join(
             shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
             channels=resolved_channels,
-            websocket_insecure=insecure,
+            websocket_auth=websocket_auth,
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
             room_rules_path=room_rules,
@@ -10255,16 +10376,13 @@ async def run(
             help="Persist realtime audio input chunks to dataset thread storage as binary attachments.",
         ),
     ] = False,
-    insecure: Annotated[
-        bool,
+    websocket_auth: Annotated[
+        WebSocketAuthMode,
         typer.Option(
-            "--insecure",
-            help=(
-                "For websocket channels, accept or send X-MESHAGENT-USER instead of "
-                "requiring a MESHAGENT_SECRET-signed participant token."
-            ),
+            "--websocket-auth",
+            help=("Authentication mode for websocket channels: jwt, iap, or none."),
         ),
-    ] = False,
+    ] = "jwt",
     user: Annotated[
         str,
         typer.Option(
@@ -10451,7 +10569,7 @@ async def run(
             shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
             channels=resolved_channels,
-            websocket_insecure=insecure,
+            websocket_auth=websocket_auth,
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
             room_rules_path=room_rules,
@@ -10514,7 +10632,8 @@ async def run(
                         room=client,
                         websocket_config=websocket_run_channel,
                         user=user,
-                        insecure=insecure,
+                        websocket_auth=websocket_auth,
+                        iap_token=jwt,
                         thread_path=thread_path,
                         thread_storage=thread_storage,
                         agent_name=agent_name,
@@ -10665,15 +10784,55 @@ async def use(
         Optional[str],
         typer.Option(..., help="the input message to use"),
     ] = None,
+    websocket_url: Annotated[
+        Optional[str],
+        typer.Option(
+            "--websocket-url",
+            help="Connect to a process websocket channel instead of room chat.",
+        ),
+    ] = None,
+    websocket_auth: Annotated[
+        WebSocketAuthMode,
+        typer.Option(
+            "--websocket-auth",
+            help=("Authentication mode for --websocket-url: jwt, iap, or none."),
+        ),
+    ] = "iap",
+    user: Annotated[
+        str,
+        typer.Option(
+            "--user",
+            help="User name for the websocket process use client.",
+        ),
+    ] = "you",
 ):
     runtime = _current_command_runtime()
     root = logging.getLogger()
     root.setLevel(logging.ERROR)
+    resolved_websocket_url = (
+        _normalize_process_use_websocket_url(websocket_url)
+        if websocket_url is not None
+        else None
+    )
     room = _require_resolved_room(resolve_room(room))
 
-    account_client = await get_client()
+    needs_account_client = resolved_websocket_url is None or websocket_auth == "iap"
+    account_client = await get_client() if needs_account_client else None
     try:
-        project_id = await resolve_project_id(project_id=project_id)
+        if resolved_websocket_url is not None and websocket_auth != "iap":
+            project_id = ""
+            iap_token = None
+        else:
+            project_id = await resolve_project_id(project_id=project_id)
+            iap_token = None
+            if resolved_websocket_url is not None:
+                if account_client is None:
+                    raise RoomException("process use account client is unavailable")
+                connection = await account_client.connect_room(
+                    project_id=project_id,
+                    room=room,
+                )
+                iap_token = connection.jwt
 
         if runtime == "process":
             if agent_name is None or agent_name.strip() == "":
@@ -10689,6 +10848,10 @@ async def use(
                 agent_name=agent_name,
                 thread_path=thread_path,
                 message=message,
+                websocket_url=resolved_websocket_url,
+                user=user,
+                websocket_auth=websocket_auth,
+                iap_token=iap_token,
             )
             return
 
@@ -10704,7 +10867,8 @@ async def use(
         return
 
     finally:
-        await account_client.close()
+        if account_client is not None:
+            await account_client.close()
 
 
 strip_command_options(app, option_names=_HIDDEN_REQUIRE_OPTION_NAMES)
