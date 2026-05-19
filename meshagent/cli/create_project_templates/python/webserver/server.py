@@ -136,7 +136,8 @@ class SearchContentTool(FunctionTool):
         results = [
             item
             for item in content.get("items", {}).values()
-            if normalized_query in f"{item.get('headline', '')}\n{item.get('body', '')}".lower()
+            if normalized_query
+            in f"{item.get('headline', '')}\n{item.get('body', '')}".lower()
         ]
         return {"ok": True, "results": results}
 

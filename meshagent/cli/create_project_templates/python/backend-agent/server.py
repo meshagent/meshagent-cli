@@ -147,7 +147,9 @@ async def run_agent_toolkit_proof(room: RoomClient) -> None:
             os.environ.get("MESHAGENT_CREATE_DEV_TOOLKIT_HOLD_SECONDS") or "0"
         )
         if hold_seconds > 0:
-            print(f"MeshAgent create dev toolkit holding registration for {hold_seconds}s")
+            print(
+                f"MeshAgent create dev toolkit holding registration for {hold_seconds}s"
+            )
             await asyncio.sleep(hold_seconds)
     finally:
         await hosted_toolkit.stop()
