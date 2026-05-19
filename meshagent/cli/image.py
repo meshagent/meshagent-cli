@@ -70,6 +70,11 @@ from meshagent.api.specs.service import (
     ImageStorageMountSpec,
     PortSpec,
     ProjectStorageMountSpec,
+    RouteBackendSpec,
+    RouteMetadata,
+    RoutePathSpec,
+    RouteRoomBackendSpec,
+    RouteSpec,
     RoomStorageMountSpec,
     SecretValue,
     ServiceMetadata,
@@ -2160,32 +2165,34 @@ async def _upsert_domain_route(
     service_id: str,
 ) -> None:
     route_annotations = {ANNOTATION_SERVICE_ID: service_id}
+    spec = RouteSpec(
+        metadata=RouteMetadata(name=domain, annotations=route_annotations),
+        domain=domain,
+        backend=RouteBackendSpec(room=RouteRoomBackendSpec(name=room_name)),
+        paths=[RoutePathSpec(path="/", targetPort=port)],
+    )
     try:
         await account_client.create_route(
             project_id=project_id,
-            domain=domain,
-            room_name=room_name,
-            port=port,
-            annotations=route_annotations,
+            spec=spec,
         )
     except ConflictError:
         existing = await account_client.get_route(project_id=project_id, domain=domain)
-        if existing.room_name != room_name:
+        if existing.spec.room_name != room_name:
             raise typer.BadParameter(
-                f"--domain {domain} already routes to room {existing.room_name}. "
+                f"--domain {domain} already routes to room {existing.spec.room_name}. "
                 f"Refusing to change it to room {room_name}."
             ) from None
         updated_annotations = dict(existing.annotations)
         updated_annotations[ANNOTATION_SERVICE_ID] = service_id
+        spec.metadata.annotations = updated_annotations
         if existing.port == port and existing.annotations == updated_annotations:
             print(f"[green]Route already configured:[/] {domain} -> {room_name}:{port}")
             return
         await account_client.update_route(
             project_id=project_id,
             domain=domain,
-            room_name=room_name,
-            port=port,
-            annotations=updated_annotations,
+            spec=spec,
         )
         print(f"[green]Updated route:[/] {domain} -> {room_name}:{port}")
     else:
