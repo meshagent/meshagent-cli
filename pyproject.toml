@@ -70,7 +70,16 @@ Source = "https://www.meshagent.com"
 include = ["meshagent.*"]
 
 [tool.setuptools.package-data]
-"meshagent" = ["py.typed", "*.pyi", "**/*.pyi", "**/*.js"]
+"meshagent" = [
+  "py.typed",
+  "*.pyi",
+  "**/*.pyi",
+  "**/*.js",
+  "**/*.Dockerfile",
+  "**/*.toml",
+  "**/*.template",
+  "**/.*.template",
+]
 
 [tool.setuptools.dynamic]
 version = {attr = "meshagent.cli.version.__version__"}

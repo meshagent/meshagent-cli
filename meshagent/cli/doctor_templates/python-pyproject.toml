@@ -1,0 +1,10 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "__PYTHON_PROJECT_NAME__"
+version = "0.1.0"
+requires-python = ">=__PYTHON_REQUIRED_VERSION__"
+dependencies = [
+__PYTHON_DEPENDENCY_LINES__]__PYTHON_SETUPTOOLS_SECTION__
