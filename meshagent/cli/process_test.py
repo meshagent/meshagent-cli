@@ -43,6 +43,7 @@ from meshagent.agents.thread_status_publisher import (
 )
 from meshagent.agents.thread_storage import ThreadListEntry, ThreadListEvent
 from meshagent.api import RoomClient
+from meshagent.api import ParticipantToken
 from meshagent.api.specs.service import ContainerSpec, ServiceMetadata, ServiceSpec
 from meshagent.cli.async_typer import get_command
 from meshagent.cli import chatbot
@@ -353,6 +354,141 @@ def test_resolved_channels_accept_queue_channel() -> None:
         runtime="process",
         channel=["queue:jobs"],
     ) == ["queue:jobs"]
+
+
+def test_resolved_channels_accept_websocket_channel_port_shorthand() -> None:
+    assert process._resolved_channels(
+        runtime="process",
+        channel=["websocket:8080"],
+    ) == ["websocket://0.0.0.0:8080"]
+
+
+def test_resolved_channels_accept_websocket_channel_url() -> None:
+    assert process._resolved_channels(
+        runtime="process",
+        channel=["websocket://127.0.0.1:8080"],
+    ) == ["websocket://127.0.0.1:8080"]
+
+
+def test_resolved_channels_reject_websocket_channel_without_port() -> None:
+    with pytest.raises(click.BadParameter):
+        process._resolved_channels(
+            runtime="process",
+            channel=["websocket://127.0.0.1"],
+        )
+
+
+class _FakeRequest:
+    def __init__(
+        self,
+        *,
+        headers: dict[str, str] | None = None,
+        query: dict[str, str] | None = None,
+    ) -> None:
+        self.headers = headers or {}
+        self.query = query or {}
+
+
+class _FakeLocalParticipant:
+    id = "local-id"
+
+    def __init__(self, *, name: str) -> None:
+        self._name = name
+
+    def get_attribute(self, name: str) -> object:
+        if name == "name":
+            return self._name
+        return None
+
+
+class _FakeRoom:
+    def __init__(self, *, local_participant_name: str) -> None:
+        self.local_participant = _FakeLocalParticipant(name=local_participant_name)
+
+
+def test_authorize_process_websocket_request_accepts_insecure_user_header() -> None:
+    participant = process._authorize_process_websocket_request(
+        request=_FakeRequest(headers={"X-MESHAGENT-USER": "caller"}),
+        room=_FakeRoom(local_participant_name="agent"),
+        insecure=True,
+    )
+
+    assert participant.id == "caller"
+    assert participant.get_attribute("name") == "caller"
+    assert participant.get_attribute("role") == "user"
+
+
+def test_authorize_process_websocket_request_requires_agent_grant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "test-secret-with-enough-bytes-for-hs256"
+    monkeypatch.setenv("MESHAGENT_SECRET", secret)
+    token = ParticipantToken(name="caller", version="0.3.5")
+    token.add_agent_grant("agent")
+
+    participant = process._authorize_process_websocket_request(
+        request=_FakeRequest(
+            headers={
+                "Authorization": f"Bearer {token.to_jwt(token=secret)}",
+            }
+        ),
+        room=_FakeRoom(local_participant_name="agent"),
+        insecure=False,
+    )
+
+    assert participant.id == "caller"
+    assert participant.get_attribute("name") == "caller"
+
+
+def test_authorize_process_websocket_request_rejects_wrong_agent_grant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "test-secret-with-enough-bytes-for-hs256"
+    monkeypatch.setenv("MESHAGENT_SECRET", secret)
+    token = ParticipantToken(name="caller", version="0.3.5")
+    token.add_agent_grant("other-agent")
+
+    with pytest.raises(process.web.HTTPForbidden):
+        process._authorize_process_websocket_request(
+            request=_FakeRequest(
+                query={
+                    "token": token.to_jwt(token=secret),
+                }
+            ),
+            room=_FakeRoom(local_participant_name="agent"),
+            insecure=False,
+        )
+
+
+def test_process_run_websocket_headers_send_insecure_user() -> None:
+    headers = process._process_run_websocket_headers(
+        room=_FakeRoom(local_participant_name="agent"),
+        user=" caller ",
+        insecure=True,
+    )
+
+    assert headers == {"X-MESHAGENT-USER": "caller"}
+
+
+def test_process_run_websocket_headers_sign_agent_participant_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "test-secret-with-enough-bytes-for-hs256"
+    monkeypatch.setenv("MESHAGENT_SECRET", secret)
+
+    headers = process._process_run_websocket_headers(
+        room=_FakeRoom(local_participant_name="agent"),
+        user="caller",
+        insecure=False,
+    )
+
+    token = headers["Authorization"].removeprefix("Bearer ")
+    participant_token = ParticipantToken.from_jwt(token, token=secret)
+    assert participant_token.name == "caller"
+    assert process._has_matching_agent_grant(
+        token=participant_token,
+        agent_name="agent",
+    )
 
 
 @pytest.mark.asyncio
@@ -3582,37 +3718,27 @@ async def _wait_for(predicate, *, timeout: float = 1) -> None:
 
 @pytest.mark.asyncio
 async def test_process_thread_sidebar_applies_watch_events_without_relisting() -> None:
-    watch_events: asyncio.Queue[ThreadListEvent] = asyncio.Queue()
-
-    class _WatchStorage:
+    class _ThreadSource:
         list_calls = 0
+        listener = None
 
         @classmethod
-        async def list_threads(cls, *, room, thread_dir: str, limit: int, offset: int):
-            del room
-            del thread_dir
-            del limit
-            del offset
+        async def list_threads(cls):
             cls.list_calls += 1
-            return type(
-                "_Page",
-                (),
-                {
-                    "threads": [],
-                },
-            )()
+            return []
 
         @classmethod
-        async def watch_threads(cls, *, room, thread_dir: str):
-            del room
-            del thread_dir
-            while True:
-                yield await watch_events.get()
+        def subscribe(cls, callback):
+            cls.listener = callback
+
+            def _unsubscribe():
+                cls.listener = None
+
+            return _unsubscribe
 
     sidebar = process._ProcessThreadSidebar(
-        room=_FakeProcessRoomClient(),
-        storage_class=_WatchStorage,
-        thread_dir="dataset://agents/testcli/threads",
+        list_threads=_ThreadSource.list_threads,
+        subscribe_thread_events=_ThreadSource.subscribe,
         current_thread_path=lambda: None,
         switch_thread=lambda _path: asyncio.sleep(0),
         delete_thread=lambda _path: asyncio.sleep(0),
@@ -3620,8 +3746,9 @@ async def test_process_thread_sidebar_applies_watch_events_without_relisting() -
     )
     await sidebar.start()
     try:
-        await _wait_for(lambda: _WatchStorage.list_calls == 1)
-        watch_events.put_nowait(
+        await _wait_for(lambda: _ThreadSource.list_calls == 1)
+        assert _ThreadSource.listener is not None
+        _ThreadSource.listener(
             ThreadListEvent(
                 type="upserted",
                 path="dataset://agents/testcli/threads/new",
@@ -3636,9 +3763,10 @@ async def test_process_thread_sidebar_applies_watch_events_without_relisting() -
         await _wait_for(
             lambda: [entry.name for entry in sidebar._entries] == ["New Thread"]
         )
-        assert _WatchStorage.list_calls == 1
+        assert _ThreadSource.list_calls == 1
     finally:
         await sidebar.close()
+    assert _ThreadSource.listener is None
 
 
 @pytest.mark.asyncio
@@ -3658,6 +3786,7 @@ async def test_process_agent_thread_control_messages_mutate_thread_storage(
 
     class _ThreadStorage:
         delete_calls: list[dict[str, object]] = []
+        list_calls: list[dict[str, object]] = []
         rename_calls: list[dict[str, object]] = []
 
         @classmethod
@@ -3671,6 +3800,30 @@ async def test_process_agent_thread_control_messages_mutate_thread_storage(
         async def delete_thread(cls, *, room, thread_dir: str, path: str) -> None:
             cls.delete_calls.append(
                 {"room": room, "thread_dir": thread_dir, "path": path}
+            )
+
+        @classmethod
+        async def list_threads(cls, *, room, thread_dir: str, limit: int, offset: int):
+            cls.list_calls.append(
+                {
+                    "room": room,
+                    "thread_dir": thread_dir,
+                    "limit": limit,
+                    "offset": offset,
+                }
+            )
+            return process.ThreadListPage(
+                threads=[
+                    ThreadListEntry(
+                        name="First",
+                        path="dataset://agents/testcli/threads/first",
+                        created_at="2026-05-13T08:55:00Z",
+                        modified_at="2026-05-13T08:55:00Z",
+                    )
+                ],
+                total=1,
+                offset=offset,
+                limit=limit,
             )
 
         @classmethod
@@ -3726,6 +3879,14 @@ async def test_process_agent_thread_control_messages_mutate_thread_storage(
                 )
             )
         )
+        page = await agent._supervisor.list_threads(
+            list_threads=process.ListThreads(
+                type="meshagent.agent.thread.list",
+                limit=100,
+                offset=0,
+            ),
+            sender=None,
+        )
     finally:
         await agent.stop()
 
@@ -3744,6 +3905,15 @@ async def test_process_agent_thread_control_messages_mutate_thread_storage(
             "name": "First Renamed",
         }
     ]
+    assert _ThreadStorage.list_calls == [
+        {
+            "room": room,
+            "thread_dir": "dataset://agents/testcli/threads",
+            "limit": 100,
+            "offset": 0,
+        }
+    ]
+    assert [entry.name for entry in page.threads] == ["First"]
 
 
 @pytest.mark.asyncio
@@ -3754,9 +3924,7 @@ async def test_process_thread_sidebar_can_send_control_messages_locally() -> Non
         deleted_paths.append(path)
 
     sidebar = process._ProcessThreadSidebar(
-        room=_FakeProcessRoomClient(),
-        storage_class=object(),
-        thread_dir="dataset://agents/testcli/threads",
+        list_threads=lambda: asyncio.sleep(0, result=[]),
         current_thread_path=lambda: "dataset://agents/testcli/threads/first",
         switch_thread=lambda _path: asyncio.sleep(0),
         delete_thread=delete_thread,
@@ -3790,9 +3958,7 @@ async def test_process_thread_sidebar_keeps_focused_selection_and_handles_clicks
         opened_paths.append(path)
 
     sidebar = process._ProcessThreadSidebar(
-        room=_FakeProcessRoomClient(),
-        storage_class=object(),
-        thread_dir="dataset://agents/testcli/threads",
+        list_threads=lambda: asyncio.sleep(0, result=[]),
         current_thread_path=lambda: "dataset://agents/testcli/threads/first",
         switch_thread=switch_thread,
         delete_thread=lambda path: deleted_paths.append(path) or asyncio.sleep(0),
