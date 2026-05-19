@@ -1,0 +1,66 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:meshagent/meshagent.dart';
+
+Future<void> main() async {
+  final roomName = Platform.environment['MESHAGENT_ROOM'];
+  final token = Platform.environment['MESHAGENT_TOKEN'];
+  if (roomName == null || roomName.isEmpty || token == null || token.isEmpty) {
+    print('MeshAgent room environment is not set; waiting for deployment env.');
+    await Completer<void>().future;
+    return;
+  }
+
+  final room = RoomClient(
+    protocolFactory: WebSocketClientProtocol.createFactory(
+      url: _websocketRoomUrl(roomName),
+      token: token,
+    ),
+  );
+  await room.start();
+  print('Connected to MeshAgent room: ${room.roomName}');
+  final wroteDevProof = await publishDevReadyMarker(room);
+  if (wroteDevProof) {
+    room.dispose();
+    return;
+  }
+  await Completer<void>().future;
+}
+
+Future<bool> publishDevReadyMarker(RoomClient room) async {
+  final readyPath = Platform.environment['MESHAGENT_CREATE_DEV_READY_PATH'];
+  final probe = Platform.environment['MESHAGENT_CREATE_DEV_PROBE'];
+  if (readyPath == null || readyPath.isEmpty || probe == null || probe.isEmpty) {
+    return false;
+  }
+
+  final payload = jsonEncode({
+    'probe': probe,
+    'room': room.roomName,
+    'language': 'dart',
+    'focus': 'backend-agent',
+  });
+  await room.storage.upload(
+    readyPath,
+    Uint8List.fromList(utf8.encode('$payload\n')),
+    overwrite: true,
+    mimeType: 'application/json',
+  );
+  print('MeshAgent create dev probe wrote: $readyPath $probe');
+  return true;
+}
+
+Uri _websocketRoomUrl(String roomName) {
+  var baseUrl = Platform.environment['MESHAGENT_ROOM_URL'] ??
+      Platform.environment['MESHAGENT_API_URL'] ??
+      'https://api.meshagent.com';
+  if (baseUrl.startsWith('https:')) {
+    baseUrl = 'wss:${baseUrl.substring('https:'.length)}';
+  } else if (baseUrl.startsWith('http:')) {
+    baseUrl = 'ws:${baseUrl.substring('http:'.length)}';
+  }
+  return Uri.parse('$baseUrl/rooms/$roomName');
+}

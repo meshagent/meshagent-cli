@@ -16,7 +16,10 @@ from meshagent.api.client import (
     NotFoundError,
     PermissionDeniedError,
     ProjectInfo,
+    ProjectRoomGrant,
     ProjectRepository,
+    Route,
+    Room,
 )
 from meshagent.api.image_runtime import (
     IMAGE_RUNTIME_BASES,
@@ -32,6 +35,11 @@ from meshagent.api.specs.service import (
     EnvironmentVariable,
     ImageStorageMountSpec,
     PortSpec,
+    RouteBackendSpec,
+    RouteMetadata,
+    RoutePathSpec,
+    RouteRoomBackendSpec,
+    RouteSpec,
     SecretValue,
     ServiceMetadata,
     ServiceSpec,
@@ -47,6 +55,23 @@ class _FakeParticipant:
         if name == "name":
             return self._name
         return None
+
+
+def _route_for_service(
+    *, domain: str, room_name: str, port: str, service_id: str
+) -> Route:
+    return Route(
+        domain=domain,
+        spec=RouteSpec(
+            metadata=RouteMetadata(
+                name=domain,
+                annotations={image.ANNOTATION_SERVICE_ID: service_id},
+            ),
+            domain=domain,
+            backend=RouteBackendSpec(room=RouteRoomBackendSpec(name=room_name)),
+            paths=[RoutePathSpec(path="/", targetPort=port)],
+        ),
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -204,6 +229,236 @@ async def test_deploy_image_missing_room_prints_create_room_guidance(
         "'meshagent rooms create --name missing-room --if-not-exists', "
         "then retry deploy.[/red]"
     ]
+
+
+@pytest.mark.asyncio
+async def test_list_owner_deploy_rooms_filters_to_active_user_admin_grants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def list_room_grants_by_user(
+            self,
+            *,
+            project_id: str,
+            user_id: str,
+            limit: int,
+            offset: int,
+            order_by: str,
+        ) -> list[ProjectRoomGrant]:
+            self.calls.append(
+                {
+                    "project_id": project_id,
+                    "user_id": user_id,
+                    "limit": limit,
+                    "offset": offset,
+                    "order_by": order_by,
+                }
+            )
+            return [
+                ProjectRoomGrant(
+                    room=Room(
+                        id="room-member",
+                        name="member",
+                        metadata={},
+                        annotations={},
+                    ),
+                    user_id="user-1",
+                    permissions=ApiScope.user_default(),
+                ),
+                ProjectRoomGrant(
+                    room=Room(
+                        id="room-owner",
+                        name="owner",
+                        metadata={},
+                        annotations={},
+                    ),
+                    user_id="user-1",
+                    permissions=ApiScope.full(),
+                ),
+            ]
+
+    fake_client = _FakeClient()
+    monkeypatch.setattr(image, "get_active_user_id", lambda: "user-1")
+
+    rooms = await image._list_owner_deploy_rooms(
+        fake_client,
+        project_id="project-1",
+    )
+
+    assert [room.name for room in rooms] == ["owner"]
+    assert fake_client.calls == [
+        {
+            "project_id": "project-1",
+            "user_id": "user-1",
+            "limit": 500,
+            "offset": 0,
+            "order_by": "room_name",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_user_can_create_deploy_room_uses_current_user_role_endpoint() -> None:
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.project_ids: list[str] = []
+
+        async def can_create_rooms(self, project_id: str) -> bool:
+            self.project_ids.append(project_id)
+            return True
+
+    fake_client = _FakeClient()
+
+    can_create = await image._user_can_create_deploy_room(
+        fake_client,
+        project_id="project-1",
+    )
+
+    assert can_create is True
+    assert fake_client.project_ids == ["project-1"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_deploy_room_prompts_when_room_missing_and_tty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called: dict[str, object] = {}
+
+    async def _fake_select_deploy_room_interactively(*, project_id: str) -> str:
+        called["project_id"] = project_id
+        return "picked-room"
+
+    monkeypatch.setattr(image, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(
+        image,
+        "_select_deploy_room_interactively",
+        _fake_select_deploy_room_interactively,
+    )
+    monkeypatch.setattr(
+        image,
+        "resolve_room",
+        lambda room: pytest.fail("resolve_room should not be used"),
+    )
+
+    room = await image._resolve_deploy_room(project_id="project-1", room=None)
+
+    assert room == "picked-room"
+    assert called == {"project_id": "project-1"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_deploy_room_non_tty_uses_existing_room_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(image, "_stdio_is_interactive", lambda: False)
+    monkeypatch.setattr(image, "resolve_room", lambda room: "env-room")
+
+    room = await image._resolve_deploy_room(project_id="project-1", room=None)
+
+    assert room == "env-room"
+
+
+@pytest.mark.asyncio
+async def test_select_deploy_room_can_create_new_room(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_rooms: list[dict[str, object]] = []
+
+    class _FakeClient:
+        async def list_room_grants_by_user(
+            self,
+            *,
+            project_id: str,
+            user_id: str,
+            limit: int,
+            offset: int,
+            order_by: str,
+        ) -> list[ProjectRoomGrant]:
+            del project_id, user_id, limit, offset, order_by
+            return []
+
+        async def can_create_rooms(self, project_id: str) -> bool:
+            assert project_id == "project-1"
+            return True
+
+        async def create_room(self, *, project_id: str, name: str) -> Room:
+            created_rooms.append({"project_id": project_id, "name": name})
+            return Room(id="room-created", name=name, metadata={}, annotations={})
+
+        async def close(self) -> None:
+            return None
+
+    async def _fake_get_client() -> _FakeClient:
+        return _FakeClient()
+
+    async def _fake_run_deploy_room_picker_tui(*, rooms, can_create_room):
+        from meshagent.cli.tui.deploy_room import DeployRoomPickerResult
+
+        assert rooms == []
+        assert can_create_room is True
+        return DeployRoomPickerResult(
+            status="create",
+            create_room_name="new-room",
+        )
+
+    printed: list[str] = []
+    monkeypatch.setattr(image, "get_active_user_id", lambda: "user-1")
+    monkeypatch.setattr(image, "get_client", _fake_get_client)
+    monkeypatch.setattr(image, "print", lambda message: printed.append(message))
+    monkeypatch.setattr(
+        "meshagent.cli.tui.deploy_room.run_deploy_room_picker_tui",
+        _fake_run_deploy_room_picker_tui,
+    )
+
+    room = await image._select_deploy_room_interactively(project_id="project-1")
+
+    assert room == "new-room"
+    assert created_rooms == [{"project_id": "project-1", "name": "new-room"}]
+    assert printed == ["[bold green]Created room new-room[/bold green]"]
+
+
+@pytest.mark.asyncio
+async def test_select_deploy_room_can_create_when_active_user_id_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeClient:
+        async def can_create_rooms(self, project_id: str) -> bool:
+            assert project_id == "project-1"
+            return True
+
+        async def create_room(self, *, project_id: str, name: str) -> Room:
+            return Room(id="room-created", name=name, metadata={}, annotations={})
+
+        async def close(self) -> None:
+            return None
+
+    async def _fake_get_client() -> _FakeClient:
+        return _FakeClient()
+
+    async def _fake_run_deploy_room_picker_tui(*, rooms, can_create_room):
+        from meshagent.cli.tui.deploy_room import DeployRoomPickerResult
+
+        assert rooms == []
+        assert can_create_room is True
+        return DeployRoomPickerResult(
+            status="create",
+            create_room_name="new-room",
+        )
+
+    monkeypatch.setattr(image, "get_active_user_id", lambda: None)
+    monkeypatch.setattr(image, "get_client", _fake_get_client)
+    monkeypatch.setattr(image, "print", lambda message: None)
+    monkeypatch.setattr(
+        "meshagent.cli.tui.deploy_room.run_deploy_room_picker_tui",
+        _fake_run_deploy_room_picker_tui,
+    )
+
+    room = await image._select_deploy_room_interactively(project_id="project-1")
+
+    assert room == "new-room"
 
 
 def test_replace_meshagent_image_vars_defaults_to_pkg_dev(monkeypatch) -> None:
@@ -2412,6 +2667,8 @@ async def test_deploy_image_pack_builds_before_deploying(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    from meshagent.cli.tui.deploy_room import DeployDomainPromptResult
+
     captured: dict[str, object] = {"events": []}
     source_dir = tmp_path / "website"
     source_dir.mkdir()
@@ -2423,6 +2680,16 @@ async def test_deploy_image_pack_builds_before_deploying(
     async def _fake_run_image_build_stage(**kwargs) -> None:
         captured["build_kwargs"] = kwargs
         captured["events"].append("build")
+
+    async def _fake_run_deploy_domain_prompt_tui(
+        *, service_name: str, port: str
+    ) -> DeployDomainPromptResult:
+        captured["events"].append("domain_tui")
+        captured["domain_tui"] = {
+            "service_name": service_name,
+            "port": port,
+        }
+        return DeployDomainPromptResult(status="skipped")
 
     class _FakeRoomClient:
         async def __aexit__(self, exc_type, exc, tb) -> None:
@@ -2459,6 +2726,11 @@ async def test_deploy_image_pack_builds_before_deploying(
     monkeypatch.setattr(image, "_with_client", _fake_with_client)
     monkeypatch.setattr(image, "resolve_room", lambda room: room)
     monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(image, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(
+        "meshagent.cli.tui.deploy_room.run_deploy_domain_prompt_tui",
+        _fake_run_deploy_domain_prompt_tui,
+    )
     monkeypatch.setenv("MESHAGENT_ARCH", "arm64")
     monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
 
@@ -2494,7 +2766,11 @@ async def test_deploy_image_pack_builds_before_deploying(
     assert build_kwargs["optimize"] is False
     assert build_kwargs["cred"] == ["registry,user,password"]
     assert build_kwargs["add_latest_tag"] is False
-    assert captured["events"] == ["build", "create"]
+    assert captured["domain_tui"] == {
+        "service_name": "repo-web",
+        "port": "8080",
+    }
+    assert captured["events"] == ["domain_tui", "build", "create"]
     created_service = captured["created_service"]
     assert isinstance(created_service, tuple)
     service_spec = created_service[2]
@@ -2942,6 +3218,8 @@ async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
         dockerfile_path="/context/Dockerfile",
         optimize=True,
         domain="node.meshagent.dev",
+        extra_port=["3001:/messages"],
+        validation_mode="cookie",
         room_mount=[],
         project_mount=[],
         empty_dir_mount=[],
@@ -2974,10 +3252,228 @@ async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
     assert route_spec.domain == "node.meshagent.dev"
     assert route_spec.room_name == "room-1"
     assert str(route_spec.paths[0].targetPort) == "8080"
+    assert route_spec.paths[1].path == "/messages"
+    assert str(route_spec.paths[1].targetPort) == "3001"
     assert route_spec.annotations == {image.ANNOTATION_SERVICE_ID: "repo-web"}
     assert "restarted_service_id" not in captured
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_resolve_deploy_domain_prompts_for_dockerfile_exposed_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from meshagent.cli.tui.deploy_room import DeployDomainPromptResult
+
+    captured: dict[str, object] = {}
+    parsed_tag = image._parse_build_tag("registry.meshagent.com/repo/web:1")
+    default_ports = [PortSpec(num=8080, published=True)]
+    deploy_plan = image._build_deploy_service_spec(
+        existing_service=None,
+        parsed_tag=parsed_tag,
+        public=False,
+        liveness=None,
+        default_ports=default_ports,
+    )
+
+    async def _fake_run_deploy_domain_prompt_tui(
+        *, service_name: str, port: str
+    ) -> DeployDomainPromptResult:
+        captured["domain_tui"] = {
+            "service_name": service_name,
+            "port": port,
+        }
+        return DeployDomainPromptResult(
+            status="completed",
+            domain="chat.example.com",
+        )
+
+    monkeypatch.setattr(image, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(
+        "meshagent.cli.tui.deploy_room.run_deploy_domain_prompt_tui",
+        _fake_run_deploy_domain_prompt_tui,
+    )
+
+    domain = await image._resolve_deploy_domain(
+        account_client=SimpleNamespace(),
+        project_id="project-1",
+        room_name="room-1",
+        explicit_domain=None,
+        existing_service=None,
+        dockerfile_default_ports=default_ports,
+        extra_route_ports=[],
+        deploy_plan=deploy_plan,
+    )
+
+    assert domain == "chat.example.com"
+    assert captured["domain_tui"] == {
+        "service_name": "repo-web",
+        "port": "8080",
+    }
+
+
+@pytest.mark.asyncio
+async def test_resolve_deploy_domain_reuses_existing_service_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    existing_service = ServiceSpec(
+        version="v1",
+        kind="Service",
+        id="service-1",
+        metadata=ServiceMetadata(name="repo-web"),
+        container=ContainerSpec(image="registry.meshagent.com/repo/web:old"),
+        ports=[PortSpec(num=8080, published=True)],
+    )
+    parsed_tag = image._parse_build_tag("registry.meshagent.com/repo/web:1")
+    default_ports = [PortSpec(num=8080, published=True)]
+    deploy_plan = image._build_deploy_service_spec(
+        existing_service=existing_service,
+        parsed_tag=parsed_tag,
+        public=False,
+        liveness=None,
+        default_ports=default_ports,
+    )
+
+    class _FakeAccountClient:
+        async def list_room_routes(
+            self,
+            *,
+            project_id: str,
+            room_name: str,
+            count: int = 100,
+            offset: int = 0,
+            filter: str | None = None,
+        ) -> list[Route]:
+            captured["list_room_routes"] = {
+                "project_id": project_id,
+                "room_name": room_name,
+                "count": count,
+                "offset": offset,
+                "filter": filter,
+            }
+            return [
+                _route_for_service(
+                    domain="existing.example.com",
+                    room_name=room_name,
+                    port="3000",
+                    service_id="repo-web",
+                )
+            ]
+
+    async def _unexpected_run_deploy_domain_prompt_tui(**kwargs) -> None:
+        del kwargs
+        raise AssertionError("domain prompt should not be shown")
+
+    monkeypatch.setattr(image, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(
+        "meshagent.cli.tui.deploy_room.run_deploy_domain_prompt_tui",
+        _unexpected_run_deploy_domain_prompt_tui,
+    )
+
+    domain = await image._resolve_deploy_domain(
+        account_client=_FakeAccountClient(),
+        project_id="project-1",
+        room_name="room-1",
+        explicit_domain=None,
+        existing_service=existing_service,
+        dockerfile_default_ports=default_ports,
+        extra_route_ports=[],
+        deploy_plan=deploy_plan,
+    )
+
+    assert domain == "existing.example.com"
+    assert captured["list_room_routes"] == {
+        "project_id": "project-1",
+        "room_name": "room-1",
+        "count": 100,
+        "offset": 0,
+        "filter": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_warn_missing_extra_route_ports_logs_unpublished_ports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {"messages": []}
+
+    class _FakeAccountClient:
+        async def list_room_services(
+            self,
+            *,
+            project_id: str,
+            room_name: str,
+        ) -> list[ServiceSpec]:
+            captured["list_room_services"] = (project_id, room_name)
+            return [
+                ServiceSpec(
+                    version="v1",
+                    kind="Service",
+                    metadata=ServiceMetadata(name="assistant"),
+                    ports=[PortSpec(num=3002, published=True)],
+                )
+            ]
+
+    def _fake_print(message: str) -> None:
+        captured["messages"].append(message)
+
+    monkeypatch.setattr(image, "print", _fake_print)
+
+    await image._warn_missing_extra_route_ports(
+        account_client=_FakeAccountClient(),
+        project_id="project-1",
+        room_name="room-1",
+        extra_route_ports=[
+            image._ExtraRoutePort(port=3001, path="/messages"),
+        ],
+    )
+
+    assert captured["list_room_services"] == ("project-1", "room-1")
+    assert captured["messages"] == [
+        "[yellow]Warning:[/] no service currently publishes port 3001 in room room-1; route path /messages may not resolve."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_warn_missing_extra_route_ports_skips_published_ports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {"messages": []}
+
+    class _FakeAccountClient:
+        async def list_room_services(
+            self,
+            *,
+            project_id: str,
+            room_name: str,
+        ) -> list[ServiceSpec]:
+            del project_id, room_name
+            return [
+                ServiceSpec(
+                    version="v1",
+                    kind="Service",
+                    metadata=ServiceMetadata(name="assistant"),
+                    ports=[PortSpec(num=3001, published=True)],
+                )
+            ]
+
+    def _fake_print(message: str) -> None:
+        captured["messages"].append(message)
+
+    monkeypatch.setattr(image, "print", _fake_print)
+
+    await image._warn_missing_extra_route_ports(
+        account_client=_FakeAccountClient(),
+        project_id="project-1",
+        room_name="room-1",
+        extra_route_ports=[
+            image._ExtraRoutePort(port=3001, path="/messages"),
+        ],
+    )
+
+    assert captured["messages"] == []
 
 
 @pytest.mark.asyncio

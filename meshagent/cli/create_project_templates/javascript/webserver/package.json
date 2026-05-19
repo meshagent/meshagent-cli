@@ -1,0 +1,18 @@
+{
+  "name": "meshagent-create-javascript",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "build": "ncc build server.js -o dist",
+    "dev": "meshagent room connect -- node server.js",
+    "deploy": "meshagent deploy . --tag meshagent-create-javascript:dev --public --liveness /health --wait",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@meshagent/meshagent": "^__MESHAGENT_CLIENT_VERSION__"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "^0.38.3"
+  }
+}

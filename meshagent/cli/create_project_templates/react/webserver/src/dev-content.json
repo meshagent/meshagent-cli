@@ -1,0 +1,10 @@
+{
+  "activeId": "hero",
+  "items": {
+    "hero": {
+      "id": "hero",
+      "headline": "hello from meshagent create",
+      "body": "Run npm run dev to let the local MeshAgent toolkit update this content."
+    }
+  }
+}

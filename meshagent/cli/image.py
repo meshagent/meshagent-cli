@@ -6,11 +6,12 @@ import os
 import posixpath
 import re
 import shlex
+import sys
 import tempfile
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 from urllib.parse import urlparse
 
 from aiohttp import ClientTimeout
@@ -29,12 +30,13 @@ from meshagent.cli.containers import (
 from meshagent.cli.helper import (
     get_client,
     resolve_api_url,
-    resolve_room,
     resolve_project_id,
+    resolve_room,
     split_container_mount,
     split_empty_dir_mount,
     split_image_mount,
 )
+from meshagent.cli.local_settings import get_active_user_id
 from meshagent.api import ApiScope, RoomClient
 from meshagent.api.client import (
     ConflictError,
@@ -44,7 +46,10 @@ from meshagent.api.client import (
     MeshagentDeploymentConfig,
     NotFoundError,
     PermissionDeniedError,
+    ProjectRoomGrant,
     ProjectRepository,
+    Route,
+    Room,
 )
 from meshagent.api.image_runtime import (
     IMAGE_RUNTIME_BASES,
@@ -112,6 +117,7 @@ _REPOSITORY_COMPONENT_RE = re.compile(r"^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$"
 _REGISTRY_COMPONENT_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 _PROJECT_KEY_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _COOKIE_VALIDATION_METHOD = "cookie"
+DeployValidationMode = Literal["default", "cookie", "none"]
 _RESERVED_ROOM_SERVICE_PORTS_TEXT = ", ".join(
     str(port) for port in sorted(RESERVED_ROOM_SERVICE_PORTS)
 )
@@ -140,6 +146,120 @@ _DEPLOY_MISSING_DOCKERFILE_GUIDANCE = (
     "the app directory first or create one elsewhere in PATH and pass it with "
     "--dockerfile-path."
 )
+
+
+def _stdio_is_interactive() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _room_grant_is_owner_for_deploy(grant: ProjectRoomGrant) -> bool:
+    return grant.permissions.admin is not None
+
+
+async def _user_can_create_deploy_room(
+    account_client: Meshagent,
+    *,
+    project_id: str,
+) -> bool:
+    return await account_client.can_create_rooms(project_id)
+
+
+async def _list_owner_deploy_rooms(
+    account_client: Meshagent,
+    *,
+    project_id: str,
+) -> list[Room]:
+    user_id = get_active_user_id()
+    if user_id is None:
+        raise typer.BadParameter(
+            "Unable to determine the active user for room selection. "
+            "Pass --room explicitly."
+        )
+
+    rooms_by_name: dict[str, Room] = {}
+    limit = 500
+    offset = 0
+    while True:
+        room_grants = await account_client.list_room_grants_by_user(
+            project_id=project_id,
+            user_id=user_id,
+            limit=limit,
+            offset=offset,
+            order_by="room_name",
+        )
+        for room_grant in room_grants:
+            if _room_grant_is_owner_for_deploy(room_grant):
+                rooms_by_name.setdefault(room_grant.room.name, room_grant.room)
+        if len(room_grants) < limit:
+            break
+        offset += limit
+
+    return sorted(rooms_by_name.values(), key=lambda room: room.name.lower())
+
+
+async def _select_deploy_room_interactively(*, project_id: str) -> str:
+    account_client = await get_client()
+    try:
+        can_create_room = await _user_can_create_deploy_room(
+            account_client,
+            project_id=project_id,
+        )
+        try:
+            rooms = await _list_owner_deploy_rooms(
+                account_client,
+                project_id=project_id,
+            )
+        except typer.BadParameter:
+            if not can_create_room:
+                raise
+            rooms = []
+
+        if len(rooms) == 0 and not can_create_room:
+            raise typer.BadParameter(
+                "No owner rooms found for deploy. "
+                "Create a room or pass --room explicitly."
+            )
+
+        from meshagent.cli.tui.deploy_room import (
+            DeployRoomChoice,
+            run_deploy_room_picker_tui,
+        )
+
+        result = await run_deploy_room_picker_tui(
+            rooms=[
+                DeployRoomChoice(
+                    id=room.id,
+                    name=room.name,
+                    description=room.annotations.get("meshagent.storage.class", ""),
+                )
+                for room in rooms
+            ],
+            can_create_room=can_create_room,
+        )
+        if result.status == "create" and result.create_room_name is not None:
+            room = await account_client.create_room(
+                project_id=project_id,
+                name=result.create_room_name,
+            )
+            print(f"[bold green]Created room {room.name}[/bold green]")
+            return room.name
+        if result.status == "completed" and result.selected_room_name is not None:
+            return result.selected_room_name
+
+        print("[yellow]Deploy canceled.[/yellow]")
+        raise typer.Exit(0)
+    finally:
+        await account_client.close()
+
+
+async def _resolve_deploy_room(*, project_id: str, room: str | None) -> str:
+    if room is None and _stdio_is_interactive():
+        return await _select_deploy_room_interactively(project_id=project_id)
+
+    resolved_room = resolve_room(room)
+    if resolved_room is None:
+        raise typer.BadParameter("--room is required unless MESHAGENT_ROOM is set")
+    return resolved_room
 
 
 def default_pack_architecture() -> str:
@@ -254,6 +374,12 @@ class _ServiceDeployPlan:
 @dataclass(frozen=True)
 class _RoomRouteTarget:
     port: str
+
+
+@dataclass(frozen=True)
+class _ExtraRoutePort:
+    port: int
+    path: str
 
 
 @dataclass(frozen=True)
@@ -1345,6 +1471,41 @@ def _normalize_deploy_liveness(*, liveness: str | None) -> str | None:
     return normalized_liveness
 
 
+def _normalize_deploy_validation_mode(*, validation_mode: str) -> DeployValidationMode:
+    normalized = validation_mode.strip().lower()
+    if normalized in ("default", "cookie", "none"):
+        return normalized
+    raise typer.BadParameter("--validation-mode must be one of: default, cookie, none")
+
+
+def _parse_extra_route_ports(*, values: list[str]) -> list[_ExtraRoutePort]:
+    extra_ports: list[_ExtraRoutePort] = []
+    seen_paths: set[str] = set()
+    for value in values:
+        raw_value = value.strip()
+        if ":" not in raw_value:
+            raise typer.BadParameter(
+                "--extra-port must use PORT:/path, for example 3001:/messages"
+            )
+        raw_port, raw_path = raw_value.split(":", 1)
+        try:
+            port = int(raw_port)
+        except ValueError:
+            raise typer.BadParameter("--extra-port PORT must be an integer") from None
+        if port <= 0:
+            raise typer.BadParameter("--extra-port PORT must be positive")
+        path = raw_path.strip()
+        if path == "" or not path.startswith("/"):
+            raise typer.BadParameter("--extra-port path must start with /")
+        if path == "/":
+            raise typer.BadParameter("--extra-port path must not be /")
+        if path in seen_paths:
+            raise typer.BadParameter(f"--extra-port path is duplicated: {path}")
+        seen_paths.add(path)
+        extra_ports.append(_ExtraRoutePort(port=port, path=path))
+    return extra_ports
+
+
 def _parse_meshagent_token_scope(*, value: str) -> ApiScope:
     cleaned = value.strip()
     if cleaned == "":
@@ -1876,6 +2037,7 @@ def _build_deploy_service_spec(
     existing_service: ServiceSpec | None,
     parsed_tag: _ParsedImageTag,
     public: bool,
+    validation_mode: DeployValidationMode = "default",
     liveness: str | None,
     environment: list[EnvironmentVariable] | None = None,
     storage: ContainerMountSpec | None = None,
@@ -1890,6 +2052,7 @@ def _build_deploy_service_spec(
             else {}
         ),
         public=public,
+        validation_mode=validation_mode,
     )
     annotations[ANNOTATION_SERVICE_ID] = service_name
 
@@ -1958,6 +2121,7 @@ def _build_deploy_service_spec(
             _update_deploy_port(
                 port=port,
                 public=public,
+                validation_mode=validation_mode,
                 liveness=liveness,
             )
             for port in ports
@@ -1988,9 +2152,16 @@ def _update_request_validation_annotations(
     *,
     annotations: dict[str, str],
     public: bool,
+    validation_mode: DeployValidationMode = "default",
 ) -> dict[str, str]:
     updated_annotations = dict(annotations)
-    if not public:
+    if validation_mode == "cookie":
+        updated_annotations[ANNOTATION_REQUEST_VALIDATION_METHOD] = (
+            _COOKIE_VALIDATION_METHOD
+        )
+    elif validation_mode == "none":
+        updated_annotations.pop(ANNOTATION_REQUEST_VALIDATION_METHOD, None)
+    elif not public:
         updated_annotations[ANNOTATION_REQUEST_VALIDATION_METHOD] = (
             _COOKIE_VALIDATION_METHOD
         )
@@ -2007,6 +2178,7 @@ def _update_deploy_port(
     *,
     port: PortSpec,
     public: bool,
+    validation_mode: DeployValidationMode = "default",
     liveness: str | None,
 ) -> PortSpec:
     updated_port = port.model_copy(deep=True)
@@ -2022,6 +2194,7 @@ def _update_deploy_port(
     annotations = _update_request_validation_annotations(
         annotations=dict(updated_port.annotations or {}),
         public=public,
+        validation_mode=validation_mode,
     )
     return updated_port.model_copy(
         update={
@@ -2031,11 +2204,20 @@ def _update_deploy_port(
     )
 
 
-def _resolve_domain_route_target(*, service_spec: ServiceSpec) -> _RoomRouteTarget:
+def _resolve_domain_route_target(
+    *,
+    service_spec: ServiceSpec,
+    extra_route_ports: list[_ExtraRoutePort] | None = None,
+) -> _RoomRouteTarget:
+    extra_port_nums = {
+        extra_route_port.port for extra_route_port in extra_route_ports or []
+    }
     published_ports = [
         port
         for port in service_spec.ports or []
-        if port.published and isinstance(port.num, int)
+        if port.published
+        and isinstance(port.num, int)
+        and port.num not in extra_port_nums
     ]
     if len(published_ports) == 0:
         raise typer.BadParameter(
@@ -2048,6 +2230,82 @@ def _resolve_domain_route_target(*, service_spec: ServiceSpec) -> _RoomRouteTarg
     return _RoomRouteTarget(port=str(published_ports[0].num))
 
 
+async def _find_existing_domain_route_for_service(
+    *,
+    account_client: Meshagent,
+    project_id: str,
+    room_name: str,
+    service_id: str,
+) -> Route | None:
+    count = 100
+    offset = 0
+    while True:
+        routes = await account_client.list_room_routes(
+            project_id=project_id,
+            room_name=room_name,
+            count=count,
+            offset=offset,
+        )
+        for route in routes:
+            if route.annotations.get(ANNOTATION_SERVICE_ID) == service_id:
+                return route
+        if len(routes) < count:
+            return None
+        offset += count
+
+
+async def _resolve_deploy_domain(
+    *,
+    account_client: Meshagent,
+    project_id: str,
+    room_name: str,
+    explicit_domain: str | None,
+    existing_service: ServiceSpec | None,
+    dockerfile_default_ports: list[PortSpec] | None,
+    extra_route_ports: list[_ExtraRoutePort],
+    deploy_plan: _ServiceDeployPlan,
+) -> str | None:
+    if explicit_domain is not None:
+        return explicit_domain
+    if dockerfile_default_ports is None or len(dockerfile_default_ports) == 0:
+        return None
+
+    try:
+        route_target = _resolve_domain_route_target(
+            service_spec=deploy_plan.spec,
+            extra_route_ports=extra_route_ports,
+        )
+    except typer.BadParameter:
+        return None
+
+    if existing_service is not None:
+        existing_route = await _find_existing_domain_route_for_service(
+            account_client=account_client,
+            project_id=project_id,
+            room_name=room_name,
+            service_id=deploy_plan.service_id_annotation,
+        )
+        if existing_route is not None:
+            return existing_route.domain
+
+    if not _stdio_is_interactive():
+        return None
+
+    from meshagent.cli.tui.deploy_room import run_deploy_domain_prompt_tui
+
+    result = await run_deploy_domain_prompt_tui(
+        service_name=deploy_plan.spec.metadata.name,
+        port=route_target.port,
+    )
+    if result.status == "canceled":
+        if result.message is not None:
+            print(f"[yellow]{result.message}[/yellow]")
+        raise typer.Exit(1)
+    if result.status == "skipped":
+        return None
+    return result.domain
+
+
 def _find_service_port(
     *,
     service_spec: ServiceSpec,
@@ -2057,6 +2315,42 @@ def _find_service_port(
         if str(service_port.num) == port:
             return service_port
     return None
+
+
+def _service_has_published_port(*, service_spec: ServiceSpec, port: int) -> bool:
+    for service_port in service_spec.ports or []:
+        if service_port.published and service_port.num == port:
+            return True
+    return False
+
+
+async def _warn_missing_extra_route_ports(
+    *,
+    account_client: Meshagent,
+    project_id: str,
+    room_name: str,
+    extra_route_ports: list[_ExtraRoutePort],
+) -> None:
+    if len(extra_route_ports) == 0:
+        return
+    services = await account_client.list_room_services(
+        project_id=project_id,
+        room_name=room_name,
+    )
+    for extra_route_port in extra_route_ports:
+        if any(
+            _service_has_published_port(
+                service_spec=service,
+                port=extra_route_port.port,
+            )
+            for service in services
+        ):
+            continue
+        print(
+            "[yellow]Warning:[/] no service currently publishes "
+            f"port {extra_route_port.port} in room {room_name}; "
+            f"route path {extra_route_port.path} may not resolve."
+        )
 
 
 def _resolve_domain_liveness_path(
@@ -2155,6 +2449,15 @@ async def _upsert_room_service(
     return _RoomServiceUpsertResult(service_id=existing_service.id, created=False)
 
 
+def _route_paths_match(
+    existing_paths: list[RoutePathSpec],
+    desired_paths: list[RoutePathSpec],
+) -> bool:
+    existing = [(path.path, str(path.targetPort)) for path in existing_paths]
+    desired = [(path.path, str(path.targetPort)) for path in desired_paths]
+    return existing == desired
+
+
 async def _upsert_domain_route(
     *,
     account_client,
@@ -2162,14 +2465,20 @@ async def _upsert_domain_route(
     room_name: str,
     domain: str,
     port: str,
+    extra_route_ports: list[_ExtraRoutePort],
     service_id: str,
 ) -> None:
     route_annotations = {ANNOTATION_SERVICE_ID: service_id}
+    paths = [RoutePathSpec(path="/", targetPort=port)]
+    paths.extend(
+        RoutePathSpec(path=extra_route_port.path, targetPort=extra_route_port.port)
+        for extra_route_port in extra_route_ports
+    )
     spec = RouteSpec(
         metadata=RouteMetadata(name=domain, annotations=route_annotations),
         domain=domain,
         backend=RouteBackendSpec(room=RouteRoomBackendSpec(name=room_name)),
-        paths=[RoutePathSpec(path="/", targetPort=port)],
+        paths=paths,
     )
     try:
         await account_client.create_route(
@@ -2186,7 +2495,10 @@ async def _upsert_domain_route(
         updated_annotations = dict(existing.annotations)
         updated_annotations[ANNOTATION_SERVICE_ID] = service_id
         spec.metadata.annotations = updated_annotations
-        if existing.port == port and existing.annotations == updated_annotations:
+        if (
+            _route_paths_match(existing.spec.paths, spec.paths)
+            and existing.annotations == updated_annotations
+        ):
             print(f"[green]Route already configured:[/] {domain} -> {room_name}:{port}")
             return
         await account_client.update_route(
@@ -2207,9 +2519,13 @@ async def _apply_deploy_plan(
     room_name: str,
     deploy_plan: _ServiceDeployPlan,
     domain: str | None,
+    extra_route_ports: list[_ExtraRoutePort],
 ) -> _AppliedDeployPlanResult:
     route_target = (
-        _resolve_domain_route_target(service_spec=deploy_plan.spec)
+        _resolve_domain_route_target(
+            service_spec=deploy_plan.spec,
+            extra_route_ports=extra_route_ports,
+        )
         if domain is not None
         else None
     )
@@ -2236,6 +2552,7 @@ async def _apply_deploy_plan(
             room_name=room_name,
             domain=domain,
             port=route_target.port,
+            extra_route_ports=extra_route_ports,
             service_id=deploy_plan.service_id_annotation,
         )
     return _AppliedDeployPlanResult(
@@ -2841,6 +3158,26 @@ async def deploy_image(
             ),
         ),
     ] = None,
+    extra_port: Annotated[
+        list[str],
+        typer.Option(
+            "--extra-port",
+            help=(
+                "Add an extra route path to DOMAIN as PORT:/path. Can be passed "
+                "multiple times. The port must already be published by a room service."
+            ),
+        ),
+    ] = [],
+    validation_mode: Annotated[
+        str,
+        typer.Option(
+            "--validation-mode",
+            help=(
+                "Request validation annotation mode for private published service "
+                "ports: default, cookie, or none."
+            ),
+        ),
+    ] = "default",
     liveness: Annotated[
         Optional[str],
         typer.Option(
@@ -2955,6 +3292,10 @@ async def deploy_image(
         image_mounts=image_mount,
         empty_dir_mounts=empty_dir_mount,
     )
+    parsed_extra_route_ports = _parse_extra_route_ports(values=extra_port)
+    normalized_validation_mode = _normalize_deploy_validation_mode(
+        validation_mode=validation_mode,
+    )
     meshagent_token_scope = (
         _parse_meshagent_token_scope(value=meshagent_token)
         if meshagent_token is not None
@@ -2962,10 +3303,11 @@ async def deploy_image(
     )
     identity_override = _normalize_deploy_identity(identity=identity)
 
-    resolved_room = resolve_room(room)
-    if resolved_room is None:
-        raise typer.BadParameter("--room is required unless MESHAGENT_ROOM is set")
     resolved_project_id = await resolve_project_id(project_id=project_id)
+    resolved_room = await _resolve_deploy_room(
+        project_id=resolved_project_id,
+        room=room,
+    )
     if pack is not None:
         project_registry, parsed_tag = await _resolve_room_registry_target(
             project_id=resolved_project_id,
@@ -3055,6 +3397,43 @@ async def deploy_image(
             environment=environment,
             resolved_identity=resolved_environment.identity,
         )
+        previous_runtime_state = (
+            await _get_service_runtime_state(
+                client=client,
+                service_id=existing_service.id,
+            )
+            if existing_service is not None
+            and existing_service.id is not None
+            and existing_service.id != ""
+            else None
+        )
+        deploy_plan = _build_deploy_service_spec(
+            existing_service=existing_service,
+            parsed_tag=parsed_tag,
+            public=not private,
+            validation_mode=normalized_validation_mode,
+            liveness=normalized_liveness,
+            environment=environment,
+            storage=storage,
+            default_ports=packed_default_ports,
+            runtime_container=runtime_container,
+        )
+        await _warn_missing_extra_route_ports(
+            account_client=account_client,
+            project_id=resolved_project_id,
+            room_name=resolved_room,
+            extra_route_ports=parsed_extra_route_ports,
+        )
+        domain = await _resolve_deploy_domain(
+            account_client=account_client,
+            project_id=resolved_project_id,
+            room_name=resolved_room,
+            explicit_domain=domain,
+            existing_service=existing_service,
+            dockerfile_default_ports=packed_default_ports,
+            extra_route_ports=parsed_extra_route_ports,
+            deploy_plan=deploy_plan,
+        )
         if pack is not None:
             assert project_registry is not None
             await _run_image_build_stage(
@@ -3072,65 +3451,6 @@ async def deploy_image(
                 cred=cred,
                 add_latest_tag=latest,
             )
-            existing_service = await _find_room_service_by_name(
-                account_client=account_client,
-                project_id=resolved_project_id,
-                room_name=resolved_room,
-                service_name=_derive_service_name(parsed_tag=parsed_tag),
-            )
-        resolved_environment = _resolve_deploy_environment(
-            existing_service=existing_service,
-            default_environment=(
-                list(runtime_container.default_environment)
-                if runtime_container is not None
-                else None
-            ),
-            parsed_environment=parsed_environment,
-            parsed_secret_environment=parsed_secret_environment,
-            meshagent_token_scope=meshagent_token_scope,
-            token_identity=meshagent_token_identity,
-            identity_override=identity_override,
-        )
-        environment = resolved_environment.environment
-        storage = _resolve_deploy_storage(
-            existing_service=existing_service,
-            parsed_storage=parsed_storage,
-            replace_room_mounts=len(room_mount) > 0,
-            replace_project_mounts=len(project_mount) > 0,
-            replace_image_mounts=len(image_mount) > 0,
-            replace_empty_dir_mounts=len(empty_dir_mount) > 0,
-            runtime_container=runtime_container,
-        )
-        _validate_packed_dockerfile_volume_mounts(
-            dockerfile_metadata=packed_dockerfile_metadata,
-            storage=storage,
-        )
-        if pack is not None:
-            await _validate_deploy_environment_secrets(
-                client=client,
-                environment=environment,
-                resolved_identity=resolved_environment.identity,
-            )
-        previous_runtime_state = (
-            await _get_service_runtime_state(
-                client=client,
-                service_id=existing_service.id,
-            )
-            if existing_service is not None
-            and existing_service.id is not None
-            and existing_service.id != ""
-            else None
-        )
-        deploy_plan = _build_deploy_service_spec(
-            existing_service=existing_service,
-            parsed_tag=parsed_tag,
-            public=not private,
-            liveness=normalized_liveness,
-            environment=environment,
-            storage=storage,
-            default_ports=packed_default_ports,
-            runtime_container=runtime_container,
-        )
         deploy_result = await _apply_deploy_plan(
             account_client=account_client,
             client=client,
@@ -3138,6 +3458,7 @@ async def deploy_image(
             room_name=resolved_room,
             deploy_plan=deploy_plan,
             domain=domain,
+            extra_route_ports=parsed_extra_route_ports,
         )
         if wait:
             await _wait_for_deployed_service_live(

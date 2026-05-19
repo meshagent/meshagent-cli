@@ -1,0 +1,9 @@
+node_modules/
+.next/
+out/
+dist/
+build/
+.npm-cache/
+npm-debug.log*
+.git/
+.DS_Store

@@ -1,0 +1,9 @@
+name: meshagent_create_flutter
+description: A minimal deployable Flutter web app for MeshAgent.
+publish_to: "none"
+environment:
+  sdk: ">=3.8.0 <4.0.0"
+dependencies:
+  flutter:
+    sdk: flutter
+  meshagent: ^__MESHAGENT_CLIENT_VERSION__

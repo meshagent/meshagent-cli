@@ -1,0 +1,6 @@
+name: meshagent_create_dart_agent
+publish_to: "none"
+environment:
+  sdk: ">=3.8.0 <4.0.0"
+dependencies:
+  meshagent: ^__MESHAGENT_CLIENT_VERSION__

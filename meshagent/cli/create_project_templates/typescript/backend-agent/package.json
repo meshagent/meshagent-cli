@@ -1,0 +1,21 @@
+{
+  "name": "meshagent-create-typescript-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "build": "ncc build src/server.ts -o dist",
+    "dev": "meshagent room connect -- tsx src/server.ts",
+    "deploy": "meshagent deploy . --tag meshagent-create-typescript-agent:dev --meshagent-token agentDefault --wait",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@meshagent/meshagent": "^__MESHAGENT_CLIENT_VERSION__"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.20.0",
+    "@vercel/ncc": "^0.38.3",
+    "typescript": "^5.8.0"
+  }
+}

@@ -39,39 +39,39 @@ from textual.binding import Binding
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
-INIT_BACK_OPTION_ID = "__init_back__"
-INIT_CANCEL_OPTION_ID = "__init_cancel__"
-INIT_EXISTING_DOCTOR_OPTION_ID = "__init_existing_doctor__"
-INIT_EXISTING_SUBFOLDER_OPTION_ID = "__init_existing_subfolder__"
-INIT_LANGUAGE_OPTION_ID_PREFIX = "__init_language__:"
-INIT_FOCUS_OPTION_ID_PREFIX = "__init_focus__:"
+CREATE_BACK_OPTION_ID = "__init_back__"
+CREATE_CANCEL_OPTION_ID = "__init_cancel__"
+CREATE_EXISTING_DOCTOR_OPTION_ID = "__init_existing_doctor__"
+CREATE_EXISTING_SUBFOLDER_OPTION_ID = "__init_existing_subfolder__"
+CREATE_LANGUAGE_OPTION_ID_PREFIX = "__init_language__:"
+CREATE_FOCUS_OPTION_ID_PREFIX = "__init_focus__:"
 
 EXISTING_ACTION_DOCTOR = "run-doctor"
 EXISTING_ACTION_SUBFOLDER = "create-subfolder"
 
 
 def _language_option_id(language_id: str) -> str:
-    return f"{INIT_LANGUAGE_OPTION_ID_PREFIX}{language_id}"
+    return f"{CREATE_LANGUAGE_OPTION_ID_PREFIX}{language_id}"
 
 
 def _language_id_from_option_id(option_id: str) -> str | None:
-    if not option_id.startswith(INIT_LANGUAGE_OPTION_ID_PREFIX):
+    if not option_id.startswith(CREATE_LANGUAGE_OPTION_ID_PREFIX):
         return None
-    return option_id.removeprefix(INIT_LANGUAGE_OPTION_ID_PREFIX)
+    return option_id.removeprefix(CREATE_LANGUAGE_OPTION_ID_PREFIX)
 
 
 def _focus_option_id(focus_id: str) -> str:
-    return f"{INIT_FOCUS_OPTION_ID_PREFIX}{focus_id}"
+    return f"{CREATE_FOCUS_OPTION_ID_PREFIX}{focus_id}"
 
 
 def _focus_id_from_option_id(option_id: str) -> str | None:
-    if not option_id.startswith(INIT_FOCUS_OPTION_ID_PREFIX):
+    if not option_id.startswith(CREATE_FOCUS_OPTION_ID_PREFIX):
         return None
-    return option_id.removeprefix(INIT_FOCUS_OPTION_ID_PREFIX)
+    return option_id.removeprefix(CREATE_FOCUS_OPTION_ID_PREFIX)
 
 
 @dataclass(frozen=True, slots=True)
-class InitLanguageChoice:
+class CreateLanguageChoice:
     id: str
     label: str
     description: str
@@ -79,14 +79,14 @@ class InitLanguageChoice:
 
 
 @dataclass(frozen=True, slots=True)
-class InitFocusChoice:
+class CreateFocusChoice:
     id: str
     label: str
     description: str
 
 
 @dataclass(frozen=True, slots=True)
-class InitWizardResult:
+class CreateWizardResult:
     status: Literal["completed", "canceled"]
     message: str | None = None
     selected_language_id: str | None = None
@@ -94,7 +94,7 @@ class InitWizardResult:
 
 
 @dataclass(frozen=True, slots=True)
-class InitExistingProjectResult:
+class CreateExistingProjectResult:
     status: Literal["completed", "canceled"]
     message: str | None = None
     action: Literal["run-doctor", "create-subfolder"] | None = None
@@ -110,7 +110,7 @@ def _validate_subfolder_name(value: str) -> str:
     return resolved_value
 
 
-class InitExistingProjectApp(App[None]):
+class CreateExistingProjectApp(App[None]):
     CSS = """
     Screen {
         layout: vertical;
@@ -169,9 +169,9 @@ class InitExistingProjectApp(App[None]):
         self._input_view: Input | None = None
         self._help_view: Static | None = None
         self._error_view: Static | None = None
-        self.result = InitExistingProjectResult(
+        self.result = CreateExistingProjectResult(
             status="canceled",
-            message="Init canceled.",
+            message="Create canceled.",
         )
 
     def compose(self) -> ComposeResult:
@@ -194,9 +194,9 @@ class InitExistingProjectApp(App[None]):
         self._show_existing_project_choice()
 
     async def action_cancel_init(self) -> None:
-        self.result = InitExistingProjectResult(
+        self.result = CreateExistingProjectResult(
             status="canceled",
-            message="Init canceled.",
+            message="Create canceled.",
         )
         self.exit()
 
@@ -214,22 +214,22 @@ class InitExistingProjectApp(App[None]):
         if not isinstance(selected_id, str):
             return
 
-        if selected_id == INIT_EXISTING_DOCTOR_OPTION_ID:
-            self.result = InitExistingProjectResult(
+        if selected_id == CREATE_EXISTING_DOCTOR_OPTION_ID:
+            self.result = CreateExistingProjectResult(
                 status="completed",
                 action=EXISTING_ACTION_DOCTOR,
             )
             self.exit()
             return
 
-        if selected_id == INIT_EXISTING_SUBFOLDER_OPTION_ID:
+        if selected_id == CREATE_EXISTING_SUBFOLDER_OPTION_ID:
             self._show_subfolder_prompt()
             return
 
-        if selected_id == INIT_CANCEL_OPTION_ID:
-            self.result = InitExistingProjectResult(
+        if selected_id == CREATE_CANCEL_OPTION_ID:
+            self.result = CreateExistingProjectResult(
                 status="canceled",
-                message="Init canceled.",
+                message="Create canceled.",
             )
             self.exit()
 
@@ -294,7 +294,7 @@ class InitExistingProjectApp(App[None]):
         self._clear_error()
         self._hide_input()
         self._set_text(
-            title="MeshAgent Init",
+            title="MeshAgent Create",
             message="This directory already contains project files.",
             help_text="Choose an option. Esc or Ctrl+C cancels.",
         )
@@ -302,13 +302,13 @@ class InitExistingProjectApp(App[None]):
             [
                 Option(
                     "Run meshagent doctor here.",
-                    id=INIT_EXISTING_DOCTOR_OPTION_ID,
+                    id=CREATE_EXISTING_DOCTOR_OPTION_ID,
                 ),
                 Option(
                     "Create a new project in a new subfolder.",
-                    id=INIT_EXISTING_SUBFOLDER_OPTION_ID,
+                    id=CREATE_EXISTING_SUBFOLDER_OPTION_ID,
                 ),
-                Option("Cancel", id=INIT_CANCEL_OPTION_ID),
+                Option("Cancel", id=CREATE_CANCEL_OPTION_ID),
             ]
         )
 
@@ -317,7 +317,7 @@ class InitExistingProjectApp(App[None]):
         self._clear_error()
         self._hide_options()
         self._set_text(
-            title="MeshAgent Init",
+            title="MeshAgent Create",
             message="Enter a folder name for the new project.",
             help_text="Type a folder name and press Enter. Esc goes back.",
         )
@@ -330,7 +330,7 @@ class InitExistingProjectApp(App[None]):
             self._set_error_text(str(error))
             return False
 
-        self.result = InitExistingProjectResult(
+        self.result = CreateExistingProjectResult(
             status="completed",
             action=EXISTING_ACTION_SUBFOLDER,
             subfolder_name=resolved_subfolder_name,
@@ -339,7 +339,7 @@ class InitExistingProjectApp(App[None]):
         return True
 
 
-class InitWizardApp(App[None]):
+class CreateWizardApp(App[None]):
     CSS = """
     Screen {
         layout: vertical;
@@ -382,8 +382,8 @@ class InitWizardApp(App[None]):
     def __init__(
         self,
         *,
-        languages: Sequence[InitLanguageChoice],
-        focuses: Sequence[InitFocusChoice],
+        languages: Sequence[CreateLanguageChoice],
+        focuses: Sequence[CreateFocusChoice],
     ) -> None:
         super().__init__()
         self._languages = list(languages)
@@ -395,9 +395,9 @@ class InitWizardApp(App[None]):
         self._message_view: Static | None = None
         self._options_view: OptionList | None = None
         self._help_view: Static | None = None
-        self.result = InitWizardResult(
+        self.result = CreateWizardResult(
             status="canceled",
-            message="Init canceled.",
+            message="Create canceled.",
         )
 
     def compose(self) -> ComposeResult:
@@ -414,7 +414,7 @@ class InitWizardApp(App[None]):
         self._show_language_selection()
 
     async def action_cancel_init(self) -> None:
-        self.result = InitWizardResult(status="canceled", message="Init canceled.")
+        self.result = CreateWizardResult(status="canceled", message="Create canceled.")
         self.exit()
 
     async def action_cancel_or_back(self) -> None:
@@ -431,12 +431,14 @@ class InitWizardApp(App[None]):
         if not isinstance(selected_id, str):
             return
 
-        if selected_id == INIT_CANCEL_OPTION_ID:
-            self.result = InitWizardResult(status="canceled", message="Init canceled.")
+        if selected_id == CREATE_CANCEL_OPTION_ID:
+            self.result = CreateWizardResult(
+                status="canceled", message="Create canceled."
+            )
             self.exit()
             return
 
-        if selected_id == INIT_BACK_OPTION_ID:
+        if selected_id == CREATE_BACK_OPTION_ID:
             self._show_language_selection()
             return
 
@@ -451,7 +453,7 @@ class InitWizardApp(App[None]):
         if focus_id is None or self._selected_language_id is None:
             return
 
-        self.result = InitWizardResult(
+        self.result = CreateWizardResult(
             status="completed",
             selected_language_id=self._selected_language_id,
             selected_focus_id=focus_id,
@@ -471,13 +473,13 @@ class InitWizardApp(App[None]):
                 return language.label
         return language_id
 
-    def _language_choice(self, language_id: str) -> InitLanguageChoice | None:
+    def _language_choice(self, language_id: str) -> CreateLanguageChoice | None:
         for language in self._languages:
             if language.id == language_id:
                 return language
         return None
 
-    def _focuses_for_selected_language(self) -> list[InitFocusChoice]:
+    def _focuses_for_selected_language(self) -> list[CreateFocusChoice]:
         if self._selected_language_id is None:
             return list(self._focuses)
 
@@ -510,7 +512,7 @@ class InitWizardApp(App[None]):
         self._selected_language_id = None
         self._selected_language_label = None
         self._set_text(
-            title="MeshAgent Init",
+            title="MeshAgent Create",
             message="Choose the language for the project.",
             help_text="Use Up/Down and Enter. Esc or Ctrl+C cancels.",
         )
@@ -521,18 +523,19 @@ class InitWizardApp(App[None]):
             )
             for language in self._languages
         ]
-        options.append(Option("Cancel", id=INIT_CANCEL_OPTION_ID))
+        options.append(Option("Cancel", id=CREATE_CANCEL_OPTION_ID))
         self._set_options(options)
 
     def _show_focus_selection(self) -> None:
         self._mode = "focus"
         language_label = self._selected_language_label or "the selected language"
         self._set_text(
-            title="MeshAgent Init",
+            title="MeshAgent Create",
             message=f"Choose what you want to build for {language_label}.",
             help_text=(
                 "Web server creates an HTTP app. Backend agent creates a "
-                "RoomClient SDK service. Esc goes back."
+                "RoomClient SDK service. Chatbot creates a TypeScript "
+                "RoomClient chat sample. Esc goes back."
             ),
         )
         options = [
@@ -542,8 +545,8 @@ class InitWizardApp(App[None]):
             )
             for focus in self._focuses_for_selected_language()
         ]
-        options.append(Option("Back", id=INIT_BACK_OPTION_ID))
-        options.append(Option("Cancel", id=INIT_CANCEL_OPTION_ID))
+        options.append(Option("Back", id=CREATE_BACK_OPTION_ID))
+        options.append(Option("Cancel", id=CREATE_CANCEL_OPTION_ID))
         self._set_options(options)
 
 
@@ -555,27 +558,29 @@ async def _run_app(app: App[None]) -> None:
         active_app.reset(app_token)
 
 
-async def run_init_wizard_tui(
+async def run_create_wizard_tui(
     *,
-    languages: Sequence[InitLanguageChoice],
-    focuses: Sequence[InitFocusChoice],
-) -> InitWizardResult:
-    app = InitWizardApp(languages=languages, focuses=focuses)
+    languages: Sequence[CreateLanguageChoice],
+    focuses: Sequence[CreateFocusChoice],
+) -> CreateWizardResult:
+    app = CreateWizardApp(languages=languages, focuses=focuses)
 
     try:
         await _run_app(app)
     except KeyboardInterrupt:
-        return InitWizardResult(status="canceled", message="Init canceled.")
+        return CreateWizardResult(status="canceled", message="Create canceled.")
 
     return app.result
 
 
-async def run_existing_project_init_tui() -> InitExistingProjectResult:
-    app = InitExistingProjectApp()
+async def run_existing_project_create_tui() -> CreateExistingProjectResult:
+    app = CreateExistingProjectApp()
 
     try:
         await _run_app(app)
     except KeyboardInterrupt:
-        return InitExistingProjectResult(status="canceled", message="Init canceled.")
+        return CreateExistingProjectResult(
+            status="canceled", message="Create canceled."
+        )
 
     return app.result

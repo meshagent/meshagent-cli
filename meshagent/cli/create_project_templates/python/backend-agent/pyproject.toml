@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meshagent-create-python-agent"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+  "aiofiles~=24.1",
+  "meshagent-api==__MESHAGENT_CLIENT_VERSION__",
+  "meshagent-tools==__MESHAGENT_CLIENT_VERSION__",
+  "openai~=2.25.0",
+]
+
+[tool.setuptools]
+py-modules = ["server"]

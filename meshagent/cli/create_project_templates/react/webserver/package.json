@@ -1,0 +1,20 @@
+{
+  "name": "meshagent-create-react",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "meshagent room connect -- sh -c 'node scripts/dev-content-toolkit.js & vite --host 0.0.0.0'",
+    "deploy": "meshagent deploy . --tag meshagent-create-react:dev --public --liveness /health --room-mount /:/data:rw --wait"
+  },
+  "dependencies": {
+    "@meshagent/meshagent": "^__MESHAGENT_CLIENT_VERSION__",
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^6.0.0",
+    "typescript": "^5.8.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {}
+}

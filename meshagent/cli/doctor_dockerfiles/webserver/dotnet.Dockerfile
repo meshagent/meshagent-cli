@@ -1,0 +1,12 @@
+FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
+ENV DOTNET_NOLOGO=1
+WORKDIR /src
+COPY . .
+RUN dotnet publish -c Release -o /app/publish --disable-build-servers /p:UseSharedCompilation=false
+
+FROM mcr.microsoft.com/dotnet/aspnet:9.0
+WORKDIR /app
+COPY --from=build /app/publish .
+EXPOSE 5000
+ENTRYPOINT ["dotnet", "DoctorDotnetRoomClient.dll"]

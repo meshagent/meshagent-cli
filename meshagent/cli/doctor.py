@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from importlib import resources
 import json
 from pathlib import Path
 import re
@@ -50,6 +51,31 @@ PYTHON_VIRTUAL_ENV_SCAN_IGNORES = {
     "node_modules",
     "obj",
     "target",
+}
+DOCKERFILE_TEMPLATE_PACKAGE = "meshagent.cli.doctor_dockerfiles"
+DOCTOR_TEMPLATE_PACKAGE = "meshagent.cli.doctor_templates"
+PYTHON_PYPROJECT_TEMPLATE = "python-pyproject.toml"
+DOCKERFILE_BACKEND_TEMPLATE_BY_LANGUAGE = {
+    "Python": "backend-agent/python.Dockerfile",
+    "TypeScript": "backend-agent/typescript.Dockerfile",
+    "JavaScript": "backend-agent/javascript.Dockerfile",
+    ".NET": "backend-agent/dotnet.Dockerfile",
+    "Dart": "backend-agent/dart.Dockerfile",
+}
+DOCKERFILE_WEBSERVER_TEMPLATE_BY_LANGUAGE = {
+    "Python": "webserver/python.Dockerfile",
+    "TypeScript": "webserver/typescript.Dockerfile",
+    "JavaScript": "webserver/javascript.Dockerfile",
+    ".NET": "webserver/dotnet.Dockerfile",
+    "Dart": "webserver/dart.Dockerfile",
+    "Go": "webserver/go.Dockerfile",
+    "Ruby": "webserver/ruby.Dockerfile",
+}
+DOCKERFILE_WEBSERVER_TEMPLATE_BY_JAVASCRIPT_FLAVOR = {
+    "React/Vite": "webserver/react-vite.Dockerfile",
+    "Vite": "webserver/react-vite.Dockerfile",
+    "React": "webserver/react.Dockerfile",
+    "Next.js": "webserver/nextjs.Dockerfile",
 }
 
 
@@ -888,246 +914,46 @@ def _start_command(language: str, javascript_flavor: str | None) -> str:
     }.get(language, "<start command>")
 
 
+def _read_dockerfile_template(template_name: str) -> str:
+    resource = resources.files(DOCKERFILE_TEMPLATE_PACKAGE)
+    for part in template_name.split("/"):
+        resource = resource.joinpath(part)
+    return resource.read_text(encoding="utf-8")
+
+
+def _read_doctor_template(template_name: str) -> str:
+    return (
+        resources.files(DOCTOR_TEMPLATE_PACKAGE)
+        .joinpath(template_name)
+        .read_text(encoding="utf-8")
+    )
+
+
+def _render_dockerfile_template(template_name: str) -> str:
+    return (
+        _read_dockerfile_template(template_name)
+        .replace("__MESHAGENT_IMAGE_PREFIX__", meshagent_image_prefix())
+        .replace("__MESHAGENT_CLIENT_VERSION__", MESHAGENT_CLIENT_VERSION)
+        .strip()
+    )
+
+
 def _dockerfile_for(
     language: str,
     javascript_flavor: str | None,
     *,
     headless_backend_agent: bool = False,
 ) -> str:
-    image_prefix = meshagent_image_prefix()
     if headless_backend_agent:
-        snippets = {
-            "Python": f"""
-                ARG MESHAGENT_IMAGE_PREFIX={image_prefix}
-                FROM ${{MESHAGENT_IMAGE_PREFIX}}python-sdk-slim:{MESHAGENT_CLIENT_VERSION} AS build
-                WORKDIR /app
-                COPY . .
-                RUN python -m pip install --no-cache-dir --target /out .
+        template_name = DOCKERFILE_BACKEND_TEMPLATE_BY_LANGUAGE.get(language)
+        return _render_dockerfile_template(template_name) if template_name else ""
 
-                FROM scratch
-                LABEL meshagent.runtime=python
-                WORKDIR /app
-                COPY --from=build /out /app
-                CMD ["-m", "server"]
-            """,
-            "TypeScript": f"""
-                ARG MESHAGENT_IMAGE_PREFIX={image_prefix}
-                FROM ${{MESHAGENT_IMAGE_PREFIX}}node-sdk:{MESHAGENT_CLIENT_VERSION} AS build
-                WORKDIR /app
-                COPY package*.json tsconfig.json ./
-                RUN npm install
-                COPY src ./src
-                RUN npm run build
-
-                FROM scratch
-                LABEL meshagent.runtime=node
-                WORKDIR /app
-                COPY --from=build /app/dist/index.js /app/index.js
-                CMD ["index.js"]
-            """,
-            "JavaScript": f"""
-                ARG MESHAGENT_IMAGE_PREFIX={image_prefix}
-                FROM ${{MESHAGENT_IMAGE_PREFIX}}node-sdk:{MESHAGENT_CLIENT_VERSION} AS build
-                WORKDIR /app
-                COPY package*.json ./
-                RUN npm install
-                COPY server.js ./
-                RUN npm run build
-
-                FROM scratch
-                LABEL meshagent.runtime=node
-                WORKDIR /app
-                COPY --from=build /app/dist/index.js /app/index.js
-                CMD ["index.js"]
-            """,
-            ".NET": """
-                FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
-                ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
-                ENV DOTNET_NOLOGO=1
-                WORKDIR /src
-                COPY . .
-                RUN dotnet publish -c Release -o /app/publish --disable-build-servers /p:UseSharedCompilation=false
-
-                FROM mcr.microsoft.com/dotnet/runtime:9.0
-                WORKDIR /app
-                COPY --from=build /app/publish .
-                ENTRYPOINT ["dotnet", "DoctorDotnetRoomClient.dll"]
-            """,
-            "Dart": """
-                FROM dart:stable
-                WORKDIR /app
-                COPY pubspec.yaml ./
-                RUN dart pub get
-                COPY bin ./bin
-                RUN dart compile exe bin/server.dart -o /app/server
-                CMD ["/app/server"]
-            """,
-        }
-        return textwrap.dedent(snippets.get(language, "")).strip()
-
-    snippets = {
-        "Python": f"""
-            ARG MESHAGENT_IMAGE_PREFIX={image_prefix}
-            FROM ${{MESHAGENT_IMAGE_PREFIX}}python-sdk-slim:{MESHAGENT_CLIENT_VERSION} AS build
-            WORKDIR /app
-            COPY . .
-            RUN python -m pip install --no-cache-dir --target /out .
-
-            FROM scratch
-            LABEL meshagent.runtime=python
-            WORKDIR /app
-            COPY --from=build /out /app
-            EXPOSE 8000
-            CMD ["-m", "server"]
-        """,
-        "TypeScript": f"""
-            ARG MESHAGENT_IMAGE_PREFIX={image_prefix}
-            FROM ${{MESHAGENT_IMAGE_PREFIX}}node-sdk:{MESHAGENT_CLIENT_VERSION} AS build
-            WORKDIR /app
-            COPY package*.json tsconfig.json ./
-            RUN npm install
-            COPY src ./src
-            RUN npm run build
-
-            FROM scratch
-            LABEL meshagent.runtime=node
-            WORKDIR /app
-            COPY --from=build /app/dist/index.js /app/index.js
-            EXPOSE 3000
-            CMD ["index.js"]
-        """,
-        "JavaScript": f"""
-            ARG MESHAGENT_IMAGE_PREFIX={image_prefix}
-            FROM ${{MESHAGENT_IMAGE_PREFIX}}node-sdk:{MESHAGENT_CLIENT_VERSION} AS build
-            WORKDIR /app
-            COPY package*.json ./
-            RUN npm install
-            COPY server.js ./
-            RUN npm run build
-
-            FROM scratch
-            LABEL meshagent.runtime=node
-            WORKDIR /app
-            COPY --from=build /app/dist/index.js /app/index.js
-            EXPOSE 3000
-            CMD ["index.js"]
-        """,
-        ".NET": """
-            FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
-            ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
-            ENV DOTNET_NOLOGO=1
-            WORKDIR /src
-            COPY . .
-            RUN dotnet publish -c Release -o /app/publish --disable-build-servers /p:UseSharedCompilation=false
-
-            FROM mcr.microsoft.com/dotnet/aspnet:9.0
-            WORKDIR /app
-            COPY --from=build /app/publish .
-            EXPOSE 5000
-            ENTRYPOINT ["dotnet", "DoctorDotnetRoomClient.dll"]
-        """,
-        "Dart": """
-            FROM dart:stable
-            WORKDIR /app
-            COPY pubspec.yaml ./
-            RUN dart pub get
-            COPY bin ./bin
-            RUN dart compile exe bin/server.dart -o /app/server
-            EXPOSE 8081
-            CMD ["/app/server"]
-        """,
-        "Go": """
-            FROM golang:1.24-alpine
-            WORKDIR /app
-            COPY server.go .
-            RUN go build -o server server.go
-            EXPOSE 8001
-            CMD ["./server"]
-        """,
-        "Ruby": """
-            FROM ruby:3.4-alpine
-            WORKDIR /app
-            COPY server.rb .
-            EXPOSE 4567
-            CMD ["ruby", "server.rb"]
-        """,
-    }
-
-    if javascript_flavor in {"React/Vite", "Vite"}:
-        return textwrap.dedent(
-            """
-            FROM node:22-alpine AS build
-            WORKDIR /app
-            COPY package*.json ./
-            RUN npm install
-            COPY . .
-            RUN npm run build
-
-            FROM nginx:1.27-alpine
-            COPY --from=build /app/dist /usr/share/nginx/html
-            RUN rm -f /etc/nginx/conf.d/default.conf && printf '%s\\n' \\
-              'pid /data/nginx/nginx.pid;' \\
-              'events {}' \\
-              'http {' \\
-              '  include /etc/nginx/mime.types;' \\
-              '  client_body_temp_path /data/nginx/client_temp;' \\
-              '  proxy_temp_path /data/nginx/proxy_temp;' \\
-              '  fastcgi_temp_path /data/nginx/fastcgi_temp;' \\
-              '  uwsgi_temp_path /data/nginx/uwsgi_temp;' \\
-              '  scgi_temp_path /data/nginx/scgi_temp;' \\
-              '  server { listen 80; location = /health { return 200 "ok\\n"; } location / { try_files $uri $uri/ /index.html; } }' \\
-              '}' > /etc/nginx/nginx.conf
-            EXPOSE 80
-            CMD ["sh", "-c", "mkdir -p /data/nginx/client_temp /data/nginx/proxy_temp /data/nginx/fastcgi_temp /data/nginx/uwsgi_temp /data/nginx/scgi_temp && nginx -c /etc/nginx/nginx.conf -g 'daemon off;'"]
-            """
-        ).strip()
-
-    if javascript_flavor == "React":
-        return textwrap.dedent(
-            """
-            FROM node:22-alpine AS build
-            WORKDIR /app
-            COPY package*.json ./
-            RUN npm install
-            COPY . .
-            RUN npm run build
-
-            FROM nginx:1.27-alpine
-            COPY --from=build /app/build /usr/share/nginx/html
-            RUN rm -f /etc/nginx/conf.d/default.conf && printf '%s\\n' \\
-              'pid /data/nginx/nginx.pid;' \\
-              'events {}' \\
-              'http {' \\
-              '  include /etc/nginx/mime.types;' \\
-              '  client_body_temp_path /data/nginx/client_temp;' \\
-              '  proxy_temp_path /data/nginx/proxy_temp;' \\
-              '  fastcgi_temp_path /data/nginx/fastcgi_temp;' \\
-              '  uwsgi_temp_path /data/nginx/uwsgi_temp;' \\
-              '  scgi_temp_path /data/nginx/scgi_temp;' \\
-              '  server { listen 80; location = /health { return 200 "ok\\n"; } location / { try_files $uri $uri/ /index.html; } }' \\
-              '}' > /etc/nginx/nginx.conf
-            EXPOSE 80
-            CMD ["sh", "-c", "mkdir -p /data/nginx/client_temp /data/nginx/proxy_temp /data/nginx/fastcgi_temp /data/nginx/uwsgi_temp /data/nginx/scgi_temp && nginx -c /etc/nginx/nginx.conf -g 'daemon off;'"]
-            """
-        ).strip()
-
-    if javascript_flavor == "Next.js":
-        return textwrap.dedent(
-            """
-            FROM node:22-alpine
-            WORKDIR /app
-            ENV HOSTNAME=0.0.0.0
-            ENV PORT=3000
-            COPY package*.json ./
-            RUN npm install
-            COPY . .
-            RUN npm run build
-            EXPOSE 3000
-            CMD ["sh", "-c", "npm start -- -H 0.0.0.0 -p ${PORT:-3000}"]
-            """
-        ).strip()
-
-    return textwrap.dedent(snippets.get(language, "")).strip()
+    template_name = DOCKERFILE_WEBSERVER_TEMPLATE_BY_JAVASCRIPT_FLAVOR.get(
+        javascript_flavor or ""
+    )
+    if template_name is None:
+        template_name = DOCKERFILE_WEBSERVER_TEMPLATE_BY_LANGUAGE.get(language)
+    return _render_dockerfile_template(template_name) if template_name else ""
 
 
 def _liveness_path_for(
@@ -1336,20 +1162,15 @@ def _python_pyproject_for(diagnosis: ProjectDiagnosis) -> str:
     )
     setuptools_section = ""
     if (diagnosis.root / "server.py").is_file():
-        setuptools_section = '\n[tool.setuptools]\npy-modules = ["server"]\n'
+        setuptools_section = '\n\n[tool.setuptools]\npy-modules = ["server"]'
     return (
-        "[build-system]\n"
-        'requires = ["setuptools>=61.0", "wheel"]\n'
-        'build-backend = "setuptools.build_meta"\n'
-        "\n"
-        "[project]\n"
-        f'name = "{_python_project_name(diagnosis.root)}"\n'
-        'version = "0.1.0"\n'
-        f'requires-python = ">={PYTHON_REQUIRED_VERSION}"\n'
-        "dependencies = [\n"
-        f"{dependency_lines}"
-        "]\n"
-        f"{setuptools_section}"
+        _read_doctor_template(PYTHON_PYPROJECT_TEMPLATE)
+        .replace("__PYTHON_PROJECT_NAME__", _python_project_name(diagnosis.root))
+        .replace("__PYTHON_REQUIRED_VERSION__", PYTHON_REQUIRED_VERSION)
+        .replace("__PYTHON_DEPENDENCY_LINES__", dependency_lines)
+        .replace("__PYTHON_SETUPTOOLS_SECTION__", setuptools_section)
+        .rstrip()
+        + "\n"
     )
 
 
@@ -1746,13 +1567,13 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
         click.echo("")
         click.echo("Recommended next steps:")
         click.echo("1. Create a minimal deployable Python backend agent project:")
-        click.echo("   meshagent init")
+        click.echo("   meshagent create")
         click.echo("2. Re-run doctor and address remaining findings:")
         click.echo("   meshagent doctor")
         click.echo("3. Deployment checks:")
         click.echo(
             "   - Project detection check: no recognizable application code or "
-            "deployment metadata was found in this directory. Run `meshagent init` "
+            "deployment metadata was found in this directory. Run `meshagent create` "
             "to create a minimal Python backend agent project, then deploy the "
             "generated project."
         )
