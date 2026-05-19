@@ -2911,18 +2911,9 @@ async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
             self,
             *,
             project_id: str,
-            domain: str,
-            room_name: str,
-            port: str,
-            annotations: dict[str, str] | None = None,
+            spec,
         ) -> None:
-            captured["created_route"] = (
-                project_id,
-                domain,
-                room_name,
-                port,
-                annotations,
-            )
+            captured["created_route"] = (project_id, spec)
 
         async def close(self) -> None:
             captured["account_client_closed"] = True
@@ -2976,13 +2967,14 @@ async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
     assert service_spec.ports[0].annotations == {
         image.ANNOTATION_REQUEST_VALIDATION_METHOD: "cookie"
     }
-    assert captured["created_route"] == (
-        "project-1",
-        "node.meshagent.dev",
-        "room-1",
-        "8080",
-        {image.ANNOTATION_SERVICE_ID: "repo-web"},
-    )
+    created_route = captured["created_route"]
+    assert isinstance(created_route, tuple)
+    assert created_route[0] == "project-1"
+    route_spec = created_route[1]
+    assert route_spec.domain == "node.meshagent.dev"
+    assert route_spec.room_name == "room-1"
+    assert str(route_spec.paths[0].targetPort) == "8080"
+    assert route_spec.annotations == {image.ANNOTATION_SERVICE_ID: "repo-web"}
     assert "restarted_service_id" not in captured
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
@@ -3220,18 +3212,9 @@ async def test_deploy_image_updates_existing_service_route_and_replaces_environm
             self,
             *,
             project_id: str,
-            domain: str,
-            room_name: str,
-            port: str,
-            annotations: dict[str, str] | None = None,
+            spec,
         ) -> None:
-            captured["created_route"] = (
-                project_id,
-                domain,
-                room_name,
-                port,
-                annotations,
-            )
+            captured["created_route"] = (project_id, spec)
 
         async def close(self) -> None:
             captured["account_client_closed"] = True
@@ -3297,13 +3280,14 @@ async def test_deploy_image_updates_existing_service_route_and_replaces_environm
     assert updated_spec.ports is not None
     assert updated_spec.ports[0].liveness == "/"
     assert updated_spec.ports[0].public is True
-    assert captured["created_route"] == (
-        "project-1",
-        "app.meshagent.app",
-        "room-1",
-        "8080",
-        {image.ANNOTATION_SERVICE_ID: "repo-web"},
-    )
+    created_route = captured["created_route"]
+    assert isinstance(created_route, tuple)
+    assert created_route[0] == "project-1"
+    route_spec = created_route[1]
+    assert route_spec.domain == "app.meshagent.app"
+    assert route_spec.room_name == "room-1"
+    assert str(route_spec.paths[0].targetPort) == "8080"
+    assert route_spec.annotations == {image.ANNOTATION_SERVICE_ID: "repo-web"}
     assert captured["restarted_service_id"] == "service-1"
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True

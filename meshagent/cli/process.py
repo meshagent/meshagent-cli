@@ -2,6 +2,8 @@ import typer
 import click
 import contextlib
 import inspect
+import jwt
+from aiohttp import web
 from rich import print
 from typing import (
     Annotated,
@@ -134,6 +136,9 @@ from meshagent.agents.messages import (
     AGENT_EVENT_FILE_CONTENT_DELTA,
     AGENT_EVENT_MODEL_CHANGED,
     AGENT_EVENT_TEXT_CONTENT_DELTA,
+    AGENT_EVENT_THREAD_CREATED,
+    AGENT_EVENT_THREAD_DELETED,
+    AGENT_EVENT_THREAD_UPDATED,
     AGENT_EVENT_THREAD_STARTED,
     AGENT_MESSAGE_MODEL_CHANGE,
     AGENT_MESSAGE_MODELS_REQUEST,
@@ -146,6 +151,7 @@ from meshagent.agents.messages import (
     AgentAudioFormat,
     AgentMessage,
     AgentThreadStatus,
+    AgentThreadListEntry,
     AgentModelInfo,
     AgentModelChanged,
     AgentProviderInfo,
@@ -154,11 +160,15 @@ from meshagent.agents.messages import (
     AgentTextContentDelta,
     ChangeModel,
     DeleteThread,
+    ListThreads,
     ModelsRequest,
     ModelsResponse,
     OpenThread,
     RenameThread,
     StartThread,
+    ThreadCreated,
+    ThreadDeleted,
+    ThreadUpdated,
     ThreadStarted,
     TurnStart,
 )
@@ -166,10 +176,15 @@ from meshagent.agents.chat_client import (
     ChatThreadSession,
     LocalChatClient,
     MessagingChatClient,
+    WebSocketChatClient,
 )
 from meshagent.agents.process import ContentScheme, Message
 from meshagent.agents.images_dataset import ImageDatasetClient, ImagesDataset
-from meshagent.agents.thread_storage import ThreadListEntry, ThreadListEvent
+from meshagent.agents.thread_storage import (
+    ThreadListEntry,
+    ThreadListEvent,
+    ThreadListPage,
+)
 
 from meshagent.api import RequiredToolkit, RequiredSchema
 from meshagent.api.messaging import FileContent
@@ -745,6 +760,28 @@ class _ProcessRunSession:
     async def rename_thread(self, thread_path: str, name: str) -> None:
         await self._chat_session.rename_thread(thread_path, name)
 
+    async def list_threads(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[ThreadListEntry]:
+        response = await self._chat_session.list_threads(limit=limit, offset=offset)
+        return [
+            _thread_list_entry_from_agent_entry(entry) for entry in response.threads
+        ]
+
+    def add_thread_list_event_listener(
+        self,
+        callback: Callable[[ThreadListEvent], None],
+    ) -> Callable[[], None]:
+        def _handle_payload(payload: dict[str, Any]) -> None:
+            event = _thread_list_event_from_agent_payload(payload)
+            if event is not None:
+                callback(event)
+
+        return self._chat_session.add_event_listener(_handle_payload)
+
     async def ask(
         self,
         *,
@@ -1084,17 +1121,19 @@ class _ProcessThreadSidebar:
     def __init__(
         self,
         *,
-        room: RoomClient,
-        storage_class: Any,
-        thread_dir: str,
+        list_threads: Callable[[], Awaitable[list[ThreadListEntry]]],
+        subscribe_thread_events: Callable[
+            [Callable[[ThreadListEvent], None]], Callable[[], None]
+        ]
+        | None = None,
         current_thread_path: Callable[[], str | None],
         switch_thread: Callable[[str], Awaitable[None]],
         delete_thread: Callable[[str], Awaitable[None]],
         rename_thread: Callable[[str, str], Awaitable[None]],
     ) -> None:
-        self._room = room
-        self._storage_class = storage_class
-        self._thread_dir = thread_dir
+        self._list_threads = list_threads
+        self._subscribe_thread_events = subscribe_thread_events
+        self._unsubscribe_thread_events: Callable[[], None] | None = None
         self._current_thread_path = current_thread_path
         self._switch_thread = switch_thread
         self._delete_thread = delete_thread
@@ -1106,16 +1145,21 @@ class _ProcessThreadSidebar:
         self._rename_path: str | None = None
         self._rename_value = ""
         self._refresh_task: asyncio.Task[None] | None = None
-        self._watch_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         self._refresh_task = asyncio.create_task(self.refresh())
-        self._watch_task = asyncio.create_task(self._watch_threads())
+        if self._subscribe_thread_events is not None:
+            self._unsubscribe_thread_events = self._subscribe_thread_events(
+                self._apply_thread_list_event
+            )
 
     async def close(self) -> None:
+        if self._unsubscribe_thread_events is not None:
+            self._unsubscribe_thread_events()
+        self._unsubscribe_thread_events = None
         tasks = [
             task
-            for task in (self._refresh_task, self._watch_task)
+            for task in (self._refresh_task,)
             if task is not None and not task.done()
         ]
         for task in tasks:
@@ -1123,17 +1167,10 @@ class _ProcessThreadSidebar:
         if len(tasks) > 0:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._refresh_task = None
-        self._watch_task = None
 
     async def refresh(self) -> None:
         try:
-            page = await self._storage_class.list_threads(
-                room=self._room,
-                thread_dir=self._thread_dir,
-                limit=100,
-                offset=0,
-            )
-            self._entries = page.threads
+            self._entries = await self._list_threads()
             self._sync_selection()
             if self._message is not None and self._message.startswith(
                 "Unable to load threads:"
@@ -1143,18 +1180,6 @@ class _ProcessThreadSidebar:
             raise
         except Exception as exc:
             self._message = f"Unable to load threads: {exc}"
-
-    async def _watch_threads(self) -> None:
-        try:
-            async for event in self._storage_class.watch_threads(
-                room=self._room,
-                thread_dir=self._thread_dir,
-            ):
-                self._apply_thread_list_event(event)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            self._message = f"Thread watch stopped: {exc}"
 
     def _apply_thread_list_event(self, event: ThreadListEvent) -> None:
         if event.type == "deleted":
@@ -1415,6 +1440,50 @@ def _sort_process_thread_entries(
     )
 
 
+def _thread_list_entry_from_agent_entry(
+    entry: AgentThreadListEntry,
+) -> ThreadListEntry:
+    return ThreadListEntry(
+        path=entry.path,
+        name=entry.name,
+        created_at=entry.created_at,
+        modified_at=entry.modified_at,
+    )
+
+
+def _thread_list_event_from_agent_payload(
+    payload: dict[str, Any],
+) -> ThreadListEvent | None:
+    payload_type = payload.get("type")
+    try:
+        if payload_type == AGENT_EVENT_THREAD_CREATED:
+            created = ThreadCreated.model_validate(payload)
+            entry = _thread_list_entry_from_agent_entry(created.thread)
+            return ThreadListEvent(
+                type="upserted",
+                path=entry.path,
+                entry=entry,
+            )
+        if payload_type == AGENT_EVENT_THREAD_UPDATED:
+            updated = ThreadUpdated.model_validate(payload)
+            entry = _thread_list_entry_from_agent_entry(updated.thread)
+            return ThreadListEvent(
+                type="upserted",
+                path=entry.path,
+                entry=entry,
+            )
+        if payload_type == AGENT_EVENT_THREAD_DELETED:
+            deleted = ThreadDeleted.model_validate(payload)
+            return ThreadListEvent(
+                type="deleted",
+                path=deleted.path,
+                entry=None,
+            )
+    except Exception:
+        return None
+    return None
+
+
 async def _run_process_run_tui(
     *,
     bot: Any,
@@ -1441,6 +1510,7 @@ async def _run_process_run_tui(
     threading_mode: "ThreadingMode",
     message: str | None,
     working_dir: str | None,
+    chat_client: ChatThreadSession | None = None,
 ) -> None:
     from meshagent.cli import ask as ask_module
 
@@ -1475,18 +1545,26 @@ async def _run_process_run_tui(
         current_model=initial_model,
         fallback=", ".join(configured_models),
     )
-    session = _ProcessRunSession(
-        bot=bot,
-        model=None,
-        thread_path=thread_path,
-        thread_storage=thread_storage,
-        agent_name=agent_name,
-        thread_dir=thread_dir,
-        threading_mode=threading_mode,
-        current_working_directory=working_dir,
-        initial_model=initial_model,
-        image_dataset_client=ImageDatasetClient(room) if room is not None else None,
-    )
+    if chat_client is None:
+        session = _ProcessRunSession(
+            bot=bot,
+            model=None,
+            thread_path=thread_path,
+            thread_storage=thread_storage,
+            agent_name=agent_name,
+            thread_dir=thread_dir,
+            threading_mode=threading_mode,
+            current_working_directory=working_dir,
+            initial_model=initial_model,
+            image_dataset_client=ImageDatasetClient(room) if room is not None else None,
+        )
+    else:
+        session = _ChatChannelUseSession(
+            chat_client=chat_client,
+            current_working_directory=working_dir,
+        )
+        if initial_model is not None:
+            session.select_model(initial_model)
     thread_sidebar: _ProcessThreadSidebar | None = None
     try:
         await session.start()
@@ -1522,12 +1600,10 @@ async def _run_process_run_tui(
             click.echo()
             return
 
-        storage_class = _thread_storage_class_for_backend(thread_storage)
-        if room is not None and storage_class is not None and thread_dir is not None:
+        if thread_storage != "none" and thread_dir is not None:
             thread_sidebar = _ProcessThreadSidebar(
-                room=room,
-                storage_class=storage_class,
-                thread_dir=thread_dir,
+                list_threads=lambda: session.list_threads(limit=100, offset=0),
+                subscribe_thread_events=session.add_thread_list_event_listener,
                 current_thread_path=lambda: _process_session_thread_path(session),
                 switch_thread=session.switch_thread,
                 delete_thread=session.delete_thread,
@@ -1620,6 +1696,7 @@ class _ChatChannelUseSession:
             normalized_path,
             local_participant_name=pending_session.local_participant_name,
             close_client_on_close=True,
+            load=True,
         )
         self._chat_client = new_session
         self._session = self._build_session()
@@ -1653,6 +1730,28 @@ class _ChatChannelUseSession:
     async def rename_thread(self, thread_path: str, name: str) -> None:
         await self._chat_client.rename_thread(thread_path, name)
 
+    async def list_threads(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[ThreadListEntry]:
+        response = await self._chat_client.list_threads(limit=limit, offset=offset)
+        return [
+            _thread_list_entry_from_agent_entry(entry) for entry in response.threads
+        ]
+
+    def add_thread_list_event_listener(
+        self,
+        callback: Callable[[ThreadListEvent], None],
+    ) -> Callable[[], None]:
+        def _handle_payload(payload: dict[str, Any]) -> None:
+            event = _thread_list_event_from_agent_payload(payload)
+            if event is not None:
+                callback(event)
+
+        return self._chat_client.client.add_event_listener(_handle_payload)
+
     @property
     def current_working_directory(self) -> str:
         return self._session.current_working_directory
@@ -1672,6 +1771,10 @@ class _ChatChannelUseSession:
     @property
     def models_response(self) -> ModelsResponse | None:
         return self._chat_client.models_response
+
+    @property
+    def can_request_initial_models(self) -> bool:
+        return self._chat_client.has_thread_path
 
     @property
     def output_modalities(self) -> tuple[Literal["text", "audio"], ...]:
@@ -1719,17 +1822,12 @@ class _ChatChannelUseSession:
         if not self._chat_client.has_thread_path:
             self._started = True
             return
-        for message in await _load_thread_agent_messages(
-            room=self._chat_client.room,
-            thread_path=self._chat_client.thread_path,
-        ):
-            self._chat_client.add_agent_message(message)
         self._started = True
 
     async def close(self) -> None:
         await self._session.close(close_client=False)
         if isinstance(self._chat_client, ChatThreadSession):
-            await self._chat_client.close(close_client=False)
+            await self._chat_client.close()
 
     async def ask(
         self,
@@ -1764,6 +1862,10 @@ class _ChatChannelUseSession:
         response = await self._chat_client.request_models()
         self._sync_turn_output_modalities()
         return response
+
+    def _apply_models_response(self, response: ModelsResponse) -> None:
+        self._chat_client.apply_models_response(response)
+        self._sync_turn_output_modalities()
 
     def select_model(self, model: AgentModelChanged) -> None:
         self._chat_client.select_model(model)
@@ -1966,6 +2068,7 @@ async def _open_process_use_chat_session(
                 resolved_thread_path,
                 local_participant_name=local_participant_name,
                 close_client_on_close=True,
+                load=True,
             )
         return user_client, chat_session
     except Exception:
@@ -1973,6 +2076,57 @@ async def _open_process_use_chat_session(
         if chat_session is None and chat_client is not None:
             await chat_client.__aexit__(None, None, None)
         await _close_process_use_room_client(user_client)
+        raise
+
+
+async def _open_process_run_websocket_chat_session(
+    *,
+    room: RoomClient,
+    websocket_config: "_WebSocketChannelConfig",
+    user: str,
+    insecure: bool,
+    thread_path: str | None,
+    thread_storage: "ThreadStorageBackend",
+    agent_name: str | None,
+    thread_dir: str | None,
+    threading_mode: "ThreadingMode",
+) -> ChatThreadSession:
+    headers = _process_run_websocket_headers(
+        room=room,
+        user=user,
+        insecure=insecure,
+    )
+    chat_client = WebSocketChatClient(
+        url=_websocket_client_url(websocket_config),
+        headers=headers,
+    )
+    try:
+        await chat_client.__aenter__()
+        local_participant_name = user.strip()
+        resolved_thread_path = _process_run_thread_id(
+            thread_path=thread_path,
+            thread_storage=thread_storage,
+            agent_name=agent_name,
+            thread_dir=thread_dir,
+            threading_mode=threading_mode,
+        )
+        if threading_mode == "default-new" and (
+            thread_path is None or thread_path.strip() == ""
+        ):
+            return ChatThreadSession(
+                client=chat_client,
+                thread_path=None,
+                local_participant_name=local_participant_name,
+                close_client_on_close=True,
+            )
+        return await chat_client.open_thread(
+            resolved_thread_path,
+            local_participant_name=local_participant_name,
+            close_client_on_close=True,
+            load=True,
+        )
+    except Exception:
+        await chat_client.__aexit__(None, None, None)
         raise
 
 
@@ -2070,16 +2224,10 @@ async def _run_process_use_tui(
             click.echo()
             return
 
-        sidebar_options = _process_use_thread_sidebar_options(
-            room=user_client,
-            agent_name=agent_name,
-        )
-        if sidebar_options is not None:
-            storage_class, thread_dir = sidebar_options
+        if session is not None:
             thread_sidebar = _ProcessThreadSidebar(
-                room=user_client,
-                storage_class=storage_class,
-                thread_dir=thread_dir,
+                list_threads=lambda: session.list_threads(limit=100, offset=0),
+                subscribe_thread_events=session.add_thread_list_event_listener,
                 current_thread_path=lambda: (
                     _process_session_thread_path(session)
                     if session is not None
@@ -2368,7 +2516,8 @@ ChannelOption = Annotated[
         help=(
             "Attach a channel to the agent process. "
             "Can be repeated. Currently supported: chat, mail:EMAIL_ADDRESS, "
-            "queue:QUEUE_NAME, toolkit:NAME."
+            "queue:QUEUE_NAME, toolkit:NAME, websocket:PORT, "
+            "websocket://HOST:PORT."
         ),
     ),
 ]
@@ -2388,6 +2537,20 @@ class _QueueChannelConfig:
 @dataclass(frozen=True, slots=True)
 class _ToolkitChannelConfig:
     toolkit_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class _WebSocketChannelConfig:
+    host: str
+    port: int
+
+
+@dataclass(frozen=True, slots=True)
+class _WebSocketChannelServer:
+    runner: web.AppRunner
+
+    async def stop(self) -> None:
+        await self.runner.cleanup()
 
 
 def _current_command_runtime() -> Literal["process"]:
@@ -2490,6 +2653,14 @@ def _resolved_channels(
                 normalized_channels.append(channel_key)
             continue
 
+        if normalized[:10].casefold() == "websocket:":
+            websocket_config = _parse_websocket_channel(channel=normalized)
+            channel_key = _websocket_channel_key(websocket_config)
+            if channel_key not in seen_channels:
+                seen_channels.add(channel_key)
+                normalized_channels.append(channel_key)
+            continue
+
         raise typer.BadParameter(f"unsupported channel: {item}")
 
     if runtime == "chatbot":
@@ -2551,6 +2722,231 @@ def _parse_toolkit_channel(*, channel: str) -> _ToolkitChannelConfig:
         )
 
     return _ToolkitChannelConfig(toolkit_name=toolkit_name)
+
+
+def _parse_websocket_channel(*, channel: str) -> _WebSocketChannelConfig:
+    if channel[:10].casefold() != "websocket:":
+        raise typer.BadParameter(f"unsupported websocket channel: {channel}")
+
+    host = "0.0.0.0"
+    port: int | None = None
+    if channel[:12].casefold() == "websocket://":
+        parsed = urlparse(channel)
+        host = parsed.hostname or host
+        if parsed.path not in ("", "/"):
+            raise typer.BadParameter(
+                "websocket channels must be passed as --channel=websocket:PORT "
+                "or --channel=websocket://HOST:PORT"
+            )
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise typer.BadParameter(
+                f"invalid websocket channel port: {channel}"
+            ) from exc
+    else:
+        port_text = channel[10:].strip()
+        if port_text == "":
+            raise typer.BadParameter(
+                "websocket channels must be passed as --channel=websocket:PORT "
+                "or --channel=websocket://HOST:PORT"
+            )
+        try:
+            port = int(port_text)
+        except ValueError as exc:
+            raise typer.BadParameter(
+                f"invalid websocket channel port: {port_text}"
+            ) from exc
+
+    if port is None:
+        raise typer.BadParameter(
+            "websocket channels must include a port, for example "
+            "--channel=websocket:8080"
+        )
+    if port < 1 or port > 65535:
+        raise typer.BadParameter("websocket channel port must be between 1 and 65535")
+
+    return _WebSocketChannelConfig(host=host, port=port)
+
+
+def _websocket_channel_key(config: _WebSocketChannelConfig) -> str:
+    host = config.host
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"websocket://{host}:{config.port}"
+
+
+def _is_websocket_channel(channel: str) -> bool:
+    return channel[:12].casefold() == "websocket://"
+
+
+def _process_run_websocket_channel(
+    *,
+    channels: list[str],
+) -> _WebSocketChannelConfig | None:
+    if _has_chat_channel(channels=channels):
+        return None
+    for channel in channels:
+        if _is_websocket_channel(channel):
+            return _parse_websocket_channel(channel=channel)
+    return None
+
+
+def _websocket_client_host(host: str) -> str:
+    normalized = host.strip()
+    if normalized in ("", "0.0.0.0", "::"):
+        return "127.0.0.1"
+    return normalized
+
+
+def _websocket_client_url(config: _WebSocketChannelConfig) -> str:
+    host = _websocket_client_host(config.host)
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"ws://{host}:{config.port}/"
+
+
+def _process_run_websocket_headers(
+    *,
+    room: RoomClient,
+    user: str,
+    insecure: bool,
+) -> dict[str, str]:
+    normalized_user = user.strip()
+    if normalized_user == "":
+        raise typer.BadParameter("--user cannot be empty")
+    if insecure:
+        return {"X-MESHAGENT-USER": normalized_user}
+
+    secret = os.getenv("MESHAGENT_SECRET")
+    if secret is None or secret == "":
+        raise typer.BadParameter(
+            "MESHAGENT_SECRET is required for websocket process run without --insecure"
+        )
+    local_agent_name = _local_process_participant_name(room)
+    if local_agent_name is None:
+        raise typer.BadParameter("local process participant name is unavailable")
+    token = ParticipantToken(name=normalized_user)
+    token.add_agent_grant(local_agent_name)
+    return {"Authorization": f"Bearer {token.to_jwt(token=secret)}"}
+
+
+def _token_from_websocket_protocol_header(request: web.Request) -> str | None:
+    protocols = request.headers.get("Sec-WebSocket-Protocol")
+    if protocols is None:
+        return None
+
+    for protocol in protocols.split(","):
+        normalized = protocol.strip()
+        if normalized[:16].casefold() == "meshagent-token.":
+            return normalized[16:]
+        if normalized[:7].casefold() == "bearer.":
+            return normalized[7:]
+    return None
+
+
+def _participant_token_from_websocket_request(request: web.Request) -> str:
+    auth_header = request.headers.get("Authorization")
+    if auth_header is not None:
+        auth_header = auth_header.strip()
+        if auth_header[:7].casefold() == "bearer " and auth_header[7:].strip() != "":
+            return auth_header[7:].strip()
+        raise web.HTTPUnauthorized(text="websocket Authorization must use Bearer token")
+
+    token = request.query.get("token")
+    if token is not None and token.strip() != "":
+        return token.strip()
+
+    token = _token_from_websocket_protocol_header(request)
+    if token is not None and token.strip() != "":
+        return token.strip()
+
+    raise web.HTTPUnauthorized(text="websocket participant token is required")
+
+
+def _local_process_participant_name(room: RoomClient) -> str | None:
+    local_participant = room.local_participant
+    name = local_participant.get_attribute("name")
+    if isinstance(name, str) and name.strip() != "":
+        return name.strip()
+    if isinstance(local_participant.id, str) and local_participant.id.strip() != "":
+        return local_participant.id.strip()
+    return None
+
+
+def _has_matching_agent_grant(
+    *,
+    token: ParticipantToken,
+    agent_name: str,
+) -> bool:
+    for grant in token.grants:
+        if grant.name == "agent" and grant.scope == agent_name:
+            return True
+    return False
+
+
+def _authorize_process_websocket_request(
+    *,
+    request: web.Request,
+    room: RoomClient,
+    insecure: bool,
+) -> Participant:
+    if insecure:
+        user_name = request.headers.get("X-MESHAGENT-USER")
+        if user_name is None or user_name.strip() == "":
+            raise web.HTTPUnauthorized(text="X-MESHAGENT-USER header is required")
+        user_name = user_name.strip()
+        return Participant(
+            id=user_name,
+            attributes={
+                "name": user_name,
+                "role": "user",
+            },
+        )
+
+    secret = os.getenv("MESHAGENT_SECRET")
+    if secret is None or secret == "":
+        raise web.HTTPServiceUnavailable(text="MESHAGENT_SECRET is required")
+
+    local_agent_name = _local_process_participant_name(room)
+    if local_agent_name is None:
+        raise web.HTTPServiceUnavailable(text="local participant name is unavailable")
+
+    token_str = _participant_token_from_websocket_request(request)
+    try:
+        token = ParticipantToken.from_jwt(token_str, token=secret)
+    except jwt.PyJWTError as exc:
+        raise web.HTTPUnauthorized(text="invalid websocket participant token") from exc
+
+    if not _has_matching_agent_grant(token=token, agent_name=local_agent_name):
+        raise web.HTTPForbidden(text="token is missing the required agent grant")
+
+    return Participant(
+        id=token.name,
+        attributes={
+            "name": token.name,
+            "role": token.role,
+        },
+    )
+
+
+async def _start_process_websocket_channel_server(
+    *,
+    config: _WebSocketChannelConfig,
+    channel,
+) -> _WebSocketChannelServer:
+    app = web.Application()
+    app.router.add_get("/", channel.websocket_handler)
+    app.router.add_get("/{tail:.*}", channel.websocket_handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    try:
+        site = web.TCPSite(runner, config.host, config.port)
+        await site.start()
+    except Exception:
+        await runner.cleanup()
+        raise
+    return _WebSocketChannelServer(runner=runner)
 
 
 def _has_chat_channel(*, channels: list[str]) -> bool:
@@ -3676,6 +4072,7 @@ def _build_runtime_agent(
     shell_set_env: Optional[list[str]],
     log_llm_requests: Optional[bool],
     channels: Optional[list[str]],
+    websocket_insecure: bool = False,
     voice: str | None = None,
     turn_detection: Literal[
         "none", "automatic"
@@ -3776,6 +4173,7 @@ def _build_runtime_agent(
         builder_kwargs["verbose_dataset"] = verbose_dataset
         builder_kwargs["save_audio_input"] = save_audio_input
         builder_kwargs["preamble_rule"] = preamble_rule
+        builder_kwargs["websocket_insecure"] = websocket_insecure
     return builder(**builder_kwargs)
 
 
@@ -4435,6 +4833,7 @@ def build_process_agent(
     shell_copy_env: Optional[list[str]] = None,
     shell_set_env: Optional[list[str]] = None,
     channels: Optional[list[str]] = None,
+    websocket_insecure: bool = False,
     transcription_model: str | None = DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL,
     voice: str | None = None,
     turn_detection: Literal[
@@ -4463,6 +4862,7 @@ def build_process_agent(
         QueueChannel,
         SingleRoomAgent,
         ToolkitChannel,
+        WebSocketChatChannel,
     )
     from meshagent.agents.messages import TurnStart, TurnSteer
     from meshagent.agents.process import (
@@ -4725,6 +5125,8 @@ def build_process_agent(
             self._mail_channels: list[MailChannel] = []
             self._queue_channels: list[QueueChannel] = []
             self._toolkit_channels: list[ToolkitChannel] = []
+            self._websocket_channels: list[WebSocketChatChannel] = []
+            self._websocket_channel_servers: list[_WebSocketChannelServer] = []
             self._shell_env: dict[str, str] = dict(base_shell_env)
             self._advanced_shell_toolkit: ContainerToolkit | None = None
             self._required_shell_tools: dict[str, BaseTool] = {}
@@ -4774,6 +5176,7 @@ def build_process_agent(
             channels.extend(self._mail_channels)
             channels.extend(self._queue_channels)
             channels.extend(self._toolkit_channels)
+            channels.extend(self._websocket_channels)
             for channel in channels:
                 if channel.state != "started":
                     continue
@@ -4844,7 +5247,26 @@ def build_process_agent(
                         thread_dir=thread_dir,
                     )
                 )
+            self._websocket_channels = []
+            for channel_spec in resolved_channels:
+                if not _is_websocket_channel(channel_spec):
+                    continue
+                self._websocket_channels.append(
+                    WebSocketChatChannel(
+                        room=room,
+                        authorize=lambda request: _authorize_process_websocket_request(
+                            request=request,
+                            room=room,
+                            insecure=websocket_insecure,
+                        ),
+                        threading_mode=self._resolved_threading_mode,
+                        thread_dir=thread_dir,
+                        **channel_thread_url_kwargs,
+                        llm_adapter=channel_llm_adapter,
+                    )
+                )
             started_remote_toolkits: list[_RemoteToolkitWrapper] = []
+            started_websocket_servers: list[_WebSocketChannelServer] = []
             supervisor: AgentSupervisor | None = None
 
             try:
@@ -4881,8 +5303,31 @@ def build_process_agent(
                     supervisor.add_channel(queue_channel)
                 for toolkit_channel in self._toolkit_channels:
                     supervisor.add_channel(toolkit_channel)
+                for websocket_channel in self._websocket_channels:
+                    supervisor.add_channel(websocket_channel)
                 await supervisor.start()
                 self._supervisor = supervisor
+
+                for channel_spec, websocket_channel in zip(
+                    [
+                        channel_spec
+                        for channel_spec in resolved_channels
+                        if _is_websocket_channel(channel_spec)
+                    ],
+                    self._websocket_channels,
+                ):
+                    websocket_config = _parse_websocket_channel(channel=channel_spec)
+                    server = await _start_process_websocket_channel_server(
+                        config=websocket_config,
+                        channel=websocket_channel,
+                    )
+                    started_websocket_servers.append(server)
+                    print(
+                        "[bold green]WebSocket channel listening on "
+                        f"ws://{websocket_config.host}:{websocket_config.port}[/bold green]",
+                        flush=True,
+                    )
+                self._websocket_channel_servers = started_websocket_servers
 
                 self._exposed_toolkits = await self.get_exposed_toolkits()
                 for toolkit in self._exposed_toolkits:
@@ -4893,6 +5338,9 @@ def build_process_agent(
                     started_remote_toolkits.append(hosted_toolkit)
                 self._hosted_exposed_toolkits = started_remote_toolkits
             except Exception:
+                for server in reversed(started_websocket_servers):
+                    await server.stop()
+                self._websocket_channel_servers = []
                 for toolkit in reversed(started_remote_toolkits):
                     await toolkit.stop()
                 self._hosted_exposed_toolkits = []
@@ -4904,11 +5352,15 @@ def build_process_agent(
                 self._mail_channels = []
                 self._queue_channels = []
                 self._toolkit_channels = []
+                self._websocket_channels = []
                 self._advanced_shell_toolkit = None
                 self._room = None
                 raise
 
         async def stop(self) -> None:
+            for server in reversed(self._websocket_channel_servers):
+                await server.stop()
+            self._websocket_channel_servers = []
             supervisor = self._supervisor
             self._supervisor = None
             if supervisor is not None:
@@ -4917,6 +5369,7 @@ def build_process_agent(
             self._mail_channels = []
             self._queue_channels = []
             self._toolkit_channels = []
+            self._websocket_channels = []
             room = self._room
             try:
                 if self._advanced_shell_toolkit is not None and room is not None:
@@ -5387,7 +5840,7 @@ def build_process_agent(
             *,
             rename_thread: RenameThread,
             sender: Participant | None,
-        ) -> None:
+        ) -> ThreadListEntry | None:
             del sender
             storage_class = _thread_storage_class_for_backend(thread_storage)
             normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
@@ -5401,6 +5854,35 @@ def build_process_agent(
                 thread_dir=normalized_thread_dir,
                 path=rename_thread.thread_id,
                 name=name,
+            )
+            return ThreadListEntry(
+                path=rename_thread.thread_id,
+                name=name,
+                created_at="",
+                modified_at=datetime.now(timezone.utc).isoformat(),
+            )
+
+        async def list_threads(
+            self,
+            *,
+            list_threads: ListThreads,
+            sender: Participant | None,
+        ) -> ThreadListPage:
+            del sender
+            storage_class = _thread_storage_class_for_backend(thread_storage)
+            normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
+            if storage_class is None or normalized_thread_dir is None:
+                return ThreadListPage(
+                    threads=[],
+                    total=0,
+                    offset=list_threads.offset,
+                    limit=list_threads.limit,
+                )
+            return await storage_class.list_threads(
+                room=self._agent.room,
+                thread_dir=normalized_thread_dir,
+                limit=list_threads.limit,
+                offset=list_threads.offset,
             )
 
         def subscribe_local_events(self) -> asyncio.Queue[Message]:
@@ -5467,7 +5949,7 @@ def build_process_agent(
             thread_id: str,
             start_thread: StartThread,
             sender: Participant | None,
-        ) -> None:
+        ) -> ThreadListEntry | None:
             del sender
             storage_class = _thread_storage_class_for_backend(thread_storage)
             normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
@@ -5478,6 +5960,13 @@ def build_process_agent(
                 thread_dir=normalized_thread_dir,
                 path=thread_id,
                 name=_start_thread_list_name(start_thread),
+            )
+            now = datetime.now(timezone.utc).isoformat()
+            return ThreadListEntry(
+                path=thread_id,
+                name=_start_thread_list_name(start_thread),
+                created_at=now,
+                modified_at=now,
             )
 
         async def on_models_request(self, message: Message) -> None:
@@ -5907,6 +6396,16 @@ async def join(
     max_output_tokens: MaxOutputTokensOption = 32000,
     reasoning_effort: ReasoningEffortOption = None,
     channel: ChannelOption = [],
+    insecure: Annotated[
+        bool,
+        typer.Option(
+            "--insecure",
+            help=(
+                "For websocket channels, accept X-MESHAGENT-USER instead of "
+                "requiring a MESHAGENT_SECRET-signed participant token."
+            ),
+        ),
+    ] = False,
     skill_dir: Annotated[
         list[str],
         typer.Option(..., help="an agent skills directory"),
@@ -6093,6 +6592,7 @@ async def join(
             shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
             channels=resolved_channels,
+            websocket_insecure=insecure,
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
             room_rules_path=room_rules,
@@ -9755,6 +10255,23 @@ async def run(
             help="Persist realtime audio input chunks to dataset thread storage as binary attachments.",
         ),
     ] = False,
+    insecure: Annotated[
+        bool,
+        typer.Option(
+            "--insecure",
+            help=(
+                "For websocket channels, accept or send X-MESHAGENT-USER instead of "
+                "requiring a MESHAGENT_SECRET-signed participant token."
+            ),
+        ),
+    ] = False,
+    user: Annotated[
+        str,
+        typer.Option(
+            "--user",
+            help="User name for the local websocket process run client.",
+        ),
+    ] = "you",
     thread_path: Annotated[
         Optional[str],
         typer.Option(..., help="log all requests to the llm"),
@@ -9780,8 +10297,13 @@ async def run(
     resolved_channels = _resolved_channels(
         runtime=runtime,
         channel=channel,
-        require_chat=runtime == "process",
     )
+    websocket_run_channel = _process_run_websocket_channel(channels=resolved_channels)
+    if runtime == "process" and not _has_chat_channel(channels=resolved_channels):
+        if websocket_run_channel is None:
+            raise typer.BadParameter(
+                "--channel=chat or --channel=websocket:PORT is required"
+            )
     working_dir = _resolve_working_dir_option(
         working_dir=working_dir,
         working_directory=working_directory,
@@ -9929,6 +10451,7 @@ async def run(
             shell_set_env=shell_set_env,
             log_llm_requests=log_llm_requests,
             channels=resolved_channels,
+            websocket_insecure=insecure,
             starting_url=starting_url,
             allow_goto_url=allow_goto_url,
             room_rules_path=room_rules,
@@ -9984,6 +10507,20 @@ async def run(
                         output_audio_sample_rate
                     )
                     process_tui_kwargs["output_audio_bitrate"] = output_audio_bitrate
+                if websocket_run_channel is not None:
+                    process_tui_kwargs[
+                        "chat_client"
+                    ] = await _open_process_run_websocket_chat_session(
+                        room=client,
+                        websocket_config=websocket_run_channel,
+                        user=user,
+                        insecure=insecure,
+                        thread_path=thread_path,
+                        thread_storage=thread_storage,
+                        agent_name=agent_name,
+                        thread_dir=resolved_thread_dir,
+                        threading_mode=resolved_threading_mode,
+                    )
                 interaction_task = asyncio.create_task(
                     _run_process_run_tui(**process_tui_kwargs)
                 )

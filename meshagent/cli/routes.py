@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated, Optional
 
 import json
@@ -9,9 +10,11 @@ import os
 
 import typer
 from aiohttp import ClientResponseError
+from pydantic import ValidationError
 from rich import print
 
 from meshagent.api.client import ValidationErrorResponse
+from meshagent.api.specs.service import RouteSpec
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import ProjectIdOption, OutputFormatOption
 from meshagent.cli.helper import (
@@ -49,6 +52,20 @@ def _parse_annotations(annotations: Optional[str]) -> Optional[dict[str, str]]:
         raise typer.BadParameter("Invalid JSON for --annotations") from exc
 
 
+def _load_route_spec(path: str) -> RouteSpec:
+    try:
+        text = Path(path).expanduser().read_text(encoding="utf-8")
+        if path.endswith(".json"):
+            return RouteSpec.model_validate_json(text)
+        return RouteSpec.from_yaml(text)
+    except OSError as exc:
+        raise typer.BadParameter(f"Unable to read route spec: {exc}") from exc
+    except ValidationError as exc:
+        raise typer.BadParameter(f"Invalid RouteSpec: {exc}") from exc
+    except Exception as exc:
+        raise typer.BadParameter(f"Invalid route spec: {exc}") from exc
+
+
 def _warn_if_non_meshagent_app_domain(domain: str) -> None:
     if domain.strip().lower().endswith(MESHAGENT_APP_DOMAIN_SUFFIX):
         return
@@ -62,7 +79,7 @@ async def route_create(
     *,
     project_id: ProjectIdOption,
     domain: Annotated[
-        str,
+        Optional[str],
         typer.Option(
             "--domain",
             "-d",
@@ -71,18 +88,22 @@ async def route_create(
                 "DNS-safe; long room-name-derived domains may be rejected."
             ),
         ),
-    ],
+    ] = None,
+    file: Annotated[
+        Optional[str],
+        typer.Option("--file", "-f", help="Path to a RouteSpec YAML or JSON file"),
+    ] = None,
     room: Annotated[
         Optional[str], typer.Option("--room", help="Room name")
     ] = os.getenv("MESHAGENT_ROOM"),
     port: Annotated[
-        str,
+        Optional[str],
         typer.Option(
             "--port",
             "-p",
             help="Published port to route to",
         ),
-    ],
+    ] = None,
     annotations: Annotated[
         Optional[str],
         typer.Option(
@@ -104,16 +125,32 @@ async def route_create(
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
-        room = resolve_room(room)
-        _warn_if_non_meshagent_app_domain(domain)
-        try:
+        if file is None:
+            if domain is None or port is None:
+                raise typer.BadParameter("Provide --file or both --domain and --port")
+            room = resolve_room(room)
+            if room is None:
+                print(
+                    "[red]Room name not specified, pass --room or set MESHAGENT_ROOM[/red]"
+                )
+                raise typer.Exit(code=1)
             parsed_annotations = _parse_annotations(annotations) or {}
+            spec = RouteSpec.model_validate(
+                {
+                    "metadata": {"name": domain, "annotations": parsed_annotations},
+                    "domain": domain,
+                    "backend": {"room": {"name": room}},
+                    "paths": [{"path": "/", "pathType": "prefix", "targetPort": port}],
+                }
+            )
+        else:
+            spec = _load_route_spec(file)
+            domain = spec.domain
+        _warn_if_non_meshagent_app_domain(spec.domain)
+        try:
             await client.create_route(
                 project_id=project_id,
-                domain=domain,
-                room_name=room,
-                port=port,
-                annotations=parsed_annotations,
+                spec=spec,
             )
         except (ClientResponseError, ValidationErrorResponse) as exc:
             status = exc.status if isinstance(exc, ClientResponseError) else 400
@@ -125,7 +162,7 @@ async def route_create(
                 raise typer.Exit(code=1)
             raise
         else:
-            print(f"[green]Created route:[/] {domain}")
+            print(f"[green]Created route:[/] {spec.domain}")
     finally:
         await client.close()
 
@@ -138,6 +175,10 @@ async def route_update(
         str,
         typer.Argument(help="Domain name to update"),
     ],
+    file: Annotated[
+        Optional[str],
+        typer.Option("--file", "-f", help="Path to a RouteSpec YAML or JSON file"),
+    ] = None,
     room: Annotated[
         Optional[str],
         typer.Option(
@@ -167,11 +208,12 @@ async def route_update(
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
-        room = resolve_room(room)
         _warn_if_non_meshagent_app_domain(domain)
-        parsed_annotations = _parse_annotations(annotations)
-
-        if room is None or port is None or parsed_annotations is None:
+        if file is not None:
+            spec = _load_route_spec(file)
+        else:
+            room = resolve_room(room)
+            parsed_annotations = _parse_annotations(annotations)
             try:
                 route = await client.get_route(project_id=project_id, domain=domain)
             except (ClientResponseError, ValidationErrorResponse) as exc:
@@ -190,14 +232,20 @@ async def route_update(
                 if parsed_annotations is not None
                 else route.annotations
             )
+            spec = RouteSpec.model_validate(
+                {
+                    "metadata": {"name": domain, "annotations": parsed_annotations},
+                    "domain": domain,
+                    "backend": {"room": {"name": room}},
+                    "paths": [{"path": "/", "pathType": "prefix", "targetPort": port}],
+                }
+            )
 
         try:
             await client.update_route(
                 project_id=project_id,
                 domain=domain,
-                room_name=room,
-                port=port,
-                annotations=parsed_annotations,
+                spec=spec,
             )
         except (ClientResponseError, ValidationErrorResponse) as exc:
             status = exc.status if isinstance(exc, ClientResponseError) else 400
@@ -283,13 +331,13 @@ async def route_list(
                 [
                     {
                         "domain": route.domain,
-                        "room": route.room_name,
+                        "backend": route.spec.room_name or route.spec.agent_name or "",
                         "port": route.port,
                     }
                     for route in routes
                 ],
                 "domain",
-                "room",
+                "backend",
                 "port",
             )
     finally:
