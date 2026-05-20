@@ -39,6 +39,7 @@ def _subscription_row(subscription: Any) -> dict[str, str]:
         "id": subscription.id,
         "room": subscription.room,
         "path": subscription.path,
+        "filename_datetime_format": subscription.filename_datetime_format or "",
     }
 
 
@@ -49,6 +50,16 @@ async def subscription_create(
     feed_id: Annotated[str, typer.Option("--feed-id", help="Feed id")],
     room: Annotated[str, typer.Option("--room", help="Room name")],
     path: Annotated[str, typer.Option("--path", help="Storage path prefix")],
+    filename_datetime_format: Annotated[
+        Optional[str],
+        typer.Option(
+            "--filename-datetime-format",
+            help=(
+                "GCP Cloud Storage filename datetime format. "
+                "Use slashes to bucket files, for example YYYY/MM/DD/hh_mm_ssZ."
+            ),
+        ),
+    ] = None,
     annotations: Annotated[
         Optional[str],
         typer.Option(
@@ -65,6 +76,7 @@ async def subscription_create(
             feed_id=feed_id,
             room=resolve_room(room),
             path=path,
+            filename_datetime_format=filename_datetime_format,
             annotations=_parse_annotations(annotations) or {},
         )
         print(subscription.model_dump(mode="json"))
@@ -78,6 +90,16 @@ async def subscription_update(
     project_id: ProjectIdOption,
     feed_id: Annotated[str, typer.Option("--feed-id", help="Feed id")],
     subscription_id: Annotated[str, typer.Argument(help="Subscription id to update")],
+    filename_datetime_format: Annotated[
+        Optional[str],
+        typer.Option(
+            "--filename-datetime-format",
+            help=(
+                "GCP Cloud Storage filename datetime format. "
+                "Pass an empty string to restore the default."
+            ),
+        ),
+    ] = None,
     annotations: Annotated[
         Optional[str],
         typer.Option(
@@ -98,6 +120,9 @@ async def subscription_update(
             project_id=project_id,
             feed_id=feed_id,
             subscription_id=subscription_id,
+            filename_datetime_format=filename_datetime_format
+            if filename_datetime_format is not None
+            else existing.filename_datetime_format,
             annotations=_parse_annotations(annotations)
             if annotations is not None
             else existing.annotations,
@@ -168,6 +193,7 @@ async def subscription_list(
                 "id",
                 "room",
                 "path",
+                "filename_datetime_format",
             )
     finally:
         await client.close()
