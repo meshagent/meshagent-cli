@@ -58,6 +58,7 @@ IGNORED_FILE_NAMES = {
 WEB_FOCUS = "webserver"
 AGENT_FOCUS = "backend-agent"
 CHATBOT_FOCUS = "chatbot"
+ANTHROPIC_CHATBOT_FOCUS = "chatbot-anthropic"
 CHATBOT_UI_FOCUS = "chatbot-ui"
 DEFAULT_LANGUAGE = "python"
 DEFAULT_FOCUS = AGENT_FOCUS
@@ -177,8 +178,13 @@ FOCUSES: Mapping[str, CreateFocus] = {
     ),
     CHATBOT_FOCUS: CreateFocus(
         id=CHATBOT_FOCUS,
-        label="Chatbot",
+        label="OpenAI Chatbot",
         description="Web app that chats through the room OpenAI proxy.",
+    ),
+    ANTHROPIC_CHATBOT_FOCUS: CreateFocus(
+        id=ANTHROPIC_CHATBOT_FOCUS,
+        label="Anthropic Chatbot",
+        description="Web app that chats through the room Anthropic proxy.",
     ),
     CHATBOT_UI_FOCUS: CreateFocus(
         id=CHATBOT_UI_FOCUS,
@@ -319,13 +325,28 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("typescript", CHATBOT_FOCUS): CreateTemplate(
         language_id="typescript",
         focus_id=CHATBOT_FOCUS,
-        label="TypeScript chatbot",
+        label="TypeScript OpenAI Chatbot",
         description="Web chatbot using the room OpenAI proxy.",
         files={
             "package.json": "typescript/chatbot/package.json",
             ".npmrc": "typescript/backend-agent/.npmrc",
             "tsconfig.json": "typescript/backend-agent/tsconfig.json",
             "src/server.ts": "typescript/chatbot/src/server.ts",
+            "Dockerfile": "typescript/webserver/Dockerfile",
+            ".dockerignore": "typescript/backend-agent/.dockerignore",
+        },
+        next_steps=NPM_WEBSERVER_NEXT_STEPS,
+    ),
+    ("typescript", ANTHROPIC_CHATBOT_FOCUS): CreateTemplate(
+        language_id="typescript",
+        focus_id=ANTHROPIC_CHATBOT_FOCUS,
+        label="TypeScript Anthropic Chatbot",
+        description="Web chatbot using the room Anthropic proxy.",
+        files={
+            "package.json": "typescript/chatbot-anthropic/package.json",
+            ".npmrc": "typescript/backend-agent/.npmrc",
+            "tsconfig.json": "typescript/backend-agent/tsconfig.json",
+            "src/server.ts": "typescript/chatbot-anthropic/src/server.ts",
             "Dockerfile": "typescript/webserver/Dockerfile",
             ".dockerignore": "typescript/backend-agent/.dockerignore",
         },
@@ -493,8 +514,12 @@ FOCUS_ALIASES = {
     "backend": AGENT_FOCUS,
     "backend-agent": AGENT_FOCUS,
     "backend_agent": AGENT_FOCUS,
+    "anthropic-chat": ANTHROPIC_CHATBOT_FOCUS,
+    "anthropic-chatbot": ANTHROPIC_CHATBOT_FOCUS,
     "chat": CHATBOT_FOCUS,
     "chatbot": CHATBOT_FOCUS,
+    "chatbot-anthropic": ANTHROPIC_CHATBOT_FOCUS,
+    "chatbot_anthropic": ANTHROPIC_CHATBOT_FOCUS,
     "chat-ui": CHATBOT_UI_FOCUS,
     "chat_ui": CHATBOT_UI_FOCUS,
     "chatbot-ui": CHATBOT_UI_FOCUS,
@@ -803,7 +828,7 @@ def _print_created_report(
     default=None,
     help=(
         "Project focus for non-interactive use. Supported: webserver, backend-agent."
-        " TypeScript also supports chatbot and chatbot-ui."
+        " TypeScript also supports chatbot, chatbot-anthropic, and chatbot-ui."
     ),
 )
 @click.option(

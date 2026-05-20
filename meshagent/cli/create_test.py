@@ -494,7 +494,7 @@ def test_init_creates_typescript_chatbot_non_interactively(tmp_path) -> None:
     diagnosis = diagnose_project(tmp_path)
 
     assert result.exit_code == 0
-    assert "Created a minimal deployable TypeScript chatbot" in result.output
+    assert "Created a minimal deployable TypeScript OpenAI Chatbot" in result.output
     assert "npm run dev" in result.output
     assert "MESHAGENT_ROOM=<room>" not in result.output
     assert "npm run deploy" in result.output
@@ -518,10 +518,89 @@ def test_init_creates_typescript_chatbot_non_interactively(tmp_path) -> None:
     assert "http.createServer" in server_ts
     assert "OPENAI_BASE_URL" in server_ts
     assert "OPENAI_API_KEY" in server_ts
-    assert "/chat/completions" in server_ts
+    assert "/responses" in server_ts
+    assert "/chat/completions" not in server_ts
     assert "/api/chat" in server_ts
     assert "messages" in server_ts
     assert "completeChat" in server_ts
+    assert "extractResponseText" in server_ts
+    assert "RoomClient" not in server_ts
+    assert "startHostedToolkit" not in server_ts
+    assert "extends Tool" not in server_ts
+    assert "extends Toolkit" not in server_ts
+    assert "room.sync" not in server_ts
+    assert "room.invoke" not in server_ts
+    assert "room.storage" not in server_ts
+    assert "chatbot-proof.json" not in server_ts
+    assert "chatbot-storage-proof.json" not in server_ts
+    assert "server.listen" in server_ts
+    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    assert "node-sdk" in dockerfile
+    assert "FROM scratch" in dockerfile
+    assert "LABEL meshagent.runtime=node" in dockerfile
+    assert "EXPOSE 3000" in dockerfile
+    assert diagnosis.language == "TypeScript"
+    assert diagnosis.javascript_flavor == "Node.js/TypeScript"
+    assert diagnosis.sdk is None
+    assert diagnosis.has_health_route is True
+    assert diagnosis.has_http_port_hint is True
+    assert diagnosis.is_headless_backend_agent is False
+
+
+def test_init_creates_typescript_anthropic_chatbot_non_interactively(
+    tmp_path,
+) -> None:
+    result = CliRunner().invoke(
+        create_command,
+        [
+            "--language",
+            "typescript",
+            "--focus",
+            "chatbot-anthropic",
+            "--no-interactive",
+            str(tmp_path),
+        ],
+    )
+    diagnosis = diagnose_project(tmp_path)
+
+    assert result.exit_code == 0
+    assert "Created a minimal deployable TypeScript Anthropic Chatbot" in result.output
+    assert "npm run dev" in result.output
+    assert "MESHAGENT_ROOM=<room>" not in result.output
+    assert "npm run deploy" in result.output
+    assert "meshagent doctor" not in result.output
+    assert "--public" not in result.output
+    assert "--liveness" not in result.output
+    assert (tmp_path / "package.json").is_file()
+    assert (tmp_path / ".npmrc").is_file()
+    assert (tmp_path / "tsconfig.json").is_file()
+    assert (tmp_path / "src" / "server.ts").is_file()
+    assert not (tmp_path / "src" / "dev-content.json").exists()
+    package_text = (tmp_path / "package.json").read_text(encoding="utf-8")
+    assert '"name": "meshagent-create-typescript-chatbot-anthropic"' in package_text
+    assert (
+        '"deploy": "meshagent deploy . --tag meshagent-create-typescript-chatbot-anthropic:dev --public --liveness /health --meshagent-token agentDefault --wait"'
+        in package_text
+    )
+    assert "@meshagent/meshagent" not in package_text
+    server_ts = (tmp_path / "src" / "server.ts").read_text(encoding="utf-8")
+    assert 'const http = require("node:http")' in server_ts
+    assert "http.createServer" in server_ts
+    assert "ANTHROPIC_BASE_URL" in server_ts
+    assert "ANTHROPIC_API_KEY" in server_ts
+    assert "ANTHROPIC_MODEL" in server_ts
+    assert "anthropic-version" in server_ts
+    assert "/v1/messages" in server_ts
+    assert "/responses" not in server_ts
+    assert "/chat/completions" not in server_ts
+    assert "OPENAI_BASE_URL" not in server_ts
+    assert "OPENAI_API_KEY" not in server_ts
+    assert "/api/chat" in server_ts
+    assert "messages" in server_ts
+    assert "completeChat" in server_ts
+    assert "anthropicSystem" in server_ts
+    assert "anthropicMessages" in server_ts
+    assert "extractMessageText" in server_ts
     assert "RoomClient" not in server_ts
     assert "startHostedToolkit" not in server_ts
     assert "extends Tool" not in server_ts
@@ -561,6 +640,25 @@ def test_init_rejects_non_typescript_chatbot(tmp_path) -> None:
     assert result.exit_code == 1
     assert "Unsupported template combination" in result.output
     assert "JavaScript does not support chatbot" in result.output
+    assert not (tmp_path / "package.json").exists()
+
+
+def test_init_rejects_non_typescript_anthropic_chatbot(tmp_path) -> None:
+    result = CliRunner().invoke(
+        create_command,
+        [
+            "--language",
+            "javascript",
+            "--focus",
+            "chatbot-anthropic",
+            "--no-interactive",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Unsupported template combination" in result.output
+    assert "JavaScript does not support chatbot-anthropic" in result.output
     assert not (tmp_path / "package.json").exists()
 
 
@@ -992,7 +1090,10 @@ def test_init_rejects_unknown_focus(tmp_path) -> None:
 
     assert result.exit_code == 1
     assert "Unsupported focus: desktop" in result.output
-    assert "webserver, backend-agent, chatbot, chatbot-ui" in result.output
+    assert (
+        "webserver, backend-agent, chatbot, chatbot-anthropic, chatbot-ui"
+        in result.output
+    )
     assert not (tmp_path / "Dockerfile").exists()
 
 
@@ -1026,15 +1127,22 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
         "webserver",
         "backend-agent",
         "chatbot",
+        "chatbot-anthropic",
         "chatbot-ui",
     ]
     focus_labels = {choice[0]: choice[1] for choice in captured_focuses}
+    assert focus_labels["chatbot"] == "OpenAI Chatbot"
+    assert focus_labels["chatbot-anthropic"] == "Anthropic Chatbot"
     assert focus_labels["chatbot-ui"] == "Agent UI"
     focus_descriptions = {choice[0]: choice[2] for choice in captured_focuses}
     assert focus_descriptions["chatbot"] == (
         "Web app that chats through the room OpenAI proxy."
     )
+    assert focus_descriptions["chatbot-anthropic"] == (
+        "Web app that chats through the room Anthropic proxy."
+    )
     assert "TypeScript" not in focus_descriptions["chatbot"]
+    assert "TypeScript" not in focus_descriptions["chatbot-anthropic"]
     assert focus_descriptions["chatbot-ui"] == (
         "Browser chat interface for a MeshAgent agent."
     )
@@ -1046,6 +1154,7 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
         "webserver",
         "backend-agent",
         "chatbot",
+        "chatbot-anthropic",
         "chatbot-ui",
     )
     assert (tmp_path / "server.js").is_file()
