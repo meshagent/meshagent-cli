@@ -653,7 +653,7 @@ def test_init_creates_typescript_chatbot_ui_non_interactively(tmp_path) -> None:
     )
 
     assert result.exit_code == 0
-    assert "Created a minimal deployable TypeScript chatbot UI" in result.output
+    assert "Created a minimal deployable TypeScript assistant UI" in result.output
     assert "npm run dev" in result.output
     assert "MESHAGENT_ROOM=<room>" not in result.output
     assert "npm run deploy" in result.output
@@ -1018,6 +1018,17 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
         "chatbot",
         "chatbot-ui",
     ]
+    focus_labels = {choice[0]: choice[1] for choice in captured_focuses}
+    assert focus_labels["chatbot-ui"] == "Assistant UI"
+    focus_descriptions = {choice[0]: choice[2] for choice in captured_focuses}
+    assert focus_descriptions["chatbot"] == (
+        "Web app that chats through the room OpenAI proxy."
+    )
+    assert "TypeScript" not in focus_descriptions["chatbot"]
+    assert focus_descriptions["chatbot-ui"] == (
+        "Browser chat interface for a MeshAgent assistant."
+    )
+    assert "TypeScript/Next.js" not in focus_descriptions["chatbot-ui"]
     assert {choice[0]: choice[3] for choice in captured_languages}["react"] == (
         "webserver",
     )

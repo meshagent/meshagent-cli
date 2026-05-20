@@ -177,12 +177,12 @@ FOCUSES: Mapping[str, CreateFocus] = {
     CHATBOT_FOCUS: CreateFocus(
         id=CHATBOT_FOCUS,
         label="Chatbot",
-        description="TypeScript web app that chats through the room OpenAI proxy.",
+        description="Web app that chats through the room OpenAI proxy.",
     ),
     CHATBOT_UI_FOCUS: CreateFocus(
         id=CHATBOT_UI_FOCUS,
-        label="Chatbot UI",
-        description="TypeScript/Next.js UI that chats with a MeshAgent assistant.",
+        label="Assistant UI",
+        description="Browser chat interface for a MeshAgent assistant.",
     ),
 }
 
@@ -319,7 +319,7 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         language_id="typescript",
         focus_id=CHATBOT_FOCUS,
         label="TypeScript chatbot",
-        description="TypeScript web chatbot using the room OpenAI proxy.",
+        description="Web chatbot using the room OpenAI proxy.",
         files={
             "package.json": "typescript/chatbot/package.json",
             ".npmrc": "typescript/backend-agent/.npmrc",
@@ -356,8 +356,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("typescript", CHATBOT_UI_FOCUS): CreateTemplate(
         language_id="typescript",
         focus_id=CHATBOT_UI_FOCUS,
-        label="TypeScript chatbot UI",
-        description="TypeScript/Next.js UI that chats with a MeshAgent assistant.",
+        label="TypeScript assistant UI",
+        description="Browser chat interface for a MeshAgent assistant.",
         files=_template_files(
             "typescript",
             CHATBOT_UI_FOCUS,
