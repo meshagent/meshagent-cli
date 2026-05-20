@@ -26,9 +26,10 @@ from meshagent.api.image_runtime import (
     IMAGE_RUNTIME_MOUNT_PATH,
     IMAGE_RUNTIME_MOUNT_SUBPATH,
 )
+from meshagent.api.error_codes import ErrorCode
 from meshagent.api.room_ports import ROOM_INTERNAL_API_PORT
 from meshagent.cli import async_typer, cli, image
-from meshagent.api.room_server_client import ServiceRuntimeState
+from meshagent.api.room_server_client import RoomException, ServiceRuntimeState
 from meshagent.api.specs.service import (
     ContainerMountSpec,
     ContainerSpec,
@@ -2663,6 +2664,25 @@ async def test_deploy_image_env_secret_requires_matching_token_identity(
 
 
 @pytest.mark.asyncio
+async def test_delete_built_image_from_room_cache_ignores_missing_image() -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeContainers:
+        async def delete_image(self, *, image: str) -> None:
+            captured["deleted_image"] = image
+            raise RoomException("image not found", code=ErrorCode.NOT_FOUND)
+
+    client = SimpleNamespace(containers=_FakeContainers())
+
+    await image._delete_built_image_from_room_cache(
+        client=client,
+        parsed_tag=image._parse_build_tag("registry.meshagent.com/repo/web:1"),
+    )
+
+    assert captured["deleted_image"] == "registry.meshagent.com/repo/web:1"
+
+
+@pytest.mark.asyncio
 async def test_deploy_image_pack_builds_before_deploying(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2692,6 +2712,13 @@ async def test_deploy_image_pack_builds_before_deploying(
         return DeployDomainPromptResult(status="skipped")
 
     class _FakeRoomClient:
+        def __init__(self) -> None:
+            self.containers = SimpleNamespace(delete_image=self._delete_image)
+
+        async def _delete_image(self, *, image: str) -> None:
+            captured["events"].append("delete")
+            captured["deleted_image"] = image
+
         async def __aexit__(self, exc_type, exc, tb) -> None:
             del exc_type, exc, tb
             captured["room_client_closed"] = True
@@ -2770,7 +2797,8 @@ async def test_deploy_image_pack_builds_before_deploying(
         "service_name": "repo-web",
         "port": "8080",
     }
-    assert captured["events"] == ["domain_tui", "build", "create"]
+    assert captured["deleted_image"] == "registry.meshagent.com/repo/web:1"
+    assert captured["events"] == ["domain_tui", "build", "delete", "create"]
     created_service = captured["created_service"]
     assert isinstance(created_service, tuple)
     service_spec = created_service[2]
@@ -2977,6 +3005,13 @@ async def test_deploy_image_pack_allows_matching_volume_mount(
         captured["events"].append("build")
 
     class _FakeRoomClient:
+        def __init__(self) -> None:
+            self.containers = SimpleNamespace(delete_image=self._delete_image)
+
+        async def _delete_image(self, *, image: str) -> None:
+            captured["events"].append("delete")
+            captured["deleted_image"] = image
+
         async def __aexit__(self, exc_type, exc, tb) -> None:
             del exc_type, exc, tb
             captured["room_client_closed"] = True
@@ -3034,7 +3069,8 @@ async def test_deploy_image_pack_allows_matching_volume_mount(
     assert service_spec.container.storage is not None
     assert service_spec.container.storage.empty_dirs is not None
     assert service_spec.container.storage.empty_dirs[0].path == "/data"
-    assert captured["events"] == ["build", "create"]
+    assert captured["deleted_image"] == "registry.meshagent.com/repo/web:1"
+    assert captured["events"] == ["build", "delete", "create"]
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
 
@@ -3065,6 +3101,13 @@ CMD ["/app/dist/index.js"]
         captured["events"].append("build")
 
     class _FakeRoomClient:
+        def __init__(self) -> None:
+            self.containers = SimpleNamespace(delete_image=self._delete_image)
+
+        async def _delete_image(self, *, image: str) -> None:
+            captured["events"].append("delete")
+            captured["deleted_image"] = image
+
         async def __aexit__(self, exc_type, exc, tb) -> None:
             del exc_type, exc, tb
             captured["room_client_closed"] = True
@@ -3135,10 +3178,14 @@ CMD ["/app/dist/index.js"]
             read_only=True,
         )
     ]
-    assert service_spec.container.environment is None
+    assert service_spec.container.environment == [
+        EnvironmentVariable(name="NODE_ENV", value="production"),
+        EnvironmentVariable(name="PORT", value="8111"),
+    ]
     assert service_spec.ports is not None
     assert service_spec.ports[0].num == 8111
-    assert captured["events"] == ["build", "create"]
+    assert captured["deleted_image"] == "registry.meshagent.com/repo/web:1"
+    assert captured["events"] == ["build", "delete", "create"]
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
 
@@ -3162,9 +3209,13 @@ async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
     class _FakeRoomClient:
         def __init__(self) -> None:
             self.services = SimpleNamespace(restart=self._restart)
+            self.containers = SimpleNamespace(delete_image=self._delete_image)
 
         async def _restart(self, *, service_id: str) -> None:
             captured["restarted_service_id"] = service_id
+
+        async def _delete_image(self, *, image: str) -> None:
+            captured["deleted_image"] = image
 
         async def __aexit__(self, exc_type, exc, tb) -> None:
             del exc_type, exc, tb
@@ -3238,6 +3289,7 @@ async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
     assert service_spec.ports[0].public is None
     assert service_spec.ports[0].liveness == "/"
     assert service_spec.metadata.annotations is not None
+    assert captured["deleted_image"] == "registry.meshagent.com/repo/web:1"
     assert (
         service_spec.metadata.annotations[image.ANNOTATION_REQUEST_VALIDATION_METHOD]
         == "cookie"

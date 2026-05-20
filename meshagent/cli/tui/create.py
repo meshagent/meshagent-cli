@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, Sequence
 
 
@@ -160,8 +161,9 @@ class CreateExistingProjectApp(App[None]):
         Binding("escape", "cancel_or_back", "Cancel", priority=True),
     ]
 
-    def __init__(self) -> None:
+    def __init__(self, *, root: Path | None = None) -> None:
         super().__init__()
+        self._root = root
         self._mode: Literal["choice", "folder_name"] = "choice"
         self._title_view: Static | None = None
         self._message_view: Static | None = None
@@ -328,6 +330,12 @@ class CreateExistingProjectApp(App[None]):
             resolved_subfolder_name = _validate_subfolder_name(subfolder_name)
         except ValueError as error:
             self._set_error_text(str(error))
+            return False
+
+        if self._root is not None and (self._root / resolved_subfolder_name).exists():
+            self._set_error_text(
+                "Folder is already in use. Enter an empty folder name."
+            )
             return False
 
         self.result = CreateExistingProjectResult(
@@ -573,8 +581,11 @@ async def run_create_wizard_tui(
     return app.result
 
 
-async def run_existing_project_create_tui() -> CreateExistingProjectResult:
-    app = CreateExistingProjectApp()
+async def run_existing_project_create_tui(
+    *,
+    root: Path | None = None,
+) -> CreateExistingProjectResult:
+    app = CreateExistingProjectApp(root=root)
 
     try:
         await _run_app(app)

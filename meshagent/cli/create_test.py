@@ -662,6 +662,7 @@ def test_init_creates_typescript_chatbot_ui_non_interactively(tmp_path) -> None:
     assert (tmp_path / "tsconfig.json").is_file()
     assert (tmp_path / "next.config.ts").is_file()
     assert (tmp_path / "next-env.d.ts").is_file()
+    assert not (tmp_path / "server.ts").exists()
     assert (tmp_path / "app" / "layout.tsx").is_file()
     assert (tmp_path / "app" / "page.tsx").is_file()
     assert (tmp_path / "app" / "globals.css").is_file()
@@ -674,6 +675,10 @@ def test_init_creates_typescript_chatbot_ui_non_interactively(tmp_path) -> None:
     assert '"name": "meshagent-create-typescript-chatbot-ui"' in package_json
     assert '"@msgpack/msgpack"' in package_json
     assert '"next"' in package_json
+    assert '"next": "^16.2.6"' in package_json
+    assert '"@vercel/ncc"' not in package_json
+    assert '"build": "next build"' in package_json
+    assert '"start": "node .next/standalone/server.js"' in package_json
     assert (
         '"deploy": "meshagent deploy . --tag meshagent-create-typescript-chatbot-ui:dev --private --validation-mode=cookie --extra-port=3001:/messages --liveness /health --wait"'
         in package_json
@@ -685,6 +690,11 @@ def test_init_creates_typescript_chatbot_ui_non_interactively(tmp_path) -> None:
     assert "meshagent.agent.turn.ended" in page_tsx
     assert "/messages" in page_tsx
     assert "disabled={!canSend}" in page_tsx
+    assert "FROM scratch" in dockerfile
+    assert "LABEL meshagent.runtime=node" in dockerfile
+    assert "COPY --from=build /app/.next/standalone /app" in dockerfile
+    assert "COPY --from=build /app/.next/static /app/.next/static" in dockerfile
+    assert 'CMD ["server.js"]' in dockerfile
     assert "ENV HOSTNAME=0.0.0.0" in dockerfile
     assert "EXPOSE 3000" in dockerfile
 
@@ -1063,7 +1073,9 @@ def test_create_existing_project_tui_cancel_uses_create_wording(
 ) -> None:
     (tmp_path / "server.py").write_text("print('already here')\n", encoding="utf-8")
     monkeypatch.setattr(create_module, "_stdio_is_interactive", lambda: True)
-    monkeypatch.setattr(create_module, "_run_existing_project_tui", lambda: None)
+    monkeypatch.setattr(
+        create_module, "_run_existing_project_tui", lambda *, root: None
+    )
 
     result = CliRunner().invoke(create_command, [str(tmp_path)])
 
@@ -1288,6 +1300,24 @@ def test_init_tui_existing_project_subfolder_prompt_rejects_paths(
     assert app.result.status == "canceled"
 
 
+def test_init_tui_existing_project_subfolder_prompt_rejects_used_folder(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from meshagent.cli.tui.create import CreateExistingProjectApp
+
+    (tmp_path / "hello-agent").mkdir()
+    app = CreateExistingProjectApp(root=tmp_path)
+    errors: list[str] = []
+    monkeypatch.setattr(app, "_set_error_text", errors.append)
+
+    submitted = app._submit_subfolder_name("hello-agent")
+
+    assert submitted is False
+    assert errors == ["Folder is already in use. Enter an empty folder name."]
+    assert app.result.status == "canceled"
+
+
 def test_init_existing_code_interactive_can_run_doctor_here(
     tmp_path,
     monkeypatch,
@@ -1299,7 +1329,7 @@ def test_init_existing_code_interactive_can_run_doctor_here(
     monkeypatch.setattr(
         create_module,
         "_run_existing_project_tui",
-        lambda: create_module.ExistingProjectSelection(action="run-doctor"),
+        lambda *, root: create_module.ExistingProjectSelection(action="run-doctor"),
     )
     monkeypatch.setattr(create_module, "_run_doctor", doctor_paths.append)
     monkeypatch.setattr(
@@ -1327,7 +1357,7 @@ def test_init_existing_code_interactive_creates_project_in_subfolder(
     monkeypatch.setattr(
         create_module,
         "_run_existing_project_tui",
-        lambda: create_module.ExistingProjectSelection(
+        lambda *, root: create_module.ExistingProjectSelection(
             action="create-subfolder",
             subfolder_name="hello-agent",
         ),
@@ -1343,6 +1373,7 @@ def test_init_existing_code_interactive_creates_project_in_subfolder(
 
     assert result.exit_code == 0
     assert f"New project: {project_root.resolve()}" in result.output
+    assert f"  cd {project_root.resolve()}" in result.output
     assert (project_root / "package.json").is_file()
     assert (project_root / "src" / "server.ts").is_file()
     assert (project_root / "Dockerfile").is_file()
@@ -1363,7 +1394,7 @@ def test_init_existing_code_interactive_rejects_existing_subfolder(
     monkeypatch.setattr(
         create_module,
         "_run_existing_project_tui",
-        lambda: create_module.ExistingProjectSelection(
+        lambda *, root: create_module.ExistingProjectSelection(
             action="create-subfolder",
             subfolder_name="hello-agent",
         ),

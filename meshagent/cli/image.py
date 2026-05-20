@@ -51,6 +51,7 @@ from meshagent.api.client import (
     Route,
     Room,
 )
+from meshagent.api.error_codes import ErrorCode
 from meshagent.api.image_runtime import (
     IMAGE_RUNTIME_BASES,
     IMAGE_RUNTIME_LABEL,
@@ -62,6 +63,7 @@ from meshagent.api.registry_auth import DEFAULT_REGISTRY_HOST, DEFAULT_REGISTRY_
 from meshagent.api.room_server_client import (
     DockerSecret,
     LogStream,
+    RoomException,
     ServiceRuntimeState,
 )
 from meshagent.api.room_ports import RESERVED_ROOM_SERVICE_PORTS
@@ -1336,6 +1338,10 @@ def _resolve_runtime_container_override(
             subpath=IMAGE_RUNTIME_MOUNT_SUBPATH,
             read_only=True,
         ),
+        default_environment=tuple(
+            EnvironmentVariable(name=name, value=value)
+            for name, value in dockerfile_metadata.environment
+        ),
     )
 
 
@@ -2146,6 +2152,19 @@ def _build_deploy_service_spec(
         )
     )
     return _ServiceDeployPlan(spec=spec, service_id_annotation=service_name)
+
+
+async def _delete_built_image_from_room_cache(
+    *,
+    client: RoomClient,
+    parsed_tag: _ParsedImageTag,
+) -> None:
+    try:
+        await client.containers.delete_image(image=parsed_tag.value)
+    except RoomException as exc:
+        if exc.code in {ErrorCode.NOT_FOUND, ErrorCode.CONTAINER_NOT_FOUND}:
+            return
+        raise
 
 
 def _update_request_validation_annotations(
@@ -3450,6 +3469,10 @@ async def deploy_image(
                 optimize=optimize,
                 cred=cred,
                 add_latest_tag=latest,
+            )
+            await _delete_built_image_from_room_cache(
+                client=client,
+                parsed_tag=parsed_tag,
             )
         deploy_result = await _apply_deploy_plan(
             account_client=account_client,
