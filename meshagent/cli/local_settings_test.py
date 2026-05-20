@@ -139,3 +139,17 @@ def test_resolve_api_url_prefers_explicit_then_profile_then_environment(
         local_settings.resolve_api_url(api_url="https://explicit.meshagent.test/")
         == "https://explicit.meshagent.test"
     )
+
+
+def test_resolve_pages_domain_maps_life_api_to_dev_domain() -> None:
+    assert (
+        local_settings.resolve_pages_domain(api_url="https://api.meshagent.life")
+        == "meshagent.dev"
+    )
+
+
+def test_resolve_pages_domain_maps_prod_api_to_app_domain() -> None:
+    assert (
+        local_settings.resolve_pages_domain(api_url="https://api.meshagent.com")
+        == "meshagent.app"
+    )
