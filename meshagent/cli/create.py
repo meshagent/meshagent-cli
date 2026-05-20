@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
+import shlex
 import sys
 from typing import Literal, Mapping, Sequence
 
@@ -689,10 +690,10 @@ def _run_create_tui(
     return result.selected_language_id, result.selected_focus_id
 
 
-def _run_existing_project_tui() -> ExistingProjectSelection | None:
+def _run_existing_project_tui(*, root: Path) -> ExistingProjectSelection | None:
     from meshagent.cli.tui.create import run_existing_project_create_tui
 
-    result = asyncio.run(run_existing_project_create_tui())
+    result = asyncio.run(run_existing_project_create_tui(root=root))
     if result.status != "completed" or result.action is None:
         return None
     return ExistingProjectSelection(
@@ -736,13 +737,19 @@ def _write_template(root: Path, template: CreateTemplate) -> None:
         _write_file(root / name, template_name)
 
 
-def _print_created_report(*, template: CreateTemplate) -> None:
+def _print_created_report(
+    *,
+    template: CreateTemplate,
+    enter_project_root: Path | None = None,
+) -> None:
     click.echo("")
     click.echo(f"Created a minimal deployable {template.label} project:")
     for name in template.files:
         click.echo(f"  {name}")
     click.echo("")
     click.echo("Next steps:")
+    if enter_project_root is not None:
+        click.echo(f"  cd {shlex.quote(str(enter_project_root))}")
     for step in template.next_steps:
         click.echo(f"  {step}")
 
@@ -796,6 +803,7 @@ def create_command(
 
     click.echo("meshagent create")
     click.echo(f"Project: {root}")
+    enter_project_root: Path | None = None
 
     is_interactive_stdio = _stdio_is_interactive()
     if interactive is True and not is_interactive_stdio:
@@ -806,7 +814,7 @@ def create_command(
 
     if _has_existing_project_content(root):
         if interactive is not False and is_interactive_stdio:
-            existing_project_selection = _run_existing_project_tui()
+            existing_project_selection = _run_existing_project_tui(root=root)
             if existing_project_selection is None:
                 click.echo("Create canceled.")
                 return
@@ -820,6 +828,7 @@ def create_command(
                 existing_project_selection.subfolder_name,
             )
             root.mkdir(parents=True, exist_ok=False)
+            enter_project_root = root
             click.echo(f"New project: {root}")
         else:
             click.echo("")
@@ -851,4 +860,4 @@ def create_command(
 
     template = _resolve_template(language_id, focus_id)
     _write_template(root, template)
-    _print_created_report(template=template)
+    _print_created_report(template=template, enter_project_root=enter_project_root)
