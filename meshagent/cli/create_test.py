@@ -65,8 +65,14 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     assert result.exit_code == 0
     assert "meshagent create" in result.output
     assert "Created a minimal deployable Python backend agent" in result.output
-    assert "meshagent doctor" in result.output
-    assert "MESHAGENT_ROOM=<room> ./scripts/dev.sh" in result.output
+    assert "meshagent doctor" not in result.output
+    assert "Next steps:" in result.output
+    assert "1. Install dependencies" in result.output
+    assert "./scripts/install.sh" in result.output
+    assert "2. Run locally" in result.output
+    assert "./scripts/dev.sh" in result.output
+    assert "MESHAGENT_ROOM=<room>" not in result.output
+    assert "3. Deploy" in result.output
     assert "./scripts/deploy.sh" in result.output
     assert "--meshagent-token full" not in result.output
     assert " -e " not in result.output
@@ -125,6 +131,28 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     assert diagnosis.is_headless_backend_agent is True
     assert diagnosis.python_has_pyproject is True
     assert diagnosis.python_source_uses_sdk is True
+
+
+def test_init_colorizes_next_steps_when_color_is_enabled(tmp_path) -> None:
+    result = CliRunner().invoke(
+        create_command,
+        [
+            "--language",
+            "typescript",
+            "--focus",
+            "chatbot",
+            "--no-interactive",
+            str(tmp_path),
+        ],
+        color=True,
+    )
+
+    assert result.exit_code == 0
+    assert "\x1b[" in result.output
+    assert "Next steps:" in result.output
+    assert "1. Install dependencies" in result.output
+    assert "2. Run locally" in result.output
+    assert "3. Deploy" in result.output
 
 
 def test_init_renders_meshagent_image_prefix_from_environment(
@@ -235,7 +263,8 @@ def test_init_creates_javascript_webserver_non_interactively(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "Created a minimal deployable JavaScript web server" in result.output
-    assert "MESHAGENT_ROOM=<room> npm run dev" in result.output
+    assert "npm run dev" in result.output
+    assert "MESHAGENT_ROOM=<room>" not in result.output
     assert "npm run deploy" in result.output
     package_json = tmp_path / "package.json"
     npmrc = tmp_path / ".npmrc"
@@ -297,7 +326,8 @@ def test_init_creates_javascript_backend_agent_non_interactively(tmp_path) -> No
 
     assert result.exit_code == 0
     assert "Created a minimal deployable JavaScript backend agent" in result.output
-    assert "MESHAGENT_ROOM=<room> npm run dev" in result.output
+    assert "npm run dev" in result.output
+    assert "MESHAGENT_ROOM=<room>" not in result.output
     assert "npm run deploy" in result.output
     assert "--meshagent-token full" not in result.output
     assert " -e " not in result.output
@@ -347,7 +377,8 @@ def test_init_creates_typescript_webserver_non_interactively(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "Created a minimal deployable TypeScript web server" in result.output
-    assert "MESHAGENT_ROOM=<room> npm run dev" in result.output
+    assert "npm run dev" in result.output
+    assert "MESHAGENT_ROOM=<room>" not in result.output
     assert "npm run deploy" in result.output
     assert (tmp_path / "package.json").is_file()
     assert (tmp_path / ".npmrc").is_file()
@@ -411,7 +442,8 @@ def test_init_creates_typescript_backend_agent_non_interactively(tmp_path) -> No
 
     assert result.exit_code == 0
     assert "Created a minimal deployable TypeScript backend agent" in result.output
-    assert "MESHAGENT_ROOM=<room> npm run dev" in result.output
+    assert "npm run dev" in result.output
+    assert "MESHAGENT_ROOM=<room>" not in result.output
     assert "npm run deploy" in result.output
     assert "--meshagent-token full" not in result.output
     assert " -e " not in result.output
@@ -463,8 +495,10 @@ def test_init_creates_typescript_chatbot_non_interactively(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "Created a minimal deployable TypeScript chatbot" in result.output
-    assert "MESHAGENT_ROOM=<room> npm run dev" in result.output
+    assert "npm run dev" in result.output
+    assert "MESHAGENT_ROOM=<room>" not in result.output
     assert "npm run deploy" in result.output
+    assert "meshagent doctor" not in result.output
     assert "--public" not in result.output
     assert "--liveness" not in result.output
     assert (tmp_path / "package.json").is_file()
@@ -475,55 +509,40 @@ def test_init_creates_typescript_chatbot_non_interactively(tmp_path) -> None:
     package_text = (tmp_path / "package.json").read_text(encoding="utf-8")
     assert '"name": "meshagent-create-typescript-chatbot"' in package_text
     assert (
-        '"deploy": "meshagent deploy . --tag meshagent-create-typescript-chatbot:dev --meshagent-token agentDefault --wait"'
+        '"deploy": "meshagent deploy . --tag meshagent-create-typescript-chatbot:dev --public --liveness /health --meshagent-token agentDefault --wait"'
         in package_text
     )
+    assert "@meshagent/meshagent" not in package_text
     server_ts = (tmp_path / "src" / "server.ts").read_text(encoding="utf-8")
-    assert "class TypeScriptChatTool extends Tool" in server_ts
-    assert "class TypeScriptChatbotToolkit extends Toolkit" in server_ts
-    assert 'name: "chat"' in server_ts
-    assert "function chatbotReply" in server_ts
-    assert "callMeshAgentLLM" in server_ts
+    assert 'const http = require("node:http")' in server_ts
+    assert "http.createServer" in server_ts
     assert "OPENAI_BASE_URL" in server_ts
     assert "OPENAI_API_KEY" in server_ts
-    assert "/responses" in server_ts
-    assert "threadPathForSession" in server_ts
-    assert "room.sync.open" in server_ts
-    assert "threadPath" in server_ts
-    assert "threadMessages" in server_ts
-    assert "invokeRoomTool" in server_ts
-    assert "room.invoke" in server_ts
-    assert "roomToolCalls" in server_ts
-    assert "roomApiCalls" in server_ts
-    assert "meshagent_room_api_call" in server_ts
-    assert "room.storage.upload" in server_ts
-    assert "room.storage.download" in server_ts
-    assert "storage.upload" in server_ts
-    assert "storage.download" in server_ts
-    assert "sessionId" in server_ts
+    assert "/chat/completions" in server_ts
+    assert "/api/chat" in server_ts
     assert "messages" in server_ts
-    assert "What did I just say?" in server_ts
-    assert "Your previous message was:" in server_ts
-    assert "Summarize the contents of that file." in server_ts
-    assert "Room storage summary:" in server_ts
-    assert "MeshAgent create dev chatbot turn 1:" in server_ts
-    assert "MeshAgent create dev chatbot turn 2:" in server_ts
-    assert "MeshAgent create dev chatbot room tool:" in server_ts
-    assert "MeshAgent create dev chatbot storage write:" in server_ts
-    assert "MeshAgent create dev chatbot storage summary:" in server_ts
-    assert "MeshAgent create dev chatbot storage room tool:" in server_ts
-    assert "chatbot-proof.json" in server_ts
-    assert "chatbot-storage-proof.json" in server_ts
-    assert "server.listen" not in server_ts
+    assert "completeChat" in server_ts
+    assert "RoomClient" not in server_ts
+    assert "startHostedToolkit" not in server_ts
+    assert "extends Tool" not in server_ts
+    assert "extends Toolkit" not in server_ts
+    assert "room.sync" not in server_ts
+    assert "room.invoke" not in server_ts
+    assert "room.storage" not in server_ts
+    assert "chatbot-proof.json" not in server_ts
+    assert "chatbot-storage-proof.json" not in server_ts
+    assert "server.listen" in server_ts
     dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     assert "node-sdk" in dockerfile
     assert "FROM scratch" in dockerfile
     assert "LABEL meshagent.runtime=node" in dockerfile
-    assert "EXPOSE" not in dockerfile
+    assert "EXPOSE 3000" in dockerfile
     assert diagnosis.language == "TypeScript"
     assert diagnosis.javascript_flavor == "Node.js/TypeScript"
-    assert diagnosis.sdk == "@meshagent/meshagent"
-    assert diagnosis.is_headless_backend_agent is True
+    assert diagnosis.sdk is None
+    assert diagnosis.has_health_route is True
+    assert diagnosis.has_http_port_hint is True
+    assert diagnosis.is_headless_backend_agent is False
 
 
 def test_init_rejects_non_typescript_chatbot(tmp_path) -> None:
@@ -561,7 +580,8 @@ def test_init_creates_react_webserver_non_interactively(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "Created a minimal deployable React web server" in result.output
-    assert "MESHAGENT_ROOM=<room> npm run dev" in result.output
+    assert "npm run dev" in result.output
+    assert "MESHAGENT_ROOM=<room>" not in result.output
     assert "npm run deploy" in result.output
     assert (tmp_path / "package.json").is_file()
     assert (tmp_path / ".npmrc").is_file()
@@ -634,7 +654,8 @@ def test_init_creates_typescript_chatbot_ui_non_interactively(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "Created a minimal deployable TypeScript chatbot UI" in result.output
-    assert "MESHAGENT_ROOM=<room> npm run dev" in result.output
+    assert "npm run dev" in result.output
+    assert "MESHAGENT_ROOM=<room>" not in result.output
     assert "npm run deploy" in result.output
     assert (tmp_path / "package.json").is_file()
     assert (tmp_path / ".npmrc").is_file()
@@ -654,7 +675,7 @@ def test_init_creates_typescript_chatbot_ui_non_interactively(tmp_path) -> None:
     assert '"@msgpack/msgpack"' in package_json
     assert '"next"' in package_json
     assert (
-        '"deploy": "meshagent deploy . --tag meshagent-create-typescript-chatbot-ui:dev --public --liveness /health --wait"'
+        '"deploy": "meshagent deploy . --tag meshagent-create-typescript-chatbot-ui:dev --private --validation-mode=cookie --extra-port=3001:/messages --liveness /health --wait"'
         in package_json
     )
     assert 'from "@msgpack/msgpack"' in page_tsx
@@ -723,7 +744,8 @@ def test_init_creates_dotnet_backend_agent_non_interactively(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "Created a minimal deployable .NET backend agent" in result.output
-    assert "MESHAGENT_ROOM=<room> ./scripts/dev.sh" in result.output
+    assert "./scripts/dev.sh" in result.output
+    assert "MESHAGENT_ROOM=<room>" not in result.output
     assert "./scripts/deploy.sh" in result.output
     assert "--meshagent-token full" not in result.output
     assert 'PackageReference Include="Meshagent.Api"' in (
@@ -830,7 +852,8 @@ def test_init_creates_flutter_webserver_non_interactively(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "Created a minimal deployable Flutter web server" in result.output
-    assert "MESHAGENT_ROOM=<room> ./scripts/dev.sh" in result.output
+    assert "./scripts/dev.sh" in result.output
+    assert "MESHAGENT_ROOM=<room>" not in result.output
     assert "./scripts/deploy.sh" in result.output
     assert (tmp_path / "pubspec.yaml").is_file()
     assert (tmp_path / "lib" / "main.dart").is_file()
@@ -890,7 +913,8 @@ def test_init_creates_dart_backend_agent_non_interactively(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "Created a minimal deployable Dart backend agent" in result.output
-    assert "MESHAGENT_ROOM=<room> ./scripts/dev.sh" in result.output
+    assert "./scripts/dev.sh" in result.output
+    assert "MESHAGENT_ROOM=<room>" not in result.output
     assert "./scripts/deploy.sh" in result.output
     assert "--meshagent-token full" not in result.output
     assert "meshagent:" in (tmp_path / "pubspec.yaml").read_text(encoding="utf-8")

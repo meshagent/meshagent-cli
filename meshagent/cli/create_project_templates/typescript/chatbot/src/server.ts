@@ -1,871 +1,330 @@
 // @ts-nocheck
-const crypto = require("node:crypto");
-const fs = require("node:fs");
-const path = require("node:path");
-const { TextDecoder, TextEncoder } = require("node:util");
-const {
-  ChildProperty,
-  ElementType,
-  JsonContent,
-  MeshSchema,
-  RoomClient,
-  SimpleValue,
-  Tool,
-  Toolkit,
-  ValueProperty,
-  startHostedToolkit,
-} = require("@meshagent/meshagent");
+const http = require("node:http");
 
-const proofDisplayPath = "src/chatbot-proof.json";
-const proofPath = path.join(__dirname, proofDisplayPath.split("/").pop());
-const storageProofDisplayPath = "src/chatbot-storage-proof.json";
-const storageProofPath = path.join(__dirname, storageProofDisplayPath.split("/").pop());
-const toolkitName = "meshagent.create.typescript-chatbot";
-const threadDir = ".threads/meshagent-create/typescript-chatbot";
-const threadListPath = `${threadDir}/index.threadl`;
-
-const threadSchema = new MeshSchema({
-  rootTagName: "thread",
-  elements: [
-    new ElementType({
-      tagName: "thread",
-      description: "a MeshAgent chat thread",
-      properties: [
-        new ValueProperty({ name: "name", type: SimpleValue.string }),
-        new ChildProperty({
-          name: "properties",
-          childTagNames: ["members", "messages"],
-          ordered: true,
-        }),
-      ],
-    }),
-    new ElementType({
-      tagName: "members",
-      properties: [
-        new ChildProperty({ name: "items", childTagNames: ["member"] }),
-      ],
-    }),
-    new ElementType({
-      tagName: "messages",
-      properties: [
-        new ValueProperty({ name: "external_thread_id", type: SimpleValue.string }),
-        new ChildProperty({ name: "items", childTagNames: ["message"] }),
-      ],
-    }),
-    new ElementType({
-      tagName: "member",
-      properties: [
-        new ValueProperty({ name: "name", type: SimpleValue.string }),
-      ],
-    }),
-    new ElementType({
-      tagName: "message",
-      properties: [
-        new ValueProperty({ name: "id", type: SimpleValue.string }),
-        new ValueProperty({ name: "turn_id", type: SimpleValue.string }),
-        new ValueProperty({ name: "text", type: SimpleValue.string }),
-        new ValueProperty({ name: "created_at", type: SimpleValue.string }),
-        new ValueProperty({ name: "author_name", type: SimpleValue.string }),
-        new ValueProperty({ name: "role", type: SimpleValue.string }),
-        new ValueProperty({ name: "author_ref", type: SimpleValue.string }),
-      ],
-    }),
-  ],
-});
-
-const threadListSchema = new MeshSchema({
-  rootTagName: "thread_list",
-  elements: [
-    new ElementType({
-      tagName: "thread_list",
-      description: "an index of MeshAgent chat threads",
-      properties: [
-        new ChildProperty({ name: "threads", childTagNames: ["thread"] }),
-      ],
-    }),
-    new ElementType({
-      tagName: "thread",
-      properties: [
-        new ValueProperty({ name: "name", type: SimpleValue.string }),
-        new ValueProperty({ name: "path", type: SimpleValue.string }),
-        new ValueProperty({ name: "created_at", type: SimpleValue.string }),
-        new ValueProperty({ name: "modified_at", type: SimpleValue.string }),
-      ],
-    }),
-  ],
-});
-
-const chatbotActionSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: [
-    "action",
-    "reply",
-    "storagePath",
-    "payloadJson",
-    "roomToolkit",
-    "roomTool",
-    "roomToolArgumentsJson",
-  ],
-  properties: {
-    action: {
-      type: "string",
-      enum: [
-        "reply",
-        "write_room_storage",
-        "summarize_room_storage",
-        "invoke_room_tool",
-      ],
-    },
-    reply: { type: "string" },
-    storagePath: { type: "string" },
-    payloadJson: { type: "string" },
-    roomToolkit: { type: "string" },
-    roomTool: { type: "string" },
-    roomToolArgumentsJson: { type: "string" },
-  },
+const port = Number(process.env.PORT || 3000);
+const model = process.env.OPENAI_MODEL || process.env.MESHAGENT_CHATBOT_MODEL || "gpt-5.4";
+const systemMessage = {
+  role: "system",
+  content: "You are a concise assistant running through the MeshAgent room OpenAI proxy.",
 };
-
-const chatbotReplySchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["reply"],
-  properties: {
-    reply: { type: "string" },
-  },
-};
-
-function sleep(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-function normalizeMessage(message) {
-  const text = String(message ?? "").trim();
-  if (text === "") {
-    return "Say something.";
-  }
-  return text;
-}
 
 function trimTrailingSlash(value) {
-  let trimmed = value;
-  while (trimmed.endsWith("/")) {
-    trimmed = trimmed.slice(0, -1);
+  return value.replace(/\/+$/, "");
+}
+
+function jsonResponse(response, status, payload) {
+  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+  response.end(`${JSON.stringify(payload)}\n`);
+}
+
+function textResponse(response, status, body) {
+  response.writeHead(status, { "content-type": "text/plain; charset=utf-8" });
+  response.end(body);
+}
+
+async function readJson(request) {
+  const chunks = [];
+  let totalBytes = 0;
+  for await (const chunk of request) {
+    totalBytes += chunk.length;
+    if (totalBytes > 1_000_000) {
+      throw new Error("Request body is too large.");
+    }
+    chunks.push(chunk);
   }
-  return trimmed;
-}
 
-function nowIso() {
-  return new Date().toISOString();
-}
-
-function messageId() {
-  return crypto.randomUUID();
-}
-
-function threadPathForSession(sessionId) {
-  const key = String(sessionId ?? "").trim() || "default";
-  return `${threadDir}/${encodeURIComponent(key)}.thread`;
-}
-
-function findChild(element, tagName) {
-  return element.getChildren().find((child) => child.tagName === tagName) ?? null;
-}
-
-function findMessagesElement(document) {
-  const messages = findChild(document.root, "messages");
-  if (!messages) {
-    throw new Error("thread document is missing messages element");
+  const text = Buffer.concat(chunks).toString("utf8").trim();
+  if (!text) {
+    return {};
   }
+  return JSON.parse(text);
+}
+
+function normalizeMessages(value) {
+  if (!Array.isArray(value)) {
+    throw new Error("messages must be an array.");
+  }
+
+  const messages = value.map((message) => {
+    const role = String(message?.role ?? "").trim();
+    const content = String(message?.content ?? "").trim();
+    if (!["user", "assistant", "system"].includes(role) || !content) {
+      throw new Error("Each message must have role user, assistant, or system and non-empty content.");
+    }
+    return { role, content };
+  });
+
+  if (messages.length === 0 || messages[messages.length - 1].role !== "user") {
+    throw new Error("The latest message must be a user message.");
+  }
+
   return messages;
 }
 
-function ensureThreadDocument(document) {
-  let messages = findChild(document.root, "messages");
-  if (!messages) {
-    document.root.createChildElement("messages", {});
+function extractAssistantText(payload) {
+  const content = payload?.choices?.[0]?.message?.content;
+  if (typeof content === "string") {
+    return content.trim();
   }
-  let members = findChild(document.root, "members");
-  if (!members) {
-    document.root.createChildElement("members", {});
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") {
+          return part;
+        }
+        return part?.text ?? "";
+      })
+      .join("")
+      .trim();
   }
+  return "";
 }
 
-function threadMessagesFromDocument(document) {
-  const messages = findMessagesElement(document);
-  return messages
-    .getChildren()
-    .filter((child) => child.tagName === "message")
-    .map((child) => ({
-      id: child.getAttribute("id") ?? "",
-      role: child.getAttribute("role") ?? "",
-      content: child.getAttribute("text") ?? "",
-      authorName: child.getAttribute("author_name") ?? "",
-      createdAt: child.getAttribute("created_at") ?? "",
-    }));
-}
-
-async function openThreadDocument(room, threadPath) {
-  const document = await room.sync.open(threadPath, {
-    create: true,
-    schema: threadSchema,
-  });
-  ensureThreadDocument(document);
-  return document;
-}
-
-async function readThreadMessages({ room, threadPath }) {
-  const document = await openThreadDocument(room, threadPath);
-  try {
-    return threadMessagesFromDocument(document);
-  } finally {
-    await room.sync.close(threadPath);
-  }
-}
-
-async function appendThreadMessages({ room, threadPath, messages }) {
-  const document = await openThreadDocument(room, threadPath);
-  try {
-    const parent = findMessagesElement(document);
-    for (const message of messages) {
-      parent.createChildElement("message", {
-        id: message.id ?? messageId(),
-        turn_id: message.turnId ?? "",
-        role: message.role,
-        text: message.content,
-        author_name: message.authorName,
-        author_ref: message.authorRef ?? "",
-        created_at: message.createdAt ?? nowIso(),
-      });
-    }
-    return threadMessagesFromDocument(document);
-  } finally {
-    await room.sync.close(threadPath);
-  }
-}
-
-async function upsertThreadIndex({ room, threadPath, name }) {
-  const document = await room.sync.open(threadListPath, {
-    create: true,
-    schema: threadListSchema,
-  });
-  try {
-    const timestamp = nowIso();
-    let existing = null;
-    for (const child of document.root.getChildren()) {
-      if (child.tagName === "thread" && child.getAttribute("path") === threadPath) {
-        existing = child;
-        break;
-      }
-    }
-    if (!existing) {
-      document.root.createChildElement("thread", {
-        name,
-        path: threadPath,
-        created_at: timestamp,
-        modified_at: timestamp,
-      });
-      return;
-    }
-    existing.setAttribute("name", name);
-    existing.setAttribute("modified_at", timestamp);
-  } finally {
-    await room.sync.close(threadListPath);
-  }
-}
-
-function parseJsonObject(text, label) {
-  const value = JSON.parse(text);
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${label} was not a JSON object.`);
-  }
-  return value;
-}
-
-function tryParseJsonObject(text) {
-  try {
-    return parseJsonObject(text, "thread message");
-  } catch {
-    return null;
-  }
-}
-
-function extractResponseText(payload) {
-  if (typeof payload.output_text === "string" && payload.output_text.trim() !== "") {
-    return payload.output_text.trim();
-  }
-
-  const parts = [];
-  for (const item of payload.output ?? []) {
-    for (const content of item.content ?? []) {
-      if (typeof content.text === "string") {
-        parts.push(content.text);
-      }
-    }
-  }
-  return parts.join("").trim();
-}
-
-async function callMeshAgentLLM({ instructions, input, schemaName, schema }) {
+async function completeChat(messages) {
   const baseURL = String(process.env.OPENAI_BASE_URL ?? "").trim();
   const apiKey = String(process.env.OPENAI_API_KEY ?? "").trim();
   if (!baseURL || !apiKey) {
     throw new Error(
-      "MeshAgent LLM router environment is missing. Run this chatbot through `meshagent room connect` so OPENAI_BASE_URL and OPENAI_API_KEY are set."
+      "OPENAI_BASE_URL and OPENAI_API_KEY are required. Run locally with `meshagent room connect -- npm run dev` or use `npm run dev` from this sample."
     );
   }
 
-  const response = await fetch(`${trimTrailingSlash(baseURL)}/responses`, {
+  const response = await fetch(`${trimTrailingSlash(baseURL)}/chat/completions`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${apiKey}`,
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      model: process.env.MESHAGENT_CHATBOT_MODEL || "gpt-5.4",
-      instructions,
-      input,
-      text: {
-        format: {
-          type: "json_schema",
-          name: schemaName,
-          schema,
-          strict: true,
-        },
-      },
+      model,
+      messages: [systemMessage, ...messages],
     }),
   });
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`MeshAgent LLM request failed (${response.status}): ${body}`);
+    throw new Error(`MeshAgent OpenAI proxy request failed (${response.status}): ${body}`);
   }
 
   const payload = await response.json();
-  const outputText = extractResponseText(payload);
-  if (!outputText) {
-    throw new Error("MeshAgent LLM response did not include output text.");
+  const reply = extractAssistantText(payload);
+  if (!reply) {
+    throw new Error("MeshAgent OpenAI proxy response did not include assistant text.");
   }
-  return parseJsonObject(outputText, "MeshAgent LLM response");
+  return reply;
 }
 
-function chatbotControllerInstructions() {
-  return [
-    "You are a MeshAgent chatbot shim. Choose one action for the latest user message.",
-    "The conversation history comes from a MeshAgent thread document. Use it as the source of truth.",
-    "Return only JSON that matches the schema.",
-    "Use action reply for normal chat and put the assistant response in reply.",
-    "If the latest user asks what they just said, answer from the previous user message and start the reply with: Your previous message was:",
-    "If the latest user asks to write JSON to a room storage file, use action write_room_storage, copy the storage path into storagePath, and copy the JSON object text into payloadJson.",
-    "If the latest user asks to summarize the contents of that file and knownStoragePath is set, use action summarize_room_storage and copy knownStoragePath into storagePath.",
-    "If the latest user asks to call or use a MeshAgent room tool, use action invoke_room_tool, set roomToolkit and roomTool, and put the JSON arguments in roomToolArgumentsJson.",
-    "For fields that do not apply to the chosen action, use an empty string.",
-  ].join("\n");
-}
-
-async function chooseChatbotAction({ threadPath, threadMessages, message, storagePath }) {
-  return callMeshAgentLLM({
-    instructions: chatbotControllerInstructions(),
-    schemaName: "meshagent_chatbot_action",
-    schema: chatbotActionSchema,
-    input: JSON.stringify(
-      {
-        threadPath,
-        knownStoragePath: storagePath || "",
-        threadMessages,
-        latestUserMessage: message,
-      },
-      null,
-      2
-    ),
-  });
-}
-
-async function completeReplyWithLLM({ instruction, payload }) {
-  const result = await callMeshAgentLLM({
-    instructions: [
-      instruction,
-      "Return only JSON that matches the schema.",
-    ].join("\n"),
-    schemaName: "meshagent_chatbot_reply",
-    schema: chatbotReplySchema,
-    input: JSON.stringify(payload, null, 2),
-  });
-  return String(result.reply ?? "").trim();
-}
-
-async function writeJsonToRoomStorage({ room, storagePath, payload }) {
-  const body = `${JSON.stringify(payload, null, 2)}\n`;
-  await room.storage.upload(storagePath, new TextEncoder().encode(body), {
-    overwrite: true,
-    name: path.basename(storagePath),
-    mimeType: "application/json",
-  });
-}
-
-async function readJsonFromRoomStorage({ room, storagePath }) {
-  const file = await room.storage.download(storagePath);
-  return JSON.parse(new TextDecoder().decode(file.data));
-}
-
-function contentToPlainObject(content) {
-  if (content && typeof content.json !== "undefined") {
-    return content.json;
-  }
-  if (content && typeof content.text === "string") {
-    return { text: content.text };
-  }
-  if (content === null || content === undefined) {
-    return null;
-  }
-  return JSON.parse(JSON.stringify(content));
-}
-
-async function invokeRoomTool({ room, toolkit, tool, argumentsJson }) {
-  const input = argumentsJson.trim() ? parseJsonObject(argumentsJson, "room tool arguments") : {};
-  const content = await room.invoke({ toolkit, tool, input });
-  return {
-    toolkit,
-    tool,
-    arguments: input,
-    result: contentToPlainObject(content),
-  };
-}
-
-function roomToolMessage(toolCall) {
-  return {
-    role: "tool",
-    authorName: "MeshAgent room tool",
-    content: JSON.stringify({
-      kind: "meshagent_room_tool_call",
-      ...toolCall,
-    }),
-  };
-}
-
-function roomApiMessage(apiCall) {
-  return {
-    role: "event",
-    authorName: "MeshAgent room API",
-    content: JSON.stringify({
-      kind: "meshagent_room_api_call",
-      ...apiCall,
-    }),
-  };
-}
-
-function storageApiMessage({ api, storagePath, result }) {
-  return roomApiMessage({
-    api,
-    arguments: { path: storagePath },
-    result,
-  });
-}
-
-function roomToolCallsFromMessages(messages) {
-  const calls = [];
-  for (const message of messages) {
-    if (message.role !== "tool") {
-      continue;
+function html() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MeshAgent Chatbot</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f7f8fb;
+      --panel: #ffffff;
+      --text: #151922;
+      --muted: #5e6878;
+      --border: #d8dde8;
+      --accent: #1668dc;
+      --assistant: #eef4ff;
+      --user: #eaf7ee;
     }
-    const parsed = tryParseJsonObject(message.content);
-    if (parsed?.kind === "meshagent_room_tool_call") {
-      calls.push({
-        toolkit: parsed.toolkit,
-        tool: parsed.tool,
-        arguments: parsed.arguments ?? {},
-        result: parsed.result ?? null,
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f1218;
+        --panel: #171b24;
+        --text: #eef2f8;
+        --muted: #aab4c4;
+        --border: #2d3442;
+        --accent: #74a7ff;
+        --assistant: #1b2a44;
+        --user: #173525;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(880px, calc(100vw - 32px));
+      min-height: 100vh;
+      margin: 0 auto;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 16px;
+      padding: 24px 0;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.2;
+    }
+    header p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    #messages {
+      min-height: 360px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 16px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .message {
+      max-width: 78%;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      white-space: pre-wrap;
+      line-height: 1.45;
+    }
+    .assistant { align-self: flex-start; background: var(--assistant); }
+    .user { align-self: flex-end; background: var(--user); }
+    form {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+    }
+    textarea {
+      width: 100%;
+      min-height: 52px;
+      max-height: 160px;
+      resize: vertical;
+      padding: 12px;
+      color: var(--text);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font: inherit;
+    }
+    button {
+      min-width: 96px;
+      padding: 0 18px;
+      color: white;
+      background: var(--accent);
+      border: 0;
+      border-radius: 8px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:disabled {
+      cursor: wait;
+      opacity: 0.65;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>MeshAgent Chatbot</h1>
+      <p>OpenAI-compatible chat through the current MeshAgent room.</p>
+    </header>
+    <section id="messages" aria-live="polite"></section>
+    <form id="chat-form">
+      <textarea id="message-input" name="message" placeholder="Type a message" autocomplete="off"></textarea>
+      <button id="send-button" type="submit">Send</button>
+    </form>
+  </main>
+  <script>
+    const form = document.querySelector("#chat-form");
+    const input = document.querySelector("#message-input");
+    const button = document.querySelector("#send-button");
+    const messagesEl = document.querySelector("#messages");
+    const messages = [];
+
+    function renderMessage(role, content) {
+      const node = document.createElement("div");
+      node.className = "message " + role;
+      node.textContent = content;
+      messagesEl.appendChild(node);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    async function sendMessage(content) {
+      messages.push({ role: "user", content });
+      renderMessage("user", content);
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messages }),
       });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "Chat request failed.");
+      }
+      messages.push({ role: "assistant", content: payload.reply });
+      renderMessage("assistant", payload.reply);
     }
-  }
-  return calls;
-}
 
-function roomApiCallsFromMessages(messages) {
-  const calls = [];
-  for (const message of messages) {
-    const parsed = tryParseJsonObject(message.content);
-    if (parsed?.kind === "meshagent_room_api_call") {
-      calls.push({
-        api: parsed.api,
-        arguments: parsed.arguments ?? {},
-        result: parsed.result ?? null,
-      });
-    }
-  }
-  return calls;
-}
-
-function visibleChatMessages(messages) {
-  return messages.filter((message) => message.role !== "tool" && message.role !== "event");
-}
-
-function latestStoragePathFromMessages(messages) {
-  for (const message of [...messages].reverse()) {
-    const parsed = tryParseJsonObject(message.content);
-    const storagePath = parsed?.arguments?.path ?? parsed?.storagePath;
-    if (typeof storagePath === "string" && storagePath.trim() !== "") {
-      return storagePath.trim();
-    }
-  }
-  return "";
-}
-
-function buildStorageResult({ probe, storagePath }) {
-  return {
-    probe,
-    result: "room-storage-chatbot-result",
-    status: "written",
-    storagePath,
-    source: "typescript-chatbot",
-  };
-}
-
-function summaryContainsStoredFacts(summary, payload) {
-  const text = String(summary ?? "");
-  return [payload.result, payload.probe, payload.status].every((value) =>
-    text.includes(String(value))
-  );
-}
-
-async function chatbotReply({ room, sessionId, message }) {
-  const text = normalizeMessage(message);
-  const threadPath = threadPathForSession(sessionId);
-  await upsertThreadIndex({ room, threadPath, name: String(sessionId ?? "default") });
-  const previousMessages = await readThreadMessages({ room, threadPath });
-  const plan = await chooseChatbotAction({
-    threadPath,
-    threadMessages: previousMessages,
-    message: text,
-    storagePath: latestStoragePathFromMessages(previousMessages),
-  });
-
-  const pendingMessages = [
-    {
-      role: "user",
-      authorName: "user",
-      content: text,
-    },
-  ];
-  let reply = String(plan.reply ?? "").trim();
-  let storagePath = String(plan.storagePath ?? "").trim();
-
-  if (plan.action === "write_room_storage") {
-    if (!storagePath) {
-      throw new Error("MeshAgent LLM did not choose a room storage path.");
-    }
-    const storedPayload = parseJsonObject(plan.payloadJson, "room storage payloadJson");
-    await writeJsonToRoomStorage({ room, storagePath, payload: storedPayload });
-    pendingMessages.push(storageApiMessage({
-      api: "storage.upload",
-      storagePath,
-      result: { ok: true, bytes: JSON.stringify(storedPayload, null, 2).length + 1 },
-    }));
-    if (!reply) {
-      reply = `Wrote room storage file ${storagePath}.`;
-    }
-  } else if (plan.action === "summarize_room_storage") {
-    storagePath = storagePath || latestStoragePathFromMessages(previousMessages);
-    if (!storagePath) {
-      reply = "I do not have a room storage file to summarize yet.";
-    } else {
-      const storedPayload = await readJsonFromRoomStorage({ room, storagePath });
-      pendingMessages.push(storageApiMessage({
-        api: "storage.download",
-        storagePath,
-        result: storedPayload,
-      }));
-      reply = await completeReplyWithLLM({
-        instruction: [
-          "You summarize room storage JSON for a MeshAgent chatbot.",
-          "If the JSON has result, probe, and status fields, set reply exactly to:",
-          "Room storage summary: <result> for probe <probe> has status <status>.",
-          "Otherwise, write one short sentence that summarizes the JSON contents.",
-        ].join("\n"),
-        payload: {
-          userMessage: text,
-          storagePath,
-          storedPayload,
-        },
-      });
-    }
-  } else if (plan.action === "invoke_room_tool") {
-    const toolkit = String(plan.roomToolkit ?? "").trim();
-    const tool = String(plan.roomTool ?? "").trim();
-    if (!toolkit || !tool) {
-      throw new Error("MeshAgent LLM did not choose a room toolkit and tool.");
-    }
-    const toolCall = await invokeRoomTool({
-      room,
-      toolkit,
-      tool,
-      argumentsJson: String(plan.roomToolArgumentsJson ?? ""),
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const content = input.value.trim();
+      if (!content) {
+        return;
+      }
+      input.value = "";
+      button.disabled = true;
+      try {
+        await sendMessage(content);
+      } catch (error) {
+        renderMessage("assistant", error.message || String(error));
+      } finally {
+        button.disabled = false;
+        input.focus();
+      }
     });
-    pendingMessages.push(roomToolMessage(toolCall));
-    reply = await completeReplyWithLLM({
-      instruction: "Write one short assistant reply that summarizes the MeshAgent room tool result.",
-      payload: {
-        userMessage: text,
-        toolCall,
-      },
-    });
-  } else if (!reply) {
-    reply = "I am ready to chat.";
-  }
-
-  pendingMessages.push({
-    role: "assistant",
-    authorName: "typescript-chatbot",
-    content: reply,
-  });
-
-  const threadMessages = await appendThreadMessages({
-    room,
-    threadPath,
-    messages: pendingMessages,
-  });
-
-  return {
-    sessionId: String(sessionId ?? "").trim() || "default",
-    threadPath,
-    threadListPath,
-    reply,
-    storagePath,
-    messages: threadMessages,
-    roomToolCalls: roomToolCallsFromMessages(threadMessages),
-    roomApiCalls: roomApiCallsFromMessages(threadMessages),
-  };
+  </script>
+</body>
+</html>`;
 }
 
-async function writeChatbotProof({ probe, sessionId, threadPath, threadMessages }) {
-  const payload = {
-    probe,
-    sessionId,
-    threadPath,
-    threadListPath,
-    messages: visibleChatMessages(threadMessages),
-    threadMessages,
-    roomToolCalls: roomToolCallsFromMessages(threadMessages),
-    roomApiCalls: roomApiCallsFromMessages(threadMessages),
-    tools: ["chat"],
-  };
-  await fs.promises.mkdir(path.dirname(proofPath), { recursive: true });
-  await fs.promises.writeFile(proofPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-  return payload;
-}
-
-async function writeChatbotStorageProof({ probe, sessionId, threadPath, storagePath, storedPayload, storageSummary, threadMessages }) {
-  const payload = {
-    probe,
-    sessionId,
-    threadPath,
-    threadListPath,
-    storagePath,
-    storedPayload,
-    storageSummary,
-    messages: visibleChatMessages(threadMessages),
-    threadMessages,
-    roomToolCalls: roomToolCallsFromMessages(threadMessages),
-    roomApiCalls: roomApiCallsFromMessages(threadMessages),
-    tools: ["chat"],
-  };
-  await fs.promises.mkdir(path.dirname(storageProofPath), { recursive: true });
-  await fs.promises.writeFile(storageProofPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-  return payload;
-}
-
-class TypeScriptChatTool extends Tool {
-  constructor({ room }) {
-    super({
-      name: "chat",
-      title: "Chat with MeshAgent LLM",
-      description: "Routes chat through the room LLM router, stores history in a MeshAgent thread, and can call room tools.",
-      inputSchema: {
-        type: "object",
-        required: ["sessionId", "message"],
-        additionalProperties: false,
-        properties: {
-          sessionId: { type: "string" },
-          message: { type: "string" },
-        },
-      },
-    });
-    this.room = room;
-  }
-
-  async execute({ sessionId, message }) {
-    return new JsonContent({ json: await chatbotReply({ room: this.room, sessionId, message }) });
-  }
-}
-
-class TypeScriptChatbotToolkit extends Toolkit {
-  constructor({ room }) {
-    super({
-      name: toolkitName,
-      title: "TypeScript Local Chatbot Toolkit",
-      description: "Local chatbot backed by MeshAgent LLM, MeshAgent threads, and MeshAgent room tools.",
-      tools: [new TypeScriptChatTool({ room })],
-    });
-  }
-}
-
-async function runDevTranscriptProof(room, probe) {
-  const sessionId = `meshagent-create-chat-${probe}`;
-  const threadPath = threadPathForSession(sessionId);
-  const firstMessage = `MeshAgent local dev proof ${probe}`;
-  const firstTurn = await room.agents.invokeTool({
-    toolkit: toolkitName,
-    tool: "chat",
-    arguments: { sessionId, message: firstMessage },
-  });
-  console.log(`MeshAgent create dev chatbot turn 1: ${JSON.stringify(firstTurn.json)}`);
-  if (firstTurn.json?.threadPath !== threadPath || !String(firstTurn.json?.reply ?? "").trim()) {
-    throw new Error("Local TypeScript chatbot proof did not write the first turn to a MeshAgent thread.");
-  }
-
-  const secondMessage = "What did I just say?";
-  const secondTurn = await room.agents.invokeTool({
-    toolkit: toolkitName,
-    tool: "chat",
-    arguments: { sessionId, message: secondMessage },
-  });
-  console.log(`MeshAgent create dev chatbot turn 2: ${JSON.stringify(secondTurn.json)}`);
-  if (!String(secondTurn.json?.reply ?? "").includes(firstMessage)) {
-    throw new Error("Local TypeScript chatbot proof did not preserve chat history in the MeshAgent thread.");
-  }
-
-  const toolMessage = `Call MeshAgent room tool storage.stat with JSON ${JSON.stringify({ path: threadPath })}`;
-  const toolTurn = await room.agents.invokeTool({
-    toolkit: toolkitName,
-    tool: "chat",
-    arguments: { sessionId, message: toolMessage },
-  });
-  console.log(`MeshAgent create dev chatbot room tool: ${JSON.stringify(toolTurn.json)}`);
-  const roomToolCalls = toolTurn.json?.roomToolCalls ?? [];
-  if (!roomToolCalls.some((call) => call.toolkit === "storage" && call.tool === "stat")) {
-    throw new Error("Local TypeScript chatbot proof did not call a MeshAgent room tool.");
-  }
-
-  const threadMessages = await readThreadMessages({ room, threadPath });
-  await writeChatbotProof({ probe, sessionId, threadPath, threadMessages });
-  console.log(`MeshAgent create dev chatbot proof wrote: ${proofDisplayPath} ${probe}`);
-}
-
-async function runDevRoomStorageProof(room, probe) {
-  const sessionId = `meshagent-create-storage-${probe}`;
-  const threadPath = threadPathForSession(sessionId);
-  const storagePath = `.meshagent-create/chatbot-result-${probe}.json`;
-  const storedPayload = buildStorageResult({ probe, storagePath });
-  const writeMessage = `Write result to room storage file ${storagePath} with JSON ${JSON.stringify(storedPayload)}`;
-  const writeTurn = await room.agents.invokeTool({
-    toolkit: toolkitName,
-    tool: "chat",
-    arguments: { sessionId, message: writeMessage },
-  });
-  console.log(`MeshAgent create dev chatbot storage write: ${JSON.stringify(writeTurn.json)}`);
-  if (writeTurn.json?.threadPath !== threadPath || writeTurn.json?.storagePath !== storagePath) {
-    throw new Error("Local TypeScript chatbot proof did not write storage state to the MeshAgent thread.");
-  }
-
-  const summaryMessage = "Summarize the contents of that file.";
-  const summaryTurn = await room.agents.invokeTool({
-    toolkit: toolkitName,
-    tool: "chat",
-    arguments: { sessionId, message: summaryMessage },
-  });
-  console.log(`MeshAgent create dev chatbot storage summary: ${JSON.stringify(summaryTurn.json)}`);
-
-  const actualStoredPayload = await readJsonFromRoomStorage({ room, storagePath });
-  if (JSON.stringify(actualStoredPayload) !== JSON.stringify(storedPayload)) {
-    throw new Error("Local TypeScript chatbot proof did not write the expected room storage payload.");
-  }
-  if (!summaryContainsStoredFacts(summaryTurn.json?.reply, actualStoredPayload)) {
-    throw new Error("Local TypeScript chatbot proof did not summarize the room storage file.");
-  }
-
-  const toolMessage = `Call MeshAgent room tool storage.stat with JSON ${JSON.stringify({ path: storagePath })}`;
-  const toolTurn = await room.agents.invokeTool({
-    toolkit: toolkitName,
-    tool: "chat",
-    arguments: { sessionId, message: toolMessage },
-  });
-  console.log(`MeshAgent create dev chatbot storage room tool: ${JSON.stringify(toolTurn.json)}`);
-  const roomToolCalls = toolTurn.json?.roomToolCalls ?? [];
-  if (!roomToolCalls.some((call) => call.toolkit === "storage" && call.tool === "stat")) {
-    throw new Error("Local TypeScript chatbot proof did not call a MeshAgent room tool.");
-  }
-
-  const threadMessages = await readThreadMessages({ room, threadPath });
-  await writeChatbotStorageProof({
-    probe,
-    sessionId,
-    threadPath,
-    storagePath,
-    storedPayload: actualStoredPayload,
-    storageSummary: summaryTurn.json?.reply,
-    threadMessages,
-  });
-  console.log(`MeshAgent create dev chatbot storage proof wrote: ${storageProofDisplayPath} ${probe}`);
-}
-
-async function runDevChatbotToolkit(existingRoom) {
-  const probe = process.env.MESHAGENT_CREATE_DEV_PROBE;
-  if (!process.env.MESHAGENT_ROOM || !process.env.MESHAGENT_TOKEN) {
-    return;
-  }
-
-  const room = existingRoom ?? new RoomClient();
-  if (!existingRoom) {
-    await room.start();
-  }
-  const hostedToolkit = await startHostedToolkit({
-    room,
-    toolkit: new TypeScriptChatbotToolkit({ room }),
-    public_: true,
-  });
-
+const server = http.createServer(async (request, response) => {
   try {
-    if (!probe) {
-      await new Promise(() => {});
+    const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
+
+    if (request.method === "GET" && url.pathname === "/health") {
+      textResponse(response, 200, "ok\n");
       return;
     }
 
-    if (process.env.MESHAGENT_CREATE_CHATBOT_PROOF_MODE === "room-storage") {
-      await runDevRoomStorageProof(room, probe);
+    if (request.method === "GET" && url.pathname === "/") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(html());
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/chat") {
+      const body = await readJson(request);
+      const messages = normalizeMessages(body.messages);
+      const reply = await completeChat(messages);
+      jsonResponse(response, 200, { reply, model });
+      return;
+    }
+
+    jsonResponse(response, 404, { error: "not found" });
+  } catch (error) {
+    console.error("Unable to handle chatbot request:", error);
+    if (!response.headersSent) {
+      jsonResponse(response, 500, { error: error.message || String(error) });
     } else {
-      await runDevTranscriptProof(room, probe);
-    }
-    const holdSeconds = Number.parseFloat(process.env.MESHAGENT_CREATE_DEV_TOOLKIT_HOLD_SECONDS ?? "0");
-    if (Number.isFinite(holdSeconds) && holdSeconds > 0) {
-      console.log(`MeshAgent create dev chatbot holding registration for ${holdSeconds}s`);
-      await sleep(holdSeconds * 1000);
-    }
-  } finally {
-    await hostedToolkit.stop();
-    if (!existingRoom) {
-      room.dispose();
+      response.end();
     }
   }
-}
+});
 
-async function main() {
-  if (!process.env.MESHAGENT_ROOM || !process.env.MESHAGENT_TOKEN) {
-    console.log("MeshAgent room environment is not set; waiting for deployment env.");
-    await new Promise(() => {});
-    return;
-  }
-
-  const room = new RoomClient();
-  await room.start();
-  console.log(`Connected to MeshAgent room: ${room.roomName}`);
-  try {
-    await runDevChatbotToolkit(room);
-  } finally {
-    room.dispose();
-  }
-}
-
-main().catch((error) => {
-  console.error("Unable to start MeshAgent RoomClient chatbot:", error);
-  process.exitCode = 1;
+server.listen(port, "0.0.0.0", () => {
+  console.log(`MeshAgent TypeScript chatbot listening on http://0.0.0.0:${port}`);
 });

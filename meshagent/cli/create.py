@@ -95,45 +95,38 @@ class ExistingProjectSelection:
 
 
 WEBSERVER_NEXT_STEPS = (
-    "meshagent doctor",
     "./scripts/install.sh",
-    "MESHAGENT_ROOM=<room> ./scripts/dev.sh",
+    "./scripts/dev.sh",
     "./scripts/deploy.sh",
 )
 STATIC_WEBSERVER_NEXT_STEPS = (
-    "meshagent doctor",
     "./scripts/install.sh",
-    "MESHAGENT_ROOM=<room> ./scripts/dev.sh",
+    "./scripts/dev.sh",
     "./scripts/deploy.sh",
 )
 AGENT_NEXT_STEPS = (
-    "meshagent doctor",
     "./scripts/install.sh",
-    "MESHAGENT_ROOM=<room> ./scripts/dev.sh",
+    "./scripts/dev.sh",
     "./scripts/deploy.sh",
 )
 NPM_WEBSERVER_NEXT_STEPS = (
-    "meshagent doctor",
     "npm install",
-    "MESHAGENT_ROOM=<room> npm run dev",
+    "npm run dev",
     "npm run deploy",
 )
 NPM_STATIC_WEBSERVER_NEXT_STEPS = (
-    "meshagent doctor",
     "npm install",
-    "MESHAGENT_ROOM=<room> npm run dev",
+    "npm run dev",
     "npm run deploy",
 )
 NPM_CHATBOT_UI_NEXT_STEPS = (
-    "meshagent doctor",
     "npm install",
-    "MESHAGENT_ROOM=<room> npm run dev",
+    "npm run dev",
     "npm run deploy",
 )
 NPM_AGENT_NEXT_STEPS = (
-    "meshagent doctor",
     "npm install",
-    "MESHAGENT_ROOM=<room> npm run dev",
+    "npm run dev",
     "npm run deploy",
 )
 
@@ -184,7 +177,7 @@ FOCUSES: Mapping[str, CreateFocus] = {
     CHATBOT_FOCUS: CreateFocus(
         id=CHATBOT_FOCUS,
         label="Chatbot",
-        description="TypeScript RoomClient chatbot with one chat tool.",
+        description="TypeScript web app that chats through the room OpenAI proxy.",
     ),
     CHATBOT_UI_FOCUS: CreateFocus(
         id=CHATBOT_UI_FOCUS,
@@ -326,16 +319,16 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         language_id="typescript",
         focus_id=CHATBOT_FOCUS,
         label="TypeScript chatbot",
-        description="Headless TypeScript RoomClient chatbot.",
+        description="TypeScript web chatbot using the room OpenAI proxy.",
         files={
             "package.json": "typescript/chatbot/package.json",
             ".npmrc": "typescript/backend-agent/.npmrc",
             "tsconfig.json": "typescript/backend-agent/tsconfig.json",
             "src/server.ts": "typescript/chatbot/src/server.ts",
-            "Dockerfile": "typescript/backend-agent/Dockerfile",
+            "Dockerfile": "typescript/webserver/Dockerfile",
             ".dockerignore": "typescript/backend-agent/.dockerignore",
         },
-        next_steps=NPM_AGENT_NEXT_STEPS,
+        next_steps=NPM_WEBSERVER_NEXT_STEPS,
     ),
     ("react", WEB_FOCUS): CreateTemplate(
         language_id="react",
@@ -736,15 +729,47 @@ def _write_template(root: Path, template: CreateTemplate) -> None:
         _write_file(root / name, template_name)
 
 
+def _next_step_sections(
+    steps: tuple[str, ...],
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    section_specs = (
+        ("Install dependencies", ("install",)),
+        ("Run locally", ("dev",)),
+        ("Deploy", ("deploy",)),
+    )
+    sections: list[tuple[str, tuple[str, ...]]] = []
+    matched_steps: set[str] = set()
+    for title, keywords in section_specs:
+        section_steps = tuple(
+            step for step in steps if any(keyword in step for keyword in keywords)
+        )
+        if section_steps:
+            sections.append((title, section_steps))
+            matched_steps.update(section_steps)
+
+    other_steps = tuple(step for step in steps if step not in matched_steps)
+    if other_steps:
+        sections.append(("Other", other_steps))
+    return tuple(sections)
+
+
+def _print_next_steps(steps: tuple[str, ...]) -> None:
+    click.secho("Next steps:", fg="cyan", bold=True)
+    for index, (title, section_steps) in enumerate(_next_step_sections(steps), start=1):
+        if index > 1:
+            click.echo("")
+        click.secho(f"  {index}. {title}", fg="blue", bold=True)
+        for step in section_steps:
+            click.secho(f"     {step}", fg="green")
+
+
 def _print_created_report(*, template: CreateTemplate) -> None:
     click.echo("")
     click.echo(f"Created a minimal deployable {template.label} project:")
     for name in template.files:
         click.echo(f"  {name}")
     click.echo("")
-    click.echo("Next steps:")
-    for step in template.next_steps:
-        click.echo(f"  {step}")
+    _print_next_steps(template.next_steps)
 
 
 @click.command(
