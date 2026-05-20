@@ -181,8 +181,8 @@ FOCUSES: Mapping[str, CreateFocus] = {
     ),
     CHATBOT_UI_FOCUS: CreateFocus(
         id=CHATBOT_UI_FOCUS,
-        label="Assistant UI",
-        description="Browser chat interface for a MeshAgent assistant.",
+        label="Agent UI",
+        description="Browser chat interface for a MeshAgent agent.",
     ),
 }
 
@@ -356,8 +356,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("typescript", CHATBOT_UI_FOCUS): CreateTemplate(
         language_id="typescript",
         focus_id=CHATBOT_UI_FOCUS,
-        label="TypeScript assistant UI",
-        description="Browser chat interface for a MeshAgent assistant.",
+        label="TypeScript agent UI",
+        description="Browser chat interface for a MeshAgent agent.",
         files=_template_files(
             "typescript",
             CHATBOT_UI_FOCUS,
