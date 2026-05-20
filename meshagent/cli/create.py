@@ -131,6 +131,20 @@ NPM_AGENT_NEXT_STEPS = (
     "npm run dev",
     "npm run deploy",
 )
+AGENT_TOOLKIT_NAMES = {
+    "python": "meshagent.create.python-agent",
+    "javascript": "meshagent.create.javascript-agent",
+    "typescript": "meshagent.create.typescript-agent",
+    "dotnet": "meshagent.create.dotnet-agent",
+    "dart-flutter": "meshagent.create.dart-agent",
+}
+AGENT_PROCESS_NAMES = {
+    "python": "meshagent-create-python-agent",
+    "javascript": "meshagent-create-javascript-agent",
+    "typescript": "meshagent-create-typescript-agent",
+    "dotnet": "meshagent-create-dotnet-agent",
+    "dart-flutter": "meshagent-create-dart-agent",
+}
 
 LANGUAGES: Mapping[str, CreateLanguage] = {
     "python": CreateLanguage(
@@ -805,6 +819,36 @@ def _print_next_steps(
             click.secho(f"     {step}", fg="green")
 
 
+def _paired_agent_deploy_command(template: CreateTemplate) -> str | None:
+    if template.focus_id != AGENT_FOCUS:
+        return None
+    toolkit_name = AGENT_TOOLKIT_NAMES.get(template.language_id)
+    agent_name = AGENT_PROCESS_NAMES.get(template.language_id)
+    if toolkit_name is None or agent_name is None:
+        return None
+    rule = f"Use the {toolkit_name} toolkit to answer ping, status, and echo requests."
+    return (
+        "meshagent process deploy "
+        "--room <room> "
+        f"--agent-name {agent_name} "
+        f"--require-toolkit {toolkit_name} "
+        f"--rule {shlex.quote(rule)}"
+    )
+
+
+def _print_agent_toolkit_guidance(template: CreateTemplate) -> None:
+    command = _paired_agent_deploy_command(template)
+    if command is None:
+        return
+    click.echo("")
+    click.secho(
+        "To install an agent in your room that uses this tool run:",
+        fg="cyan",
+        bold=True,
+    )
+    click.secho(f"  {command}", fg="green")
+
+
 def _print_created_report(
     *,
     template: CreateTemplate,
@@ -816,6 +860,7 @@ def _print_created_report(
         click.echo(f"  {name}")
     click.echo("")
     _print_next_steps(template.next_steps, enter_project_root=enter_project_root)
+    _print_agent_toolkit_guidance(template)
 
 
 @click.command(

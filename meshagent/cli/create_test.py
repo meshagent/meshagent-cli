@@ -74,6 +74,14 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     assert "MESHAGENT_ROOM=<room>" not in result.output
     assert "3. Deploy" in result.output
     assert "./scripts/deploy.sh" in result.output
+    assert "To install an agent in your room that uses this tool run:" in result.output
+    assert "meshagent process deploy --room <room>" in result.output
+    assert "--agent-name meshagent-create-python-agent" in result.output
+    assert "--require-toolkit meshagent.create.python-agent" in result.output
+    assert (
+        "Use the meshagent.create.python-agent toolkit to answer ping, status, and echo requests."
+        in result.output
+    )
     assert "--meshagent-token full" not in result.output
     assert " -e " not in result.output
     assert "--liveness" not in result.output
@@ -153,6 +161,27 @@ def test_init_colorizes_next_steps_when_color_is_enabled(tmp_path) -> None:
     assert "1. Install dependencies" in result.output
     assert "2. Run locally" in result.output
     assert "3. Deploy" in result.output
+
+
+def test_init_colorizes_agent_toolkit_pairing_guidance(tmp_path) -> None:
+    result = CliRunner().invoke(
+        create_command,
+        [
+            "--language",
+            "typescript",
+            "--focus",
+            "backend-agent",
+            "--no-interactive",
+            str(tmp_path),
+        ],
+        color=True,
+    )
+
+    assert result.exit_code == 0
+    assert "\x1b[" in result.output
+    assert "To install an agent in your room that uses this tool run:" in result.output
+    assert "--agent-name meshagent-create-typescript-agent" in result.output
+    assert "--require-toolkit meshagent.create.typescript-agent" in result.output
 
 
 def test_init_renders_meshagent_image_prefix_from_environment(
@@ -869,8 +898,21 @@ def test_init_creates_dotnet_backend_agent_non_interactively(tmp_path) -> None:
     assert '<Project Sdk="Microsoft.NET.Sdk">' in csproj
     assert "<OutputType>Exe</OutputType>" in csproj
     assert "RoomClient" in program_cs
-    assert "MESHAGENT_CREATE_DEV_READY_PATH" in program_cs
-    assert "Storage.Upload" in program_cs
+    assert "DotNetAgentToolkitHost" in program_cs
+    assert '"room.register_toolkit"' in program_cs
+    assert "room.tool_call." in program_cs
+    assert '"room.tool_call_response"' in program_cs
+    assert "room.Agents.InvokeTool" in program_cs
+    assert '"meshagent.create.dotnet-agent"' in program_cs
+    assert '".NET Local Agent Toolkit"' in program_cs
+    assert '"ping"' in program_cs
+    assert '"status"' in program_cs
+    assert '"echo"' in program_cs
+    assert "agent-proof.json" in program_cs
+    assert "MESHAGENT_CREATE_DEV_PROBE" in program_cs
+    assert "MESHAGENT_CREATE_DEV_TOOLKIT_HOLD_SECONDS" in program_cs
+    assert "MESHAGENT_CREATE_DEV_READY_PATH" not in program_cs
+    assert "Storage.Upload" not in program_cs
     assert "MapGet" not in program_cs
     assert "mcr.microsoft.com/dotnet/runtime:9.0" in dockerfile
     assert "EXPOSE" not in dockerfile
@@ -1026,24 +1068,27 @@ def test_init_creates_dart_backend_agent_non_interactively(tmp_path) -> None:
     assert "./scripts/deploy.sh" in result.output
     assert "--meshagent-token full" not in result.output
     assert "meshagent:" in (tmp_path / "pubspec.yaml").read_text(encoding="utf-8")
-    assert "RoomClient" in (tmp_path / "bin" / "server.dart").read_text(
-        encoding="utf-8"
-    )
-    assert "MESHAGENT_CREATE_DEV_READY_PATH" in (
-        tmp_path / "bin" / "server.dart"
-    ).read_text(encoding="utf-8")
-    assert "room.storage.upload" in (tmp_path / "bin" / "server.dart").read_text(
-        encoding="utf-8"
-    )
-    assert "wroteDevProof" in (tmp_path / "bin" / "server.dart").read_text(
-        encoding="utf-8"
-    )
-    assert "room.dispose()" in (tmp_path / "bin" / "server.dart").read_text(
-        encoding="utf-8"
-    )
-    assert "HttpServer" not in (tmp_path / "bin" / "server.dart").read_text(
-        encoding="utf-8"
-    )
+    server_dart = (tmp_path / "bin" / "server.dart").read_text(encoding="utf-8")
+    assert "RoomClient" in server_dart
+    assert "FunctionTool" in server_dart
+    assert "class DartAgentToolkit extends Toolkit" in server_dart
+    assert "startHostedToolkit" in server_dart
+    assert "public: true" in server_dart
+    assert "room.agents.invokeTool" in server_dart
+    assert "ToolContentInput" in server_dart
+    assert "'meshagent.create.dart-agent'" in server_dart
+    assert "'Dart Local Agent Toolkit'" in server_dart
+    assert "name: 'ping'" in server_dart
+    assert "name: 'status'" in server_dart
+    assert "name: 'echo'" in server_dart
+    assert "agent-proof.json" in server_dart
+    assert "MESHAGENT_CREATE_DEV_PROBE" in server_dart
+    assert "MESHAGENT_CREATE_DEV_TOOLKIT_HOLD_SECONDS" in server_dart
+    assert "MESHAGENT_CREATE_DEV_READY_PATH" not in server_dart
+    assert "room.storage.upload" not in server_dart
+    assert "wroteDevProof" not in server_dart
+    assert "room.dispose()" in server_dart
+    assert "HttpServer" not in server_dart
     assert "FROM dart:stable" in (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     assert "EXPOSE" not in (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")

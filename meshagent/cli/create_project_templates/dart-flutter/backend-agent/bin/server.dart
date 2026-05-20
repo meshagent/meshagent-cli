@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:meshagent/meshagent.dart';
+
+const proofDisplayPath = 'agent-proof.json';
+const toolkitName = 'meshagent.create.dart-agent';
 
 Future<void> main() async {
   final roomName = Platform.environment['MESHAGENT_ROOM'];
@@ -22,35 +24,88 @@ Future<void> main() async {
   );
   await room.start();
   print('Connected to MeshAgent room: ${room.roomName}');
-  final wroteDevProof = await publishDevReadyMarker(room);
-  if (wroteDevProof) {
+  try {
+    await runAgentToolkitProof(room);
+  } finally {
     room.dispose();
-    return;
   }
-  await Completer<void>().future;
 }
 
-Future<bool> publishDevReadyMarker(RoomClient room) async {
-  final readyPath = Platform.environment['MESHAGENT_CREATE_DEV_READY_PATH'];
+Future<void> runAgentToolkitProof(RoomClient room) async {
   final probe = Platform.environment['MESHAGENT_CREATE_DEV_PROBE'];
-  if (readyPath == null || readyPath.isEmpty || probe == null || probe.isEmpty) {
-    return false;
-  }
-
-  final payload = jsonEncode({
-    'probe': probe,
-    'room': room.roomName,
-    'language': 'dart',
-    'focus': 'backend-agent',
-  });
-  await room.storage.upload(
-    readyPath,
-    Uint8List.fromList(utf8.encode('$payload\n')),
-    overwrite: true,
-    mimeType: 'application/json',
+  final hostedToolkit = await startHostedToolkit(
+    room: room,
+    toolkit: DartAgentToolkit(),
+    public: true,
   );
-  print('MeshAgent create dev probe wrote: $readyPath $probe');
-  return true;
+  try {
+    if (probe == null || probe.isEmpty) {
+      await room.waitForClose();
+      return;
+    }
+
+    final pinged = await invokeJsonTool(room, 'ping', <String, dynamic>{});
+    print('MeshAgent create dev toolkit ping: ${jsonEncode(pinged)}');
+
+    final status = await invokeJsonTool(room, 'status', <String, dynamic>{});
+    print('MeshAgent create dev toolkit status: ${jsonEncode(status)}');
+
+    final message = 'MeshAgent local dev proof $probe';
+    final echoed = await invokeJsonTool(room, 'echo', <String, dynamic>{
+      'message': message,
+    });
+    print('MeshAgent create dev toolkit echo: ${jsonEncode(echoed)}');
+    if (echoed['echo'] != message) {
+      throw StateError('Local Dart agent toolkit proof did not echo the probe.');
+    }
+
+    await writeAgentProof(probe, message);
+    print('MeshAgent create dev toolkit proof wrote: $proofDisplayPath $probe');
+
+    final holdSeconds =
+        double.tryParse(
+          Platform.environment['MESHAGENT_CREATE_DEV_TOOLKIT_HOLD_SECONDS'] ??
+              '0',
+        ) ??
+        0;
+    if (holdSeconds > 0) {
+      print(
+        'MeshAgent create dev toolkit holding registration for ${holdSeconds}s',
+      );
+      await Future<void>.delayed(
+        Duration(milliseconds: (holdSeconds * 1000).round()),
+      );
+    }
+  } finally {
+    await hostedToolkit.stop();
+  }
+}
+
+Future<Map<String, dynamic>> invokeJsonTool(
+  RoomClient room,
+  String tool,
+  Map<String, dynamic> arguments,
+) async {
+  final output = await room.agents.invokeTool(
+    toolkit: toolkitName,
+    tool: tool,
+    input: ToolContentInput(JsonContent(json: arguments)),
+  );
+  if (output is! ToolContentOutput || output.content is! JsonContent) {
+    throw StateError('Expected JSON response from $tool.');
+  }
+  return Map<String, dynamic>.from((output.content as JsonContent).json);
+}
+
+Future<void> writeAgentProof(String probe, String echo) async {
+  final payload = {
+    'probe': probe,
+    'echo': echo,
+    'tools': ['ping', 'status', 'echo'],
+  };
+  await File(proofDisplayPath).writeAsString(
+    '${const JsonEncoder.withIndent('  ').convert(payload)}\n',
+  );
 }
 
 Uri _websocketRoomUrl(String roomName) {
@@ -63,4 +118,89 @@ Uri _websocketRoomUrl(String roomName) {
     baseUrl = 'ws:${baseUrl.substring('http:'.length)}';
   }
   return Uri.parse('$baseUrl/rooms/$roomName');
+}
+
+class DartPingTool extends FunctionTool {
+  DartPingTool()
+      : super(
+          name: 'ping',
+          title: 'Ping local agent',
+          description: 'Checks that the local Dart backend agent toolkit is reachable.',
+          inputSchema: const {
+            'type': 'object',
+            'additionalProperties': false,
+            'properties': <String, dynamic>{},
+          },
+        );
+
+  @override
+  Future<Content> execute(
+    ToolContext context,
+    Map<String, dynamic> arguments,
+  ) async {
+    return JsonContent(json: {'pong': true});
+  }
+}
+
+class DartStatusTool extends FunctionTool {
+  DartStatusTool()
+      : super(
+          name: 'status',
+          title: 'Read local agent status',
+          description: 'Returns a minimal status payload from the local Dart backend agent.',
+          inputSchema: const {
+            'type': 'object',
+            'additionalProperties': false,
+            'properties': <String, dynamic>{},
+          },
+        );
+
+  @override
+  Future<Content> execute(
+    ToolContext context,
+    Map<String, dynamic> arguments,
+  ) async {
+    return JsonContent(
+      json: {'ready': true, 'language': 'dart', 'focus': 'backend-agent'},
+    );
+  }
+}
+
+class DartEchoTool extends FunctionTool {
+  DartEchoTool()
+      : super(
+          name: 'echo',
+          title: 'Echo a message',
+          description: 'Echoes a message through the local Dart backend agent.',
+          inputSchema: const {
+            'type': 'object',
+            'required': ['message'],
+            'additionalProperties': false,
+            'properties': {
+              'message': {'type': 'string'},
+            },
+          },
+        );
+
+  @override
+  Future<Content> execute(
+    ToolContext context,
+    Map<String, dynamic> arguments,
+  ) async {
+    final message = arguments['message'];
+    if (message is! String) {
+      throw ArgumentError('message must be a string');
+    }
+    return JsonContent(json: {'echo': message});
+  }
+}
+
+class DartAgentToolkit extends Toolkit {
+  DartAgentToolkit()
+      : super(
+          name: toolkitName,
+          title: 'Dart Local Agent Toolkit',
+          description: 'Local-only ping, status, and echo tools for the Dart backend agent.',
+          tools: [DartPingTool(), DartStatusTool(), DartEchoTool()],
+        );
 }
