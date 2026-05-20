@@ -136,60 +136,60 @@ LANGUAGES: Mapping[str, CreateLanguage] = {
     "python": CreateLanguage(
         id="python",
         label="Python",
-        description="Python 3.13.",
+        description="Python 3.13 services and agents.",
     ),
     "javascript": CreateLanguage(
         id="javascript",
         label="JavaScript",
-        description="Node.js/CommonJS.",
+        description="Node.js CommonJS services and agents.",
     ),
     "typescript": CreateLanguage(
         id="typescript",
         label="TypeScript",
-        description="Node.js/TypeScript.",
+        description="Node.js TypeScript services, agents, and chat apps.",
     ),
     "react": CreateLanguage(
         id="react",
         label="React",
-        description="React/Vite.",
+        description="React/Vite browser app.",
     ),
     "dotnet": CreateLanguage(
         id="dotnet",
         label=".NET",
-        description=".NET.",
+        description=".NET service or agent.",
     ),
     "dart-flutter": CreateLanguage(
         id="dart-flutter",
         label="Dart/Flutter",
-        description="Dart or Flutter.",
+        description="Flutter Web App or Dart Agent Toolkit.",
     ),
 }
 
 FOCUSES: Mapping[str, CreateFocus] = {
     WEB_FOCUS: CreateFocus(
         id=WEB_FOCUS,
-        label="Web server",
-        description="HTTP app with a health endpoint and public route.",
+        label="Web App",
+        description="Public HTTP service with a health endpoint.",
     ),
     AGENT_FOCUS: CreateFocus(
         id=AGENT_FOCUS,
-        label="Backend agent",
-        description="Headless RoomClient SDK service without a public port.",
+        label="Agent Toolkit",
+        description="Expose custom functionality to agents in the room.",
     ),
     CHATBOT_FOCUS: CreateFocus(
         id=CHATBOT_FOCUS,
         label="OpenAI Chatbot",
-        description="Web app that chats through the room OpenAI proxy.",
+        description="Browser chat app backed by the room OpenAI proxy.",
     ),
     ANTHROPIC_CHATBOT_FOCUS: CreateFocus(
         id=ANTHROPIC_CHATBOT_FOCUS,
         label="Anthropic Chatbot",
-        description="Web app that chats through the room Anthropic proxy.",
+        description="Browser chat app backed by the room Anthropic proxy.",
     ),
     CHATBOT_UI_FOCUS: CreateFocus(
         id=CHATBOT_UI_FOCUS,
         label="Agent UI",
-        description="Browser chat interface for a MeshAgent agent.",
+        description="Browser chat interface for a deployed MeshAgent agent.",
     ),
 }
 
@@ -208,8 +208,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("python", WEB_FOCUS): CreateTemplate(
         language_id="python",
         focus_id=WEB_FOCUS,
-        label="Python web server",
-        description="Async Python HTTP service on a declared container port.",
+        label="Python Web App",
+        description="Async Python public HTTP service with a health route.",
         files=_template_files(
             "python",
             WEB_FOCUS,
@@ -229,8 +229,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("python", AGENT_FOCUS): CreateTemplate(
         language_id="python",
         focus_id=AGENT_FOCUS,
-        label="Python backend agent",
-        description="Headless Python RoomClient service.",
+        label="Python Agent Toolkit",
+        description="Headless Python service that exposes custom tools to agents.",
         files=_template_files(
             "python",
             AGENT_FOCUS,
@@ -249,8 +249,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("javascript", WEB_FOCUS): CreateTemplate(
         language_id="javascript",
         focus_id=WEB_FOCUS,
-        label="JavaScript web server",
-        description="Node.js HTTP service on a declared container port.",
+        label="JavaScript Web App",
+        description="Node.js public HTTP service with a health route.",
         files=_template_files(
             "javascript",
             WEB_FOCUS,
@@ -268,8 +268,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("javascript", AGENT_FOCUS): CreateTemplate(
         language_id="javascript",
         focus_id=AGENT_FOCUS,
-        label="JavaScript backend agent",
-        description="Headless Node.js RoomClient service.",
+        label="JavaScript Agent Toolkit",
+        description="Headless Node.js service that exposes custom tools to agents.",
         files=_template_files(
             "javascript",
             AGENT_FOCUS,
@@ -286,8 +286,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("typescript", WEB_FOCUS): CreateTemplate(
         language_id="typescript",
         focus_id=WEB_FOCUS,
-        label="TypeScript web server",
-        description="Node.js TypeScript HTTP service on a declared container port.",
+        label="TypeScript Web App",
+        description="TypeScript public HTTP service with a health route.",
         files=_template_files(
             "typescript",
             WEB_FOCUS,
@@ -306,8 +306,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("typescript", AGENT_FOCUS): CreateTemplate(
         language_id="typescript",
         focus_id=AGENT_FOCUS,
-        label="TypeScript backend agent",
-        description="Headless TypeScript RoomClient service.",
+        label="TypeScript Agent Toolkit",
+        description="Headless TypeScript service that exposes custom tools to agents.",
         files=_template_files(
             "typescript",
             AGENT_FOCUS,
@@ -326,7 +326,7 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         language_id="typescript",
         focus_id=CHATBOT_FOCUS,
         label="TypeScript OpenAI Chatbot",
-        description="Web chatbot using the room OpenAI proxy.",
+        description="Browser chatbot backed by the room OpenAI proxy.",
         files={
             "package.json": "typescript/chatbot/package.json",
             ".npmrc": "typescript/backend-agent/.npmrc",
@@ -341,7 +341,7 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         language_id="typescript",
         focus_id=ANTHROPIC_CHATBOT_FOCUS,
         label="TypeScript Anthropic Chatbot",
-        description="Web chatbot using the room Anthropic proxy.",
+        description="Browser chatbot backed by the room Anthropic proxy.",
         files={
             "package.json": "typescript/chatbot-anthropic/package.json",
             ".npmrc": "typescript/backend-agent/.npmrc",
@@ -355,8 +355,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("react", WEB_FOCUS): CreateTemplate(
         language_id="react",
         focus_id=WEB_FOCUS,
-        label="React web server",
-        description="React/Vite web app served by nginx on a declared container port.",
+        label="React/Vite Web App",
+        description="React/Vite browser app served as a public route.",
         files=_template_files(
             "react",
             WEB_FOCUS,
@@ -378,8 +378,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("typescript", CHATBOT_UI_FOCUS): CreateTemplate(
         language_id="typescript",
         focus_id=CHATBOT_UI_FOCUS,
-        label="TypeScript agent UI",
-        description="Browser chat interface for a MeshAgent agent.",
+        label="TypeScript Agent UI",
+        description="Browser chat interface for a deployed MeshAgent agent.",
         files=_template_files(
             "typescript",
             CHATBOT_UI_FOCUS,
@@ -402,8 +402,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("dotnet", WEB_FOCUS): CreateTemplate(
         language_id="dotnet",
         focus_id=WEB_FOCUS,
-        label=".NET web server",
-        description="ASP.NET Core HTTP service on a declared container port.",
+        label=".NET Web App",
+        description="ASP.NET Core public HTTP service with a health route.",
         files=_template_files(
             "dotnet",
             WEB_FOCUS,
@@ -422,8 +422,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("dotnet", AGENT_FOCUS): CreateTemplate(
         language_id="dotnet",
         focus_id=AGENT_FOCUS,
-        label=".NET backend agent",
-        description="Headless .NET RoomClient service.",
+        label=".NET Agent Toolkit",
+        description="Headless .NET service that exposes custom tools to agents.",
         files=_template_files(
             "dotnet",
             AGENT_FOCUS,
@@ -442,8 +442,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("dart-flutter", WEB_FOCUS): CreateTemplate(
         language_id="dart-flutter",
         focus_id=WEB_FOCUS,
-        label="Flutter web server",
-        description="Flutter web app served by nginx on a declared container port.",
+        label="Flutter Web App",
+        description="Flutter browser app served as a public route.",
         files=_template_files(
             "dart-flutter",
             WEB_FOCUS,
@@ -464,8 +464,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("dart-flutter", AGENT_FOCUS): CreateTemplate(
         language_id="dart-flutter",
         focus_id=AGENT_FOCUS,
-        label="Dart backend agent",
-        description="Headless Dart RoomClient service.",
+        label="Dart Agent Toolkit",
+        description="Headless Dart service that exposes custom tools to agents.",
         files=_template_files(
             "dart-flutter",
             AGENT_FOCUS,
@@ -514,12 +514,20 @@ FOCUS_ALIASES = {
     "backend": AGENT_FOCUS,
     "backend-agent": AGENT_FOCUS,
     "backend_agent": AGENT_FOCUS,
+    "agent-toolkit": AGENT_FOCUS,
+    "agent_toolkit": AGENT_FOCUS,
+    "room-agent": AGENT_FOCUS,
+    "room_agent": AGENT_FOCUS,
     "anthropic-chat": ANTHROPIC_CHATBOT_FOCUS,
     "anthropic-chatbot": ANTHROPIC_CHATBOT_FOCUS,
     "chat": CHATBOT_FOCUS,
     "chatbot": CHATBOT_FOCUS,
+    "openai-chat": CHATBOT_FOCUS,
+    "openai-chatbot": CHATBOT_FOCUS,
     "chatbot-anthropic": ANTHROPIC_CHATBOT_FOCUS,
     "chatbot_anthropic": ANTHROPIC_CHATBOT_FOCUS,
+    "agent-ui": CHATBOT_UI_FOCUS,
+    "agent_ui": CHATBOT_UI_FOCUS,
     "chat-ui": CHATBOT_UI_FOCUS,
     "chat_ui": CHATBOT_UI_FOCUS,
     "chatbot-ui": CHATBOT_UI_FOCUS,
@@ -527,6 +535,8 @@ FOCUS_ALIASES = {
     "roomclient": AGENT_FOCUS,
     "room-client": AGENT_FOCUS,
     "web": WEB_FOCUS,
+    "web-app": WEB_FOCUS,
+    "web_app": WEB_FOCUS,
     "webserver": WEB_FOCUS,
     "web-server": WEB_FOCUS,
     "web_server": WEB_FOCUS,
@@ -827,8 +837,9 @@ def _print_created_report(
     type=str,
     default=None,
     help=(
-        "Project focus for non-interactive use. Supported: webserver, backend-agent."
-        " TypeScript also supports chatbot, chatbot-anthropic, and chatbot-ui."
+        "Project focus for non-interactive use. Use stable IDs: webserver "
+        "(Web App), backend-agent (Agent Toolkit), chatbot (OpenAI Chatbot), "
+        "chatbot-anthropic (Anthropic Chatbot), or chatbot-ui (Agent UI)."
     ),
 )
 @click.option(

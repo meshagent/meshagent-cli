@@ -64,7 +64,7 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
 
     assert result.exit_code == 0
     assert "meshagent create" in result.output
-    assert "Created a minimal deployable Python backend agent" in result.output
+    assert "Created a minimal deployable Python Agent Toolkit" in result.output
     assert "meshagent doctor" not in result.output
     assert "Next steps:" in result.output
     assert "1. Install dependencies" in result.output
@@ -194,7 +194,7 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     diagnosis = diagnose_project(tmp_path)
 
     assert result.exit_code == 0
-    assert "Created a minimal deployable Python web server" in result.output
+    assert "Created a minimal deployable Python Web App" in result.output
     assert "--meshagent-token" not in result.output
 
     pyproject = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
@@ -262,7 +262,7 @@ def test_init_creates_javascript_webserver_non_interactively(tmp_path) -> None:
     )
 
     assert result.exit_code == 0
-    assert "Created a minimal deployable JavaScript web server" in result.output
+    assert "Created a minimal deployable JavaScript Web App" in result.output
     assert "npm run dev" in result.output
     assert "MESHAGENT_ROOM=<room>" not in result.output
     assert "npm run deploy" in result.output
@@ -325,7 +325,7 @@ def test_init_creates_javascript_backend_agent_non_interactively(tmp_path) -> No
     )
 
     assert result.exit_code == 0
-    assert "Created a minimal deployable JavaScript backend agent" in result.output
+    assert "Created a minimal deployable JavaScript Agent Toolkit" in result.output
     assert "npm run dev" in result.output
     assert "MESHAGENT_ROOM=<room>" not in result.output
     assert "npm run deploy" in result.output
@@ -376,7 +376,7 @@ def test_init_creates_typescript_webserver_non_interactively(tmp_path) -> None:
     diagnosis = diagnose_project(tmp_path)
 
     assert result.exit_code == 0
-    assert "Created a minimal deployable TypeScript web server" in result.output
+    assert "Created a minimal deployable TypeScript Web App" in result.output
     assert "npm run dev" in result.output
     assert "MESHAGENT_ROOM=<room>" not in result.output
     assert "npm run deploy" in result.output
@@ -441,7 +441,7 @@ def test_init_creates_typescript_backend_agent_non_interactively(tmp_path) -> No
     diagnosis = diagnose_project(tmp_path)
 
     assert result.exit_code == 0
-    assert "Created a minimal deployable TypeScript backend agent" in result.output
+    assert "Created a minimal deployable TypeScript Agent Toolkit" in result.output
     assert "npm run dev" in result.output
     assert "MESHAGENT_ROOM=<room>" not in result.output
     assert "npm run deploy" in result.output
@@ -677,7 +677,7 @@ def test_init_creates_react_webserver_non_interactively(tmp_path) -> None:
     diagnosis = diagnose_project(tmp_path)
 
     assert result.exit_code == 0
-    assert "Created a minimal deployable React web server" in result.output
+    assert "Created a minimal deployable React/Vite Web App" in result.output
     assert "npm run dev" in result.output
     assert "MESHAGENT_ROOM=<room>" not in result.output
     assert "npm run deploy" in result.output
@@ -751,7 +751,7 @@ def test_init_creates_typescript_chatbot_ui_non_interactively(tmp_path) -> None:
     )
 
     assert result.exit_code == 0
-    assert "Created a minimal deployable TypeScript agent UI" in result.output
+    assert "Created a minimal deployable TypeScript Agent UI" in result.output
     assert "npm run dev" in result.output
     assert "MESHAGENT_ROOM=<room>" not in result.output
     assert "npm run deploy" in result.output
@@ -851,7 +851,7 @@ def test_init_creates_dotnet_backend_agent_non_interactively(tmp_path) -> None:
     )
 
     assert result.exit_code == 0
-    assert "Created a minimal deployable .NET backend agent" in result.output
+    assert "Created a minimal deployable .NET Agent Toolkit" in result.output
     assert "./scripts/dev.sh" in result.output
     assert "MESHAGENT_ROOM=<room>" not in result.output
     assert "./scripts/deploy.sh" in result.output
@@ -907,7 +907,7 @@ def test_init_creates_dotnet_webserver_non_interactively(tmp_path) -> None:
     )
 
     assert result.exit_code == 0
-    assert "Created a minimal deployable .NET web server" in result.output
+    assert "Created a minimal deployable .NET Web App" in result.output
     assert "--meshagent-token" not in result.output
     csproj = (tmp_path / "MeshAgentHello.csproj").read_text(encoding="utf-8")
     program_cs = (tmp_path / "Program.cs").read_text(encoding="utf-8")
@@ -959,7 +959,7 @@ def test_init_creates_flutter_webserver_non_interactively(tmp_path) -> None:
     )
 
     assert result.exit_code == 0
-    assert "Created a minimal deployable Flutter web server" in result.output
+    assert "Created a minimal deployable Flutter Web App" in result.output
     assert "./scripts/dev.sh" in result.output
     assert "MESHAGENT_ROOM=<room>" not in result.output
     assert "./scripts/deploy.sh" in result.output
@@ -1020,7 +1020,7 @@ def test_init_creates_dart_backend_agent_non_interactively(tmp_path) -> None:
     )
 
     assert result.exit_code == 0
-    assert "Created a minimal deployable Dart backend agent" in result.output
+    assert "Created a minimal deployable Dart Agent Toolkit" in result.output
     assert "./scripts/dev.sh" in result.output
     assert "MESHAGENT_ROOM=<room>" not in result.output
     assert "./scripts/deploy.sh" in result.output
@@ -1131,20 +1131,28 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
         "chatbot-ui",
     ]
     focus_labels = {choice[0]: choice[1] for choice in captured_focuses}
+    assert focus_labels["webserver"] == "Web App"
+    assert focus_labels["backend-agent"] == "Agent Toolkit"
     assert focus_labels["chatbot"] == "OpenAI Chatbot"
     assert focus_labels["chatbot-anthropic"] == "Anthropic Chatbot"
     assert focus_labels["chatbot-ui"] == "Agent UI"
     focus_descriptions = {choice[0]: choice[2] for choice in captured_focuses}
+    assert focus_descriptions["webserver"] == (
+        "Public HTTP service with a health endpoint."
+    )
+    assert focus_descriptions["backend-agent"] == (
+        "Expose custom functionality to agents in the room."
+    )
     assert focus_descriptions["chatbot"] == (
-        "Web app that chats through the room OpenAI proxy."
+        "Browser chat app backed by the room OpenAI proxy."
     )
     assert focus_descriptions["chatbot-anthropic"] == (
-        "Web app that chats through the room Anthropic proxy."
+        "Browser chat app backed by the room Anthropic proxy."
     )
     assert "TypeScript" not in focus_descriptions["chatbot"]
     assert "TypeScript" not in focus_descriptions["chatbot-anthropic"]
     assert focus_descriptions["chatbot-ui"] == (
-        "Browser chat interface for a MeshAgent agent."
+        "Browser chat interface for a deployed MeshAgent agent."
     )
     assert "TypeScript/Next.js" not in focus_descriptions["chatbot-ui"]
     assert {choice[0]: choice[3] for choice in captured_languages}["react"] == (
@@ -1206,26 +1214,26 @@ def test_init_tui_language_screen_lists_languages_only(monkeypatch) -> None:
             CreateLanguageChoice(
                 id="python",
                 label="Python",
-                description="Python 3.13 service or RoomClient backend.",
+                description="Python 3.13 services and agents.",
                 focus_ids=("webserver", "backend-agent"),
             ),
             CreateLanguageChoice(
                 id="typescript",
                 label="TypeScript",
-                description="Node.js service or RoomClient backend in TypeScript.",
+                description="Node.js TypeScript services, agents, and chat apps.",
                 focus_ids=("webserver", "backend-agent"),
             ),
         ],
         focuses=[
             CreateFocusChoice(
                 id="webserver",
-                label="Web server",
-                description="HTTP app with a health endpoint.",
+                label="Web App",
+                description="Public HTTP service with a health endpoint.",
             ),
             CreateFocusChoice(
                 id="backend-agent",
-                label="Backend agent",
-                description="RoomClient SDK service.",
+                label="Agent Toolkit",
+                description="Expose custom functionality to agents in the room.",
             ),
         ],
     )
@@ -1269,20 +1277,20 @@ def test_init_tui_focus_screen_asks_for_webserver_or_backend_agent(
             CreateLanguageChoice(
                 id="python",
                 label="Python",
-                description="Python 3.13.",
+                description="Python 3.13 services and agents.",
                 focus_ids=("webserver", "backend-agent"),
             )
         ],
         focuses=[
             CreateFocusChoice(
                 id="webserver",
-                label="Web server",
-                description="HTTP app with a health endpoint and public route.",
+                label="Web App",
+                description="Public HTTP service with a health endpoint.",
             ),
             CreateFocusChoice(
                 id="backend-agent",
-                label="Backend agent",
-                description="Headless RoomClient SDK service without a public port.",
+                label="Agent Toolkit",
+                description="Expose custom functionality to agents in the room.",
             ),
         ],
     )
@@ -1305,13 +1313,14 @@ def test_init_tui_focus_screen_asks_for_webserver_or_backend_agent(
     app._show_focus_selection()
 
     assert captured_text["message"] == "Choose what you want to build for Python."
-    assert "Web server creates an HTTP app" in captured_text["help_text"]
+    assert "Web App creates an HTTP service" in captured_text["help_text"]
     assert (
-        "Backend agent creates a RoomClient SDK service" in captured_text["help_text"]
+        "Agent Toolkit exposes custom functionality to agents in the room"
+        in captured_text["help_text"]
     )
     assert [str(option.prompt) for option in captured_options] == [
-        "Web server - HTTP app with a health endpoint and public route.",
-        "Backend agent - Headless RoomClient SDK service without a public port.",
+        "Web App - Public HTTP service with a health endpoint.",
+        "Agent Toolkit - Expose custom functionality to agents in the room.",
         "Back",
         "Cancel",
     ]

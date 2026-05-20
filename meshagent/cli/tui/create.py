@@ -541,9 +541,10 @@ class CreateWizardApp(App[None]):
             title="MeshAgent Create",
             message=f"Choose what you want to build for {language_label}.",
             help_text=(
-                "Web server creates an HTTP app. Backend agent creates a "
-                "RoomClient SDK service. OpenAI Chatbot and Anthropic Chatbot "
-                "create web apps for room LLM proxies. Esc goes back."
+                "Web App creates an HTTP service. Agent Toolkit exposes custom "
+                "functionality to agents in the room. OpenAI Chatbot and "
+                "Anthropic Chatbot create browser chat apps. Agent UI creates "
+                "a browser interface for a deployed agent. Esc goes back."
             ),
         )
         options = [
