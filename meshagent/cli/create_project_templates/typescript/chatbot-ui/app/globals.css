@@ -114,8 +114,14 @@ h1 {
   padding: 26px 22px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
   overflow-y: auto;
+}
+
+.message-stack {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
 .empty {

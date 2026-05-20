@@ -72,6 +72,7 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const pendingAssistantMessageId = useRef<string | null>(null);
+  const messagesRef = useRef<HTMLDivElement | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
@@ -83,6 +84,14 @@ export default function Home() {
     }
     return connectionStatus;
   }, [activeTurnId, connectionStatus, turnStatus]);
+
+  useEffect(() => {
+    const messagesElement = messagesRef.current;
+    if (messagesElement === null) {
+      return;
+    }
+    messagesElement.scrollTop = messagesElement.scrollHeight;
+  }, [messages]);
 
   useEffect(() => {
     let stopped = false;
@@ -283,18 +292,20 @@ export default function Home() {
           </div>
         </header>
 
-        <div className="messages" aria-live="polite">
+        <div className="messages" aria-live="polite" ref={messagesRef}>
           {messages.length === 0 ? (
             <div className="empty">
               <h2>Start a conversation</h2>
               <p>Ask the assistant to research, plan, write, or operate in the room.</p>
             </div>
           ) : (
-            messages.map((message) => (
-              <article className={`message ${message.role}`} key={message.id}>
-                <div className="bubble">{message.text}</div>
-              </article>
-            ))
+            <div className="message-stack">
+              {messages.map((message) => (
+                <article className={`message ${message.role}`} key={message.id}>
+                  <div className="bubble">{message.text}</div>
+                </article>
+              ))}
+            </div>
           )}
         </div>
 
