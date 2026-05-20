@@ -3178,7 +3178,10 @@ CMD ["/app/dist/index.js"]
             read_only=True,
         )
     ]
-    assert service_spec.container.environment is None
+    assert service_spec.container.environment == [
+        EnvironmentVariable(name="NODE_ENV", value="production"),
+        EnvironmentVariable(name="PORT", value="8111"),
+    ]
     assert service_spec.ports is not None
     assert service_spec.ports[0].num == 8111
     assert captured["deleted_image"] == "registry.meshagent.com/repo/web:1"

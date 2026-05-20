@@ -1338,6 +1338,10 @@ def _resolve_runtime_container_override(
             subpath=IMAGE_RUNTIME_MOUNT_SUBPATH,
             read_only=True,
         ),
+        default_environment=tuple(
+            EnvironmentVariable(name=name, value=value)
+            for name, value in dockerfile_metadata.environment
+        ),
     )
 
 
