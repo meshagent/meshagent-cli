@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Literal, Sequence
 
@@ -42,6 +43,7 @@ from textual.widgets.option_list import Option
 DEPLOY_ROOM_CANCEL_OPTION_ID = "__deploy_room_cancel__"
 DEPLOY_ROOM_CREATE_OPTION_ID = "__deploy_room_create__"
 DEPLOY_ROOM_OPTION_ID_PREFIX = "__deploy_room__:"
+SUBDOMAIN_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 def _room_option_id(room_id: str) -> str:
@@ -363,6 +365,12 @@ class DeployDomainPromptApp(App[None]):
         color: #95a7ce;
         margin: 1 0 0 0;
     }
+    #deploy-domain-error {
+        width: 100%;
+        content-align: left middle;
+        color: #ff7b72;
+        margin: 1 0 0 0;
+    }
     """
 
     BINDINGS = [
@@ -370,10 +378,21 @@ class DeployDomainPromptApp(App[None]):
         Binding("escape", "skip_domain", "Skip", priority=True),
     ]
 
-    def __init__(self, *, service_name: str, port: str) -> None:
+    def __init__(
+        self,
+        *,
+        service_name: str,
+        port: str,
+        room_name: str,
+        pages_domain: str,
+    ) -> None:
         super().__init__()
         self._service_name = service_name
         self._port = port
+        self._pages_domain = pages_domain.strip().lower().removeprefix(".")
+        self._default_subdomain = self._subdomain_from_room_name(room_name)
+        self._help_view: Static | None = None
+        self._error_view: Static | None = None
         self.result = DeployDomainPromptResult(
             status="canceled",
             message="Deploy canceled.",
@@ -382,29 +401,52 @@ class DeployDomainPromptApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Static("MeshAgent Deploy", id="deploy-domain-title")
         yield Static(
-            f"Service {self._service_name} exposes port {self._port}. Enter a domain to route to this service.",
+            (
+                f"Service {self._service_name} exposes port {self._port}. "
+                f"The domain suffix is already selected: .{self._pages_domain}."
+            ),
             id="deploy-domain-message",
         )
-        yield Input(id="deploy-domain-input", placeholder="app.example.com")
+        yield Input(id="deploy-domain-input", placeholder="subdomain")
         yield Static(
-            "Press Enter to use the domain. Leave empty or press Esc to skip. Ctrl+C cancels.",
+            "",
             id="deploy-domain-help",
         )
+        yield Static("", id="deploy-domain-error")
 
     async def on_mount(self) -> None:
-        self.query_one("#deploy-domain-input", Input).focus()
+        self._help_view = self.query_one("#deploy-domain-help", Static)
+        self._error_view = self.query_one("#deploy-domain-error", Static)
+        input_view = self.query_one("#deploy-domain-input", Input)
+        input_view.value = self._default_subdomain
+        self._update_domain_preview(input_view.value)
+        input_view.focus()
+        input_view.cursor_position = len(input_view.value)
+
+    async def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id != "deploy-domain-input":
+            return
+        self._clear_error()
+        self._update_domain_preview(event.value)
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "deploy-domain-input":
             return
-        domain = event.value.strip()
-        if domain == "":
+        subdomain = event.value.strip().lower()
+        if subdomain == "":
             self.result = DeployDomainPromptResult(status="skipped")
-        else:
-            self.result = DeployDomainPromptResult(
-                status="completed",
-                domain=domain,
+            self.exit()
+            return
+        if not self._is_valid_subdomain(subdomain):
+            self._set_error(
+                "Enter only the subdomain. The domain suffix "
+                f".{self._pages_domain} is already selected."
             )
+            return
+        self.result = DeployDomainPromptResult(
+            status="completed",
+            domain=f"{subdomain}.{self._pages_domain}",
+        )
         self.exit()
 
     async def action_skip_domain(self) -> None:
@@ -418,13 +460,51 @@ class DeployDomainPromptApp(App[None]):
         )
         self.exit()
 
+    @staticmethod
+    def _subdomain_from_room_name(room_name: str) -> str:
+        normalized = room_name.strip().lower()
+        normalized = re.sub(r"[^a-z0-9-]+", "-", normalized)
+        normalized = re.sub(r"-+", "-", normalized).strip("-")
+        if normalized == "":
+            normalized = "app"
+        if len(normalized) > 63:
+            normalized = normalized[:63].rstrip("-")
+        return normalized or "app"
+
+    @staticmethod
+    def _is_valid_subdomain(value: str) -> bool:
+        return SUBDOMAIN_PATTERN.fullmatch(value) is not None
+
+    def _update_domain_preview(self, subdomain: str) -> None:
+        preview_subdomain = subdomain.strip().lower() or "<subdomain>"
+        if self._help_view is not None:
+            self._help_view.update(
+                f"Public domain: {preview_subdomain}.{self._pages_domain}. "
+                "Press Enter to use it. Leave empty or press Esc to skip. Ctrl+C cancels."
+            )
+
+    def _clear_error(self) -> None:
+        if self._error_view is not None:
+            self._error_view.update("")
+
+    def _set_error(self, message: str) -> None:
+        if self._error_view is not None:
+            self._error_view.update(message)
+
 
 async def run_deploy_domain_prompt_tui(
     *,
     service_name: str,
     port: str,
+    room_name: str,
+    pages_domain: str,
 ) -> DeployDomainPromptResult:
-    app = DeployDomainPromptApp(service_name=service_name, port=port)
+    app = DeployDomainPromptApp(
+        service_name=service_name,
+        port=port,
+        room_name=room_name,
+        pages_domain=pages_domain,
+    )
 
     try:
         await _run_app(app)

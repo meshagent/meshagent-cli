@@ -2,8 +2,9 @@
 const http = require("node:http");
 
 const port = Number(process.env.PORT || 3000);
-const model = process.env.OPENAI_MODEL || process.env.MESHAGENT_CHATBOT_MODEL || "gpt-5.4";
-const defaultInstructions = "You are a concise assistant running through the MeshAgent room OpenAI proxy.";
+const model = process.env.ANTHROPIC_MODEL || process.env.MESHAGENT_CHATBOT_MODEL || "claude-sonnet-4-6";
+const defaultInstructions = "You are a concise assistant running through the MeshAgent room Anthropic proxy.";
+const anthropicVersion = process.env.ANTHROPIC_VERSION || "2023-06-01";
 
 function trimTrailingSlash(value) {
   return value.replace(/\/+$/, "");
@@ -58,66 +59,62 @@ function normalizeMessages(value) {
   return messages;
 }
 
-function responseInstructions(messages) {
+function anthropicSystem(messages) {
   const extraInstructions = messages
     .filter((message) => message.role === "system")
     .map((message) => message.content);
   return [defaultInstructions, ...extraInstructions].join("\n\n");
 }
 
-function responseInput(messages) {
+function anthropicMessages(messages) {
   return messages
     .filter((message) => message.role !== "system")
     .map(({ role, content }) => ({ role, content }));
 }
 
-function extractResponseText(payload) {
-  if (typeof payload?.output_text === "string") {
-    return payload.output_text.trim();
-  }
-
+function extractMessageText(payload) {
   const parts = [];
-  for (const item of payload?.output ?? []) {
-    for (const content of item?.content ?? []) {
-      if (typeof content?.text === "string") {
-        parts.push(content.text);
-      }
+  for (const content of payload?.content ?? []) {
+    if (content?.type === "text" && typeof content?.text === "string") {
+      parts.push(content.text);
     }
   }
   return parts.join("").trim();
 }
 
 async function completeChat(messages) {
-  const baseURL = String(process.env.OPENAI_BASE_URL ?? "").trim();
-  const apiKey = String(process.env.OPENAI_API_KEY ?? "").trim();
+  const baseURL = String(process.env.ANTHROPIC_BASE_URL ?? "").trim();
+  const apiKey = String(process.env.ANTHROPIC_API_KEY ?? "").trim();
   if (!baseURL || !apiKey) {
     throw new Error(
-      "OPENAI_BASE_URL and OPENAI_API_KEY are required. Run locally with `meshagent room connect -- npm run dev` or use `npm run dev` from this sample."
+      "ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY are required. Run locally with `meshagent room connect -- npm run dev` or use `npm run dev` from this sample."
     );
   }
 
-  const response = await fetch(`${trimTrailingSlash(baseURL)}/responses`, {
+  const response = await fetch(`${trimTrailingSlash(baseURL)}/v1/messages`, {
     method: "POST",
     headers: {
-      authorization: `Bearer ${apiKey}`,
+      "x-api-key": apiKey,
+      "anthropic-version": anthropicVersion,
       "content-type": "application/json",
     },
     body: JSON.stringify({
       model,
-      instructions: responseInstructions(messages),
-      input: responseInput(messages),
+      max_tokens: 1024,
+      system: anthropicSystem(messages),
+      messages: anthropicMessages(messages),
     }),
   });
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`MeshAgent OpenAI proxy request failed (${response.status}): ${body}`);
+    throw new Error(`MeshAgent Anthropic proxy request failed (${response.status}): ${body}`);
   }
 
   const payload = await response.json();
-  const reply = extractResponseText(payload);
+  const reply = extractMessageText(payload);
   if (!reply) {
-    throw new Error("MeshAgent OpenAI proxy response did not include assistant text.");
+    throw new Error("MeshAgent Anthropic proxy response did not include assistant text.");
   }
   return reply;
 }
@@ -128,7 +125,7 @@ function html() {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MeshAgent Chatbot</title>
+  <title>MeshAgent Anthropic Chatbot</title>
   <style>
     :root {
       color-scheme: light dark;
@@ -237,8 +234,8 @@ function html() {
 <body>
   <main>
     <header>
-      <h1>MeshAgent Chatbot</h1>
-      <p>OpenAI-compatible chat through the current MeshAgent room.</p>
+      <h1>MeshAgent Anthropic Chatbot</h1>
+      <p>Anthropic-compatible chat through the current MeshAgent room.</p>
     </header>
     <section id="messages" aria-live="polite"></section>
     <form id="chat-form">
@@ -334,5 +331,5 @@ const server = http.createServer(async (request, response) => {
 });
 
 server.listen(port, "0.0.0.0", () => {
-  console.log(`MeshAgent TypeScript chatbot listening on http://0.0.0.0:${port}`);
+  console.log(`MeshAgent TypeScript Anthropic chatbot listening on http://0.0.0.0:${port}`);
 });

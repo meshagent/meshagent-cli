@@ -58,6 +58,7 @@ IGNORED_FILE_NAMES = {
 WEB_FOCUS = "webserver"
 AGENT_FOCUS = "backend-agent"
 CHATBOT_FOCUS = "chatbot"
+ANTHROPIC_CHATBOT_FOCUS = "chatbot-anthropic"
 CHATBOT_UI_FOCUS = "chatbot-ui"
 DEFAULT_LANGUAGE = "python"
 DEFAULT_FOCUS = AGENT_FOCUS
@@ -96,101 +97,113 @@ class ExistingProjectSelection:
 
 
 WEBSERVER_NEXT_STEPS = (
-    "meshagent doctor",
     "./scripts/install.sh",
-    "MESHAGENT_ROOM=<room> ./scripts/dev.sh",
+    "./scripts/dev.sh",
     "./scripts/deploy.sh",
 )
 STATIC_WEBSERVER_NEXT_STEPS = (
-    "meshagent doctor",
     "./scripts/install.sh",
-    "MESHAGENT_ROOM=<room> ./scripts/dev.sh",
+    "./scripts/dev.sh",
     "./scripts/deploy.sh",
 )
 AGENT_NEXT_STEPS = (
-    "meshagent doctor",
     "./scripts/install.sh",
-    "MESHAGENT_ROOM=<room> ./scripts/dev.sh",
+    "./scripts/dev.sh",
     "./scripts/deploy.sh",
 )
 NPM_WEBSERVER_NEXT_STEPS = (
-    "meshagent doctor",
     "npm install",
-    "MESHAGENT_ROOM=<room> npm run dev",
+    "npm run dev",
     "npm run deploy",
 )
 NPM_STATIC_WEBSERVER_NEXT_STEPS = (
-    "meshagent doctor",
     "npm install",
-    "MESHAGENT_ROOM=<room> npm run dev",
+    "npm run dev",
     "npm run deploy",
 )
 NPM_CHATBOT_UI_NEXT_STEPS = (
-    "meshagent doctor",
     "npm install",
-    "MESHAGENT_ROOM=<room> npm run dev",
+    "npm run dev",
     "npm run deploy",
 )
 NPM_AGENT_NEXT_STEPS = (
-    "meshagent doctor",
     "npm install",
-    "MESHAGENT_ROOM=<room> npm run dev",
+    "npm run dev",
     "npm run deploy",
 )
+AGENT_TOOLKIT_NAMES = {
+    "python": "meshagent.create.python-agent",
+    "javascript": "meshagent.create.javascript-agent",
+    "typescript": "meshagent.create.typescript-agent",
+    "dotnet": "meshagent.create.dotnet-agent",
+    "dart-flutter": "meshagent.create.dart-agent",
+}
+AGENT_PROCESS_NAMES = {
+    "python": "meshagent-create-python-agent",
+    "javascript": "meshagent-create-javascript-agent",
+    "typescript": "meshagent-create-typescript-agent",
+    "dotnet": "meshagent-create-dotnet-agent",
+    "dart-flutter": "meshagent-create-dart-agent",
+}
 
 LANGUAGES: Mapping[str, CreateLanguage] = {
     "python": CreateLanguage(
         id="python",
         label="Python",
-        description="Python 3.13.",
+        description="Python 3.13 services and agents.",
     ),
     "javascript": CreateLanguage(
         id="javascript",
         label="JavaScript",
-        description="Node.js/CommonJS.",
+        description="Node.js CommonJS services and agents.",
     ),
     "typescript": CreateLanguage(
         id="typescript",
         label="TypeScript",
-        description="Node.js/TypeScript.",
+        description="Node.js TypeScript services, agents, and chat apps.",
     ),
     "react": CreateLanguage(
         id="react",
         label="React",
-        description="React/Vite.",
+        description="React/Vite browser app.",
     ),
     "dotnet": CreateLanguage(
         id="dotnet",
         label=".NET",
-        description=".NET.",
+        description=".NET service or agent.",
     ),
     "dart-flutter": CreateLanguage(
         id="dart-flutter",
         label="Dart/Flutter",
-        description="Dart or Flutter.",
+        description="Flutter Web App or Dart Agent Toolkit.",
     ),
 }
 
 FOCUSES: Mapping[str, CreateFocus] = {
     WEB_FOCUS: CreateFocus(
         id=WEB_FOCUS,
-        label="Web server",
-        description="HTTP app with a health endpoint and public route.",
+        label="Web App",
+        description="Public HTTP service with a health endpoint.",
     ),
     AGENT_FOCUS: CreateFocus(
         id=AGENT_FOCUS,
-        label="Backend agent",
-        description="Headless RoomClient SDK service without a public port.",
+        label="Agent Toolkit",
+        description="Expose custom functionality to agents in the room.",
     ),
     CHATBOT_FOCUS: CreateFocus(
         id=CHATBOT_FOCUS,
-        label="Chatbot",
-        description="TypeScript RoomClient chatbot with one chat tool.",
+        label="OpenAI Chatbot",
+        description="Browser chat app backed by the room OpenAI proxy.",
+    ),
+    ANTHROPIC_CHATBOT_FOCUS: CreateFocus(
+        id=ANTHROPIC_CHATBOT_FOCUS,
+        label="Anthropic Chatbot",
+        description="Browser chat app backed by the room Anthropic proxy.",
     ),
     CHATBOT_UI_FOCUS: CreateFocus(
         id=CHATBOT_UI_FOCUS,
-        label="Chatbot UI",
-        description="TypeScript/Next.js UI that chats with a MeshAgent assistant.",
+        label="Agent UI",
+        description="Browser chat interface for a deployed MeshAgent agent.",
     ),
 }
 
@@ -209,8 +222,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("python", WEB_FOCUS): CreateTemplate(
         language_id="python",
         focus_id=WEB_FOCUS,
-        label="Python web server",
-        description="Async Python HTTP service on a declared container port.",
+        label="Python Web App",
+        description="Async Python public HTTP service with a health route.",
         files=_template_files(
             "python",
             WEB_FOCUS,
@@ -230,8 +243,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("python", AGENT_FOCUS): CreateTemplate(
         language_id="python",
         focus_id=AGENT_FOCUS,
-        label="Python backend agent",
-        description="Headless Python RoomClient service.",
+        label="Python Agent Toolkit",
+        description="Headless Python service that exposes custom tools to agents.",
         files=_template_files(
             "python",
             AGENT_FOCUS,
@@ -250,8 +263,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("javascript", WEB_FOCUS): CreateTemplate(
         language_id="javascript",
         focus_id=WEB_FOCUS,
-        label="JavaScript web server",
-        description="Node.js HTTP service on a declared container port.",
+        label="JavaScript Web App",
+        description="Node.js public HTTP service with a health route.",
         files=_template_files(
             "javascript",
             WEB_FOCUS,
@@ -269,8 +282,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("javascript", AGENT_FOCUS): CreateTemplate(
         language_id="javascript",
         focus_id=AGENT_FOCUS,
-        label="JavaScript backend agent",
-        description="Headless Node.js RoomClient service.",
+        label="JavaScript Agent Toolkit",
+        description="Headless Node.js service that exposes custom tools to agents.",
         files=_template_files(
             "javascript",
             AGENT_FOCUS,
@@ -287,8 +300,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("typescript", WEB_FOCUS): CreateTemplate(
         language_id="typescript",
         focus_id=WEB_FOCUS,
-        label="TypeScript web server",
-        description="Node.js TypeScript HTTP service on a declared container port.",
+        label="TypeScript Web App",
+        description="TypeScript public HTTP service with a health route.",
         files=_template_files(
             "typescript",
             WEB_FOCUS,
@@ -307,8 +320,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("typescript", AGENT_FOCUS): CreateTemplate(
         language_id="typescript",
         focus_id=AGENT_FOCUS,
-        label="TypeScript backend agent",
-        description="Headless TypeScript RoomClient service.",
+        label="TypeScript Agent Toolkit",
+        description="Headless TypeScript service that exposes custom tools to agents.",
         files=_template_files(
             "typescript",
             AGENT_FOCUS,
@@ -326,23 +339,38 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("typescript", CHATBOT_FOCUS): CreateTemplate(
         language_id="typescript",
         focus_id=CHATBOT_FOCUS,
-        label="TypeScript chatbot",
-        description="Headless TypeScript RoomClient chatbot.",
+        label="TypeScript OpenAI Chatbot",
+        description="Browser chatbot backed by the room OpenAI proxy.",
         files={
             "package.json": "typescript/chatbot/package.json",
             ".npmrc": "typescript/backend-agent/.npmrc",
             "tsconfig.json": "typescript/backend-agent/tsconfig.json",
             "src/server.ts": "typescript/chatbot/src/server.ts",
-            "Dockerfile": "typescript/backend-agent/Dockerfile",
+            "Dockerfile": "typescript/webserver/Dockerfile",
             ".dockerignore": "typescript/backend-agent/.dockerignore",
         },
-        next_steps=NPM_AGENT_NEXT_STEPS,
+        next_steps=NPM_WEBSERVER_NEXT_STEPS,
+    ),
+    ("typescript", ANTHROPIC_CHATBOT_FOCUS): CreateTemplate(
+        language_id="typescript",
+        focus_id=ANTHROPIC_CHATBOT_FOCUS,
+        label="TypeScript Anthropic Chatbot",
+        description="Browser chatbot backed by the room Anthropic proxy.",
+        files={
+            "package.json": "typescript/chatbot-anthropic/package.json",
+            ".npmrc": "typescript/backend-agent/.npmrc",
+            "tsconfig.json": "typescript/backend-agent/tsconfig.json",
+            "src/server.ts": "typescript/chatbot-anthropic/src/server.ts",
+            "Dockerfile": "typescript/webserver/Dockerfile",
+            ".dockerignore": "typescript/backend-agent/.dockerignore",
+        },
+        next_steps=NPM_WEBSERVER_NEXT_STEPS,
     ),
     ("react", WEB_FOCUS): CreateTemplate(
         language_id="react",
         focus_id=WEB_FOCUS,
-        label="React web server",
-        description="React/Vite web app served by nginx on a declared container port.",
+        label="React/Vite Web App",
+        description="React/Vite browser app served as a public route.",
         files=_template_files(
             "react",
             WEB_FOCUS,
@@ -364,8 +392,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("typescript", CHATBOT_UI_FOCUS): CreateTemplate(
         language_id="typescript",
         focus_id=CHATBOT_UI_FOCUS,
-        label="TypeScript chatbot UI",
-        description="TypeScript/Next.js UI that chats with a MeshAgent assistant.",
+        label="TypeScript Agent UI",
+        description="Browser chat interface for a deployed MeshAgent agent.",
         files=_template_files(
             "typescript",
             CHATBOT_UI_FOCUS,
@@ -388,8 +416,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("dotnet", WEB_FOCUS): CreateTemplate(
         language_id="dotnet",
         focus_id=WEB_FOCUS,
-        label=".NET web server",
-        description="ASP.NET Core HTTP service on a declared container port.",
+        label=".NET Web App",
+        description="ASP.NET Core public HTTP service with a health route.",
         files=_template_files(
             "dotnet",
             WEB_FOCUS,
@@ -408,8 +436,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("dotnet", AGENT_FOCUS): CreateTemplate(
         language_id="dotnet",
         focus_id=AGENT_FOCUS,
-        label=".NET backend agent",
-        description="Headless .NET RoomClient service.",
+        label=".NET Agent Toolkit",
+        description="Headless .NET service that exposes custom tools to agents.",
         files=_template_files(
             "dotnet",
             AGENT_FOCUS,
@@ -428,8 +456,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("dart-flutter", WEB_FOCUS): CreateTemplate(
         language_id="dart-flutter",
         focus_id=WEB_FOCUS,
-        label="Flutter web server",
-        description="Flutter web app served by nginx on a declared container port.",
+        label="Flutter Web App",
+        description="Flutter browser app served as a public route.",
         files=_template_files(
             "dart-flutter",
             WEB_FOCUS,
@@ -450,8 +478,8 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
     ("dart-flutter", AGENT_FOCUS): CreateTemplate(
         language_id="dart-flutter",
         focus_id=AGENT_FOCUS,
-        label="Dart backend agent",
-        description="Headless Dart RoomClient service.",
+        label="Dart Agent Toolkit",
+        description="Headless Dart service that exposes custom tools to agents.",
         files=_template_files(
             "dart-flutter",
             AGENT_FOCUS,
@@ -500,8 +528,20 @@ FOCUS_ALIASES = {
     "backend": AGENT_FOCUS,
     "backend-agent": AGENT_FOCUS,
     "backend_agent": AGENT_FOCUS,
+    "agent-toolkit": AGENT_FOCUS,
+    "agent_toolkit": AGENT_FOCUS,
+    "room-agent": AGENT_FOCUS,
+    "room_agent": AGENT_FOCUS,
+    "anthropic-chat": ANTHROPIC_CHATBOT_FOCUS,
+    "anthropic-chatbot": ANTHROPIC_CHATBOT_FOCUS,
     "chat": CHATBOT_FOCUS,
     "chatbot": CHATBOT_FOCUS,
+    "openai-chat": CHATBOT_FOCUS,
+    "openai-chatbot": CHATBOT_FOCUS,
+    "chatbot-anthropic": ANTHROPIC_CHATBOT_FOCUS,
+    "chatbot_anthropic": ANTHROPIC_CHATBOT_FOCUS,
+    "agent-ui": CHATBOT_UI_FOCUS,
+    "agent_ui": CHATBOT_UI_FOCUS,
     "chat-ui": CHATBOT_UI_FOCUS,
     "chat_ui": CHATBOT_UI_FOCUS,
     "chatbot-ui": CHATBOT_UI_FOCUS,
@@ -509,6 +549,8 @@ FOCUS_ALIASES = {
     "roomclient": AGENT_FOCUS,
     "room-client": AGENT_FOCUS,
     "web": WEB_FOCUS,
+    "web-app": WEB_FOCUS,
+    "web_app": WEB_FOCUS,
     "webserver": WEB_FOCUS,
     "web-server": WEB_FOCUS,
     "web_server": WEB_FOCUS,
@@ -737,6 +779,76 @@ def _write_template(root: Path, template: CreateTemplate) -> None:
         _write_file(root / name, template_name)
 
 
+def _next_step_sections(
+    steps: tuple[str, ...],
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    section_specs = (
+        ("Install dependencies", ("install",)),
+        ("Run locally", ("dev",)),
+        ("Deploy", ("deploy",)),
+    )
+    sections: list[tuple[str, tuple[str, ...]]] = []
+    matched_steps: set[str] = set()
+    for title, keywords in section_specs:
+        section_steps = tuple(
+            step for step in steps if any(keyword in step for keyword in keywords)
+        )
+        if section_steps:
+            sections.append((title, section_steps))
+            matched_steps.update(section_steps)
+
+    other_steps = tuple(step for step in steps if step not in matched_steps)
+    if other_steps:
+        sections.append(("Other", other_steps))
+    return tuple(sections)
+
+
+def _print_next_steps(
+    steps: tuple[str, ...],
+    *,
+    enter_project_root: Path | None = None,
+) -> None:
+    click.secho("Next steps:", fg="cyan", bold=True)
+    if enter_project_root is not None:
+        click.secho(f"  cd {shlex.quote(str(enter_project_root))}", fg="green")
+    for index, (title, section_steps) in enumerate(_next_step_sections(steps), start=1):
+        if index > 1:
+            click.echo("")
+        click.secho(f"  {index}. {title}", fg="blue", bold=True)
+        for step in section_steps:
+            click.secho(f"     {step}", fg="green")
+
+
+def _paired_agent_deploy_command(template: CreateTemplate) -> str | None:
+    if template.focus_id != AGENT_FOCUS:
+        return None
+    toolkit_name = AGENT_TOOLKIT_NAMES.get(template.language_id)
+    agent_name = AGENT_PROCESS_NAMES.get(template.language_id)
+    if toolkit_name is None or agent_name is None:
+        return None
+    rule = f"Use the {toolkit_name} toolkit to answer ping, status, and echo requests."
+    return (
+        "meshagent process deploy "
+        "--room <room> "
+        f"--agent-name {agent_name} "
+        f"--require-toolkit {toolkit_name} "
+        f"--rule {shlex.quote(rule)}"
+    )
+
+
+def _print_agent_toolkit_guidance(template: CreateTemplate) -> None:
+    command = _paired_agent_deploy_command(template)
+    if command is None:
+        return
+    click.echo("")
+    click.secho(
+        "To install an agent in your room that uses this tool run:",
+        fg="cyan",
+        bold=True,
+    )
+    click.secho(f"  {command}", fg="green")
+
+
 def _print_created_report(
     *,
     template: CreateTemplate,
@@ -747,11 +859,8 @@ def _print_created_report(
     for name in template.files:
         click.echo(f"  {name}")
     click.echo("")
-    click.echo("Next steps:")
-    if enter_project_root is not None:
-        click.echo(f"  cd {shlex.quote(str(enter_project_root))}")
-    for step in template.next_steps:
-        click.echo(f"  {step}")
+    _print_next_steps(template.next_steps, enter_project_root=enter_project_root)
+    _print_agent_toolkit_guidance(template)
 
 
 @click.command(
@@ -773,8 +882,9 @@ def _print_created_report(
     type=str,
     default=None,
     help=(
-        "Project focus for non-interactive use. Supported: webserver, backend-agent."
-        " TypeScript also supports chatbot and chatbot-ui."
+        "Project focus for non-interactive use. Use stable IDs: webserver "
+        "(Web App), backend-agent (Agent Toolkit), chatbot (OpenAI Chatbot), "
+        "chatbot-anthropic (Anthropic Chatbot), or chatbot-ui (Agent UI)."
     ),
 )
 @click.option(

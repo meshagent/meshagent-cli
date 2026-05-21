@@ -2702,12 +2702,14 @@ async def test_deploy_image_pack_builds_before_deploying(
         captured["events"].append("build")
 
     async def _fake_run_deploy_domain_prompt_tui(
-        *, service_name: str, port: str
+        *, service_name: str, port: str, room_name: str, pages_domain: str
     ) -> DeployDomainPromptResult:
         captured["events"].append("domain_tui")
         captured["domain_tui"] = {
             "service_name": service_name,
             "port": port,
+            "room_name": room_name,
+            "pages_domain": pages_domain,
         }
         return DeployDomainPromptResult(status="skipped")
 
@@ -2753,6 +2755,7 @@ async def test_deploy_image_pack_builds_before_deploying(
     monkeypatch.setattr(image, "_with_client", _fake_with_client)
     monkeypatch.setattr(image, "resolve_room", lambda room: room)
     monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(image, "resolve_pages_domain", lambda: "meshagent.dev")
     monkeypatch.setattr(image, "_stdio_is_interactive", lambda: True)
     monkeypatch.setattr(
         "meshagent.cli.tui.deploy_room.run_deploy_domain_prompt_tui",
@@ -2796,6 +2799,8 @@ async def test_deploy_image_pack_builds_before_deploying(
     assert captured["domain_tui"] == {
         "service_name": "repo-web",
         "port": "8080",
+        "room_name": "room-1",
+        "pages_domain": "meshagent.dev",
     }
     assert captured["deleted_image"] == "registry.meshagent.com/repo/web:1"
     assert captured["events"] == ["domain_tui", "build", "delete", "create"]
@@ -3330,11 +3335,13 @@ async def test_resolve_deploy_domain_prompts_for_dockerfile_exposed_port(
     )
 
     async def _fake_run_deploy_domain_prompt_tui(
-        *, service_name: str, port: str
+        *, service_name: str, port: str, room_name: str, pages_domain: str
     ) -> DeployDomainPromptResult:
         captured["domain_tui"] = {
             "service_name": service_name,
             "port": port,
+            "room_name": room_name,
+            "pages_domain": pages_domain,
         }
         return DeployDomainPromptResult(
             status="completed",
@@ -3342,6 +3349,7 @@ async def test_resolve_deploy_domain_prompts_for_dockerfile_exposed_port(
         )
 
     monkeypatch.setattr(image, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(image, "resolve_pages_domain", lambda: "meshagent.dev")
     monkeypatch.setattr(
         "meshagent.cli.tui.deploy_room.run_deploy_domain_prompt_tui",
         _fake_run_deploy_domain_prompt_tui,
@@ -3362,6 +3370,8 @@ async def test_resolve_deploy_domain_prompts_for_dockerfile_exposed_port(
     assert captured["domain_tui"] == {
         "service_name": "repo-web",
         "port": "8080",
+        "room_name": "room-1",
+        "pages_domain": "meshagent.dev",
     }
 
 

@@ -36,7 +36,7 @@ from meshagent.cli.helper import (
     split_empty_dir_mount,
     split_image_mount,
 )
-from meshagent.cli.local_settings import get_active_user_id
+from meshagent.cli.local_settings import get_active_user_id, resolve_pages_domain
 from meshagent.api import ApiScope, RoomClient
 from meshagent.api.client import (
     ConflictError,
@@ -2315,6 +2315,8 @@ async def _resolve_deploy_domain(
     result = await run_deploy_domain_prompt_tui(
         service_name=deploy_plan.spec.metadata.name,
         port=route_target.port,
+        room_name=room_name,
+        pages_domain=resolve_pages_domain(),
     )
     if result.status == "canceled":
         if result.message is not None:
