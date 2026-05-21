@@ -19,7 +19,7 @@ import typer
 from rich import print
 from rich.console import Console
 from rich.table import Table
-from typing import Annotated, Optional, List, Dict
+from typing import Annotated, Literal, Optional, List, Dict
 
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
@@ -57,6 +57,15 @@ _CRI_LOG_LINE_PATTERN = re.compile(
 # -------------------------
 # Helpers
 # -------------------------
+
+ContainerTemplateOption = Literal["agent", "none"]
+
+
+def _normalize_container_template(*, template: str) -> ContainerTemplateOption:
+    normalized = template.strip()
+    if normalized not in {"agent", "none"}:
+        raise typer.BadParameter("--template must be agent or none")
+    return normalized
 
 
 def _parse_keyvals(items: List[str]) -> Dict[str, str]:
@@ -777,6 +786,25 @@ async def run_container(
     container_name: Annotated[
         str, typer.Option(..., help="Optional container name")
     ] = None,
+    template: Annotated[
+        str,
+        typer.Option(
+            "--template",
+            help=(
+                "Allowed values: agent, none. agent: MeshAgent mounts room storage "
+                "at /data, sets MESHAGENT_TOKEN, OPENAI_API_KEY, and "
+                "ANTHROPIC_API_KEY to a container-scoped MeshAgent token. agent "
+                "also sets SMTP_PASSWORD to that token, SMTP_USERNAME to the "
+                "container name, SMTP_PORT to 587, SMTP_HOSTNAME from "
+                "MESHAGENT_MAIL_DOMAIN when available, plus OPENAI_BASE_URL, "
+                "ANTHROPIC_BASE_URL, MESHAGENT_API_URL, MESHAGENT_ROOM_URL, "
+                "MESHAGENT_ROOM, MESHAGENT_PROJECT_ID, MESHAGENT_SESSION_ID, "
+                "OTEL_ENDPOINT, OTEL_PYTHON_LOG_LEVEL, and MESHAGENT_MAIL_DOMAIN "
+                "from the room runtime when available. Manual env values win. "
+                "none: MeshAgent applies no template defaults."
+            ),
+        ),
+    ] = "none",
 ):
     account_client, client = await _with_client(
         project_id=project_id,
@@ -786,6 +814,7 @@ async def run_container(
         creds = _parse_creds(cred)
         env_map = _parse_keyvals(env)
         ports_map = _parse_ports(port)
+        normalized_template = _normalize_container_template(template=template)
 
         container_id = await client.containers.run(
             name=container_name,
@@ -799,6 +828,7 @@ async def run_container(
             participant_name=participant_name,
             ports=ports_map,
             credentials=creds,
+            template=normalized_template,
         )
 
         print(f"Container started: {container_id}")

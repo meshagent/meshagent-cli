@@ -44,6 +44,29 @@ class _FakeClient:
         self.containers = _FakeContainers(stream=stream, exit_code=exit_code)
 
 
+class _FakeRunContainers:
+    def __init__(self) -> None:
+        self.run_calls: list[dict[str, object]] = []
+
+    async def run(self, **kwargs) -> str:
+        self.run_calls.append(kwargs)
+        return "ctr-1"
+
+
+class _FakeRunClient:
+    def __init__(self) -> None:
+        self.containers = _FakeRunContainers()
+        self.exit_calls: list[tuple[object | None, object | None, object | None]] = []
+
+    async def __aexit__(
+        self,
+        exc_type: object | None,
+        exc: object | None,
+        tb: object | None,
+    ) -> None:
+        self.exit_calls.append((exc_type, exc, tb))
+
+
 class _FakeBuildStream:
     def __init__(self, *, lines: list[str], result: str = "image-1") -> None:
         self._lines = lines
@@ -347,6 +370,58 @@ async def test_stream_build_job_logs_and_wait_for_exit_reports_nonzero_exit(
     assert capsys.readouterr().err == (
         "Unable to complete build build-1: build failed with exit code 17.\n"
     )
+
+
+@pytest.mark.asyncio
+async def test_run_container_passes_template_to_api(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    account_client = _FakeAccountClient()
+    client = _FakeRunClient()
+
+    async def _fake_with_client(*, project_id, room):
+        assert project_id == "project-1"
+        assert room == "room-1"
+        return account_client, client
+
+    monkeypatch.setattr(containers, "_with_client", _fake_with_client)
+
+    await containers.run_container(
+        project_id="project-1",
+        room="room-1",
+        image="demo:latest",
+        command=None,
+        working_dir=None,
+        env=[],
+        port=[],
+        cred=[],
+        mount_path=None,
+        mount_subpath=None,
+        participant_name=None,
+        role="user",
+        container_name="plain",
+    )
+
+    assert client.containers.run_calls == [
+        {
+            "name": "plain",
+            "image": "demo:latest",
+            "command": None,
+            "working_dir": None,
+            "env": {},
+            "mount_path": None,
+            "mount_subpath": None,
+            "role": "user",
+            "participant_name": None,
+            "ports": {},
+            "credentials": [],
+            "template": "none",
+        }
+    ]
+    assert client.exit_calls == [(None, None, None)]
+    assert account_client.close_calls == 1
+    assert capsys.readouterr().out == "Container started: ctr-1\n"
 
 
 @pytest.mark.asyncio

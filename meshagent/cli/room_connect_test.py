@@ -210,6 +210,62 @@ async def test_room_connect_env_satisfies_llm_proxy_docs_samples(
 
 
 @pytest.mark.asyncio
+async def test_room_connect_none_template_skips_added_room_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account_client = _FakeAccountClient()
+
+    async def _fake_get_client() -> _FakeAccountClient:
+        return account_client
+
+    async def _fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-input"
+        return "project-1"
+
+    def _fake_resolve_room(room: str | None) -> str | None:
+        assert room == "room-input"
+        return room
+
+    monkeypatch.setattr(room_connect, "get_client", _fake_get_client)
+    monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
+    for name in (
+        "MESHAGENT_TOKEN",
+        "MESHAGENT_PROJECT_ID",
+        "MESHAGENT_ROOM",
+        "OPENAI_BASE_URL",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    child_env = await room_connect._build_connected_command_env(
+        project_id="project-input",
+        room="room-input",
+        env=(),
+        env_secret=(),
+        identity=None,
+        meshagent_token=None,
+        template="none",
+    )
+
+    assert account_client.connect_calls == [
+        {"project_id": "project-1", "room": "room-input"}
+    ]
+    for name in (
+        "MESHAGENT_TOKEN",
+        "MESHAGENT_PROJECT_ID",
+        "MESHAGENT_ROOM",
+        "OPENAI_BASE_URL",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_API_KEY",
+    ):
+        assert name not in child_env
+
+
+@pytest.mark.asyncio
 async def test_room_connect_uses_default_api_url_when_env_is_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -3375,6 +3375,21 @@ async def test_resolve_deploy_domain_prompts_for_dockerfile_exposed_port(
     }
 
 
+def test_build_deploy_service_spec_sets_container_template() -> None:
+    parsed_tag = image._parse_build_tag("registry.meshagent.com/repo/web:1")
+
+    deploy_plan = image._build_deploy_service_spec(
+        existing_service=None,
+        parsed_tag=parsed_tag,
+        public=False,
+        liveness=None,
+        template="none",
+    )
+
+    assert deploy_plan.spec.container is not None
+    assert deploy_plan.spec.container.template == "none"
+
+
 @pytest.mark.asyncio
 async def test_resolve_deploy_domain_reuses_existing_service_route(
     monkeypatch: pytest.MonkeyPatch,

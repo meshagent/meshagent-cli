@@ -120,6 +120,7 @@ _REGISTRY_COMPONENT_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 _PROJECT_KEY_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _COOKIE_VALIDATION_METHOD = "cookie"
 DeployValidationMode = Literal["default", "cookie", "none"]
+ContainerTemplateOption = Literal["agent", "none"]
 _RESERVED_ROOM_SERVICE_PORTS_TEXT = ", ".join(
     str(port) for port in sorted(RESERVED_ROOM_SERVICE_PORTS)
 )
@@ -1484,6 +1485,13 @@ def _normalize_deploy_validation_mode(*, validation_mode: str) -> DeployValidati
     raise typer.BadParameter("--validation-mode must be one of: default, cookie, none")
 
 
+def _normalize_container_template(*, template: str) -> ContainerTemplateOption:
+    normalized = template.strip()
+    if normalized not in {"agent", "none"}:
+        raise typer.BadParameter("--template must be agent or none")
+    return normalized
+
+
 def _parse_extra_route_ports(*, values: list[str]) -> list[_ExtraRoutePort]:
     extra_ports: list[_ExtraRoutePort] = []
     seen_paths: set[str] = set()
@@ -2049,6 +2057,7 @@ def _build_deploy_service_spec(
     storage: ContainerMountSpec | None = None,
     default_ports: list[PortSpec] | None = None,
     runtime_container: _RuntimeContainerOverride | None = None,
+    template: ContainerTemplateOption = "agent",
 ) -> _ServiceDeployPlan:
     service_name = _derive_service_name(parsed_tag=parsed_tag)
     annotations = _update_request_validation_annotations(
@@ -2107,6 +2116,7 @@ def _build_deploy_service_spec(
                 "working_dir": runtime_container.working_dir,
             }
         )
+    container = container.model_copy(update={"template": template})
 
     if existing_service is not None:
         ports = list(existing_service.ports or [])
@@ -3199,6 +3209,25 @@ async def deploy_image(
             ),
         ),
     ] = "default",
+    template: Annotated[
+        str,
+        typer.Option(
+            "--template",
+            help=(
+                "Allowed values: agent, none. agent: MeshAgent mounts room storage "
+                "at /data, sets MESHAGENT_TOKEN, OPENAI_API_KEY, and "
+                "ANTHROPIC_API_KEY to a container-scoped MeshAgent token. agent "
+                "also sets SMTP_PASSWORD to that token, SMTP_USERNAME to the "
+                "container name, SMTP_PORT to 587, SMTP_HOSTNAME from "
+                "MESHAGENT_MAIL_DOMAIN when available, plus OPENAI_BASE_URL, "
+                "ANTHROPIC_BASE_URL, MESHAGENT_API_URL, MESHAGENT_ROOM_URL, "
+                "MESHAGENT_ROOM, MESHAGENT_PROJECT_ID, MESHAGENT_SESSION_ID, "
+                "OTEL_ENDPOINT, OTEL_PYTHON_LOG_LEVEL, and MESHAGENT_MAIL_DOMAIN "
+                "from the room runtime when available. Manual env values win. "
+                "none: MeshAgent applies no template defaults."
+            ),
+        ),
+    ] = "agent",
     liveness: Annotated[
         Optional[str],
         typer.Option(
@@ -3317,6 +3346,7 @@ async def deploy_image(
     normalized_validation_mode = _normalize_deploy_validation_mode(
         validation_mode=validation_mode,
     )
+    normalized_template = _normalize_container_template(template=template)
     meshagent_token_scope = (
         _parse_meshagent_token_scope(value=meshagent_token)
         if meshagent_token is not None
@@ -3438,6 +3468,7 @@ async def deploy_image(
             storage=storage,
             default_ports=packed_default_ports,
             runtime_container=runtime_container,
+            template=normalized_template,
         )
         await _warn_missing_extra_route_ports(
             account_client=account_client,

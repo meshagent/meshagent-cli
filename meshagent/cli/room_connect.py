@@ -115,6 +115,13 @@ def _normalize_connect_role(*, role: str | None) -> str:
     return normalized_role
 
 
+def _normalize_connect_template(*, template: str) -> str:
+    normalized_template = template.strip()
+    if normalized_template not in {"agent", "none"}:
+        raise click.BadParameter("--template must be agent or none")
+    return normalized_template
+
+
 def _parse_meshagent_token_scope(*, value: str) -> ApiScope:
     cleaned = value.strip()
     if cleaned == "":
@@ -295,11 +302,13 @@ async def _build_connected_command_env(
     identity: str | None,
     role: str | None = None,
     meshagent_token: str | None = None,
+    template: str = "agent",
 ) -> dict[str, str]:
     parsed_environment = _parse_environment_variables(values=env)
     parsed_secret_environment = _parse_environment_secret_variables(values=env_secret)
     normalized_identity = _normalize_connect_identity(identity=identity)
     normalized_role = _normalize_connect_role(role=role)
+    normalized_template = _normalize_connect_template(template=template)
     meshagent_token_scope = (
         _parse_meshagent_token_scope(value=meshagent_token)
         if meshagent_token is not None
@@ -358,15 +367,18 @@ async def _build_connected_command_env(
             resolved_secret_identity = None
 
         child_env = os.environ.copy()
-        child_env["MESHAGENT_API_URL"] = room_env.api_url
-        child_env["MESHAGENT_PROJECT_ID"] = room_env.project_id
-        child_env["MESHAGENT_ROOM"] = room_env.room_name
-        child_env["OPENAI_BASE_URL"] = f"{room_env.room_url}/openai/v1"
-        child_env["ANTHROPIC_BASE_URL"] = f"{room_env.room_url}/anthropic"
-        _set_connected_token_environment(
-            child_env=child_env,
-            connected_token=connected_token,
-        )
+        if normalized_template == "agent":
+            child_env["MESHAGENT_API_URL"] = room_env.api_url
+            child_env["MESHAGENT_PROJECT_ID"] = room_env.project_id
+            child_env["MESHAGENT_ROOM"] = room_env.room_name
+            child_env["OPENAI_BASE_URL"] = f"{room_env.room_url}/openai/v1"
+            child_env["ANTHROPIC_BASE_URL"] = f"{room_env.room_url}/anthropic"
+            _set_connected_token_environment(
+                child_env=child_env,
+                connected_token=connected_token,
+            )
+        elif meshagent_token_scope is not None:
+            child_env["MESHAGENT_TOKEN"] = connected_token
 
         for name, value in parsed_environment:
             child_env[name] = value
@@ -408,8 +420,8 @@ async def _build_connected_command_env(
     help=(
         "Connect to a room and run a local command with "
         "MESHAGENT_API_URL, MESHAGENT_PROJECT_ID, MESHAGENT_TOKEN, "
-        "OPENAI_API_KEY, ANTHROPIC_API_KEY, and MESHAGENT_ROOM set. "
-        "Use -- before the local command."
+        "OPENAI_API_KEY, ANTHROPIC_API_KEY, and MESHAGENT_ROOM set by "
+        "the default agent template. Use -- before the local command."
     ),
 )
 @click.option(
@@ -450,6 +462,18 @@ async def _build_connected_command_env(
         "or a JSON ApiScope object."
     ),
 )
+@click.option(
+    "--template",
+    default="agent",
+    show_default=True,
+    help=(
+        "Allowed values: agent, none. agent: MeshAgent sets MESHAGENT_TOKEN, "
+        "OPENAI_API_KEY, and ANTHROPIC_API_KEY to a room-scoped MeshAgent token, "
+        "and sets OPENAI_BASE_URL, ANTHROPIC_BASE_URL, MESHAGENT_API_URL, "
+        "MESHAGENT_PROJECT_ID, and MESHAGENT_ROOM from the connected room unless "
+        "manually set. none: MeshAgent applies no template defaults."
+    ),
+)
 @click.argument("command", nargs=-1, type=click.UNPROCESSED)
 def connect_command(
     project_id: str | None,
@@ -459,6 +483,7 @@ def connect_command(
     identity: str | None,
     role: str | None,
     meshagent_token: str | None,
+    template: str,
     command: tuple[str, ...],
 ) -> None:
     if len(command) == 0:
@@ -476,6 +501,7 @@ def connect_command(
             identity=identity,
             role=role,
             meshagent_token=meshagent_token,
+            template=template,
         )
     )
     raise click.exceptions.Exit(
