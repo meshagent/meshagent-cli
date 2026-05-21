@@ -4129,6 +4129,113 @@ async def test_process_agent_thread_control_messages_mutate_thread_storage(
 
 
 @pytest.mark.asyncio
+async def test_process_run_session_lists_threads_through_local_protocol(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeAdapter:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+
+        def default_model(self) -> str:
+            return "gpt-5.5"
+
+        def create_session(self, *, usage_callback=None) -> AgentSessionContext:
+            del usage_callback
+            return AgentSessionContext()
+
+    class _ThreadStorage:
+        list_calls: list[dict[str, object]] = []
+
+        @classmethod
+        async def watch_threads(cls, *, room, thread_dir: str):
+            del room
+            del thread_dir
+            await asyncio.Future()
+            yield
+
+        @classmethod
+        async def list_threads(cls, *, room, thread_dir: str, limit: int, offset: int):
+            cls.list_calls.append(
+                {
+                    "room": room,
+                    "thread_dir": thread_dir,
+                    "limit": limit,
+                    "offset": offset,
+                }
+            )
+            return process.ThreadListPage(
+                threads=[
+                    ThreadListEntry(
+                        name="First",
+                        path="dataset://agents/testcli/threads/first",
+                        created_at="2026-05-13T08:55:00Z",
+                        modified_at="2026-05-13T08:55:00Z",
+                    )
+                ],
+                total=1,
+                offset=offset,
+                limit=limit,
+            )
+
+    monkeypatch.setattr(process, "OpenAIResponsesAdapter", _FakeAdapter)
+    monkeypatch.setattr(
+        process,
+        "_thread_storage_class_for_backend",
+        lambda thread_storage: _ThreadStorage if thread_storage == "dataset" else None,
+    )
+
+    agent_cls = process.build_process_agent(
+        model="gpt-5.5",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+        thread_storage="dataset",
+        thread_dir="dataset://agents/testcli/threads",
+    )
+    agent = agent_cls()
+    room = _FakeProcessRoomClient()
+
+    async def _skip_install_requirements() -> None:
+        return None
+
+    monkeypatch.setattr(agent, "install_requirements", _skip_install_requirements)
+
+    await agent.start(room=room)  # type: ignore[arg-type]
+    session = process._ProcessRunSession(
+        bot=agent,
+        model=None,
+        thread_path=None,
+        thread_storage="dataset",
+        agent_name="testcli",
+        thread_dir="dataset://agents/testcli/threads",
+        threading_mode="default-new",
+        current_working_directory=None,
+    )
+    try:
+        await session.start()
+        entries = await asyncio.wait_for(
+            session.list_threads(limit=100, offset=0),
+            timeout=1,
+        )
+    finally:
+        await session.close()
+        await agent.stop()
+
+    assert _ThreadStorage.list_calls == [
+        {
+            "room": room,
+            "thread_dir": "dataset://agents/testcli/threads",
+            "limit": 100,
+            "offset": 0,
+        }
+    ]
+    assert [entry.name for entry in entries] == ["First"]
+
+
+@pytest.mark.asyncio
 async def test_process_thread_sidebar_can_send_control_messages_locally() -> None:
     deleted_paths: list[str] = []
 

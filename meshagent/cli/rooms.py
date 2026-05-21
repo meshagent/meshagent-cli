@@ -6,6 +6,8 @@ from typing import Annotated, Optional
 import typer
 from rich import print
 
+from meshagent.api import RoomException
+from meshagent.api.client import ProjectRoomGrant, Room
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import OutputFormatOption, ProjectIdOption
 from meshagent.cli.helper import (
@@ -14,7 +16,6 @@ from meshagent.cli.helper import (
     resolve_project_id,
     resolve_room,
 )
-from meshagent.api import RoomException
 
 app = async_typer.AsyncTyper(help="Create, list, and manage rooms in a project")
 
@@ -68,6 +69,29 @@ def _maybe_parse_string_dict_json(
             raise RoomException(f"Invalid {label} JSON: all values must be strings")
         output[k] = v
     return output
+
+
+async def _list_my_rooms(
+    account_client,
+    *,
+    project_id: str,
+    limit: int,
+    offset: int,
+    order_by: str,
+    filter: Optional[str],
+) -> list[Room]:
+    room_grants: list[ProjectRoomGrant] = await account_client.list_room_grants_by_user(
+        project_id=project_id,
+        user_id="me",
+        limit=limit,
+        offset=offset,
+        order_by=order_by,
+        filter=filter,
+    )
+    rooms_by_id: dict[str, Room] = {}
+    for grant in room_grants:
+        rooms_by_id.setdefault(grant.room.id, grant.room)
+    return list(rooms_by_id.values())
 
 
 # ---------------------------
@@ -227,6 +251,13 @@ async def room_list_command(
         Optional[str],
         typer.Option("--filter", help="Lowercase contains filter for room names"),
     ] = None,
+    show_all: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            help="Show all rooms in the project instead of only rooms you can access",
+        ),
+    ] = False,
 ):
     """
     List rooms in the project.
@@ -234,13 +265,24 @@ async def room_list_command(
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        rooms = await account_client.list_rooms(
-            project_id=project_id,
-            limit=limit if limit is not None else count,
-            offset=offset,
-            order_by=order_by,
-            filter=filter,
-        )
+        room_limit = limit if limit is not None else count
+        if show_all:
+            rooms = await account_client.list_rooms(
+                project_id=project_id,
+                limit=room_limit,
+                offset=offset,
+                order_by=order_by,
+                filter=filter,
+            )
+        else:
+            rooms = await _list_my_rooms(
+                account_client,
+                project_id=project_id,
+                limit=room_limit,
+                offset=offset,
+                order_by=order_by,
+                filter=filter,
+            )
         output = [
             {
                 "id": r.id,

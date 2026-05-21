@@ -168,6 +168,7 @@ from meshagent.agents.messages import (
     StartThread,
     ThreadCreated,
     ThreadDeleted,
+    ThreadsListed,
     ThreadUpdated,
     ThreadStarted,
     TurnStart,
@@ -5884,18 +5885,6 @@ def build_process_agent(
             combined_toolkits.extend(built_required_toolkits)
             combined_toolkits.extend(required_toolkits)
             combined_toolkits.extend(extra_toolkits)
-            if process.supervisor is not None:
-                for channel in process.supervisor.channels:
-                    if channel.state != "started":
-                        continue
-                    turn_id = turns[-1].turn_id if len(turns) > 0 else None
-                    if process.thread_id is not None:
-                        combined_toolkits.extend(
-                            channel.get_turn_toolkits(
-                                thread_id=process.thread_id,
-                                turn_id=turn_id,
-                            )
-                        )
             if process.thread_storage is not None:
                 combined_toolkits.append(process.thread_storage.make_toolkit())
             return combined_toolkits
@@ -6022,10 +6011,24 @@ def build_process_agent(
             for queue in [*self._local_event_queues]:
                 queue.put_nowait(message)
 
+        def _send_to_channels(self, message: Message) -> None:
+            if isinstance(message.data, ThreadsListed):
+                self._send_to_local_event_queues(message)
+            super()._send_to_channels(message)
+
         def send(self, message: Message) -> None:
             if message.source is not None:
                 self._send_to_local_event_queues(message)
             super().send(message)
+
+        def _send_thread_list_event(
+            self,
+            *,
+            payload: ThreadCreated | ThreadUpdated | ThreadDeleted,
+            sender: Participant | None,
+        ) -> None:
+            self._send_to_local_event_queues(Message(data=payload, sender=sender))
+            super()._send_thread_list_event(payload=payload, sender=sender)
 
         def _emit_thread_started(
             self,

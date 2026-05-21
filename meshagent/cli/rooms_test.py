@@ -3,15 +3,32 @@ import json
 import pytest
 from click.testing import CliRunner
 
-from meshagent.api.client import Room
+from meshagent.api.client import ProjectRoomGrant, Room
+from meshagent.api.participant_token import ApiScope
 from meshagent.cli import async_typer, cli, rooms
 
 
 class _FakeRoomsClient:
-    def __init__(self, *, rooms_result: list[Room]) -> None:
+    def __init__(
+        self,
+        *,
+        rooms_result: list[Room],
+        room_grants_result: list[ProjectRoomGrant] | None = None,
+    ) -> None:
         self.rooms_result = rooms_result
+        self.room_grants_result = room_grants_result
+        if self.room_grants_result is None:
+            self.room_grants_result = [
+                ProjectRoomGrant(
+                    room=room,
+                    user_id="user-1",
+                    permissions=ApiScope(admin={}),
+                )
+                for room in rooms_result
+            ]
         self.closed = False
         self.list_rooms_calls: list[dict[str, object]] = []
+        self.list_room_grants_by_user_calls: list[dict[str, object]] = []
 
     async def list_rooms(
         self,
@@ -32,6 +49,28 @@ class _FakeRoomsClient:
             }
         )
         return self.rooms_result
+
+    async def list_room_grants_by_user(
+        self,
+        *,
+        project_id: str,
+        user_id: str,
+        limit: int,
+        offset: int,
+        order_by: str,
+        filter: str | None = None,
+    ) -> list[ProjectRoomGrant]:
+        self.list_room_grants_by_user_calls.append(
+            {
+                "project_id": project_id,
+                "user_id": user_id,
+                "limit": limit,
+                "offset": offset,
+                "order_by": order_by,
+                "filter": filter,
+            }
+        )
+        return self.room_grants_result
 
     async def close(self) -> None:
         self.closed = True
@@ -81,8 +120,10 @@ def test_route_create_help_mentions_short_domains_and_service_id_annotation() ->
     )
 
     assert result.exit_code == 0
-    assert "Use a short, DNS-safe domain name" in result.output
-    assert "room-name-derived domains may be rejected" in result.output
+    normalized_output = " ".join(result.output.split())
+    assert "Use a short, DNS-safe domain name" in normalized_output
+    assert "long room-name-derived" in normalized_output
+    assert "domains may be rejected" in normalized_output
     assert "meshagent.service.id" in result.output
 
 
@@ -105,9 +146,11 @@ async def test_room_list_defaults_to_table_output(
 
     await rooms.room_list_command(project_id="project-1")
 
-    assert client.list_rooms_calls == [
+    assert client.list_rooms_calls == []
+    assert client.list_room_grants_by_user_calls == [
         {
             "project_id": "resolved-project",
+            "user_id": "me",
             "limit": 100,
             "offset": 0,
             "order_by": "room_name",
@@ -140,9 +183,11 @@ async def test_room_list_passes_count_and_filter(
 
     await rooms.room_list_command(project_id="project-1", count=25, filter="demo")
 
-    assert client.list_rooms_calls == [
+    assert client.list_rooms_calls == []
+    assert client.list_room_grants_by_user_calls == [
         {
             "project_id": "resolved-project",
+            "user_id": "me",
             "limit": 25,
             "offset": 0,
             "order_by": "room_name",
@@ -178,6 +223,30 @@ async def test_room_list_json_output_skips_table_printer(
             "name": "demo",
             "metadata": {"team": "core"},
             "annotations": {"meshagent.storage.class": "ephemeral"},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_room_list_all_uses_project_room_listing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeRoomsClient(rooms_result=[_sample_room()])
+    _patch_room_list_command(monkeypatch, client=client)
+
+    monkeypatch.setattr(rooms, "print_json_table", lambda records, *cols: None)
+    monkeypatch.setattr(rooms, "print", lambda *args, **kwargs: None)
+
+    await rooms.room_list_command(project_id="project-1", show_all=True)
+
+    assert client.list_room_grants_by_user_calls == []
+    assert client.list_rooms_calls == [
+        {
+            "project_id": "resolved-project",
+            "limit": 100,
+            "offset": 0,
+            "order_by": "room_name",
+            "filter": None,
         }
     ]
 

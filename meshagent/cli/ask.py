@@ -2440,6 +2440,18 @@ async def _run_ask_tui(
             active_item_id = self._active_assistant_item_id
             await self._stop_active_assistant_stream()
             with self.batch_update():
+                if active_text.strip() != "":
+                    changed = self._append_or_replace_feed_entry(
+                        _AskFeedEntry(
+                            role=active_name or "agent",
+                            text=active_text,
+                            message_id=active_item_id,
+                        ),
+                    )
+                    if changed:
+                        self._render_feed()
+                    if active_item_id is not None:
+                        self._rendered_session_message_ids.add(active_item_id)
                 if self._active_assistant_event_break is not None:
                     self._active_assistant_event_break.styles.display = "none"
                 if self._active_assistant_entry_view is not None:
@@ -2449,17 +2461,6 @@ async def _run_ask_tui(
                     self._active_assistant_header.update("")
                 if self._active_assistant_body is not None:
                     self._active_assistant_body.update("")
-                if active_text.strip() != "":
-                    self._entries.append(
-                        _AskFeedEntry(
-                            role=active_name or "agent",
-                            text=active_text,
-                            message_id=active_item_id,
-                        )
-                    )
-                    self._render_feed()
-                    if active_item_id is not None:
-                        self._rendered_session_message_ids.add(active_item_id)
             self._active_assistant_text = ""
             self._active_assistant_name = None
             self._active_assistant_item_id = None
