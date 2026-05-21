@@ -140,8 +140,6 @@ from meshagent.agents.messages import (
     AGENT_EVENT_THREAD_DELETED,
     AGENT_EVENT_THREAD_UPDATED,
     AGENT_EVENT_THREAD_STARTED,
-    AGENT_MESSAGE_MODEL_CHANGE,
-    AGENT_MESSAGE_MODELS_REQUEST,
     AGENT_MESSAGE_MODELS_RESPONSE,
     AGENT_MESSAGE_THREAD_OPEN,
     AGENT_MESSAGE_TURN_START,
@@ -158,7 +156,6 @@ from meshagent.agents.messages import (
     AgentRealtimeConnectionInfo,
     AgentTextContent,
     AgentTextContentDelta,
-    ChangeModel,
     DeleteThread,
     ListThreads,
     ModelsRequest,
@@ -549,409 +546,6 @@ async def _load_thread_agent_messages(
         return storage.agent_messages()
     finally:
         await storage.stop()
-
-
-class _ProcessRunSession:
-    def __init__(
-        self,
-        *,
-        bot: Any,
-        model: str | None,
-        thread_path: str | None,
-        thread_storage: "ThreadStorageBackend",
-        agent_name: str | None,
-        thread_dir: str | None,
-        threading_mode: "ThreadingMode",
-        current_working_directory: str | None,
-        initial_model: AgentModelChanged | None = None,
-        image_dataset_client: ImageDatasetClient | None = None,
-    ) -> None:
-        self._bot = bot
-        self._model = model
-        self._thread_storage = thread_storage
-        self._thread_dir = thread_dir
-        self._threading_mode = threading_mode
-        self._current_working_directory = current_working_directory
-        self._image_dataset_client = image_dataset_client
-        self._agent_name = _normalized_annotation_string(agent_name)
-        self._current_model: AgentModelChanged | None = initial_model
-        self._models_response: ModelsResponse | None = None
-        self._output_modalities: tuple[OutputModality, ...] = (
-            tuple(initial_model.output_modalities)
-            if initial_model is not None
-            else ("text",)
-        )
-        self._timeout = 30
-        self._thread_generation = 0
-        resolved_thread_path = _process_run_thread_id(
-            thread_path=thread_path,
-            thread_storage=thread_storage,
-            agent_name=agent_name,
-            thread_dir=thread_dir,
-            threading_mode=threading_mode,
-        )
-        open_on_start = not (
-            threading_mode == "default-new"
-            and (thread_path is None or thread_path.strip() == "")
-        )
-        self._configure_thread(
-            thread_path=resolved_thread_path if open_on_start else None,
-            open_on_start=open_on_start,
-        )
-
-    def _configure_thread(
-        self, *, thread_path: str | None, open_on_start: bool
-    ) -> None:
-        from meshagent.cli import ask as ask_module
-
-        self._thread_id = thread_path
-        self._open_on_start = open_on_start
-        events = self._bot._supervisor.subscribe_local_events()
-        channel_client = LocalChatClient(
-            thread_path=self._thread_id,
-            send_message=self._bot._supervisor.send,
-            events=events,
-            on_close=lambda: self._bot._supervisor.unsubscribe_local_events(events),
-        )
-        self._channel_client = channel_client
-        self._chat_session = channel_client.thread_session
-        self._session = ask_module._AgentMessageSession(
-            client=self._chat_session,
-            model=self._model,
-            current_working_directory=self._current_working_directory,
-            model_provider=lambda: self._current_model,
-            image_dataset_client=self._image_dataset_client,
-            start_thread_callback=self._start_thread,
-        )
-        self._sync_turn_output_modalities()
-        self._started = False
-
-    async def _start_thread(self, start_thread: StartThread) -> ChatThreadSession:
-        new_session = await self._channel_client.start_thread(start_thread)
-        self._chat_session = new_session
-        self._thread_id = new_session.thread_path
-        self._sync_turn_output_modalities()
-        if self._models_response is not None:
-            self._apply_models_response(self._models_response)
-        return new_session
-
-    @property
-    def current_working_directory(self) -> str:
-        return self._session.current_working_directory
-
-    @property
-    def thread_status_text(self) -> str | None:
-        return self._session.thread_status_text
-
-    @property
-    def current_model(self) -> AgentModelChanged | None:
-        return self._current_model
-
-    @property
-    def output_modalities(self) -> tuple[Literal["text", "audio"], ...]:
-        return self._output_modalities
-
-    @property
-    def output_modalities_label(self) -> str:
-        return "+".join(self._output_modalities)
-
-    @property
-    def thread_id(self) -> str:
-        if self._chat_session.has_thread_path:
-            return self._chat_session.thread_path
-        if self._thread_id is None:
-            raise RoomException("chat thread session not started")
-        return self._thread_id
-
-    @property
-    def thread_generation(self) -> int:
-        return self._thread_generation
-
-    @property
-    def models_response(self) -> ModelsResponse | None:
-        return self._models_response
-
-    @property
-    def can_request_initial_models(self) -> bool:
-        return self._open_on_start
-
-    @property
-    def queued_message_labels(self) -> tuple[str, ...]:
-        return self._session.queued_message_labels
-
-    @property
-    def image_dataset_client(self) -> ImageDatasetClient | None:
-        return self._session.image_dataset_client
-
-    @property
-    def messages(self):
-        return self._session.messages
-
-    async def start(self) -> None:
-        if self._started:
-            return
-
-        if not self._open_on_start:
-            await self._channel_client.start()
-            self._started = True
-            return
-
-        await self._channel_client.start()
-        supervisor = self._bot._supervisor
-        await supervisor.route(
-            Message(
-                data=OpenThread(
-                    type=AGENT_MESSAGE_THREAD_OPEN,
-                    thread_id=self._thread_id,
-                )
-            )
-        )
-        for agent_process in supervisor.processes:
-            if agent_process.thread_id != self._thread_id:
-                continue
-            thread_storage = agent_process.thread_storage
-            if thread_storage is None:
-                break
-            storage_messages = _thread_agent_messages_from_storage(thread_storage)
-            if inspect.isawaitable(storage_messages):
-                storage_messages = await storage_messages
-            for message in storage_messages:
-                self._chat_session.add_agent_message(
-                    self._stored_agent_message_with_sender(message)
-                )
-            break
-        self._started = True
-
-    def _stored_agent_message_with_sender(self, message: AgentMessage) -> AgentMessage:
-        if self._agent_name is None:
-            return message
-        if isinstance(message, (AgentTextContentDelta, AgentFileContentDelta)):
-            if message.sender_name is not None and message.sender_name.strip() != "":
-                return message
-            return message.model_copy(update={"sender_name": self._agent_name})
-        return message
-
-    async def close(self) -> None:
-        await self._session.close()
-        await self._channel_client.close()
-
-    async def switch_thread(self, thread_path: str) -> None:
-        normalized_path = thread_path.strip()
-        if normalized_path == "" or normalized_path == self._thread_id:
-            return
-        await self.close()
-        self._thread_generation += 1
-        previous_models_response = self._models_response
-        self._configure_thread(thread_path=normalized_path, open_on_start=True)
-        await self.start()
-        if previous_models_response is not None:
-            self._apply_models_response(previous_models_response)
-
-    async def new_thread(self) -> None:
-        await self.close()
-        self._thread_generation += 1
-        previous_models_response = self._models_response
-        self._configure_thread(thread_path=None, open_on_start=False)
-        await self.start()
-        if previous_models_response is not None:
-            self._apply_models_response(previous_models_response)
-
-    async def delete_thread(self, thread_path: str) -> None:
-        await self._chat_session.delete_thread(thread_path)
-
-    async def rename_thread(self, thread_path: str, name: str) -> None:
-        await self._chat_session.rename_thread(thread_path, name)
-
-    async def list_threads(
-        self,
-        *,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> list[ThreadListEntry]:
-        response = await self._chat_session.list_threads(limit=limit, offset=offset)
-        return [
-            _thread_list_entry_from_agent_entry(entry) for entry in response.threads
-        ]
-
-    def add_thread_list_event_listener(
-        self,
-        callback: Callable[[ThreadListEvent], None],
-    ) -> Callable[[], None]:
-        def _handle_payload(payload: dict[str, Any]) -> None:
-            event = _thread_list_event_from_agent_payload(payload)
-            if event is not None:
-                callback(event)
-
-        return self._chat_session.add_event_listener(_handle_payload)
-
-    async def ask(
-        self,
-        *,
-        prompt: str,
-        on_message: Callable[[AgentMessage], Awaitable[None] | None] | None = None,
-    ) -> str:
-        await self.start()
-        return await self._session.ask(
-            prompt=prompt,
-            on_message=on_message,
-        )
-
-    def steer(
-        self,
-        *,
-        prompt: str,
-        on_accepted: Callable[[], Awaitable[None] | None] | None = None,
-        on_applied: Callable[[], Awaitable[None] | None] | None = None,
-        on_rejected: Callable[[RoomException], Awaitable[None] | None] | None = None,
-    ) -> str | None:
-        return self._session.steer(
-            prompt=prompt,
-            on_accepted=on_accepted,
-            on_applied=on_applied,
-            on_rejected=on_rejected,
-        )
-
-    def interrupt(self) -> bool:
-        return self._session.interrupt()
-
-    async def request_models(self) -> ModelsResponse:
-        payload = ModelsRequest(
-            type=AGENT_MESSAGE_MODELS_REQUEST,
-        )
-        await self._chat_session.send(payload)
-        try:
-            async with asyncio.timeout(self._timeout):
-                while True:
-                    event = await self._chat_session.receive()
-                    if event.get("type") != AGENT_MESSAGE_MODELS_RESPONSE:
-                        continue
-                    response = ModelsResponse.model_validate(event)
-                    if response.source_message_id != payload.message_id:
-                        continue
-                    self._apply_models_response(response)
-                    return response
-        except asyncio.TimeoutError as exc:
-            raise RoomException("timed out waiting for model list") from exc
-
-    def _apply_models_response(self, response: ModelsResponse) -> None:
-        self._models_response = response
-        active_model = None
-        if self._chat_session.has_thread_path:
-            active_model = _active_model_from_models_response(
-                response,
-                thread_id=self._chat_session.thread_path,
-            )
-        if active_model is not None:
-            self._current_model = active_model
-        self._output_modalities = self._supported_selected_output_modalities(
-            self._output_modalities
-        )
-        self._sync_turn_output_modalities()
-
-    def select_model(self, model: AgentModelChanged) -> None:
-        self._current_model = model
-        self._output_modalities = tuple(model.output_modalities)
-        if self._selected_model_info() is None:
-            return
-        self._output_modalities = self._supported_selected_output_modalities(
-            self._output_modalities
-        )
-        self._sync_turn_output_modalities()
-
-    def set_output_modalities(
-        self, output_modalities: tuple[Literal["text", "audio"], ...]
-    ) -> None:
-        self._output_modalities = self._supported_selected_output_modalities(
-            output_modalities
-        )
-        self._sync_turn_output_modalities()
-
-    def toggle_output_modalities(self) -> tuple[Literal["text", "audio"], ...]:
-        modalities = self._selected_model_modalities()
-        if self._output_modalities == ("text",) and "audio" in modalities:
-            self._output_modalities = ("audio",)
-        else:
-            self._output_modalities = ("text",)
-        self._output_modalities = self._supported_selected_output_modalities(
-            self._output_modalities
-        )
-        self._sync_turn_output_modalities()
-        return self._output_modalities
-
-    def _sync_turn_output_modalities(self) -> None:
-        output_modalities = self._supported_selected_output_modalities(
-            self._output_modalities
-        )
-        if output_modalities == self._output_modalities:
-            self._session.set_output_modalities(output_modalities)
-            if self._current_model is not None:
-                self._current_model = self._current_model.model_copy(
-                    update={"output_modalities": list(self._output_modalities)}
-                )
-            return
-        self._session.set_output_modalities(None)
-
-    def _selected_model_info(self) -> AgentModelInfo | None:
-        if self._current_model is None or self._models_response is None:
-            return None
-        for provider in self._models_response.providers:
-            if provider.name != self._current_model.provider:
-                continue
-            for model in provider.models:
-                if model.name == self._current_model.model:
-                    return model
-        return None
-
-    def _selected_model_modalities(self) -> tuple[Literal["text", "audio"], ...]:
-        model_info = self._selected_model_info()
-        if model_info is None:
-            return ("text",)
-        return tuple(model_info.modalities)
-
-    def _supported_selected_output_modalities(
-        self, output_modalities: tuple[Literal["text", "audio"], ...]
-    ) -> tuple[Literal["text", "audio"], ...]:
-        supported = self._selected_model_modalities()
-        selected = tuple(output for output in output_modalities if output in supported)
-        if len(selected) == 0:
-            return ("text",)
-        return (selected[0],)
-
-    async def change_model(
-        self,
-        *,
-        provider: str | None,
-        model: str | None,
-        voice: str | None = None,
-    ) -> AgentModelChanged:
-        payload = ChangeModel(
-            type=AGENT_MESSAGE_MODEL_CHANGE,
-            thread_id=self._thread_id,
-            provider=provider,
-            model=model,
-            voice=voice,
-        )
-        await self._channel_client.send(payload)
-        try:
-            async with asyncio.timeout(self._timeout):
-                while True:
-                    event = await self._channel_client.receive()
-                    if event.get("type") != AGENT_EVENT_MODEL_CHANGED:
-                        continue
-                    changed = AgentModelChanged.model_validate(event)
-                    if changed.source_message_id != payload.message_id:
-                        continue
-                    self._current_model = changed
-                    self._output_modalities = tuple(changed.output_modalities)
-                    self._output_modalities = (
-                        self._supported_selected_output_modalities(
-                            self._output_modalities
-                        )
-                    )
-                    self._sync_turn_output_modalities()
-                    return changed
-        except asyncio.TimeoutError as exc:
-            raise RoomException("timed out waiting for model change") from exc
 
 
 async def _handle_process_model_command(
@@ -1407,8 +1001,8 @@ class _ProcessThreadSidebar:
 
 def _process_session_thread_path(session: Any) -> str | None:
     try:
-        if isinstance(session, (_ProcessRunSession, _ChatChannelUseSession)):
-            return session.thread_id
+        if isinstance(session, ChatThreadSession) and session.has_thread_path:
+            return session.thread_path
     except RoomException:
         return None
     return None
@@ -1517,7 +1111,13 @@ async def _run_process_run_tui(
     from meshagent.cli import ask as ask_module
 
     configured_models = _normalize_model_options(model)
-    selected_output_modalities = _normalize_output_modalities(output_modalities)
+    configured_output_modalities = _normalize_output_modalities(output_modalities)
+    configured_output_modalities = tuple(
+        output for output in configured_output_modalities if output in ("text", "audio")
+    ) or ("text",)
+    selected_output_modalities: tuple[OutputModality, ...] = (
+        _default_realtime_output_modalities(configured_output_modalities)
+    )
     thread_id = _process_run_thread_id(
         thread_path=thread_path,
         thread_storage=thread_storage,
@@ -1547,38 +1147,362 @@ async def _run_process_run_tui(
         current_model=initial_model,
         fallback=", ".join(configured_models),
     )
+    resolved_agent_name = _normalized_annotation_string(agent_name)
+    open_on_start = not (
+        threading_mode == "default-new"
+        and (thread_path is None or thread_path.strip() == "")
+    )
+    thread_generation = 0
+    channel_client: LocalChatClient | None = None
+    channel_started = False
+
     if chat_client is None:
-        session = _ProcessRunSession(
-            bot=bot,
-            model=None,
-            thread_path=thread_path,
-            thread_storage=thread_storage,
-            agent_name=agent_name,
-            thread_dir=thread_dir,
-            threading_mode=threading_mode,
-            current_working_directory=working_dir,
-            initial_model=initial_model,
-            image_dataset_client=ImageDatasetClient(room) if room is not None else None,
+        supervisor = bot._supervisor
+        events = supervisor.subscribe_local_events()
+        channel_client = LocalChatClient(
+            thread_path=thread_id if open_on_start else None,
+            send_message=supervisor.send,
+            events=events,
+            on_close=lambda: supervisor.unsubscribe_local_events(events),
         )
+        chat_client = channel_client.thread_session
     else:
-        session = _ChatChannelUseSession(
-            chat_client=chat_client,
-            current_working_directory=working_dir,
+        open_on_start = chat_client.has_thread_path
+
+    def _current_session() -> ChatThreadSession:
+        if chat_client is None:
+            raise RoomException("process run chat session not started")
+        return chat_client
+
+    def _current_thread_path() -> str | None:
+        current = _current_session()
+        return current.thread_path if current.has_thread_path else None
+
+    def _stored_message_with_sender(message: AgentMessage) -> AgentMessage:
+        if resolved_agent_name is None:
+            return message
+        if isinstance(message, (AgentTextContentDelta, AgentFileContentDelta)):
+            if message.sender_name is not None and message.sender_name.strip() != "":
+                return message
+            return message.model_copy(update={"sender_name": resolved_agent_name})
+        return message
+
+    async def _load_current_thread_from_process_storage() -> None:
+        current = _current_session()
+        if not current.has_thread_path:
+            return
+        supervisor = bot._supervisor
+        await supervisor.route(
+            Message(
+                data=OpenThread(
+                    type=AGENT_MESSAGE_THREAD_OPEN,
+                    thread_id=current.thread_path,
+                )
+            )
         )
-        if initial_model is not None:
-            session.select_model(initial_model)
+        for agent_process in supervisor.processes:
+            if agent_process.thread_id != current.thread_path:
+                continue
+            process_thread_storage = agent_process.thread_storage
+            if process_thread_storage is None:
+                break
+            storage_messages = _thread_agent_messages_from_storage(
+                process_thread_storage
+            )
+            if inspect.isawaitable(storage_messages):
+                storage_messages = await storage_messages
+            for stored_message in storage_messages:
+                current.add_agent_message(_stored_message_with_sender(stored_message))
+            break
+
+    def _selected_model_modalities() -> tuple[OutputModality, ...]:
+        model_info = _model_info_for_current_selection(
+            response=_current_session().models_response,
+            current_model=_current_session().current_model,
+        )
+        if model_info is None:
+            return ("text",)
+        return tuple(
+            output for output in model_info.modalities if output in ("text", "audio")
+        ) or ("text",)
+
+    def _supported_output_modalities(
+        output_modalities: tuple[OutputModality, ...],
+    ) -> tuple[OutputModality, ...]:
+        supported = _selected_model_modalities()
+        selected = tuple(output for output in output_modalities if output in supported)
+        if len(selected) == 0:
+            return ("text",)
+        return (selected[0],)
+
+    def _sync_current_model_output_modalities() -> None:
+        current_model = _current_session().current_model
+        if current_model is None:
+            return
+        _current_session().select_model(
+            current_model.model_copy(
+                update={"output_modalities": list(selected_output_modalities)}
+            )
+        )
+
+    def _select_model(model_changed: AgentModelChanged) -> None:
+        nonlocal selected_output_modalities
+        _current_session().select_model(model_changed)
+        selected_output_modalities = _supported_output_modalities(
+            tuple(
+                output
+                for output in model_changed.output_modalities
+                if output in ("text", "audio")
+            )
+            or ("text",)
+        )
+        _sync_current_model_output_modalities()
+
+    def _apply_models_response(response: ModelsResponse) -> None:
+        nonlocal selected_output_modalities
+        _current_session().apply_models_response(response)
+        selected_output_modalities = _supported_output_modalities(
+            selected_output_modalities
+        )
+        _sync_current_model_output_modalities()
+
+    async def _request_models() -> ModelsResponse:
+        nonlocal selected_output_modalities
+        response = await _current_session().request_models()
+        selected = selected_output_modalities
+        _apply_models_response(response)
+        selected_output_modalities_holder = _supported_output_modalities(selected)
+        selected_output_modalities = selected_output_modalities_holder
+        _sync_current_model_output_modalities()
+        return response
+
+    async def _handle_model_command(command: str) -> str | None:
+        nonlocal selected_output_modalities
+        parts = command.strip().split()
+        command_name = parts[0] if parts else ""
+        current = _current_session()
+        current_path = _current_thread_path() or thread_id
+        if command_name == "/new":
+            if len(parts) != 1:
+                return "Usage: /new"
+            await _new_thread()
+            return "New thread"
+        if command_name == "/provider":
+            response = current.models_response or await _request_models()
+            if len(parts) == 1:
+                return _format_provider_list(
+                    providers=response.providers,
+                    current_model=current.current_model,
+                )
+            if len(parts) == 2:
+                changed = _selected_default_model_for_provider(
+                    response=response,
+                    thread_id=current_path,
+                    provider_name=parts[1],
+                )
+                if changed is None:
+                    return f"Unknown provider: {parts[1]}"
+                _select_model(changed)
+                return (
+                    "Using "
+                    f"{_provider_model_display_name(provider=changed.provider, model=changed.model)}"
+                )
+            return "Usage: /provider [provider]"
+        if command_name == "/model":
+            response = current.models_response or await _request_models()
+            if len(parts) == 1:
+                return _format_model_list(
+                    providers=response.providers,
+                    current_model=current.current_model,
+                )
+            if len(parts) != 2:
+                return "Usage: /model [model|provider/model]"
+            requested = parts[1]
+            provider_name: str | None = None
+            model_name = requested
+            if "/" in requested:
+                provider_name, model_name = requested.split("/", 1)
+            else:
+                matching_providers = [
+                    provider
+                    for provider in response.providers
+                    if any(
+                        model_info.name == requested for model_info in provider.models
+                    )
+                ]
+                if len(matching_providers) > 1:
+                    names = ", ".join(
+                        _provider_model_display_name(
+                            provider=provider.name,
+                            model=requested,
+                        )
+                        for provider in matching_providers
+                    )
+                    return f"Model name is ambiguous. Use one of: {names}"
+                if len(matching_providers) == 1:
+                    provider_name = matching_providers[0].name
+            changed = _selected_model_from_models_response(
+                response=response,
+                thread_id=current_path,
+                provider=provider_name,
+                model=model_name,
+            )
+            if changed is None:
+                return f"Unknown model: {requested}"
+            _select_model(changed)
+            return (
+                "Using "
+                f"{_provider_model_display_name(provider=changed.provider, model=changed.model)}"
+            )
+        if command_name == "/output":
+            if len(parts) == 1:
+                modalities = _selected_model_modalities()
+                if selected_output_modalities == ("text",) and "audio" in modalities:
+                    selected_output_modalities = ("audio",)
+                else:
+                    selected_output_modalities = ("text",)
+                selected_output_modalities = _supported_output_modalities(
+                    selected_output_modalities
+                )
+                _sync_current_model_output_modalities()
+                return f"Using {','.join(selected_output_modalities)} responses"
+            if len(parts) != 2:
+                return "Usage: /output [text|audio]"
+            requested_output = parts[1].strip().lower()
+            if requested_output not in ("text", "audio"):
+                return "Usage: /output [text|audio]"
+            requested_modalities: tuple[OutputModality, ...] = (
+                ("audio",) if requested_output == "audio" else ("text",)
+            )
+            unsupported = [
+                output
+                for output in requested_modalities
+                if output not in _selected_model_modalities()
+            ]
+            if len(unsupported) > 0:
+                model_label = _current_model_label(
+                    current_model=current.current_model,
+                    fallback="current model",
+                )
+                return (
+                    f"{model_label} does not support {','.join(unsupported)} responses"
+                )
+            selected_output_modalities = requested_modalities
+            _sync_current_model_output_modalities()
+            return f"Using {','.join(selected_output_modalities)} responses"
+        if command_name == "/voice":
+            response = current.models_response or await _request_models()
+            model_info = _model_info_for_current_selection(
+                response=response,
+                current_model=current.current_model,
+            )
+            if model_info is None or len(model_info.available_voices) == 0:
+                return "Current model does not advertise output voices"
+            current_voice = (
+                current.current_model.voice
+                if current.current_model is not None
+                else None
+            ) or model_info.default_output_voice
+            if len(parts) == 1:
+                lines = ["Voices:"]
+                for voice_name in model_info.available_voices:
+                    marker = "*" if voice_name == current_voice else " "
+                    lines.append(f"{marker} {voice_name}")
+                return "\n".join(lines)
+            if len(parts) != 2:
+                return "Usage: /voice [voice]"
+            requested_voice = parts[1].strip()
+            if requested_voice not in model_info.available_voices:
+                voices = ", ".join(model_info.available_voices)
+                return f"Unknown voice: {requested_voice}. Available voices: {voices}"
+            current_model = current.current_model
+            if current_model is None:
+                return "No current model selected"
+            changed = await current.change_model(
+                provider=current_model.provider,
+                model=current_model.model,
+                voice=requested_voice,
+            )
+            _select_model(changed)
+            return f"Using voice {changed.voice or requested_voice}"
+        return None
+
+    async def _switch_thread(path: str) -> None:
+        nonlocal chat_client, thread_generation
+        current = _current_session()
+        normalized_path = path.strip()
+        if normalized_path == "":
+            return
+        if current.has_thread_path and current.thread_path == normalized_path:
+            return
+        if channel_client is not None:
+            await current.close(close_client=False)
+            chat_client = ChatThreadSession(
+                client=channel_client,
+                thread_path=normalized_path,
+                local_participant_name=current.local_participant_name,
+                close_client_on_close=False,
+            )
+            await _load_current_thread_from_process_storage()
+        else:
+            new_session = await current.client.open_thread(
+                normalized_path,
+                local_participant_name=current.local_participant_name,
+                close_client_on_close=True,
+                load=True,
+            )
+            await current.close(close_client=False)
+            chat_client = new_session
+        _sync_current_model_output_modalities()
+        thread_generation += 1
+
+    async def _new_thread() -> None:
+        nonlocal chat_client, thread_generation
+        current = _current_session()
+        await current.close(close_client=False)
+        chat_client = ChatThreadSession(
+            client=current.client,
+            thread_path=None,
+            local_participant_name=current.local_participant_name,
+            close_client_on_close=channel_client is None,
+        )
+        _sync_current_model_output_modalities()
+        thread_generation += 1
+
+    async def _list_threads() -> list[ThreadListEntry]:
+        response = await _current_session().list_threads(limit=100, offset=0)
+        return [
+            _thread_list_entry_from_agent_entry(entry) for entry in response.threads
+        ]
+
+    def _subscribe_thread_events(
+        callback: Callable[[ThreadListEvent], None],
+    ) -> Callable[[], None]:
+        def _handle_payload(payload: dict[str, Any]) -> None:
+            event = _thread_list_event_from_agent_payload(payload)
+            if event is not None:
+                callback(event)
+
+        return _current_session().client.add_event_listener(_handle_payload)
+
     thread_sidebar: _ProcessThreadSidebar | None = None
     try:
-        await session.start()
+        if channel_client is not None:
+            await channel_client.start()
+            channel_started = True
+            if open_on_start:
+                await _load_current_thread_from_process_storage()
+        if initial_model is not None:
+            _select_model(initial_model)
         if len(configured_models) > 0:
-            session._apply_models_response(
+            _apply_models_response(
                 _configured_models_response(
                     models=configured_models,
-                    current_model=session.current_model,
+                    current_model=_current_session().current_model,
                     voice=voice,
                     turn_detection=turn_detection,
                     realtime_protocols=realtime_protocols,
-                    output_modalities=selected_output_modalities,
+                    output_modalities=configured_output_modalities,
                     input_audio_format=input_audio_format,
                     input_audio_sample_rate=input_audio_sample_rate,
                     input_audio_bitrate=input_audio_bitrate,
@@ -1587,15 +1511,16 @@ async def _run_process_run_tui(
                     output_audio_bitrate=output_audio_bitrate,
                 )
             )
-        if session.can_request_initial_models:
-            await _request_initial_models(session=session)
+        if open_on_start and _current_session().has_thread_path:
+            await _request_initial_models(session=_current_session())
+
         if message is not None:
 
             def _write_message(agent_message: AgentMessage) -> None:
                 if isinstance(agent_message, AgentTextContentDelta):
                     click.echo(agent_message.text, nl=False)
 
-            await session.ask(
+            await _current_session().ask(
                 prompt=message,
                 on_message=_write_message,
             )
@@ -1604,34 +1529,37 @@ async def _run_process_run_tui(
 
         if thread_storage != "none" and thread_dir is not None:
             thread_sidebar = _ProcessThreadSidebar(
-                list_threads=lambda: session.list_threads(limit=100, offset=0),
-                subscribe_thread_events=session.add_thread_list_event_listener,
-                current_thread_path=lambda: _process_session_thread_path(session),
-                switch_thread=session.switch_thread,
-                delete_thread=session.delete_thread,
-                rename_thread=session.rename_thread,
+                list_threads=_list_threads,
+                subscribe_thread_events=_subscribe_thread_events,
+                current_thread_path=_current_thread_path,
+                switch_thread=_switch_thread,
+                delete_thread=lambda path: _current_session().delete_thread(path),
+                rename_thread=lambda path, name: _current_session().rename_thread(
+                    path, name
+                ),
             )
             await thread_sidebar.start()
 
         await ask_module._run_ask_tui(
             model=display_model,
-            session=session,
+            session=_current_session(),
+            session_provider=_current_session,
+            thread_generation_provider=lambda: thread_generation,
+            current_working_directory=working_dir,
+            image_dataset_client=ImageDatasetClient(room) if room is not None else None,
             title="meshagent process run",
-            command_handler=lambda command: _handle_process_model_command(
-                command,
-                session=session,
-            ),
+            command_handler=_handle_model_command,
             model_label_provider=lambda: _current_model_label(
-                current_model=session.current_model,
+                current_model=_current_session().current_model,
                 fallback=display_model,
             ),
             command_options_provider=lambda prompt: _process_command_options(
                 prompt,
-                response=session.models_response,
-                current_model=session.current_model,
-                current_output_modalities=session.output_modalities,
+                response=_current_session().models_response,
+                current_model=_current_session().current_model,
+                current_output_modalities=selected_output_modalities,
             ),
-            output_label_provider=lambda: session.output_modalities_label,
+            output_label_provider=lambda: "+".join(selected_output_modalities),
             side_panel_renderer=(
                 thread_sidebar.render if thread_sidebar is not None else None
             ),
@@ -1645,310 +1573,11 @@ async def _run_process_run_tui(
     finally:
         if thread_sidebar is not None:
             await thread_sidebar.close()
-        await session.close()
-
-
-class _ChatChannelUseSession:
-    def __init__(
-        self,
-        *,
-        chat_client: ChatThreadSession,
-        current_working_directory: str | None = None,
-    ) -> None:
-        self._chat_client = chat_client
-        self._current_working_directory = current_working_directory
-        self._thread_generation = 0
-        current_model = chat_client.current_model
-        self._output_modalities: tuple[OutputModality, ...] = (
-            tuple(current_model.output_modalities)
-            if current_model is not None
-            else ("text",)
-        )
-        self._session = self._build_session()
-        self._sync_turn_output_modalities()
-        self._started = False
-
-    def _build_session(self):
-        from meshagent.cli import ask as ask_module
-
-        return ask_module._AgentMessageSession(
-            client=self._chat_client,
-            model=None,
-            current_working_directory=self._current_working_directory,
-            local_participant_name=self._chat_client.local_participant_name,
-            model_provider=lambda: self._chat_client.current_model,
-            start_thread_callback=self._start_thread,
-        )
-
-    @property
-    def thread_generation(self) -> int:
-        return self._thread_generation
-
-    async def switch_thread(self, thread_path: str) -> None:
-        normalized_path = thread_path.strip()
-        if normalized_path == "" or (
-            self._chat_client.has_thread_path
-            and normalized_path == self._chat_client.thread_path
-        ):
-            return
-        pending_session = self._chat_client
-        await self._session.close(close_client=False)
-        await pending_session.close(close_client=False)
-        new_session = await pending_session.client.open_thread(
-            normalized_path,
-            local_participant_name=pending_session.local_participant_name,
-            close_client_on_close=True,
-            load=True,
-        )
-        self._chat_client = new_session
-        self._session = self._build_session()
-        self._sync_turn_output_modalities()
-        self._started = False
-        self._thread_generation += 1
-        await self.start()
-        if self._chat_client.has_thread_path:
-            await self.request_models()
-
-    async def new_thread(self) -> None:
-        pending_session = self._chat_client
-        await self._session.close(close_client=False)
-        await pending_session.close(close_client=False)
-        new_session = ChatThreadSession(
-            client=pending_session.client,
-            thread_path=None,
-            local_participant_name=pending_session.local_participant_name,
-            close_client_on_close=True,
-        )
-        self._chat_client = new_session
-        self._session = self._build_session()
-        self._sync_turn_output_modalities()
-        self._started = False
-        self._thread_generation += 1
-        await self.start()
-
-    async def delete_thread(self, thread_path: str) -> None:
-        await self._chat_client.delete_thread(thread_path)
-
-    async def rename_thread(self, thread_path: str, name: str) -> None:
-        await self._chat_client.rename_thread(thread_path, name)
-
-    async def list_threads(
-        self,
-        *,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> list[ThreadListEntry]:
-        response = await self._chat_client.list_threads(limit=limit, offset=offset)
-        return [
-            _thread_list_entry_from_agent_entry(entry) for entry in response.threads
-        ]
-
-    def add_thread_list_event_listener(
-        self,
-        callback: Callable[[ThreadListEvent], None],
-    ) -> Callable[[], None]:
-        def _handle_payload(payload: dict[str, Any]) -> None:
-            event = _thread_list_event_from_agent_payload(payload)
-            if event is not None:
-                callback(event)
-
-        return self._chat_client.client.add_event_listener(_handle_payload)
-
-    @property
-    def current_working_directory(self) -> str:
-        return self._session.current_working_directory
-
-    @property
-    def thread_status_text(self) -> str | None:
-        return self._session.thread_status_text
-
-    @property
-    def current_model(self) -> AgentModelChanged | None:
-        return self._chat_client.current_model
-
-    @property
-    def thread_id(self) -> str:
-        return self._chat_client.thread_path
-
-    @property
-    def models_response(self) -> ModelsResponse | None:
-        return self._chat_client.models_response
-
-    @property
-    def can_request_initial_models(self) -> bool:
-        return self._chat_client.has_thread_path
-
-    @property
-    def output_modalities(self) -> tuple[Literal["text", "audio"], ...]:
-        return self._output_modalities
-
-    @property
-    def output_modalities_label(self) -> str:
-        return "+".join(self._output_modalities)
-
-    @property
-    def queued_message_labels(self) -> tuple[str, ...]:
-        return self._session.queued_message_labels
-
-    @property
-    def image_dataset_client(self) -> ImageDatasetClient | None:
-        return self._session.image_dataset_client
-
-    @property
-    def messages(self):
-        return self._session.messages
-
-    async def _start_thread(self, start_thread: StartThread) -> ChatThreadSession:
-        pending_session = self._chat_client
-        await pending_session.close(close_client=False)
-
-        def _adopt_pending_session(new_session: ChatThreadSession) -> None:
-            self._chat_client = new_session
-            self._session.replace_client(new_session)
-            self._sync_turn_output_modalities()
-
-        new_session = await pending_session.client.start_thread(
-            start_thread,
-            local_participant_name=pending_session.local_participant_name,
-            close_client_on_close=True,
-            on_pending_session=_adopt_pending_session,
-        )
-        self._chat_client = new_session
-        self._session.replace_client(new_session)
-        self._sync_turn_output_modalities()
-        return new_session
-
-    async def start(self) -> None:
-        if self._started:
-            return
-        if not self._chat_client.has_thread_path:
-            self._started = True
-            return
-        self._started = True
-
-    async def close(self) -> None:
-        await self._session.close(close_client=False)
-        if isinstance(self._chat_client, ChatThreadSession):
-            await self._chat_client.close()
-
-    async def ask(
-        self,
-        *,
-        prompt: str,
-        on_message: Callable[[AgentMessage], Awaitable[None] | None] | None = None,
-    ) -> str:
-        return await self._session.ask(
-            prompt=prompt,
-            on_message=on_message,
-        )
-
-    def steer(
-        self,
-        *,
-        prompt: str,
-        on_accepted: Callable[[], Awaitable[None] | None] | None = None,
-        on_applied: Callable[[], Awaitable[None] | None] | None = None,
-        on_rejected: Callable[[RoomException], Awaitable[None] | None] | None = None,
-    ) -> str | None:
-        return self._session.steer(
-            prompt=prompt,
-            on_accepted=on_accepted,
-            on_applied=on_applied,
-            on_rejected=on_rejected,
-        )
-
-    def interrupt(self) -> bool:
-        return self._session.interrupt()
-
-    async def request_models(self) -> ModelsResponse:
-        response = await self._chat_client.request_models()
-        self._sync_turn_output_modalities()
-        return response
-
-    def _apply_models_response(self, response: ModelsResponse) -> None:
-        self._chat_client.apply_models_response(response)
-        self._sync_turn_output_modalities()
-
-    def select_model(self, model: AgentModelChanged) -> None:
-        self._chat_client.select_model(model)
-        self._output_modalities = tuple(model.output_modalities)
-        self._output_modalities = self._supported_selected_output_modalities(
-            self._output_modalities
-        )
-        self._sync_turn_output_modalities()
-
-    def set_output_modalities(
-        self, output_modalities: tuple[Literal["text", "audio"], ...]
-    ) -> None:
-        self._output_modalities = self._supported_selected_output_modalities(
-            output_modalities
-        )
-        self._sync_turn_output_modalities()
-
-    def toggle_output_modalities(self) -> tuple[Literal["text", "audio"], ...]:
-        modalities = self._selected_model_modalities()
-        if self._output_modalities == ("text",) and "audio" in modalities:
-            self._output_modalities = ("audio",)
-        else:
-            self._output_modalities = ("text",)
-        self._output_modalities = self._supported_selected_output_modalities(
-            self._output_modalities
-        )
-        self._sync_turn_output_modalities()
-        return self._output_modalities
-
-    def _sync_turn_output_modalities(self) -> None:
-        output_modalities = self._supported_selected_output_modalities(
-            self._output_modalities
-        )
-        if output_modalities == self._output_modalities:
-            self._session.set_output_modalities(output_modalities)
-            current_model = self._chat_client.current_model
-            if current_model is not None:
-                self._chat_client.select_model(
-                    current_model.model_copy(
-                        update={"output_modalities": list(self._output_modalities)}
-                    )
-                )
-            return
-        self._session.set_output_modalities(None)
-
-    def _selected_model_modalities(self) -> tuple[Literal["text", "audio"], ...]:
-        model_info = _model_info_for_current_selection(
-            response=self.models_response,
-            current_model=self.current_model,
-        )
-        if model_info is None:
-            return ("text",)
-        return tuple(model_info.modalities)
-
-    def _supported_selected_output_modalities(
-        self, output_modalities: tuple[Literal["text", "audio"], ...]
-    ) -> tuple[Literal["text", "audio"], ...]:
-        supported = self._selected_model_modalities()
-        selected = tuple(output for output in output_modalities if output in supported)
-        if len(selected) == 0:
-            return ("text",)
-        return (selected[0],)
-
-    async def change_model(
-        self,
-        *,
-        provider: str | None,
-        model: str | None,
-        voice: str | None = None,
-    ) -> AgentModelChanged:
-        changed = await self._chat_client.change_model(
-            provider=provider,
-            model=model,
-            voice=voice,
-        )
-        self._output_modalities = tuple(changed.output_modalities)
-        self._output_modalities = self._supported_selected_output_modalities(
-            self._output_modalities
-        )
-        self._sync_turn_output_modalities()
-        return changed
+        current = chat_client
+        if current is not None:
+            await current.close(close_client=False)
+        if channel_client is not None and channel_started:
+            await channel_client.close()
 
 
 async def _close_process_use_chat_client(
@@ -2286,14 +1915,271 @@ async def _run_process_use_tui(
 ) -> None:
     from meshagent.cli import ask as ask_module
 
+    selected_output_modalities: tuple[OutputModality, ...] = ("text",)
+    thread_generation = 0
+
+    def _current_session() -> ChatThreadSession:
+        if chat_client is None:
+            raise RoomException("process use chat session not started")
+        return chat_client
+
+    def _selected_model_modalities() -> tuple[OutputModality, ...]:
+        model_info = _model_info_for_current_selection(
+            response=_current_session().models_response,
+            current_model=_current_session().current_model,
+        )
+        if model_info is None:
+            return ("text",)
+        return tuple(
+            output for output in model_info.modalities if output in ("text", "audio")
+        ) or ("text",)
+
+    def _supported_output_modalities(
+        output_modalities: tuple[OutputModality, ...],
+    ) -> tuple[OutputModality, ...]:
+        supported = _selected_model_modalities()
+        selected = tuple(output for output in output_modalities if output in supported)
+        if len(selected) == 0:
+            return ("text",)
+        return (selected[0],)
+
+    def _sync_current_model_output_modalities() -> None:
+        current_model = _current_session().current_model
+        if current_model is None:
+            return
+        _current_session().select_model(
+            current_model.model_copy(
+                update={"output_modalities": list(selected_output_modalities)}
+            )
+        )
+
+    def _select_model(model_changed: AgentModelChanged) -> None:
+        nonlocal selected_output_modalities
+        selected_output_modalities = _supported_output_modalities(
+            tuple(
+                output
+                for output in model_changed.output_modalities
+                if output in ("text", "audio")
+            )
+            or ("text",)
+        )
+        _current_session().select_model(
+            model_changed.model_copy(
+                update={"output_modalities": list(selected_output_modalities)}
+            )
+        )
+
+    async def _request_models() -> ModelsResponse:
+        nonlocal selected_output_modalities
+        response = await _current_session().request_models()
+        selected_output_modalities = _supported_output_modalities(("text",))
+        _sync_current_model_output_modalities()
+        return response
+
     async def _handle_model_command(command: str) -> str | None:
-        if session is None:
-            raise RoomException("process use session not started")
-        return await _handle_process_model_command(command, session=session)
+        nonlocal selected_output_modalities
+        parts = command.strip().split()
+        command_name = parts[0] if parts else ""
+        current = _current_session()
+        if command_name == "/new":
+            if len(parts) != 1:
+                return "Usage: /new"
+            await _new_thread()
+            return "New thread"
+        if command_name == "/provider":
+            response = current.models_response or await _request_models()
+            if len(parts) == 1:
+                return _format_provider_list(
+                    providers=response.providers,
+                    current_model=current.current_model,
+                )
+            if len(parts) == 2:
+                changed = _selected_default_model_for_provider(
+                    response=response,
+                    thread_id=current.thread_path,
+                    provider_name=parts[1],
+                )
+                if changed is None:
+                    return f"Unknown provider: {parts[1]}"
+                _select_model(changed)
+                return (
+                    "Using "
+                    f"{_provider_model_display_name(provider=changed.provider, model=changed.model)}"
+                )
+            return "Usage: /provider [provider]"
+        if command_name == "/model":
+            response = current.models_response or await _request_models()
+            if len(parts) == 1:
+                return _format_model_list(
+                    providers=response.providers,
+                    current_model=current.current_model,
+                )
+            if len(parts) != 2:
+                return "Usage: /model [model|provider/model]"
+            requested = parts[1]
+            provider_name: str | None = None
+            model_name = requested
+            if "/" in requested:
+                provider_name, model_name = requested.split("/", 1)
+            else:
+                matching_providers = [
+                    provider
+                    for provider in response.providers
+                    if any(model.name == requested for model in provider.models)
+                ]
+                if len(matching_providers) > 1:
+                    names = ", ".join(
+                        _provider_model_display_name(
+                            provider=provider.name,
+                            model=requested,
+                        )
+                        for provider in matching_providers
+                    )
+                    return f"Model name is ambiguous. Use one of: {names}"
+                if len(matching_providers) == 1:
+                    provider_name = matching_providers[0].name
+            changed = _selected_model_from_models_response(
+                response=response,
+                thread_id=current.thread_path,
+                provider=provider_name,
+                model=model_name,
+            )
+            if changed is None:
+                return f"Unknown model: {requested}"
+            _select_model(changed)
+            return (
+                "Using "
+                f"{_provider_model_display_name(provider=changed.provider, model=changed.model)}"
+            )
+        if command_name == "/output":
+            if len(parts) == 1:
+                modalities = _selected_model_modalities()
+                if selected_output_modalities == ("text",) and "audio" in modalities:
+                    selected_output_modalities = ("audio",)
+                else:
+                    selected_output_modalities = ("text",)
+                selected_output_modalities = _supported_output_modalities(
+                    selected_output_modalities
+                )
+                _sync_current_model_output_modalities()
+                return f"Using {','.join(selected_output_modalities)} responses"
+            if len(parts) != 2:
+                return "Usage: /output [text|audio]"
+            requested_output = parts[1].strip().lower()
+            if requested_output not in ("text", "audio"):
+                return "Usage: /output [text|audio]"
+            requested_modalities: tuple[OutputModality, ...] = (
+                ("audio",) if requested_output == "audio" else ("text",)
+            )
+            supported_modalities = _selected_model_modalities()
+            unsupported = [
+                output
+                for output in requested_modalities
+                if output not in supported_modalities
+            ]
+            if len(unsupported) > 0:
+                model_label = _current_model_label(
+                    current_model=current.current_model,
+                    fallback="current model",
+                )
+                return (
+                    f"{model_label} does not support {','.join(unsupported)} responses"
+                )
+            selected_output_modalities = requested_modalities
+            _sync_current_model_output_modalities()
+            return f"Using {','.join(selected_output_modalities)} responses"
+        if command_name == "/voice":
+            response = current.models_response or await _request_models()
+            model_info = _model_info_for_current_selection(
+                response=response,
+                current_model=current.current_model,
+            )
+            if model_info is None or len(model_info.available_voices) == 0:
+                return "Current model does not advertise output voices"
+            current_voice = (
+                current.current_model.voice
+                if current.current_model is not None
+                else None
+            ) or model_info.default_output_voice
+            if len(parts) == 1:
+                lines = ["Voices:"]
+                for voice_name in model_info.available_voices:
+                    marker = "*" if voice_name == current_voice else " "
+                    lines.append(f"{marker} {voice_name}")
+                return "\n".join(lines)
+            if len(parts) != 2:
+                return "Usage: /voice [voice]"
+            requested_voice = parts[1].strip()
+            if requested_voice not in model_info.available_voices:
+                voices = ", ".join(model_info.available_voices)
+                return f"Unknown voice: {requested_voice}. Available voices: {voices}"
+            current_model = current.current_model
+            if current_model is None:
+                return "No current model selected"
+            changed = await current.change_model(
+                provider=current_model.provider,
+                model=current_model.model,
+                voice=requested_voice,
+            )
+            _select_model(changed)
+            return f"Using voice {changed.voice or requested_voice}"
+        return None
+
+    async def _switch_thread(thread_path: str) -> None:
+        nonlocal chat_client, thread_generation
+        current = _current_session()
+        normalized_path = thread_path.strip()
+        if normalized_path == "":
+            return
+        if current.has_thread_path and current.thread_path == normalized_path:
+            return
+        new_session = await current.client.open_thread(
+            normalized_path,
+            local_participant_name=current.local_participant_name,
+            close_client_on_close=True,
+            load=True,
+        )
+        await current.close(close_client=False)
+        chat_client = new_session
+        _sync_current_model_output_modalities()
+        thread_generation += 1
+
+    async def _new_thread() -> None:
+        nonlocal chat_client, thread_generation
+        current = _current_session()
+        new_session = ChatThreadSession(
+            client=current.client,
+            thread_path=None,
+            local_participant_name=current.local_participant_name,
+            close_client_on_close=True,
+        )
+        await current.close(close_client=False)
+        chat_client = new_session
+        _sync_current_model_output_modalities()
+        thread_generation += 1
+
+    def _current_thread_path() -> str | None:
+        current = _current_session()
+        return current.thread_path if current.has_thread_path else None
+
+    async def _list_threads() -> list[ThreadListEntry]:
+        response = await _current_session().list_threads(limit=100, offset=0)
+        return [
+            _thread_list_entry_from_agent_entry(entry) for entry in response.threads
+        ]
+
+    def _subscribe_thread_events(
+        callback: Callable[[ThreadListEvent], None],
+    ) -> Callable[[], None]:
+        def _handle_payload(payload: dict[str, Any]) -> None:
+            event = _thread_list_event_from_agent_payload(payload)
+            if event is not None:
+                callback(event)
+
+        return _current_session().client.add_event_listener(_handle_payload)
 
     user_client: RoomClient | None = None
     chat_client: ChatThreadSession | None = None
-    session: _ChatChannelUseSession | None = None
     thread_sidebar: _ProcessThreadSidebar | None = None
     try:
         if websocket_url is None:
@@ -2315,10 +2201,8 @@ async def _run_process_use_tui(
                 iap_token=iap_token,
                 thread_path=thread_path,
             )
-        session = _ChatChannelUseSession(chat_client=chat_client)
-        await session.start()
         if chat_client.has_thread_path:
-            await _request_initial_models(session=session)
+            await _request_initial_models(session=chat_client)
 
         if message is not None:
 
@@ -2326,49 +2210,44 @@ async def _run_process_use_tui(
                 if isinstance(agent_message, AgentTextContentDelta):
                     click.echo(agent_message.text, nl=False)
 
-            await session.ask(
+            await chat_client.ask(
                 prompt=message,
                 on_message=_write_message,
             )
             click.echo()
             return
 
-        if session is not None:
-            thread_sidebar = _ProcessThreadSidebar(
-                list_threads=lambda: session.list_threads(limit=100, offset=0),
-                subscribe_thread_events=session.add_thread_list_event_listener,
-                current_thread_path=lambda: (
-                    _process_session_thread_path(session)
-                    if session is not None
-                    else None
-                ),
-                switch_thread=session.switch_thread,
-                delete_thread=session.delete_thread,
-                rename_thread=session.rename_thread,
-            )
-            await thread_sidebar.start()
+        thread_sidebar = _ProcessThreadSidebar(
+            list_threads=_list_threads,
+            subscribe_thread_events=_subscribe_thread_events,
+            current_thread_path=_current_thread_path,
+            switch_thread=_switch_thread,
+            delete_thread=lambda path: _current_session().delete_thread(path),
+            rename_thread=lambda path, name: _current_session().rename_thread(
+                path, name
+            ),
+        )
+        await thread_sidebar.start()
 
         await ask_module._run_ask_tui(
             model="remote",
-            session=session,
+            session=chat_client,
+            session_provider=_current_session,
+            thread_generation_provider=lambda: thread_generation,
             title=f"meshagent process use: {agent_name}",
             assistant_name=agent_name,
             command_handler=_handle_model_command,
             model_label_provider=lambda: _current_model_label(
-                current_model=session.current_model if session is not None else None,
+                current_model=_current_session().current_model,
                 fallback="remote",
             ),
             command_options_provider=lambda prompt: _process_command_options(
                 prompt,
-                response=session.models_response if session is not None else None,
-                current_model=session.current_model if session is not None else None,
-                current_output_modalities=(
-                    session.output_modalities if session is not None else ("text",)
-                ),
+                response=_current_session().models_response,
+                current_model=_current_session().current_model,
+                current_output_modalities=selected_output_modalities,
             ),
-            output_label_provider=lambda: (
-                session.output_modalities_label if session is not None else "text"
-            ),
+            output_label_provider=lambda: "+".join(selected_output_modalities),
             side_panel_renderer=(
                 thread_sidebar.render if thread_sidebar is not None else None
             ),
@@ -2382,8 +2261,6 @@ async def _run_process_use_tui(
     finally:
         if thread_sidebar is not None:
             await thread_sidebar.close()
-        if session is not None:
-            await session.close()
         await _close_process_use_chat_client(chat_client)
         await _close_process_use_room_client(user_client)
 
@@ -8084,8 +7961,6 @@ async def chat_with(
     thread_path: Optional[str],
     message: Optional[str] = None,
 ):
-    from meshagent.cli import ask as ask_module
-
     try:
         from textual import events
         from textual._context import active_app
@@ -8162,7 +8037,6 @@ async def chat_with(
                 participant_name=participant_name,
             )
             self._thread: ChatThreadSession | None = None
-            self._session: ask_module._AgentMessageSession | None = None
             self._doc = None
             self._responses: asyncio.Queue[str] = asyncio.Queue()
 
@@ -8191,11 +8065,6 @@ async def chat_with(
                 local_participant_name=local_participant_name,
                 close_client_on_close=True,
             )
-            self._session = ask_module._AgentMessageSession(
-                client=self._thread,
-                model=None,
-                local_participant_name=local_participant_name,
-            )
             return self
 
         async def __aexit__(self, exc_type, exc, exc_tb) -> None:
@@ -8211,8 +8080,8 @@ async def chat_with(
             return
 
         async def cancel(self) -> None:
-            if self._session is not None:
-                self._session.interrupt()
+            if self._thread is not None:
+                self._thread.interrupt()
 
         async def send_approval_decision(
             self, *, approval_id: str, approve: bool
@@ -8221,9 +8090,9 @@ async def chat_with(
             raise RoomException("tool approval is not available on this chat client")
 
         async def send(self, *, text: str) -> None:
-            if self._session is None:
+            if self._thread is None:
                 raise RoomException("chat client not started")
-            response = await self._session.ask(prompt=text)
+            response = await self._thread.ask(prompt=text)
             self._responses.put_nowait(response)
 
         async def receive(self) -> str:

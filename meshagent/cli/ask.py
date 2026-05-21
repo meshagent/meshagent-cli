@@ -427,6 +427,18 @@ class _AskExternalThreadState(Protocol):
 
 
 @runtime_checkable
+class _AskSteerableSession(Protocol):
+    def steer(
+        self,
+        *,
+        prompt: str,
+        on_accepted: Callable[[], Awaitable[None] | None] | None = None,
+        on_applied: Callable[[], Awaitable[None] | None] | None = None,
+        on_rejected: Callable[[RoomException], Awaitable[None] | None] | None = None,
+    ) -> str | None: ...
+
+
+@runtime_checkable
 class _AskImageDatasetProvider(Protocol):
     @property
     def image_dataset_client(self) -> ImageDatasetClient | None: ...
@@ -436,6 +448,17 @@ class _AskImageDatasetProvider(Protocol):
 class _AskThreadGenerationState(Protocol):
     @property
     def thread_generation(self) -> int: ...
+
+
+async def _send_chat_thread_prompt(
+    *,
+    session: ChatThreadSession,
+    prompt: str,
+) -> None:
+    if session.has_thread_path:
+        await session.send_text(text=prompt)
+        return
+    await session.start_thread(text=prompt)
 
 
 class _AgentMessageChannelClient(Protocol):
@@ -1082,6 +1105,12 @@ class _AgentMessageSession:
 
                 if event_type == AGENT_EVENT_TURN_START_ACCEPTED:
                     turn_start_accepted = TurnStartAccepted.model_validate(payload)
+                    if (
+                        turn_start_accepted.source_message_id
+                        == input_message.message_id
+                    ):
+                        active_turn_id = turn_start_accepted.turn_id
+                        self._active_turn_id = active_turn_id
                     self._client.add_agent_message(turn_start_accepted)
                     await _emit_agent_message(on_message, turn_start_accepted)
                     continue
@@ -1349,6 +1378,7 @@ class _AskSession:
         resolved_current_working_directory = os.path.abspath(
             current_working_directory or os.getcwd()
         )
+        self._current_working_directory = resolved_current_working_directory
         self._toolkits = _build_ask_toolkits(
             model=model,
             current_working_directory=resolved_current_working_directory,
@@ -1371,15 +1401,15 @@ class _AskSession:
             send_message=self._supervisor.send,
             events=self._supervisor.events,
         )
-        self._session = _AgentMessageSession(
-            client=self._channel_client.thread_session,
-            model=model,
-            current_working_directory=resolved_current_working_directory,
-        )
+        self._session = self._channel_client.thread_session
+
+    @property
+    def thread_session(self) -> ChatThreadSession:
+        return self._session
 
     @property
     def current_working_directory(self) -> str:
-        return self._session.current_working_directory
+        return self._current_working_directory
 
     @property
     def thread_status_text(self) -> str | None:
@@ -1390,7 +1420,7 @@ class _AskSession:
         return self._session.queued_message_labels
 
     @property
-    def messages(self) -> tuple[_AskConversationMessage, ...]:
+    def messages(self) -> tuple[AgentMessage, ...]:
         return self._session.messages
 
     async def __aenter__(self) -> _AskSession:
@@ -1403,12 +1433,23 @@ class _AskSession:
 
     async def start(self) -> None:
         await self._channel_client.start()
+        self._status_adapter.set_status_callback(self._handle_adapter_status)
         await self._supervisor.start()
 
     async def stop(self) -> None:
-        await self._session.close()
+        self._status_adapter.set_status_callback(None)
+        await self._session.close(close_client=False)
         await self._channel_client.close()
         await self._supervisor.stop()
+
+    def _handle_adapter_status(self, status: str) -> None:
+        self._session.add_agent_message(
+            AgentThreadStatus(
+                type=AGENT_EVENT_THREAD_STATUS,
+                thread_id=self._thread_id,
+                status=status,
+            )
+        )
 
     async def ask(
         self,
@@ -1434,6 +1475,7 @@ class _AskSession:
         try:
             return await self._session.ask(
                 prompt=prompt,
+                model=self._model,
                 on_message=on_message,
             )
         finally:
@@ -1675,6 +1717,10 @@ async def _run_ask_tui(
     model: str,
     llm_adapter: LLMAdapter | None = None,
     session: Any | None = None,
+    session_provider: Callable[[], Any] | None = None,
+    thread_generation_provider: Callable[[], int] | None = None,
+    current_working_directory: str | None = None,
+    image_dataset_client: ImageDatasetClient | None = None,
     title: str = "meshagent ask",
     assistant_name: str = "assistant",
     preamble_rule: bool = True,
@@ -1712,6 +1758,12 @@ async def _run_ask_tui(
         message_id: str | None = None
 
     @dataclass(slots=True)
+    class _RenderedAskFeedEntry:
+        entry: _AskFeedEntry
+        widget: Vertical
+        body_widget: Any
+
+    @dataclass(slots=True)
     class _AskToolCallState:
         toolkit: str
         tool: str
@@ -1726,13 +1778,6 @@ async def _run_ask_tui(
         compaction_mode: str | None
         compaction_threshold: int | None
         total_tokens: float
-
-    @dataclass(slots=True)
-    class _QueuedAskTurn:
-        prompt: str
-        sent: bool = False
-        accepted: bool = False
-        message_id: str | None = None
 
     @dataclass(slots=True)
     class _CommandSelectorState:
@@ -1941,8 +1986,12 @@ async def _run_ask_tui(
             self,
             *,
             session: Any,
+            session_provider: Callable[[], Any],
+            thread_generation_provider: Callable[[], int] | None,
             title: str,
             assistant_name: str,
+            current_working_directory: str,
+            image_dataset_client: ImageDatasetClient | None,
             command_handler: Callable[[str], Awaitable[str | None] | str | None] | None,
             model_label_provider: Callable[[], str | None] | None,
             output_label_provider: Callable[[], str | None] | None,
@@ -1955,9 +2004,13 @@ async def _run_ask_tui(
             | None,
         ) -> None:
             super().__init__()
-            self._session = session
+            self._session_fallback = session
+            self._session_provider = session_provider
+            self._thread_generation_provider = thread_generation_provider
             self._title = title
             self._assistant_name = assistant_name
+            self._current_working_directory = current_working_directory
+            self._image_dataset_client = image_dataset_client
             self._command_handler = command_handler
             self._model_label_provider = model_label_provider
             self._output_label_provider = output_label_provider
@@ -1985,9 +2038,11 @@ async def _run_ask_tui(
             self._session_meta_view: Static | None = None
             self._input_height = 1
             self._rendered_entry_count = 0
+            self._rendered_feed_entries_by_message_id: dict[
+                str, _RenderedAskFeedEntry
+            ] = {}
             self._submit_task: asyncio.Task[None] | None = None
             self._pending = False
-            self._queued_turns: list[_QueuedAskTurn] = []
             self._external_queued_messages: list[str] = []
             self._rendered_session_message_ids: set[str] = set()
             self._pending_session_image_message_ids: set[str] = set()
@@ -2006,6 +2061,10 @@ async def _run_ask_tui(
             self._audio_error_reported = False
             self._side_panel_focused = False
             self._thread_generation: int | None = None
+
+        @property
+        def _session(self) -> Any:
+            return self._session_provider()
 
         def compose(self) -> ComposeResult:
             help_text = "Enter to send. Shift+Enter inserts a newline. Ctrl+C quits."
@@ -2251,15 +2310,23 @@ async def _run_ask_tui(
                 return
 
             if self._pending:
-                queued_turn = _QueuedAskTurn(prompt=prompt)
-                self._queued_turns.append(queued_turn)
-                self._render_turn_queue()
-                await self._dispatch_pending_queued_turns()
+                self._steer_active_turn(prompt=prompt)
                 return
 
             self._start_turn(prompt=prompt)
 
         def _start_turn(self, *, prompt: str) -> None:
+            if isinstance(self._session, ChatThreadSession):
+                self._render_feed()
+                self._render_turn_queue()
+                self._scroll_to_end()
+                self._submit_task = asyncio.create_task(
+                    self._run_prompt(
+                        prompt=prompt,
+                    )
+                )
+                return
+
             self._pending = True
             self._begin_active_assistant()
             self._status_started_at = time.monotonic()
@@ -2399,16 +2466,31 @@ async def _run_ask_tui(
                 await self._active_assistant_stream.stop()
                 self._active_assistant_stream = None
 
+        def _stop_active_assistant_stream_in_background(self) -> None:
+            active_stream = self._active_assistant_stream
+            if active_stream is None:
+                return
+            self._active_assistant_stream = None
+            task = asyncio.create_task(active_stream.stop())
+            task.add_done_callback(_consume_task_exception)
+
         async def _run_prompt(
             self,
             *,
             prompt: str,
         ) -> None:
             try:
-                await self._session.ask(
-                    prompt=prompt,
-                    on_message=self._handle_agent_message,
-                )
+                session = self._session
+                if isinstance(session, ChatThreadSession):
+                    await self._run_chat_thread_prompt(
+                        session=session,
+                        prompt=prompt,
+                    )
+                else:
+                    await session.ask(
+                        prompt=prompt,
+                        on_message=self._handle_agent_message,
+                    )
             except asyncio.CancelledError:
                 raise
             except RoomException as ex:
@@ -2434,11 +2516,22 @@ async def _run_ask_tui(
                 if self._input_view is not None:
                     self._input_view.focus()
 
+        async def _run_chat_thread_prompt(
+            self,
+            *,
+            session: ChatThreadSession,
+            prompt: str,
+        ) -> None:
+            await _send_chat_thread_prompt(
+                session=session,
+                prompt=prompt,
+            )
+
         async def _finalize_active_assistant(self) -> None:
             active_text = self._active_assistant_text
             active_name = self._active_assistant_name
             active_item_id = self._active_assistant_item_id
-            await self._stop_active_assistant_stream()
+            self._stop_active_assistant_stream_in_background()
             with self.batch_update():
                 if active_text.strip() != "":
                     changed = self._append_or_replace_feed_entry(
@@ -2508,41 +2601,44 @@ async def _run_ask_tui(
                 return
             self._active_assistant_event_break.styles.display = "none"
 
-        async def _dispatch_pending_queued_turns(self) -> None:
-            for queued_turn in self._queued_turns:
-                if queued_turn.sent:
-                    continue
-                message_id = self._session.steer(
-                    prompt=queued_turn.prompt,
-                    on_accepted=lambda queued_turn=queued_turn: (
-                        self._accept_queued_turn(queued_turn)
-                    ),
-                    on_applied=lambda queued_turn=queued_turn: self._apply_queued_turn(
-                        queued_turn
-                    ),
-                    on_rejected=lambda error, queued_turn=queued_turn: (
-                        self._reject_queued_turn(
-                            queued_turn=queued_turn,
-                            error=error,
-                        )
-                    ),
+        def _steer_active_turn(self, *, prompt: str) -> None:
+            session = self._session
+            if not isinstance(session, _AskSteerableSession):
+                self._entries.append(
+                    _AskFeedEntry(
+                        role="error",
+                        text="Wait for the current turn to finish.",
+                    )
                 )
-                if message_id is None:
-                    break
-                queued_turn.sent = True
-                queued_turn.message_id = message_id
-                self._render_turn_queue()
+                self._render_feed()
+                self._scroll_to_end()
+                return
 
-        def _accept_queued_turn(self, queued_turn: _QueuedAskTurn) -> None:
-            queued_turn.accepted = True
+            message_id = session.steer(
+                prompt=prompt,
+                on_accepted=self._handle_steer_accepted,
+                on_applied=self._handle_steer_applied,
+                on_rejected=self._handle_steer_rejected,
+            )
+            if message_id is None:
+                self._entries.append(
+                    _AskFeedEntry(
+                        role="error",
+                        text="Wait for the current turn to become steerable.",
+                    )
+                )
+                self._render_feed()
+                self._scroll_to_end()
+                return
             self._render_turn_queue()
 
-        async def _apply_queued_turn(self, queued_turn: _QueuedAskTurn) -> None:
-            if queued_turn not in self._queued_turns:
-                return
+        def _handle_steer_accepted(self) -> None:
+            self._sync_external_thread_state()
+            self._render_turn_queue()
+
+        async def _handle_steer_applied(self) -> None:
             await self._finalize_active_assistant()
             with self.batch_update():
-                self._queued_turns.remove(queued_turn)
                 self._render_turn_queue()
                 self._sync_session_messages()
                 self._render_feed()
@@ -2552,18 +2648,11 @@ async def _run_ask_tui(
                     self._begin_active_assistant()
             self._scroll_to_end()
 
-        def _reject_queued_turn(
-            self,
-            *,
-            queued_turn: _QueuedAskTurn,
-            error: RoomException,
-        ) -> None:
-            if queued_turn in self._queued_turns:
-                self._queued_turns.remove(queued_turn)
+        def _handle_steer_rejected(self, error: RoomException) -> None:
             self._entries.append(
                 _AskFeedEntry(
                     role="error",
-                    text=f"Unable to queue prompt: {error}",
+                    text=f"Unable to steer turn: {error}",
                 )
             )
             self._render_turn_queue()
@@ -2680,9 +2769,6 @@ async def _run_ask_tui(
         async def _handle_agent_message(self, message: AgentMessage) -> None:
             if isinstance(message, (StartThread, TurnStart, TurnSteer)):
                 self._sync_session_messages()
-                return
-            if isinstance(message, TurnStarted):
-                await self._dispatch_pending_queued_turns()
                 return
             if isinstance(message, AgentThreadStatus):
                 self._sync_session_messages()
@@ -2879,9 +2965,13 @@ async def _run_ask_tui(
             image_parts: list[str] = []
             attachment_parts: list[str] = []
             image_dataset_client = (
-                self._session.image_dataset_client
-                if isinstance(self._session, _AskImageDatasetProvider)
-                else None
+                self._image_dataset_client
+                if self._image_dataset_client is not None
+                else (
+                    self._session.image_dataset_client
+                    if isinstance(self._session, _AskImageDatasetProvider)
+                    else None
+                )
             )
             for item_uri in uris:
                 image_ascii = await _ascii_image_from_uri_async(
@@ -2922,7 +3012,8 @@ async def _run_ask_tui(
                         return False
                     self._entries[index] = entry
                     if index < self._rendered_entry_count:
-                        self._reset_rendered_feed()
+                        if not self._update_rendered_feed_entry(entry):
+                            self._reset_rendered_feed()
                     return True
             self._entries.append(entry)
             return True
@@ -2946,6 +3037,28 @@ async def _run_ask_tui(
             if self._feed_view is not None:
                 self._feed_view.remove_children()
             self._rendered_entry_count = 0
+            self._rendered_feed_entries_by_message_id.clear()
+
+        def _update_rendered_feed_entry(self, entry: _AskFeedEntry) -> bool:
+            if entry.message_id is None:
+                return False
+            rendered = self._rendered_feed_entries_by_message_id.get(entry.message_id)
+            if rendered is None:
+                return False
+            if rendered.entry.role != entry.role or rendered.entry.kind != entry.kind:
+                return False
+            if rendered.entry.pending != entry.pending:
+                return False
+            body_text = entry.text if entry.text.strip() != "" else " "
+            body_widget = rendered.body_widget
+            if isinstance(body_widget, TextualMarkdown):
+                body_widget.update(body_text)
+            elif isinstance(body_widget, Static):
+                body_widget.update(self._feed_entry_body_renderable(entry))
+            else:
+                return False
+            rendered.entry = entry
+            return True
 
         def _tool_call_entry_text(
             self,
@@ -3035,18 +3148,27 @@ async def _run_ask_tui(
             self._render_turn_queue()
 
         def _sync_external_thread_state(self) -> None:
-            if not isinstance(self._session, _AskExternalThreadState):
+            session = self._session
+            if not isinstance(session, _AskExternalThreadState):
                 return
-            if isinstance(self._session, _AskThreadGenerationState):
-                generation = self._session.thread_generation
+            generation = (
+                self._thread_generation_provider()
+                if self._thread_generation_provider is not None
+                else (
+                    session.thread_generation
+                    if isinstance(session, _AskThreadGenerationState)
+                    else None
+                )
+            )
+            if generation is not None:
                 if self._thread_generation is None:
                     self._thread_generation = generation
                 elif self._thread_generation != generation:
                     self._thread_generation = generation
                     self._reset_current_thread_feed()
 
-            status = self._session.thread_status_text
-            labels = list(self._session.queued_message_labels)
+            status = session.thread_status_text
+            labels = list(session.queued_message_labels)
             active = status is not None and status.strip() != ""
             status_changed = active != self._external_thread_active
             queue_changed = labels != self._external_queued_messages
@@ -3081,14 +3203,25 @@ async def _run_ask_tui(
             self._scroll_to_end()
 
         def _sync_session_messages(self) -> None:
-            if not isinstance(self._session, _AskExternalThreadState):
+            session = self._session
+            if not isinstance(session, _AskExternalThreadState):
                 return
-            queued_message_ids = {
-                queued_turn.message_id
-                for queued_turn in self._queued_turns
-                if queued_turn.message_id is not None
-            }
-            session_messages = self._session.messages
+            session_messages = session.messages
+            queued_message_ids: set[str] = set()
+            if isinstance(session, ChatThreadSession):
+                queued_message_ids = {
+                    pending.message_id for pending in session.pending_inputs
+                }
+            if any(isinstance(message, AgentMessage) for message in session_messages):
+                local_participant_name = (
+                    session.local_participant_name
+                    if isinstance(session, ChatThreadSession)
+                    else None
+                )
+                session_messages = _ask_conversation_messages_from_agent_messages(
+                    session_messages,
+                    local_participant_name=local_participant_name,
+                )
             visible_count = _ask_conversation_message_render_window(self.size.height)
             start_index = max(0, len(session_messages) - visible_count)
             if len(self._rendered_session_message_ids) == 0:
@@ -3110,8 +3243,13 @@ async def _run_ask_tui(
                 dataset_image_uri = _dataset_image_attachment_uri(message.text)
                 if (
                     dataset_image_uri is not None
-                    and isinstance(self._session, _AskImageDatasetProvider)
-                    and self._session.image_dataset_client is not None
+                    and (
+                        self._image_dataset_client is not None
+                        or (
+                            isinstance(session, _AskImageDatasetProvider)
+                            and session.image_dataset_client is not None
+                        )
+                    )
                     and message.message_id
                     not in self._pending_session_image_message_ids
                 ):
@@ -3198,24 +3336,7 @@ async def _run_ask_tui(
             if self._queue_view is None:
                 return
 
-            def _normalized_label(value: str) -> str:
-                return " ".join(value.split())
-
-            local_labels = [queued_turn.prompt for queued_turn in self._queued_turns]
-            queued_labels = [*local_labels]
-            normalized_local_labels = {
-                _normalized_label(label) for label in local_labels
-            }
-            for external_label in self._external_queued_messages:
-                normalized_external_label = _normalized_label(external_label)
-                if normalized_external_label in normalized_local_labels:
-                    continue
-                if any(
-                    normalized_external_label.endswith(f": {local_label}")
-                    for local_label in normalized_local_labels
-                ):
-                    continue
-                queued_labels.append(external_label)
+            queued_labels = self._external_queued_messages
 
             if len(queued_labels) == 0:
                 self._queue_view.styles.display = "none"
@@ -3264,7 +3385,7 @@ async def _run_ask_tui(
                 meta_text.append(modality_label, style="#cfd3dc")
             meta_text.append("  •  ", style="#5f6778")
             meta_text.append("cwd ", style="bold #9aa5b8")
-            meta_text.append(self._session.current_working_directory, style="#cfd3dc")
+            meta_text.append(self._current_working_directory, style="#cfd3dc")
             table = Table.grid(expand=True)
             table.add_column(ratio=1)
             table.add_column(justify="right", no_wrap=True)
@@ -3423,15 +3544,18 @@ async def _run_ask_tui(
                     entry_roles,
                     before_index=self._rendered_entry_count,
                 )
-                self._feed_view.mount(
-                    self._render_entry(
-                        entry,
-                        show_header=self._should_show_entry_header(
-                            entry=entry,
-                            previous_participant_role=previous_participant_role,
-                        ),
-                    )
+                rendered = self._render_entry(
+                    entry,
+                    show_header=self._should_show_entry_header(
+                        entry=entry,
+                        previous_participant_role=previous_participant_role,
+                    ),
                 )
+                self._feed_view.mount(rendered.widget)
+                if entry.message_id is not None:
+                    self._rendered_feed_entries_by_message_id[entry.message_id] = (
+                        rendered
+                    )
                 self._rendered_entry_count += 1
 
         def _should_show_entry_header(
@@ -3448,17 +3572,33 @@ async def _run_ask_tui(
                 return True
             return previous_participant_role != entry.role
 
-        def _render_entry(self, entry: _AskFeedEntry, *, show_header: bool) -> Vertical:
+        def _feed_entry_body_renderable(self, entry: _AskFeedEntry) -> Text:
+            body_text = entry.text if entry.text.strip() != "" else " "
+            body_style = "white" if entry.role == "you" else ""
+            if entry.role == "error":
+                body_style = "red"
+            if entry.kind == "image" and body_text.strip() != "":
+                image_text = Text.from_ansi(body_text)
+                image_text.no_wrap = False
+                image_text.overflow = "fold"
+                return image_text
+            return Text(
+                body_text,
+                style=body_style,
+                no_wrap=False,
+                overflow="fold",
+            )
+
+        def _render_entry(
+            self, entry: _AskFeedEntry, *, show_header: bool
+        ) -> _RenderedAskFeedEntry:
             header_style = "bold cyan"
-            body_style = ""
             entry_classes = "feed-entry"
             if entry.role == "you":
                 header_style = "bold white"
-                body_style = "white"
                 entry_classes += " feed-entry--you"
             elif entry.role == "error":
                 header_style = "bold red"
-                body_style = "red"
                 entry_classes += " feed-entry--error"
             elif entry.role == "event":
                 event_text = Text("", no_wrap=False, overflow="fold")
@@ -3470,12 +3610,18 @@ async def _run_ask_tui(
                     for line in lines[1:]:
                         event_text.append("\n")
                         event_text.append(line, style="dim")
-                return Vertical(
-                    Static(
-                        event_text,
-                        classes="feed-entry-body",
-                    ),
+                body_widget = Static(
+                    event_text,
+                    classes="feed-entry-body",
+                )
+                widget = Vertical(
+                    body_widget,
                     classes="feed-entry feed-entry--event",
+                )
+                return _RenderedAskFeedEntry(
+                    entry=entry,
+                    widget=widget,
+                    body_widget=body_widget,
                 )
             elif not show_header:
                 entry_classes += " feed-entry--continued"
@@ -3483,20 +3629,12 @@ async def _run_ask_tui(
             body_text = entry.text if entry.text.strip() != "" else " "
             if entry.role == "error":
                 body_widget = Static(
-                    Text(
-                        body_text,
-                        style=body_style,
-                        no_wrap=False,
-                        overflow="fold",
-                    ),
+                    self._feed_entry_body_renderable(entry),
                     classes="feed-entry-body",
                 )
             elif entry.kind == "image" and body_text.strip() != "":
-                image_text = Text.from_ansi(body_text)
-                image_text.no_wrap = False
-                image_text.overflow = "fold"
                 body_widget = Static(
-                    image_text,
+                    self._feed_entry_body_renderable(entry),
                     classes="feed-entry-body",
                 )
             elif entry.role != "you" and body_text.strip() != "":
@@ -3511,22 +3649,12 @@ async def _run_ask_tui(
                 )
             elif body_text.strip() != "":
                 body_widget = Static(
-                    Text(
-                        body_text,
-                        style=body_style,
-                        no_wrap=False,
-                        overflow="fold",
-                    ),
+                    self._feed_entry_body_renderable(entry),
                     classes="feed-entry-body",
                 )
             else:
                 body_widget = Static(
-                    Text(
-                        body_text,
-                        style=body_style,
-                        no_wrap=False,
-                        overflow="fold",
-                    ),
+                    self._feed_entry_body_renderable(entry),
                     classes="feed-entry-body",
                 )
 
@@ -3540,13 +3668,26 @@ async def _run_ask_tui(
                     ),
                 )
 
-            return Vertical(*widgets, classes=entry_classes)
+            widget = Vertical(*widgets, classes=entry_classes)
+            return _RenderedAskFeedEntry(
+                entry=entry,
+                widget=widget,
+                body_widget=body_widget,
+            )
 
     async def _run_app(session_arg: Any) -> None:
+        resolved_current_working_directory = os.path.abspath(
+            current_working_directory or os.getcwd()
+        )
+        resolved_session_provider = session_provider or (lambda: session_arg)
         app = _AskTextualApp(
             session=session_arg,
+            session_provider=resolved_session_provider,
+            thread_generation_provider=thread_generation_provider,
             title=title,
             assistant_name=assistant_name,
+            current_working_directory=resolved_current_working_directory,
+            image_dataset_client=image_dataset_client,
             command_handler=command_handler,
             model_label_provider=model_label_provider,
             output_label_provider=output_label_provider,
@@ -3577,7 +3718,7 @@ async def _run_ask_tui(
             interactive=True,
             preamble_rule=preamble_rule,
         ) as created_session:
-            await _run_app(created_session)
+            await _run_app(created_session.thread_session)
 
 
 @app.async_command("ask", help="Send a one-shot LLM prompt.")

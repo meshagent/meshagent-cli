@@ -41,6 +41,17 @@ from meshagent.cli.preamble_rules import DEFAULT_PREAMBLE_RULE
 from meshagent.openai import OpenAIResponsesAdapter
 
 
+class _PromptSendSession:
+    def __init__(self) -> None:
+        self.has_thread_path = True
+        self.sent_text: str | None = None
+        self.turn_finished = asyncio.Event()
+
+    async def send_text(self, *, text: str) -> str:
+        self.sent_text = text
+        return "message-1"
+
+
 class _FakeAskAdapter(LLMAdapter[object]):
     def default_model(self) -> str:
         return "gpt-5.5"
@@ -1090,6 +1101,76 @@ async def test_ask_command_uses_oauth_token_and_prints_result(monkeypatch) -> No
         ((" world",), {"nl": False}),
         ((), {}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_send_chat_thread_prompt_returns_after_sending() -> None:
+    session = _PromptSendSession()
+
+    await asyncio.wait_for(
+        ask_module._send_chat_thread_prompt(
+            session=session,
+            prompt="hello",
+        ),
+        timeout=0.1,
+    )
+
+    assert session.sent_text == "hello"
+
+
+@pytest.mark.asyncio
+async def test_send_chat_thread_prompt_starts_thread_without_waiting_for_turn_end() -> (
+    None
+):
+    class _ThreadStartSession:
+        has_thread_path = False
+
+        def __init__(self) -> None:
+            self.started_text: str | None = None
+
+        async def start_thread(self, *, text: str) -> str:
+            self.started_text = text
+            return "message-1"
+
+    session = _ThreadStartSession()
+
+    await asyncio.wait_for(
+        ask_module._send_chat_thread_prompt(
+            session=session,
+            prompt="hello",
+        ),
+        timeout=0.1,
+    )
+
+    assert session.started_text == "hello"
+
+
+@pytest.mark.asyncio
+async def test_send_chat_thread_prompt_does_not_wait_for_turn_completion() -> None:
+    class _UnfinishedTurnSession:
+        has_thread_path = True
+
+        def __init__(self) -> None:
+            self.sent_text: str | None = None
+            self.last_completed_turn_id = None
+            self.active_turn_id = "turn-1"
+            self.thread_status_text = "Writing"
+
+        async def send_text(self, *, text: str) -> str:
+            self.sent_text = text
+            return "message-1"
+
+    session = _UnfinishedTurnSession()
+
+    await asyncio.wait_for(
+        ask_module._send_chat_thread_prompt(
+            session=session,
+            prompt="hello",
+        ),
+        timeout=0.1,
+    )
+
+    assert session.sent_text == "hello"
 
 
 @pytest.mark.asyncio

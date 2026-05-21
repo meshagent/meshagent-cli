@@ -25,6 +25,7 @@ from meshagent.agents.messages import (
     AGENT_MESSAGE_TURN_STEER,
     AgentModelChanged,
     AgentModelInfo,
+    AgentMessage,
     AgentProviderInfo,
     AgentTextContent,
     AgentTextContentDelta,
@@ -35,6 +36,7 @@ from meshagent.agents.messages import (
     StartThread,
     TurnEnded,
     TurnStart,
+    TurnStartAccepted,
     TurnStarted,
     TurnSteer,
 )
@@ -1887,9 +1889,7 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
 
     async def fake_run_ask_tui(**kwargs):
         captured.update(kwargs)
-        captured["image_dataset_client"] = kwargs[
-            "session"
-        ]._session.image_dataset_client
+        captured["image_dataset_client"] = kwargs["image_dataset_client"]
 
     bot = _DummyBot()
     room = object()
@@ -1913,7 +1913,7 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
     assert captured["command_handler"] is not None
     assert captured["model_label_provider"]() == "openai-realtime/gpt-realtime"
     assert isinstance(captured["image_dataset_client"], process.ImageDatasetClient)
-    assert captured["image_dataset_client"]._room is room
+    assert captured["image_dataset_client"].client is room
     command_options = captured["command_options_provider"]("/model")
     assert [option.command for option in command_options] == [
         "/model openai-realtime/gpt-realtime",
@@ -1925,9 +1925,62 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
         "/output audio",
     ]
     assert command_options[0].active is True
-    assert captured["session"]._session._model is None
-    assert captured["session"].current_working_directory == "/tmp"
+    assert isinstance(captured["session"], process.ChatThreadSession)
+    assert captured["current_working_directory"] == "/tmp"
     assert bot._supervisor.unsubscribed_queue is bot._supervisor.subscribed_queue
+
+
+@pytest.mark.asyncio
+async def test_process_run_tui_closes_local_events_after_supervisor_detaches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from meshagent.cli import ask as ask_module
+
+    class _DummySupervisor:
+        def __init__(self) -> None:
+            self.subscribed_queue = None
+            self.unsubscribed_queue = None
+            self.processes: list[object] = []
+
+        def subscribe_local_events(self):
+            self.subscribed_queue = asyncio.Queue()
+            return self.subscribed_queue
+
+        def unsubscribe_local_events(self, queue) -> None:
+            self.unsubscribed_queue = queue
+
+        def send(self, message: Message) -> None:
+            del message
+
+        async def route(self, message: Message) -> None:
+            del message
+
+    class _DummyBot:
+        def __init__(self) -> None:
+            self._supervisor = _DummySupervisor()
+
+    bot = _DummyBot()
+    supervisor = bot._supervisor
+
+    async def fake_run_ask_tui(**kwargs):
+        del kwargs
+        bot._supervisor = None
+
+    monkeypatch.setattr(ask_module, "_run_ask_tui", fake_run_ask_tui)
+
+    await process._run_process_run_tui(
+        bot=bot,
+        model="gpt-5.5",
+        thread_path="/threads/process-run.thread",
+        thread_storage="meshdocument",
+        agent_name="helper",
+        thread_dir=None,
+        threading_mode="none",
+        message=None,
+        working_dir="/tmp",
+    )
+
+    assert supervisor.unsubscribed_queue is supervisor.subscribed_queue
 
 
 @pytest.mark.asyncio
@@ -2148,10 +2201,24 @@ async def test_process_run_tui_loads_existing_thread_messages(
         working_dir="/tmp",
     )
 
-    assert [(message.role, message.text) for message in captured["messages"]] == [
-        ("alex", "existing prompt"),
-        ("helper", "existing answer"),
-    ]
+    assert captured["messages"] == (
+        TurnStart(
+            type=AGENT_MESSAGE_TURN_START,
+            thread_id="/threads/process-run.thread",
+            message_id="existing-1",
+            content=[AgentTextContent(type="text", text="existing prompt")],
+            sender_name="alex",
+        ),
+        AgentTextContentDelta(
+            type=AGENT_EVENT_TEXT_CONTENT_DELTA,
+            thread_id="/threads/process-run.thread",
+            message_id="existing-2",
+            turn_id="turn-existing",
+            item_id="existing-2",
+            text="existing answer",
+            sender_name="helper",
+        ),
+    )
 
 
 @pytest.mark.asyncio
@@ -2207,7 +2274,7 @@ async def test_process_run_tui_default_new_does_not_open_implicit_thread_on_star
 
 
 @pytest.mark.asyncio
-async def test_process_run_session_uses_thread_status_messages() -> None:
+async def test_process_run_direct_session_uses_thread_status_messages() -> None:
     class _DummySupervisor:
         def __init__(self) -> None:
             self.events: asyncio.Queue[Message] = asyncio.Queue()
@@ -2277,20 +2344,15 @@ async def test_process_run_session_uses_thread_status_messages() -> None:
         async def route(self, message: Message) -> None:
             self.send(message)
 
-    class _DummyBot:
-        def __init__(self) -> None:
-            self._supervisor = _DummySupervisor()
-
-    session = process._ProcessRunSession(
-        bot=_DummyBot(),
-        model="gpt-5.5",
+    supervisor = _DummySupervisor()
+    events = supervisor.subscribe_local_events()
+    client = process.LocalChatClient(
         thread_path="/threads/process-run.thread",
-        thread_storage="meshdocument",
-        agent_name="helper",
-        thread_dir=None,
-        threading_mode="none",
-        current_working_directory="/tmp",
+        send_message=supervisor.send,
+        events=events,
+        on_close=lambda: supervisor.unsubscribe_local_events(events),
     )
+    session = client.thread_session
     statuses: list[str | None] = []
 
     def _on_message(message) -> None:
@@ -2298,12 +2360,114 @@ async def test_process_run_session_uses_thread_status_messages() -> None:
             statuses.append(message.status)
 
     try:
+        await client.start()
         result = await session.ask(prompt="hello local", on_message=_on_message)
     finally:
-        await session.close()
+        await session.close(close_client=False)
+        await client.close()
 
     assert result == "local response"
     assert statuses == ["Working", "Planning", "Running tools", None]
+
+
+@pytest.mark.asyncio
+async def test_process_run_direct_session_ignores_stale_turn_end_before_started() -> (
+    None
+):
+    class _DummySupervisor:
+        def __init__(self) -> None:
+            self.events: asyncio.Queue[Message] = asyncio.Queue()
+            self.sent_messages: list[Message] = []
+            self.processes = []
+
+        def subscribe_local_events(self):
+            return self.events
+
+        def unsubscribe_local_events(self, queue) -> None:
+            assert queue is self.events
+
+        def send(self, message: Message) -> None:
+            self.sent_messages.append(message)
+            if not isinstance(message.data, TurnStart):
+                return
+            self.events.put_nowait(
+                Message(
+                    data=TurnEnded(
+                        type=AGENT_EVENT_TURN_ENDED,
+                        thread_id=message.data.thread_id,
+                        turn_id="stale-turn",
+                        error=None,
+                    )
+                )
+            )
+            self.events.put_nowait(
+                Message(
+                    data=TurnStartAccepted(
+                        type=AGENT_EVENT_TURN_START_ACCEPTED,
+                        thread_id=message.data.thread_id,
+                        turn_id="turn-2",
+                        source_message_id=message.data.message_id,
+                    )
+                )
+            )
+            self.events.put_nowait(
+                Message(
+                    data=AgentTextContentDelta(
+                        type=AGENT_EVENT_TEXT_CONTENT_DELTA,
+                        thread_id=message.data.thread_id,
+                        turn_id="turn-2",
+                        item_id="text-2",
+                        text="second response",
+                    )
+                )
+            )
+            self.events.put_nowait(
+                Message(
+                    data=TurnStarted(
+                        type=AGENT_EVENT_TURN_STARTED,
+                        thread_id=message.data.thread_id,
+                        turn_id="turn-2",
+                        source_message_id=message.data.message_id,
+                    )
+                )
+            )
+            self.events.put_nowait(
+                Message(
+                    data=TurnEnded(
+                        type=AGENT_EVENT_TURN_ENDED,
+                        thread_id=message.data.thread_id,
+                        turn_id="turn-2",
+                        error=None,
+                    )
+                )
+            )
+
+        async def route(self, message: Message) -> None:
+            self.send(message)
+
+    supervisor = _DummySupervisor()
+    events = supervisor.subscribe_local_events()
+    client = process.LocalChatClient(
+        thread_path="/threads/process-run.thread",
+        send_message=supervisor.send,
+        events=events,
+        on_close=lambda: supervisor.unsubscribe_local_events(events),
+    )
+    session = client.thread_session
+    messages: list[AgentMessage] = []
+
+    try:
+        await client.start()
+        result = await session.ask(prompt="second", on_message=messages.append)
+    finally:
+        await session.close(close_client=False)
+        await client.close()
+
+    assert result == "second response"
+    assert any(
+        isinstance(message, AgentTextContentDelta) and message.text == "second response"
+        for message in messages
+    )
 
 
 @pytest.mark.asyncio
@@ -2680,6 +2844,24 @@ async def test_process_use_tui_uses_chat_channel_session(
         async def receive(self) -> dict[str, object]:
             return await self.events.get()
 
+        async def ask(self, *, prompt: str, on_message=None):
+            payload = TurnStart(
+                type=AGENT_MESSAGE_TURN_START,
+                thread_id=self.thread_path,
+                content=[AgentTextContent(type="text", text=prompt)],
+            )
+            await self.send(payload)
+            output: list[str] = []
+            while True:
+                event = await self.receive()
+                if event["type"] == AGENT_EVENT_TEXT_CONTENT_DELTA:
+                    message = AgentTextContentDelta.model_validate(event)
+                    output.append(message.text)
+                    if on_message is not None:
+                        on_message(message)
+                if event["type"] == AGENT_EVENT_TURN_ENDED:
+                    return "".join(output)
+
         @property
         def messages(self):
             return tuple(self._messages)
@@ -2717,7 +2899,7 @@ async def test_process_use_tui_uses_chat_channel_session(
         captured["tui_title"] = kwargs["title"]
         captured["assistant_name"] = kwargs["assistant_name"]
         session = kwargs["session"]
-        captured["session_cwd"] = session.current_working_directory
+        captured["session_cwd"] = kwargs.get("current_working_directory")
         captured["initial_messages"] = session.messages
         deltas: list[str] = []
 
@@ -2771,9 +2953,7 @@ async def test_process_use_tui_uses_chat_channel_session(
     assert captured["tui_model"] == "remote"
     assert captured["tui_title"] == "meshagent process use: remote-helper"
     assert captured["assistant_name"] == "remote-helper"
-    assert [
-        (message.role, message.text) for message in captured["initial_messages"]
-    ] == [("you", "stored remote prompt")]
+    assert captured["initial_messages"] == ()
     assert captured["ask_result"] == "remote response"
     assert captured["deltas"] == ["remote response"]
     assert len(chat_client.sent_payloads) == 1
@@ -2787,7 +2967,9 @@ async def test_process_use_tui_uses_chat_channel_session(
 
 
 @pytest.mark.asyncio
-async def test_process_chat_channel_session_uses_thread_status_messages() -> None:
+async def test_process_chat_channel_direct_session_uses_thread_status_messages() -> (
+    None
+):
     class _DummyChatClient:
         def __init__(self) -> None:
             self.has_thread_path = True
@@ -2852,19 +3034,56 @@ async def test_process_chat_channel_session_uses_thread_status_messages() -> Non
         async def receive(self) -> dict[str, object]:
             return await self.events.get()
 
+        async def ask(self, *, prompt: str, on_message=None):
+            payload = TurnStart(
+                type=AGENT_MESSAGE_TURN_START,
+                thread_id=self.thread_path,
+                content=[AgentTextContent(type="text", text=prompt)],
+            )
+            await self.send(payload)
+            if on_message is not None:
+                on_message(
+                    AgentThreadStatus(
+                        type=AGENT_EVENT_THREAD_STATUS,
+                        thread_id=self.thread_path,
+                        status="Working",
+                    )
+                )
+            output: list[str] = []
+            while True:
+                event = await self.receive()
+                if event["type"] == AGENT_EVENT_THREAD_STATUS:
+                    message = AgentThreadStatus.model_validate(event)
+                    if on_message is not None:
+                        on_message(message)
+                if event["type"] == AGENT_EVENT_TEXT_CONTENT_DELTA:
+                    message = AgentTextContentDelta.model_validate(event)
+                    output.append(message.text)
+                    if on_message is not None:
+                        on_message(message)
+                if event["type"] == AGENT_EVENT_TURN_ENDED:
+                    if on_message is not None:
+                        on_message(
+                            AgentThreadStatus(
+                                type=AGENT_EVENT_THREAD_STATUS,
+                                thread_id=self.thread_path,
+                                status=None,
+                            )
+                        )
+                    return "".join(output)
+
         def clear_applied_queued_agent_inputs(self) -> None:
             pass
 
     chat_client = _DummyChatClient()
 
-    session = process._ChatChannelUseSession(chat_client=chat_client)
     statuses: list[str | None] = []
 
     def _on_message(message) -> None:
         if isinstance(message, AgentThreadStatus):
             statuses.append(message.status)
 
-    result = await session.ask(
+    result = await chat_client.ask(
         prompt="hello remote",
         on_message=_on_message,
     )
@@ -2986,7 +3205,7 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
     }
     room.messaging.handlers[0](_RoomMessage(accepted_payload))
 
-    assert session.queued_message_labels == ("self: queued prompt",)
+    assert session.queued_message_labels == ("user: queued prompt",)
     assert await session.receive() == accepted_payload
 
     applied_payload = {
@@ -3688,6 +3907,7 @@ class _FakeProcessRoom(RoomClient):
     def __init__(self) -> None:
         self._local_participant = _FakeParticipant()
         self._protocol = _FakeProcessProtocol()
+        self.datasets = object()
 
     @property
     def local_participant(self):
@@ -4129,7 +4349,7 @@ async def test_process_agent_thread_control_messages_mutate_thread_storage(
 
 
 @pytest.mark.asyncio
-async def test_process_run_session_lists_threads_through_local_protocol(
+async def test_process_run_direct_session_lists_threads_through_local_protocol(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _FakeAdapter:
@@ -4204,24 +4424,27 @@ async def test_process_run_session_lists_threads_through_local_protocol(
     monkeypatch.setattr(agent, "install_requirements", _skip_install_requirements)
 
     await agent.start(room=room)  # type: ignore[arg-type]
-    session = process._ProcessRunSession(
-        bot=agent,
-        model=None,
+    events = agent._supervisor.subscribe_local_events()
+    client = process.LocalChatClient(
         thread_path=None,
-        thread_storage="dataset",
-        agent_name="testcli",
-        thread_dir="dataset://agents/testcli/threads",
-        threading_mode="default-new",
-        current_working_directory=None,
+        send_message=agent._supervisor.send,
+        events=events,
+        on_close=lambda: agent._supervisor.unsubscribe_local_events(events),
     )
+    session = client.thread_session
     try:
-        await session.start()
-        entries = await asyncio.wait_for(
+        await client.start()
+        response = await asyncio.wait_for(
             session.list_threads(limit=100, offset=0),
             timeout=1,
         )
+        entries = [
+            process._thread_list_entry_from_agent_entry(entry)
+            for entry in response.threads
+        ]
     finally:
-        await session.close()
+        await session.close(close_client=False)
+        await client.close()
         await agent.stop()
 
     assert _ThreadStorage.list_calls == [
