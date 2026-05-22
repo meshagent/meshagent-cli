@@ -1,0 +1,14 @@
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: javascript-backend-agent
+  description: JavaScript backend agent created by meshagent create.
+variables:
+  - name: image
+    title: Container image
+    description: Image tag built and deployed by meshagent deploy.
+    optional: true
+container:
+  image: "{{ image }}"
+  template: agent
+  private: false

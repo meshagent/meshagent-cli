@@ -2,8 +2,6 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlparse
-
 from pydantic import BaseModel, Field
 
 from meshagent.api.client import User
@@ -385,13 +383,6 @@ def resolve_api_url(*, api_url: str | None = None) -> str:
 
 
 def resolve_pages_domain(*, api_url: str | None = None) -> str:
-    resolved_api_url = resolve_api_url(api_url=api_url)
-    parsed = urlparse(
-        resolved_api_url if "://" in resolved_api_url else f"https://{resolved_api_url}"
-    )
-    host = (parsed.hostname or resolved_api_url).strip().lower().rstrip(".")
-    if host == "meshagent.life" or host.endswith(".meshagent.life"):
-        return "meshagent.dev"
     return "meshagent.app"
 
 

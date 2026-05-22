@@ -1,0 +1,36 @@
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: python-contact-form
+  description: Python contact form created by meshagent create.
+variables:
+  - name: image
+    title: Container image
+    description: Image tag built and deployed by meshagent deploy.
+    optional: true
+  - name: domain
+    title: Public domain
+    description: Public route domain for the contact form.
+    type: route
+    optional: true
+  - name: from_email
+    title: From email
+    description: Public mailbox used as the sender address for contact form messages.
+    type: email
+  - name: to_email
+    title: Destination email
+    description: Email address that receives contact form submissions.
+container:
+  image: "{{ image }}"
+  template: agent
+  environment:
+    - name: CONTACT_FORM_FROM
+      value: "{{ from_email }}"
+    - name: CONTACT_FORM_TO
+      value: "{{ to_email }}"
+  private: false
+ports:
+  - num: 8000
+    type: http
+    published: true
+    liveness: /health

@@ -10,7 +10,7 @@ from email.message import EmailMessage
 from aiohttp import web
 
 
-DEFAULT_FROM_ADDRESS = "contact@mail.meshagent.life"
+DEFAULT_FROM_ADDRESS = "contact@mail.meshagent.com"
 DEFAULT_TO_ADDRESS = "you@example.com"
 
 EMAIL_RE = re.compile(r"^[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,63}$", re.IGNORECASE)

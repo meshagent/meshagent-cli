@@ -1,0 +1,24 @@
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: react-webserver
+  description: React/Vite web app created by meshagent create.
+variables:
+  - name: image
+    title: Container image
+    description: Image tag built and deployed by meshagent deploy.
+    optional: true
+  - name: domain
+    title: Public domain
+    description: Public route domain for the deployed web service.
+    type: route
+    optional: true
+container:
+  image: "{{ image }}"
+  template: none
+  private: false
+ports:
+  - num: 80
+    type: http
+    published: true
+    liveness: /health

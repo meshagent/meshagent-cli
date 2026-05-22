@@ -14,6 +14,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from importlib import resources
 from typing import Annotated, Any, Literal, Protocol, runtime_checkable
 
 import click
@@ -131,6 +132,7 @@ from meshagent.agents.process import (
 from meshagent.api import Participant, RoomException
 from meshagent.cli import async_typer, auth_async
 from meshagent.cli.common_options import ProjectIdOption
+from meshagent.cli.create import CREATE_TEMPLATE_PACKAGE
 from meshagent.cli.helper import resolve_project_id
 from meshagent.cli.preamble_rules import DEFAULT_PREAMBLE_RULE
 from meshagent.cli.tool_call_summary import format_tool_call_summary
@@ -509,6 +511,13 @@ def _thread_status_text(status: object) -> str | None:
     return normalized
 
 
+def _ask_thread_status_feed_text(status: object) -> str | None:
+    text = _thread_status_text(status)
+    if text is None:
+        return None
+    return f"• {text}"
+
+
 def _agent_message_content_text(
     content: list[AgentTextContent | AgentFileContent],
 ) -> str:
@@ -645,7 +654,7 @@ def _image_dataset_client_from_agent_client(
     chat_client = client.client
     if not isinstance(chat_client, MessagingChatClient):
         return None
-    return ImageDatasetClient(chat_client.room)
+    return ImageDatasetClient(chat_client.room.datasets)
 
 
 def _role_for_sender(
@@ -1378,10 +1387,14 @@ class _AskSession:
         resolved_current_working_directory = os.path.abspath(
             current_working_directory or os.getcwd()
         )
+        self._resource_stack = contextlib.ExitStack()
+        create_samples_path = _enter_create_samples_path(self._resource_stack)
+        self._create_samples_path = create_samples_path
         self._current_working_directory = resolved_current_working_directory
         self._toolkits = _build_ask_toolkits(
             model=model,
             current_working_directory=resolved_current_working_directory,
+            create_samples_path=create_samples_path,
         )
         self._status_adapter = _StatusAwareLLMAdapter(delegate=llm_adapter)
         self._process = LLMAgentProcess(
@@ -1391,6 +1404,7 @@ class _AskSession:
             toolkits=self._toolkits,
             turn_instructions_provider=_build_ask_turn_instructions_provider(
                 current_working_directory=resolved_current_working_directory,
+                create_samples_path=create_samples_path,
                 interactive=interactive,
                 preamble_rule=preamble_rule,
             ),
@@ -1410,6 +1424,10 @@ class _AskSession:
     @property
     def current_working_directory(self) -> str:
         return self._current_working_directory
+
+    @property
+    def create_samples_path(self) -> str:
+        return self._create_samples_path
 
     @property
     def thread_status_text(self) -> str | None:
@@ -1437,10 +1455,13 @@ class _AskSession:
         await self._supervisor.start()
 
     async def stop(self) -> None:
-        self._status_adapter.set_status_callback(None)
-        await self._session.close(close_client=False)
-        await self._channel_client.close()
-        await self._supervisor.stop()
+        try:
+            self._status_adapter.set_status_callback(None)
+            await self._session.close(close_client=False)
+            await self._channel_client.close()
+            await self._supervisor.stop()
+        finally:
+            self._resource_stack.close()
 
     def _handle_adapter_status(self, status: str) -> None:
         self._session.add_agent_message(
@@ -1566,10 +1587,19 @@ async def _resolve_ask_access_token() -> str | None:
     return normalized_access_token
 
 
+def _enter_create_samples_path(resource_stack: contextlib.ExitStack) -> str:
+    create_samples_resource = resources.files(CREATE_TEMPLATE_PACKAGE)
+    create_samples_path = resource_stack.enter_context(
+        resources.as_file(create_samples_resource)
+    )
+    return os.path.abspath(os.fspath(create_samples_path))
+
+
 def _build_ask_toolkits(
     *,
     model: str,
     current_working_directory: str,
+    create_samples_path: str | None = None,
 ) -> list[Toolkit]:
     from meshagent.anthropic.web_fetch import WebFetchTool as AnthropicWebFetchTool
     from meshagent.anthropic.web_search import (
@@ -1578,13 +1608,23 @@ def _build_ask_toolkits(
     from meshagent.openai.tools.responses_adapter import ApplyPatchTool, WebSearchTool
     from meshagent.tools.web_toolkit import WebFetchTool
 
-    storage_toolkit = StorageToolkit(
-        mounts=[
+    storage_mounts = [
+        StorageToolLocalMount(
+            path=current_working_directory,
+            local_path=current_working_directory,
+        )
+    ]
+    if create_samples_path is not None:
+        storage_mounts.append(
             StorageToolLocalMount(
-                path=current_working_directory,
-                local_path=current_working_directory,
+                path=create_samples_path,
+                local_path=create_samples_path,
+                read_only=True,
             )
-        ]
+        )
+
+    storage_toolkit = StorageToolkit(
+        mounts=storage_mounts,
     )
     toolkits: list[Toolkit] = [storage_toolkit]
 
@@ -1604,6 +1644,7 @@ def _build_ask_toolkits(
 def _build_ask_instructions(
     *,
     current_working_directory: str,
+    create_samples_path: str | None = None,
     interactive: bool = True,
     preamble_rule: bool = True,
 ) -> str:
@@ -1622,7 +1663,16 @@ def _build_ask_instructions(
         ),
         (
             "You can also use the meshagent cli to perform tasks. You can get "
-            "help for the sdk and its subcommands with the --help flag."
+            "help for the sdk and its subcommands with the --help flag. "
+            "meshagent create has an interactive mode, and users generally "
+            "want that mode when creating sample projects unless they ask for "
+            "a fully scripted flow."
+        ),
+        (
+            "When discussing deployment, assume the user wants to deploy with "
+            "meshagent and its built-in deployment flow. Do not recommend "
+            "third-party deployment services unless the user asks for them or "
+            "the project clearly requires one."
         ),
         (
             "The current working directory is "
@@ -1631,6 +1681,13 @@ def _build_ask_instructions(
             "so read and write files there using that exact path."
         ),
     ]
+    if create_samples_path is not None:
+        sections.append(
+            "The embedded meshagent create sample projects are mounted read-only "
+            f"at {create_samples_path}. Grep and read those examples when "
+            "answering questions about generated project structure, generated "
+            "files, or MeshAgent sample code."
+        )
     if not interactive:
         sections.append(
             "You are not being run interactively. Return useful and actionable "
@@ -1644,11 +1701,13 @@ def _build_ask_instructions(
 def _build_ask_turn_instructions_provider(
     *,
     current_working_directory: str,
+    create_samples_path: str | None = None,
     interactive: bool,
     preamble_rule: bool = True,
 ) -> TurnInstructionsProvider:
     instructions = _build_ask_instructions(
         current_working_directory=current_working_directory,
+        create_samples_path=create_samples_path,
         interactive=interactive,
         preamble_rule=preamble_rule,
     )
@@ -2048,6 +2107,7 @@ async def _run_ask_tui(
             self._pending_session_image_message_ids: set[str] = set()
             self._external_thread_active = False
             self._active_assistant_entry: _AskFeedEntry | None = None
+            self._thread_status_entry_id = "__meshagent_ask_thread_status__"
             self._status_text: str | None = None
             self._usage_state: _AskUsageState | None = None
             self._reasoning_parts: dict[str, list[str]] = {}
@@ -2772,7 +2832,7 @@ async def _run_ask_tui(
                 return
             if isinstance(message, AgentThreadStatus):
                 self._sync_session_messages()
-                self._set_status_text(_thread_status_text(message.status))
+                self._set_thread_status_text(message.status)
                 return
             if isinstance(message, AgentTextContentStarted):
                 await self._prepare_active_assistant_text_item(item_id=message.item_id)
@@ -3147,6 +3207,35 @@ async def _run_ask_tui(
             self._render_status_line()
             self._render_turn_queue()
 
+        def _set_thread_status_text(self, status: object) -> None:
+            self._status_text = _thread_status_text(status)
+            changed = self._set_thread_status_feed_entry(status)
+            self._render_status_line()
+            self._render_turn_queue()
+            if changed:
+                self._render_feed()
+                self._scroll_to_end()
+
+        def _set_thread_status_feed_entry(self, status: object) -> bool:
+            text = _ask_thread_status_feed_text(status)
+            if text is None:
+                for index, entry in enumerate(self._entries):
+                    if entry.message_id != self._thread_status_entry_id:
+                        continue
+                    del self._entries[index]
+                    if index < self._rendered_entry_count:
+                        self._reset_rendered_feed()
+                    return True
+                return False
+            return self._append_or_replace_feed_entry(
+                _AskFeedEntry(
+                    role="event",
+                    text=text,
+                    pending=True,
+                    message_id=self._thread_status_entry_id,
+                )
+            )
+
         def _sync_external_thread_state(self) -> None:
             session = self._session
             if not isinstance(session, _AskExternalThreadState):
@@ -3179,10 +3268,16 @@ async def _run_ask_tui(
                 if status is not None and status.strip() != "":
                     status_changed = status_changed or status != self._status_text
                     self._status_text = status
+                    if self._set_thread_status_feed_entry(status):
+                        self._render_feed()
+                        self._scroll_to_end()
             else:
                 next_status = status if active else None
                 status_changed = status_changed or next_status != self._status_text
                 self._status_text = next_status
+                if self._set_thread_status_feed_entry(next_status):
+                    self._render_feed()
+                    self._scroll_to_end()
 
             if status_changed:
                 self._render_status_line()

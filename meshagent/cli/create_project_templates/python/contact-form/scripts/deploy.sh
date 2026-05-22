@@ -10,7 +10,7 @@ mailbox_from_room() {
   if [ -z "$room_slug" ]; then
     room_slug="room"
   fi
-  printf 'contact-%s@mail.meshagent.life\n' "$room_slug"
+  printf 'contact-%s@mail.meshagent.com\n' "$room_slug"
 }
 room_name_from_args() {
   while [ "$#" -gt 0 ]; do
@@ -41,7 +41,7 @@ if [ -z "${CONTACT_FORM_FROM:-}" ]; then
   if [ -n "$ROOM_NAME" ]; then
     CONTACT_FORM_FROM="$(mailbox_from_room "$ROOM_NAME")"
   else
-    CONTACT_FORM_FROM="contact@mail.meshagent.life"
+    CONTACT_FORM_FROM="contact@mail.meshagent.com"
   fi
 fi
 if [ -n "$ROOM_NAME" ]; then
@@ -50,12 +50,9 @@ fi
 if ! meshagent deploy . \
   "$@" \
   --tag "$IMAGE_TAG" \
-  --public \
-  --liveness /health \
   --meshagent-token agentDefault \
-  --env "CONTACT_FORM_FROM=$CONTACT_FORM_FROM" \
-  --env "CONTACT_FORM_TO=$CONTACT_FORM_TO" \
-  --env "SMTP_USERNAME=$SMTP_USERNAME" \
+  --set "from_email=$CONTACT_FORM_FROM" \
+  --set "to_email=$CONTACT_FORM_TO" \
   --wait; then
   echo "" >&2
   echo "If the room does not exist yet, create it first:" >&2

@@ -1546,7 +1546,9 @@ async def _run_process_run_tui(
             session_provider=_current_session,
             thread_generation_provider=lambda: thread_generation,
             current_working_directory=working_dir,
-            image_dataset_client=ImageDatasetClient(room) if room is not None else None,
+            image_dataset_client=(
+                ImageDatasetClient(room.datasets) if room is not None else None
+            ),
             title="meshagent process run",
             command_handler=_handle_model_command,
             model_label_provider=lambda: _current_model_label(

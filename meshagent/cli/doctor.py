@@ -749,6 +749,8 @@ def _deployment_artifacts(root: Path) -> tuple[str, ...]:
     for name in ("Dockerfile", "Containerfile", "meshagent.yaml", "meshagent.yml"):
         if (root / name).exists():
             artifacts.append(name)
+    if (root / ".meshagent" / "deploy.yaml").exists():
+        artifacts.append(".meshagent/deploy.yaml")
     return tuple(artifacts)
 
 
@@ -1547,6 +1549,10 @@ def _display_path(root: Path, path: Path) -> str:
         return str(path)
 
 
+def _has_deploy_spec(root: Path) -> bool:
+    return (root / ".meshagent" / "deploy.yaml").is_file()
+
+
 def _print_report(diagnosis: ProjectDiagnosis) -> None:
     auto_fixes = _autofix_plan(diagnosis)
 
@@ -1587,6 +1593,14 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
         )
     else:
         _echo_finding("error", "Deployment artifact: add Dockerfile or meshagent.yaml")
+    if _has_deploy_spec(diagnosis.root):
+        _echo_finding("ok", "Deploy spec found: .meshagent/deploy.yaml")
+    else:
+        _echo_finding(
+            "warning",
+            "Deploy spec missing: add .meshagent/deploy.yaml for template values; "
+            "run `meshagent create` to see deploy spec examples",
+        )
     if diagnosis.has_dockerfile and _supports_meshagent_optimized_dockerfile(diagnosis):
         if diagnosis.dockerfile_is_meshagent_optimized:
             _echo_finding(
@@ -1775,6 +1789,12 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
             click.echo(f"   - {item}")
         next_step_number += 1
     checks = _deployment_checks(diagnosis)
+    if not _has_deploy_spec(diagnosis.root):
+        checks.append(
+            "Deploy spec check: add `.meshagent/deploy.yaml` so `meshagent deploy` "
+            "can prompt for template variables and save `.meshagent/values.yaml`; "
+            "run `meshagent create` to see deploy spec examples."
+        )
     if checks:
         click.echo(f"{next_step_number}. Deployment checks:")
         for item in checks:

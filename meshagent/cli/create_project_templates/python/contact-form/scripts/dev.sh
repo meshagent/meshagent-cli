@@ -10,7 +10,7 @@ if [ ! -x "$VENV_PYTHON" ]; then
 fi
 CONTACT_FORM_TO="${CONTACT_FORM_TO:-you@example.com}"
 PORT="${PORT:-8000}"
-SMTP_HOSTNAME="${SMTP_HOSTNAME:-${MESHAGENT_MAIL_DOMAIN:-mail.meshagent.life}}"
+SMTP_HOSTNAME="${SMTP_HOSTNAME:-${MESHAGENT_MAIL_DOMAIN:-mail.meshagent.com}}"
 SMTP_PORT="${SMTP_PORT:-587}"
 SMTP_USERNAME="${SMTP_USERNAME:-meshagent-create-python-contact-form}"
 mailbox_from_room() {
@@ -18,7 +18,7 @@ mailbox_from_room() {
   if [ -z "$room_slug" ]; then
     room_slug="room"
   fi
-  printf 'contact-%s@mail.meshagent.life\n' "$room_slug"
+  printf 'contact-%s@mail.meshagent.com\n' "$room_slug"
 }
 room_name_from_args() {
   while [ "$#" -gt 0 ]; do
@@ -49,7 +49,7 @@ if [ -z "${CONTACT_FORM_FROM:-}" ]; then
   if [ -n "$ROOM_NAME" ]; then
     CONTACT_FORM_FROM="$(mailbox_from_room "$ROOM_NAME")"
   else
-    CONTACT_FORM_FROM="contact@mail.meshagent.life"
+    CONTACT_FORM_FROM="contact@mail.meshagent.com"
   fi
 fi
 export CONTACT_FORM_FROM CONTACT_FORM_TO PORT SMTP_HOSTNAME SMTP_PORT SMTP_USERNAME

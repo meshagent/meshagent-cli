@@ -17,7 +17,9 @@ from urllib.parse import urlparse
 from aiohttp import ClientTimeout
 import typer
 from pydantic import ValidationError
+from pydantic_yaml import parse_yaml_raw_as
 from rich import print
+import yaml
 
 from meshagent.api.http import new_client_session
 from meshagent.cli import async_typer
@@ -44,6 +46,7 @@ from meshagent.api.client import (
     CreateRepositoryTokenRequest,
     Meshagent,
     MeshagentDeploymentConfig,
+    MeshagentDomains,
     NotFoundError,
     PermissionDeniedError,
     ProjectRoomGrant,
@@ -86,6 +89,8 @@ from meshagent.api.specs.service import (
     SecretValue,
     ServiceMetadata,
     ServiceSpec,
+    ServiceTemplateSpec,
+    ServiceTemplateVariable,
     TokenValue,
 )
 from meshagent.cli.oci_archive import (
@@ -108,6 +113,8 @@ _DEFAULT_REPOSITORY_TOKEN_TTL_SECONDS = 3600
 _DEPLOY_LIVENESS_REQUEST_TIMEOUT_SECONDS = 2.0
 _DEPLOY_WAIT_POLL_INTERVAL_SECONDS = 1.0
 _GENERATED_PACK_DOCKERFILE_NAME = ".meshagent-pack.Dockerfile"
+_DEPLOY_SPEC_PATH = Path(".meshagent/deploy.yaml")
+_DEPLOY_VALUES_PATH = Path(".meshagent/values.yaml")
 _TOKEN_ENVIRONMENT_NAMES = (
     "MESHAGENT_TOKEN",
     "OPENAI_API_KEY",
@@ -2322,11 +2329,12 @@ async def _resolve_deploy_domain(
 
     from meshagent.cli.tui.deploy_room import run_deploy_domain_prompt_tui
 
+    config = await account_client.get_config()
     result = await run_deploy_domain_prompt_tui(
         service_name=deploy_plan.spec.metadata.name,
         port=route_target.port,
         room_name=room_name,
-        pages_domain=resolve_pages_domain(),
+        pages_domain=_configured_pages_domain(config),
     )
     if result.status == "canceled":
         if result.message is not None:
@@ -2335,6 +2343,317 @@ async def _resolve_deploy_domain(
     if result.status == "skipped":
         return None
     return result.domain
+
+
+def _deploy_spec_file_for_source(source_dir: Path | None) -> Path:
+    root = source_dir if source_dir is not None else Path.cwd()
+    return root.expanduser().resolve() / _DEPLOY_SPEC_PATH
+
+
+def _deploy_values_file_for_source(source_dir: Path | None) -> Path:
+    root = source_dir if source_dir is not None else Path.cwd()
+    return root.expanduser().resolve() / _DEPLOY_VALUES_PATH
+
+
+def _load_yaml_string_map(path: Path) -> dict[str, str]:
+    if not path.is_file():
+        return {}
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise typer.BadParameter(f"{path} must contain a YAML map")
+    values: dict[str, str] = {}
+    for key, value in loaded.items():
+        if not isinstance(key, str) or key.strip() == "":
+            raise typer.BadParameter(f"{path} contains a non-string template value key")
+        values[key] = "" if value is None else str(value)
+    return values
+
+
+def _parse_template_value_overrides(values: list[str]) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for value in values:
+        if "=" not in value:
+            raise typer.BadParameter("--set must be in the form KEY=VALUE")
+        key, item_value = value.split("=", 1)
+        key = key.strip()
+        if key == "":
+            raise typer.BadParameter("--set must include a non-empty key")
+        parsed[key] = item_value
+    return parsed
+
+
+def _template_variable_title(variable: ServiceTemplateVariable) -> str:
+    title = variable.title if variable.title is not None else variable.name
+    return title[:1].upper() + title[1:]
+
+
+def _configured_pages_domain(config: MeshagentDeploymentConfig) -> str:
+    pages_domain = (config.domains.pages or "").strip().lower().removeprefix(".")
+    if pages_domain != "":
+        return pages_domain
+    return resolve_pages_domain().strip().lower().removeprefix(".")
+
+
+def _configured_mail_domain(config: MeshagentDeploymentConfig) -> str:
+    mail_domain = (config.domains.mail or "").strip().lower().removeprefix("@")
+    if mail_domain != "":
+        return mail_domain
+    return os.environ.get("MESHAGENT_MAIL_DOMAIN", "").strip().lower().removeprefix("@")
+
+
+def _empty_deploy_config() -> MeshagentDeploymentConfig:
+    return MeshagentDeploymentConfig(domains=MeshagentDomains())
+
+
+def _domain_has_suffix(*, value: str, suffix: str) -> bool:
+    normalized_value = value.strip().lower().rstrip(".")
+    normalized_suffix = suffix.strip().lower().removeprefix(".").rstrip(".")
+    return (
+        normalized_value != ""
+        and normalized_suffix != ""
+        and normalized_value.endswith(f".{normalized_suffix}")
+    )
+
+
+def _email_has_domain(*, value: str, domain: str) -> bool:
+    normalized_value = value.strip().lower()
+    normalized_domain = domain.strip().lower().removeprefix("@").rstrip(".")
+    local_part, separator, email_domain = normalized_value.rpartition("@")
+    return (
+        local_part != ""
+        and separator == "@"
+        and email_domain.rstrip(".") == normalized_domain
+    )
+
+
+def _template_variable_default(
+    *,
+    config: MeshagentDeploymentConfig,
+    variable: ServiceTemplateVariable,
+    room_name: str,
+    service_name: str,
+) -> str:
+    if variable.type == "route":
+        pages_domain = _configured_pages_domain(config)
+        subdomain = re.sub(r"[^a-z0-9-]+", "-", room_name.strip().lower())
+        subdomain = re.sub(r"-+", "-", subdomain).strip("-") or service_name
+        if pages_domain != "":
+            return f"{subdomain}.{pages_domain}"
+    if variable.type == "email":
+        mail_domain = _configured_mail_domain(config)
+        local_part = re.sub(r"[^a-z0-9._+-]+", "-", service_name.strip().lower()).strip(
+            "-"
+        )
+        if mail_domain != "" and local_part != "":
+            return f"{local_part}@{mail_domain}"
+    return ""
+
+
+def _validate_deploy_template_variable_domains(
+    *,
+    config: MeshagentDeploymentConfig,
+    template: ServiceTemplateSpec,
+    values: dict[str, str],
+) -> None:
+    pages_domain = _configured_pages_domain(config)
+    mail_domain = _configured_mail_domain(config)
+    for variable in template.variables or []:
+        value = values.get(variable.name, "").strip()
+        if value == "":
+            continue
+        if (
+            variable.type == "route"
+            and pages_domain != ""
+            and not _domain_has_suffix(value=value, suffix=pages_domain)
+        ):
+            raise typer.BadParameter(
+                f"deploy template value {variable.name} must use the configured "
+                f"pages domain suffix .{pages_domain}"
+            )
+        if (
+            variable.type == "email"
+            and mail_domain != ""
+            and not _email_has_domain(value=value, domain=mail_domain)
+        ):
+            raise typer.BadParameter(
+                f"deploy template value {variable.name} must use the configured "
+                f"mail domain @{mail_domain}"
+            )
+
+
+async def _resolve_deploy_template_values(
+    *,
+    account_client: Meshagent,
+    template: ServiceTemplateSpec,
+    room_name: str,
+    service_name: str,
+    values_file: Path,
+    extra_values_files: list[str],
+    set_values: list[str],
+    image: str,
+) -> dict[str, str]:
+    values = _load_yaml_string_map(values_file)
+    for extra_values_file in extra_values_files:
+        values.update(
+            _load_yaml_string_map(Path(extra_values_file).expanduser().resolve())
+        )
+    values.setdefault("image", image)
+    values.update(_parse_template_value_overrides(set_values))
+
+    variables = template.variables or []
+    config = await account_client.get_config() if variables else _empty_deploy_config()
+    if _stdio_is_interactive():
+        for variable in variables:
+            current = values.get(variable.name, "").strip()
+            if current != "":
+                continue
+            default = _template_variable_default(
+                config=config,
+                variable=variable,
+                room_name=room_name,
+                service_name=service_name,
+            )
+            prompt = _template_variable_title(variable)
+            if variable.description is not None and variable.description.strip() != "":
+                print(f"[cyan]{prompt}:[/] {variable.description.strip()}")
+            if variable.optional:
+                entered = typer.prompt(
+                    prompt, default=default, show_default=default != ""
+                )
+            else:
+                entered = typer.prompt(
+                    prompt, default=default, show_default=default != ""
+                )
+            values[variable.name] = entered.strip()
+
+    missing = [
+        variable.name
+        for variable in variables
+        if not variable.optional and values.get(variable.name, "").strip() == ""
+    ]
+    if missing:
+        missing_text = ", ".join(missing)
+        raise typer.BadParameter(
+            f"missing required deploy template values: {missing_text}. "
+            "Pass them with --set KEY=VALUE or run deploy in an interactive terminal."
+        )
+    _validate_deploy_template_variable_domains(
+        config=config,
+        template=template,
+        values=values,
+    )
+    return values
+
+
+def _save_deploy_template_values(*, values_file: Path, values: dict[str, str]) -> None:
+    values_file.parent.mkdir(parents=True, exist_ok=True)
+    values_file.write_text(
+        yaml.safe_dump(values, sort_keys=True, allow_unicode=False),
+        encoding="utf-8",
+    )
+
+
+def _load_deploy_template(spec_file: Path) -> tuple[str, ServiceTemplateSpec] | None:
+    if not spec_file.is_file():
+        return None
+    template_text = spec_file.read_text(encoding="utf-8")
+    return template_text, parse_yaml_raw_as(ServiceTemplateSpec, template_text)
+
+
+def _service_template_route_values(
+    *, template: ServiceTemplateSpec, values: dict[str, str]
+) -> list[str]:
+    return [
+        values[variable.name].strip()
+        for variable in template.variables or []
+        if variable.type == "route" and values.get(variable.name, "").strip() != ""
+    ]
+
+
+def _service_template_email_values(
+    *, template: ServiceTemplateSpec, values: dict[str, str]
+) -> list[str]:
+    return [
+        values[variable.name].strip().lower()
+        for variable in template.variables or []
+        if variable.type == "email" and values.get(variable.name, "").strip() != ""
+    ]
+
+
+async def _upsert_email_mailbox(
+    *,
+    account_client: Meshagent,
+    project_id: str,
+    room_name: str,
+    email: str,
+    service_id: str,
+) -> None:
+    normalized_email = email.strip().lower()
+    if normalized_email == "":
+        raise typer.BadParameter("--email cannot be empty")
+    annotations = {ANNOTATION_SERVICE_ID: service_id}
+    try:
+        existing = await account_client.get_mailbox(
+            project_id=project_id,
+            address=normalized_email,
+        )
+    except NotFoundError:
+        await account_client.create_mailbox(
+            project_id=project_id,
+            address=normalized_email,
+            room=room_name,
+            queue=normalized_email,
+            public=True,
+            annotations=annotations,
+        )
+        print(f"[green]Created mailbox:[/] {normalized_email} -> {room_name}")
+        return
+
+    if existing.room != room_name:
+        raise typer.BadParameter(
+            f"--email {normalized_email} already routes to room {existing.room}. "
+            f"Refusing to change it to room {room_name}."
+        )
+    updated_annotations = dict(existing.annotations)
+    updated_annotations[ANNOTATION_SERVICE_ID] = service_id
+    if (
+        existing.queue == normalized_email
+        and existing.public
+        and existing.annotations == updated_annotations
+    ):
+        print(
+            f"[green]Mailbox already configured:[/] {normalized_email} -> {room_name}"
+        )
+        return
+    await account_client.update_mailbox(
+        project_id=project_id,
+        address=normalized_email,
+        room=room_name,
+        queue=normalized_email,
+        public=True,
+        annotations=updated_annotations,
+    )
+    print(f"[green]Updated mailbox:[/] {normalized_email} -> {room_name}")
+
+
+def _build_deploy_template_plan(*, service_spec: ServiceSpec) -> _ServiceDeployPlan:
+    service_id = service_spec.metadata.name
+    annotations = dict(service_spec.metadata.annotations or {})
+    service_id = (
+        annotations.get(ANNOTATION_SERVICE_ID, service_id).strip()
+        or service_spec.metadata.name
+    )
+    annotations[ANNOTATION_SERVICE_ID] = service_id
+    service_spec = service_spec.model_copy(
+        update={
+            "metadata": service_spec.metadata.model_copy(
+                update={"annotations": annotations}
+            )
+        }
+    )
+    return _ServiceDeployPlan(spec=service_spec, service_id_annotation=service_id)
 
 
 def _find_service_port(
@@ -2550,6 +2869,7 @@ async def _apply_deploy_plan(
     room_name: str,
     deploy_plan: _ServiceDeployPlan,
     domain: str | None,
+    email: str | None,
     extra_route_ports: list[_ExtraRoutePort],
 ) -> _AppliedDeployPlanResult:
     route_target = (
@@ -2584,6 +2904,14 @@ async def _apply_deploy_plan(
             domain=domain,
             port=route_target.port,
             extra_route_ports=extra_route_ports,
+            service_id=deploy_plan.service_id_annotation,
+        )
+    if email is not None:
+        await _upsert_email_mailbox(
+            account_client=account_client,
+            project_id=project_id,
+            room_name=room_name,
+            email=email,
             service_id=deploy_plan.service_id_annotation,
         )
     return _AppliedDeployPlanResult(
@@ -3084,11 +3412,67 @@ async def build_image(
     )
 
 
+@app.command("describe", help="Describe the local MeshAgent deploy spec.")
+def describe_deploy(
+    path: Annotated[
+        Optional[str],
+        typer.Argument(
+            metavar="PATH",
+            help="Project directory containing .meshagent/deploy.yaml.",
+        ),
+    ] = None,
+) -> None:
+    root = Path(path).expanduser().resolve() if path is not None else Path.cwd()
+    spec_file = _deploy_spec_file_for_source(root)
+    values_file = _deploy_values_file_for_source(root)
+    loaded = _load_deploy_template(spec_file)
+    if loaded is None:
+        print(f"[yellow]No deploy spec found:[/] {spec_file}")
+        print(
+            "Add .meshagent/deploy.yaml or run `meshagent create` to see deploy spec examples."
+        )
+        return
+
+    _template_text, template = loaded
+    print(f"[bold]Deploy spec[/bold]: {spec_file}")
+    print(f"Name: {template.metadata.name}")
+    if template.metadata.description is not None:
+        print(f"Description: {template.metadata.description}")
+    if template.container is not None and template.container.image is not None:
+        print(f"Image: {template.container.image}")
+    if template.ports:
+        print("Ports:")
+        for port in template.ports:
+            published = " published" if port.published else ""
+            print(f"  - {port.num}/{port.type}{published}")
+    if template.variables:
+        saved_values = _load_yaml_string_map(values_file)
+        print("Variables:")
+        for variable in template.variables:
+            required = "optional" if variable.optional else "required"
+            type_text = f", type={variable.type}" if variable.type is not None else ""
+            title = variable.title or variable.name
+            current = saved_values.get(variable.name)
+            current_text = ""
+            if current is not None and not variable.obscure:
+                current_text = f" (current: {current})"
+            elif current is not None:
+                current_text = " (current: set)"
+            print(f"  - {variable.name} ({required}{type_text}): {title}{current_text}")
+            if variable.description is not None and variable.description.strip() != "":
+                print(f"    {variable.description.strip()}")
+    else:
+        print("Variables: none")
+
+
 @app.async_command(
     "deploy",
     help=(
         "Create or update a room service from an image, optionally building it "
-        "first. The target room must already exist. "
+        "first. The target room must already exist. If .meshagent/deploy.yaml "
+        "exists, deploy prompts for template values in TUI mode and saves them "
+        "to .meshagent/values.yaml. Use `meshagent deploy describe` to inspect "
+        "the local deploy spec. "
         f"{_DEPLOY_DOCKERFILE_HAPPY_PATH} {_DEPLOY_MISSING_DOCKERFILE_GUIDANCE}"
     ),
     hidden=True,
@@ -3189,6 +3573,35 @@ async def deploy_image(
             ),
         ),
     ] = None,
+    email: Annotated[
+        Optional[str],
+        typer.Option(
+            "--email",
+            help=(
+                "Create or update a public mailbox for the deployed service. "
+                "When a local deploy template has an email variable, that value "
+                "is used unless --email is passed."
+            ),
+        ),
+    ] = None,
+    values_file: Annotated[
+        list[str],
+        typer.Option(
+            "--values",
+            "-f",
+            help=(
+                "YAML file containing deploy template values. Can be passed "
+                "multiple times; later files override earlier files."
+            ),
+        ),
+    ] = [],
+    set_value: Annotated[
+        list[str],
+        typer.Option(
+            "--set",
+            help="Set a deploy template value as KEY=VALUE. Can be passed multiple times.",
+        ),
+    ] = [],
     extra_port: Annotated[
         list[str],
         typer.Option(
@@ -3377,11 +3790,16 @@ async def deploy_image(
         domain = domain.strip()
         if domain == "":
             raise typer.BadParameter("--domain cannot be empty")
+    if email is not None:
+        email = email.strip().lower()
+        if email == "":
+            raise typer.BadParameter("--email cannot be empty")
     normalized_liveness = _normalize_deploy_liveness(liveness=liveness)
 
     packed_default_ports: list[PortSpec] | None = None
     packed_dockerfile_metadata: _PackedDockerfileMetadata | None = None
     runtime_container: _RuntimeContainerOverride | None = None
+    build_inputs: _ResolvedBuildStageInputs | None = None
     if pack is not None:
         build_inputs = _resolve_build_stage_inputs(
             context_path=context_path,
@@ -3398,6 +3816,12 @@ async def deploy_image(
             parsed_tag=parsed_tag,
             dockerfile_metadata=packed_dockerfile_metadata,
         )
+    deploy_source_dir = (
+        build_inputs.pack_spec.source_dir if build_inputs is not None else Path.cwd()
+    )
+    deploy_spec_file = _deploy_spec_file_for_source(deploy_source_dir)
+    deploy_values_file = _deploy_values_file_for_source(deploy_source_dir)
+    loaded_deploy_template = _load_deploy_template(deploy_spec_file)
     meshagent_token_identity = _derive_service_name(parsed_tag=parsed_tag)
     try:
         account_client, client = await _with_client(
@@ -3410,44 +3834,93 @@ async def deploy_image(
         )
         raise typer.Exit(1) from exc
     try:
-        existing_service = await _find_room_service_by_name(
-            account_client=account_client,
-            project_id=resolved_project_id,
-            room_name=resolved_room,
-            service_name=_derive_service_name(parsed_tag=parsed_tag),
-        )
-        storage = _resolve_deploy_storage(
-            existing_service=existing_service,
-            parsed_storage=parsed_storage,
-            replace_room_mounts=len(room_mount) > 0,
-            replace_project_mounts=len(project_mount) > 0,
-            replace_image_mounts=len(image_mount) > 0,
-            replace_empty_dir_mounts=len(empty_dir_mount) > 0,
-            runtime_container=runtime_container,
-        )
-        _validate_packed_dockerfile_volume_mounts(
-            dockerfile_metadata=packed_dockerfile_metadata,
-            storage=storage,
-        )
-        resolved_environment = _resolve_deploy_environment(
-            existing_service=existing_service,
-            default_environment=(
-                list(runtime_container.default_environment)
-                if runtime_container is not None
+        deploy_template_values: dict[str, str] | None = None
+        deploy_template_spec: ServiceTemplateSpec | None = None
+        if loaded_deploy_template is not None:
+            template_text, deploy_template_spec = loaded_deploy_template
+            deploy_template_values = await _resolve_deploy_template_values(
+                account_client=account_client,
+                template=deploy_template_spec,
+                room_name=resolved_room,
+                service_name=_derive_service_name(parsed_tag=parsed_tag),
+                values_file=deploy_values_file,
+                extra_values_files=values_file,
+                set_values=set_value,
+                image=parsed_tag.value,
+            )
+            rendered_template = ServiceTemplateSpec.from_yaml(
+                yaml=template_text,
+                values=deploy_template_values,
+            )
+            service_spec = rendered_template.to_service_spec()
+            existing_service = await _find_room_service_by_name(
+                account_client=account_client,
+                project_id=resolved_project_id,
+                room_name=resolved_room,
+                service_name=service_spec.metadata.name,
+            )
+            deploy_plan = _build_deploy_template_plan(service_spec=service_spec)
+            environment = (
+                deploy_plan.spec.container.environment
+                if deploy_plan.spec.container is not None
                 else None
-            ),
-            parsed_environment=parsed_environment,
-            parsed_secret_environment=parsed_secret_environment,
-            meshagent_token_scope=meshagent_token_scope,
-            token_identity=meshagent_token_identity,
-            identity_override=identity_override,
-        )
-        environment = resolved_environment.environment
-        await _validate_deploy_environment_secrets(
-            client=client,
-            environment=environment,
-            resolved_identity=resolved_environment.identity,
-        )
+            )
+            await _validate_deploy_environment_secrets(
+                client=client,
+                environment=environment,
+                resolved_identity=identity_override or meshagent_token_identity,
+            )
+        else:
+            existing_service = await _find_room_service_by_name(
+                account_client=account_client,
+                project_id=resolved_project_id,
+                room_name=resolved_room,
+                service_name=_derive_service_name(parsed_tag=parsed_tag),
+            )
+            storage = _resolve_deploy_storage(
+                existing_service=existing_service,
+                parsed_storage=parsed_storage,
+                replace_room_mounts=len(room_mount) > 0,
+                replace_project_mounts=len(project_mount) > 0,
+                replace_image_mounts=len(image_mount) > 0,
+                replace_empty_dir_mounts=len(empty_dir_mount) > 0,
+                runtime_container=runtime_container,
+            )
+            _validate_packed_dockerfile_volume_mounts(
+                dockerfile_metadata=packed_dockerfile_metadata,
+                storage=storage,
+            )
+            resolved_environment = _resolve_deploy_environment(
+                existing_service=existing_service,
+                default_environment=(
+                    list(runtime_container.default_environment)
+                    if runtime_container is not None
+                    else None
+                ),
+                parsed_environment=parsed_environment,
+                parsed_secret_environment=parsed_secret_environment,
+                meshagent_token_scope=meshagent_token_scope,
+                token_identity=meshagent_token_identity,
+                identity_override=identity_override,
+            )
+            environment = resolved_environment.environment
+            await _validate_deploy_environment_secrets(
+                client=client,
+                environment=environment,
+                resolved_identity=resolved_environment.identity,
+            )
+            deploy_plan = _build_deploy_service_spec(
+                existing_service=existing_service,
+                parsed_tag=parsed_tag,
+                public=not private,
+                validation_mode=normalized_validation_mode,
+                liveness=normalized_liveness,
+                environment=environment,
+                storage=storage,
+                default_ports=packed_default_ports,
+                runtime_container=runtime_container,
+                template=normalized_template,
+            )
         previous_runtime_state = (
             await _get_service_runtime_state(
                 client=client,
@@ -3458,24 +3931,34 @@ async def deploy_image(
             and existing_service.id != ""
             else None
         )
-        deploy_plan = _build_deploy_service_spec(
-            existing_service=existing_service,
-            parsed_tag=parsed_tag,
-            public=not private,
-            validation_mode=normalized_validation_mode,
-            liveness=normalized_liveness,
-            environment=environment,
-            storage=storage,
-            default_ports=packed_default_ports,
-            runtime_container=runtime_container,
-            template=normalized_template,
-        )
         await _warn_missing_extra_route_ports(
             account_client=account_client,
             project_id=resolved_project_id,
             room_name=resolved_room,
             extra_route_ports=parsed_extra_route_ports,
         )
+        if (
+            domain is None
+            and deploy_template_spec is not None
+            and deploy_template_values is not None
+        ):
+            route_values = _service_template_route_values(
+                template=deploy_template_spec,
+                values=deploy_template_values,
+            )
+            if route_values:
+                domain = route_values[0]
+        if (
+            email is None
+            and deploy_template_spec is not None
+            and deploy_template_values is not None
+        ):
+            email_values = _service_template_email_values(
+                template=deploy_template_spec,
+                values=deploy_template_values,
+            )
+            if email_values:
+                email = email_values[0]
         domain = await _resolve_deploy_domain(
             account_client=account_client,
             project_id=resolved_project_id,
@@ -3514,8 +3997,15 @@ async def deploy_image(
             room_name=resolved_room,
             deploy_plan=deploy_plan,
             domain=domain,
+            email=email,
             extra_route_ports=parsed_extra_route_ports,
         )
+        if deploy_template_values is not None:
+            _save_deploy_template_values(
+                values_file=deploy_values_file,
+                values=deploy_template_values,
+            )
+            print(f"[green]Saved deploy values:[/] {deploy_values_file}")
         if wait:
             await _wait_for_deployed_service_live(
                 client=client,

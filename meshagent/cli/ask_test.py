@@ -4,6 +4,7 @@ import io
 
 import pytest
 import typer
+from click.testing import CliRunner
 from PIL import Image
 
 from meshagent.agents import AgentSessionContext
@@ -36,7 +37,9 @@ from meshagent.agents.messages import (
     TurnStarted,
 )
 from meshagent.api import Participant, RoomException
+from meshagent.cli import async_typer
 from meshagent.cli import ask as ask_module
+from meshagent.cli import cli as cli_module
 from meshagent.cli.preamble_rules import DEFAULT_PREAMBLE_RULE
 from meshagent.openai import OpenAIResponsesAdapter
 
@@ -174,6 +177,62 @@ def test_build_ask_instructions_can_disable_preamble_rule() -> None:
     )
 
     assert DEFAULT_PREAMBLE_RULE not in instructions
+
+
+def test_build_ask_instructions_prefers_meshagent_deployment() -> None:
+    instructions = ask_module._build_ask_instructions(
+        current_working_directory="/tmp/project",
+    )
+
+    assert "deploy with meshagent" in instructions
+    assert "third-party deployment services" in instructions
+
+
+def test_build_ask_instructions_prefers_interactive_create_mode() -> None:
+    instructions = ask_module._build_ask_instructions(
+        current_working_directory="/tmp/project",
+    )
+
+    assert "meshagent create has an interactive mode" in instructions
+    assert "creating sample projects" in instructions
+
+
+def test_build_ask_instructions_includes_create_samples_path() -> None:
+    instructions = ask_module._build_ask_instructions(
+        current_working_directory="/tmp/project",
+        create_samples_path="/tmp/create-samples",
+    )
+
+    assert "meshagent create" in instructions
+    assert "/tmp/create-samples" in instructions
+    assert "Grep and read" in instructions
+
+
+@pytest.mark.asyncio
+async def test_build_ask_toolkits_mounts_create_samples_read_only(tmp_path) -> None:
+    project_dir = tmp_path / "project"
+    samples_dir = tmp_path / "create-samples"
+    project_dir.mkdir()
+    samples_dir.mkdir()
+    sample_file = samples_dir / "sample.py"
+    sample_file.write_text("print('hello from sample')\n", encoding="utf-8")
+
+    toolkits = ask_module._build_ask_toolkits(
+        model="gpt-5.5",
+        current_working_directory=str(project_dir),
+        create_samples_path=str(samples_dir),
+    )
+    storage = next(toolkit for toolkit in toolkits if toolkit.name == "storage")
+
+    content = await storage.read_file(path=str(sample_file))
+    assert content.data == b"print('hello from sample')\n"
+
+    with pytest.raises(RoomException, match="read-only"):
+        await storage.write_text(
+            path=str(sample_file),
+            text="print('edited')\n",
+            overwrite=True,
+        )
 
 
 def test_ask_feed_previous_participant_role_skips_event_rows() -> None:
@@ -791,6 +850,15 @@ def test_agent_thread_status_accepts_missing_status_for_clear_events() -> None:
     assert message.status is None
 
 
+def test_ask_thread_status_feed_text_formats_active_status() -> None:
+    assert (
+        ask_module._ask_thread_status_feed_text("Searching files")
+        == "• Searching files"
+    )
+    assert ask_module._ask_thread_status_feed_text("   ") is None
+    assert ask_module._ask_thread_status_feed_text(None) is None
+
+
 def _png_bytes(color: str) -> bytes:
     image_buffer = io.BytesIO()
     Image.new("RGB", (16, 16), color).save(image_buffer, format="PNG")
@@ -912,7 +980,7 @@ class _FakeImageRoom:
 async def test_ascii_image_renderer_loads_dataset_uri_from_image_dataset_client() -> (
     None
 ):
-    image_dataset_client = ask_module.ImageDatasetClient(_FakeImageRoom())
+    image_dataset_client = ask_module.ImageDatasetClient(_FakeImageRoom().datasets)
 
     image_ascii = await ask_module._ascii_image_from_uri_async(
         "dataset://agents/demo/images?id=image-1",
@@ -1101,6 +1169,54 @@ async def test_ask_command_uses_oauth_token_and_prints_result(monkeypatch) -> No
         ((" world",), {"nl": False}),
         ((), {}),
     ]
+
+
+def test_meshagent_ask_cli_invocation_prints_streamed_response(
+    monkeypatch, capsys
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def _fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-123"
+        return "project-123"
+
+    def _fake_build_ask_adapter(
+        *,
+        model: str,
+        project_id: str,
+        access_token: str,
+    ) -> LLMAdapter:
+        captured["model"] = model
+        captured["project_id"] = project_id
+        captured["access_token"] = access_token
+        return _FakeAskAdapter()
+
+    monkeypatch.setenv("MESHAGENT_TOKEN", "cli-token")
+    monkeypatch.setattr(ask_module, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(ask_module, "_build_ask_adapter", _fake_build_ask_adapter)
+
+    command = async_typer.get_command(cli_module.app, materialize_lazy=True)
+    result = CliRunner().invoke(
+        command,
+        [
+            "ask",
+            "--project-id",
+            "project-123",
+            "--message",
+            "hello",
+            "--model",
+            "gpt-5.5",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    captured_stdout = result.output or capsys.readouterr().out
+    assert captured_stdout == "hello world\n"
+    assert captured == {
+        "model": "gpt-5.5",
+        "project_id": "project-123",
+        "access_token": "cli-token",
+    }
 
 
 @pytest.mark.asyncio

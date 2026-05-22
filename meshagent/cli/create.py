@@ -152,6 +152,10 @@ AGENT_PROCESS_NAMES = {
     "dotnet": "meshagent-create-dotnet-agent",
     "dart-flutter": "meshagent-create-dart-agent",
 }
+COMMON_GUIDANCE_FILES: Mapping[str, str] = {
+    "AGENTS.md": "_common/AGENTS.md",
+    "CLAUDE.md": "_common/CLAUDE.md",
+}
 
 LANGUAGES: Mapping[str, CreateLanguage] = {
     "python": CreateLanguage(
@@ -225,8 +229,27 @@ def _template_files(
     focus_id: str,
     file_names: Sequence[str],
 ) -> Mapping[str, str]:
+    files = {
+        "README.md": f"{language_id}/{focus_id}/README.md",
+        ".meshagent/deploy.yaml": f"{language_id}/{focus_id}/.meshagent/deploy.yaml",
+        **COMMON_GUIDANCE_FILES,
+    }
+    files.update(
+        {file_name: f"{language_id}/{focus_id}/{file_name}" for file_name in file_names}
+    )
+    return files
+
+
+def _with_project_guidance_files(
+    language_id: str,
+    focus_id: str,
+    files: Mapping[str, str],
+) -> Mapping[str, str]:
     return {
-        file_name: f"{language_id}/{focus_id}/{file_name}" for file_name in file_names
+        "README.md": f"{language_id}/{focus_id}/README.md",
+        ".meshagent/deploy.yaml": f"{language_id}/{focus_id}/.meshagent/deploy.yaml",
+        **COMMON_GUIDANCE_FILES,
+        **files,
     }
 
 
@@ -373,14 +396,18 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         focus_id=CHATBOT_FOCUS,
         label="TypeScript OpenAI Chatbot",
         description="Browser chatbot backed by the room OpenAI proxy.",
-        files={
-            "package.json": "typescript/chatbot/package.json",
-            ".npmrc": "typescript/backend-agent/.npmrc",
-            "tsconfig.json": "typescript/backend-agent/tsconfig.json",
-            "src/server.ts": "typescript/chatbot/src/server.ts",
-            "Dockerfile": "typescript/webserver/Dockerfile",
-            ".dockerignore": "typescript/backend-agent/.dockerignore",
-        },
+        files=_with_project_guidance_files(
+            "typescript",
+            CHATBOT_FOCUS,
+            {
+                "package.json": "typescript/chatbot/package.json",
+                ".npmrc": "typescript/backend-agent/.npmrc",
+                "tsconfig.json": "typescript/backend-agent/tsconfig.json",
+                "src/server.ts": "typescript/chatbot/src/server.ts",
+                "Dockerfile": "typescript/webserver/Dockerfile",
+                ".dockerignore": "typescript/backend-agent/.dockerignore",
+            },
+        ),
         next_steps=NPM_WEBSERVER_NEXT_STEPS,
     ),
     ("typescript", ANTHROPIC_CHATBOT_FOCUS): CreateTemplate(
@@ -388,14 +415,18 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         focus_id=ANTHROPIC_CHATBOT_FOCUS,
         label="TypeScript Anthropic Chatbot",
         description="Browser chatbot backed by the room Anthropic proxy.",
-        files={
-            "package.json": "typescript/chatbot-anthropic/package.json",
-            ".npmrc": "typescript/backend-agent/.npmrc",
-            "tsconfig.json": "typescript/backend-agent/tsconfig.json",
-            "src/server.ts": "typescript/chatbot-anthropic/src/server.ts",
-            "Dockerfile": "typescript/webserver/Dockerfile",
-            ".dockerignore": "typescript/backend-agent/.dockerignore",
-        },
+        files=_with_project_guidance_files(
+            "typescript",
+            ANTHROPIC_CHATBOT_FOCUS,
+            {
+                "package.json": "typescript/chatbot-anthropic/package.json",
+                ".npmrc": "typescript/backend-agent/.npmrc",
+                "tsconfig.json": "typescript/backend-agent/tsconfig.json",
+                "src/server.ts": "typescript/chatbot-anthropic/src/server.ts",
+                "Dockerfile": "typescript/webserver/Dockerfile",
+                ".dockerignore": "typescript/backend-agent/.dockerignore",
+            },
+        ),
         next_steps=NPM_WEBSERVER_NEXT_STEPS,
     ),
     ("react", WEB_FOCUS): CreateTemplate(
@@ -901,12 +932,12 @@ def _print_contact_form_mailbox_guidance(template: CreateTemplate) -> None:
     )
     click.echo("  New mailbox:")
     click.secho(
-        "    meshagent mailbox create --address contact-<room-slug>@mail.meshagent.life --room <room> --queue contact-<room-slug>@mail.meshagent.life --public",
+        "    meshagent mailbox create --address contact-<room-slug>@mail.meshagent.com --room <room> --queue contact-<room-slug>@mail.meshagent.com --public",
         fg="green",
     )
     click.echo("  Existing mailbox for that room:")
     click.secho(
-        "    meshagent mailbox update contact-<room-slug>@mail.meshagent.life --room <room> --queue contact-<room-slug>@mail.meshagent.life --public",
+        "    meshagent mailbox update contact-<room-slug>@mail.meshagent.com --room <room> --queue contact-<room-slug>@mail.meshagent.com --public",
         fg="green",
     )
     click.echo(

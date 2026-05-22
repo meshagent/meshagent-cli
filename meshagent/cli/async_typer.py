@@ -87,6 +87,29 @@ class LazyLoadedCommand(click.Command):
         self._loaded_command = command
         return command
 
+    def _load_command_for_args(
+        self, args: list[str]
+    ) -> tuple[click.Command, list[str]]:
+        if len(self._registration.command_path) == 0 or len(args) == 0:
+            return self._load_command(), args
+
+        module = importlib.import_module(self._registration.module)
+        try:
+            target = module.__dict__[self._registration.attribute]
+        except KeyError as exc:
+            raise RuntimeError(
+                f"{self._registration.module} has no attribute {self._registration.attribute}"
+            ) from exc
+
+        command = _coerce_to_click_command(target)
+        if not isinstance(command, click.Group):
+            return self._load_command(), args
+
+        sibling = command.get_command(click.Context(command), args[0])
+        if sibling is None or args[0] == self._registration.command_path[0]:
+            return self._load_command(), args
+        return sibling, args[1:]
+
     def make_context(
         self,
         info_name: str | None,
@@ -94,9 +117,10 @@ class LazyLoadedCommand(click.Command):
         parent: click.Context | None = None,
         **extra: Any,
     ) -> click.Context:
-        return self._load_command().make_context(
+        command, resolved_args = self._load_command_for_args(args)
+        return command.make_context(
             info_name,
-            args,
+            resolved_args,
             parent=parent,
             **extra,
         )

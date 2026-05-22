@@ -88,6 +88,9 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     assert "--public" not in result.output
 
     pyproject = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
+    readme = (tmp_path / "README.md").read_text(encoding="utf-8")
+    agents_md = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+    claude_md = (tmp_path / "CLAUDE.md").read_text(encoding="utf-8")
     server_py = (tmp_path / "server.py").read_text(encoding="utf-8")
     dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")
@@ -95,6 +98,15 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert not (tmp_path / "Makefile").exists()
 
+    assert "Python Agent Toolkit" in readme
+    assert "./scripts/install.sh" in readme
+    assert "./scripts/dev.sh" in readme
+    assert "./scripts/deploy.sh" in readme
+    assert "meshagent process deploy --room <room>" in readme
+    assert "--agent-name meshagent-create-python-agent" in readme
+    assert "--require-toolkit meshagent.create.python-agent" in readme
+    assert "Read `README.md`" in agents_md
+    assert "Read `README.md`" in claude_md
     assert 'requires-python = ">=3.13"' in pyproject
     assert '"meshagent-api==' in pyproject
     assert '"meshagent-tools==' in pyproject
@@ -227,6 +239,9 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     assert "--meshagent-token" not in result.output
 
     pyproject = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
+    readme = (tmp_path / "README.md").read_text(encoding="utf-8")
+    agents_md = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+    claude_md = (tmp_path / "CLAUDE.md").read_text(encoding="utf-8")
     server_py = (tmp_path / "server.py").read_text(encoding="utf-8")
     dev_content = (tmp_path / "dev-content.json").read_text(encoding="utf-8")
     dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
@@ -235,6 +250,12 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert not (tmp_path / "Makefile").exists()
 
+    assert "Python Web App" in readme
+    assert "./scripts/install.sh" in readme
+    assert "./scripts/dev.sh" in readme
+    assert "./scripts/deploy.sh" in readme
+    assert "Read `README.md`" in agents_md
+    assert "Read `README.md`" in claude_md
     assert '"aiohttp[speedups]~=3.13.0"' in pyproject
     assert '"meshagent-api==' in pyproject
     assert '"meshagent-tools==' in pyproject
@@ -304,11 +325,11 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "New mailbox:" in result.output
     assert "Existing mailbox for that room:" in result.output
     assert (
-        "meshagent mailbox create --address contact-<room-slug>@mail.meshagent.life --room <room> --queue contact-<room-slug>@mail.meshagent.life --public"
+        "meshagent mailbox create --address contact-<room-slug>@mail.meshagent.com --room <room> --queue contact-<room-slug>@mail.meshagent.com --public"
         in result.output
     )
     assert (
-        "meshagent mailbox update contact-<room-slug>@mail.meshagent.life --room <room> --queue contact-<room-slug>@mail.meshagent.life --public"
+        "meshagent mailbox update contact-<room-slug>@mail.meshagent.com --room <room> --queue contact-<room-slug>@mail.meshagent.com --public"
         in result.output
     )
     assert "If create returns 409" in result.output
@@ -322,11 +343,28 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     )
 
     pyproject = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
+    readme = (tmp_path / "README.md").read_text(encoding="utf-8")
+    agents_md = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+    claude_md = (tmp_path / "CLAUDE.md").read_text(encoding="utf-8")
     server_py = (tmp_path / "server.py").read_text(encoding="utf-8")
     dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")
     dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    deploy_yaml = (tmp_path / ".meshagent" / "deploy.yaml").read_text(encoding="utf-8")
+
+    assert "Python Contact Form" in readme
+    assert "meshagent rooms create --name <room> --if-not-exists" in readme
+    assert "./scripts/dev.sh --room <room>" in readme
+    assert "CONTACT_FORM_TO=you@example.com ./scripts/deploy.sh --room <room>" in readme
+    assert (
+        "meshagent mailbox create --address contact-<room-slug>@mail.meshagent.com"
+        in readme
+    )
+    assert "CONTACT_FORM_FROM" in readme
+    assert "CONTACT_FORM_TO" in readme
+    assert "Read `README.md`" in agents_md
+    assert "Read `README.md`" in claude_md
 
     assert '"aiohttp[speedups]~=3.13.0"' in pyproject
     assert '"meshagent-api==' in pyproject
@@ -345,7 +383,7 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "except KeyboardInterrupt" in server_py
     assert "Stopped contact form." in server_py
     assert "webbrowser" not in server_py
-    assert "contact@mail.meshagent.life" in server_py
+    assert "contact@mail.meshagent.com" in server_py
     assert "you@example.com" in server_py
     assert "python-sdk-slim" in dockerfile
     assert "FROM scratch" in dockerfile
@@ -359,7 +397,7 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "CONTACT_FORM_TO" in dev_sh
     assert "SMTP_HOSTNAME" in dev_sh
     assert "SMTP_USERNAME" in dev_sh
-    assert "mail.meshagent.life" in dev_sh
+    assert "mail.meshagent.com" in dev_sh
     assert "Browser will launch at $LOCAL_URL" in dev_sh
     assert "webbrowser.open(sys.argv[1])" in dev_sh
     assert "CONTACT_FORM_OPEN_BROWSER" in dev_sh
@@ -373,16 +411,23 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "meshagent rooms create --name <room> --if-not-exists" in dev_sh
     assert 'meshagent rooms create --name "$ROOM_NAME" --if-not-exists' in deploy_sh
     assert "--meshagent-token agentDefault" in deploy_sh
-    assert '--env "CONTACT_FORM_FROM=$CONTACT_FORM_FROM"' in deploy_sh
-    assert '--env "CONTACT_FORM_TO=$CONTACT_FORM_TO"' in deploy_sh
-    assert '--env "SMTP_USERNAME=$SMTP_USERNAME"' in deploy_sh
+    assert '--set "from_email=$CONTACT_FORM_FROM"' in deploy_sh
+    assert '--set "to_email=$CONTACT_FORM_TO"' in deploy_sh
     assert "mailbox_from_room" in deploy_sh
     assert '"$@"' in deploy_sh
     assert "If the room does not exist yet, create it first:" in deploy_sh
-    assert (
-        'if ! meshagent deploy . \\\n  "$@" \\\n  --tag "$IMAGE_TAG" \\\n  --public'
-        in deploy_sh
-    )
+    assert "if ! meshagent deploy ." in deploy_sh
+    assert '  "$@" \\' in deploy_sh
+    assert '  --tag "$IMAGE_TAG" \\' in deploy_sh
+    assert "  --meshagent-token agentDefault" in deploy_sh
+    assert "kind: ServiceTemplate" in deploy_yaml
+    assert "name: from_email" in deploy_yaml
+    assert "name: to_email" in deploy_yaml
+    assert "type: email" in deploy_yaml
+    assert "template: agent" in deploy_yaml
+    assert "num: 8000" in deploy_yaml
+    assert "CONTACT_FORM_FROM" in deploy_yaml
+    assert "CONTACT_FORM_TO" in deploy_yaml
     assert diagnosis.language == "Python"
     assert diagnosis.sdk == "meshagent-api"
     assert diagnosis.has_health_route is True

@@ -75,6 +75,59 @@ def _route_for_service(
     )
 
 
+class _FakeDeployConfigClient:
+    def __init__(
+        self,
+        *,
+        pages: str | None = "pages.meshagent.example",
+        mail: str | None = "mail.meshagent.example",
+    ) -> None:
+        self._config = MeshagentDeploymentConfig(
+            domains=MeshagentDomains(pages=pages, mail=mail)
+        )
+
+    async def get_config(self) -> MeshagentDeploymentConfig:
+        return self._config
+
+
+def test_root_deploy_describe_prints_local_template(tmp_path: Path) -> None:
+    deploy_dir = tmp_path / ".meshagent"
+    deploy_dir.mkdir()
+    (deploy_dir / "deploy.yaml").write_text(
+        """
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: demo
+  description: Demo service.
+variables:
+  - name: domain
+    title: Public domain
+    description: Domain to route to the service.
+    type: route
+    optional: true
+container:
+  image: "{{ image }}"
+  template: none
+ports:
+  - num: 8080
+    type: http
+    published: true
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        async_typer.get_command(cli.app),
+        ["deploy", "describe", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    assert "Deploy spec" in result.output
+    assert "Name: demo" in result.output
+    assert "domain (optional, type=route)" in result.output
+
+
 @pytest.fixture(autouse=True)
 def _stub_project_registry_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
     class _FakeConfigClient:
@@ -145,7 +198,7 @@ def test_root_deploy_help_mentions_existing_room_flow() -> None:
     assert "The target room must already exist." in result.output
     assert "Existing room name." in result.output
     assert "--public --domain <domain>" in result.output
-    assert "meshagent config get domains.pages" in result.output
+    assert "meshagent config get domains.pages" in normalized_output
     assert "create --name <room> --if-not-exists" not in result.output
     assert "return a public URL" in normalized_output
     assert ".meshagent.dev" not in result.output
@@ -2130,6 +2183,11 @@ async def test_deploy_image_waits_by_default(
             captured["room_client_closed"] = True
 
     class _FakeAccountClient:
+        async def get_config(self) -> MeshagentDeploymentConfig:
+            return MeshagentDeploymentConfig(
+                domains=MeshagentDomains(pages="pages.meshagent.example")
+            )
+
         async def list_room_services(self, *, project_id: str, room_name: str):
             del project_id, room_name
             return []
@@ -2268,6 +2326,11 @@ async def test_deploy_image_normalizes_shorthand_tag_without_build_context(
             captured["room_client_closed"] = True
 
     class _FakeAccountClient:
+        async def get_config(self) -> MeshagentDeploymentConfig:
+            return MeshagentDeploymentConfig(
+                domains=MeshagentDomains(pages="pages.meshagent.example")
+            )
+
         async def list_room_services(self, *, project_id: str, room_name: str):
             captured.setdefault("list_room_services", []).append(
                 (project_id, room_name)
@@ -2726,6 +2789,11 @@ async def test_deploy_image_pack_builds_before_deploying(
             captured["room_client_closed"] = True
 
     class _FakeAccountClient:
+        async def get_config(self) -> MeshagentDeploymentConfig:
+            return MeshagentDeploymentConfig(
+                domains=MeshagentDomains(pages="pages.meshagent.example")
+            )
+
         async def list_room_services(self, *, project_id: str, room_name: str):
             captured.setdefault("list_room_services", []).append(
                 (project_id, room_name)
@@ -2755,7 +2823,6 @@ async def test_deploy_image_pack_builds_before_deploying(
     monkeypatch.setattr(image, "_with_client", _fake_with_client)
     monkeypatch.setattr(image, "resolve_room", lambda room: room)
     monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
-    monkeypatch.setattr(image, "resolve_pages_domain", lambda: "meshagent.dev")
     monkeypatch.setattr(image, "_stdio_is_interactive", lambda: True)
     monkeypatch.setattr(
         "meshagent.cli.tui.deploy_room.run_deploy_domain_prompt_tui",
@@ -2800,7 +2867,7 @@ async def test_deploy_image_pack_builds_before_deploying(
         "service_name": "repo-web",
         "port": "8080",
         "room_name": "room-1",
-        "pages_domain": "meshagent.dev",
+        "pages_domain": "pages.meshagent.example",
     }
     assert captured["deleted_image"] == "registry.meshagent.com/repo/web:1"
     assert captured["events"] == ["domain_tui", "build", "delete", "create"]
@@ -3196,6 +3263,209 @@ CMD ["/app/dist/index.js"]
 
 
 @pytest.mark.asyncio
+async def test_resolve_deploy_template_values_uses_saved_values_and_set_overrides(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values_file = tmp_path / ".meshagent" / "values.yaml"
+    values_file.parent.mkdir()
+    values_file.write_text("domain: old.example.com\n", encoding="utf-8")
+    template = image.ServiceTemplateSpec.from_yaml(
+        yaml="""
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: demo
+variables:
+  - name: domain
+    type: route
+  - name: image
+    optional: true
+container:
+  image: "{{ image }}"
+""",
+        values={},
+    )
+    monkeypatch.setattr(image, "_stdio_is_interactive", lambda: False)
+
+    values = await image._resolve_deploy_template_values(
+        account_client=_FakeDeployConfigClient(
+            pages="example.com", mail="mail.example.com"
+        ),
+        template=template,
+        room_name="room-1",
+        service_name="demo",
+        values_file=values_file,
+        extra_values_files=[],
+        set_values=["domain=new.example.com"],
+        image="repo/demo:1",
+    )
+
+    assert values == {"domain": "new.example.com", "image": "repo/demo:1"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_deploy_template_values_requires_values_when_not_tty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    template = image.ServiceTemplateSpec.from_yaml(
+        yaml="""
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: demo
+variables:
+  - name: to_email
+    type: email
+container:
+  image: "{{ image }}"
+""",
+        values={},
+    )
+    monkeypatch.setattr(image, "_stdio_is_interactive", lambda: False)
+
+    with pytest.raises(
+        typer.BadParameter, match="missing required deploy template values"
+    ):
+        await image._resolve_deploy_template_values(
+            account_client=_FakeDeployConfigClient(
+                pages="example.com", mail="mail.example.com"
+            ),
+            template=template,
+            room_name="room-1",
+            service_name="demo",
+            values_file=tmp_path / ".meshagent" / "values.yaml",
+            extra_values_files=[],
+            set_values=[],
+            image="repo/demo:1",
+        )
+
+
+@pytest.mark.asyncio
+async def test_resolve_deploy_template_values_defaults_domains_from_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    template = image.ServiceTemplateSpec.from_yaml(
+        yaml="""
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: demo
+variables:
+  - name: domain
+    type: route
+  - name: from_email
+    type: email
+  - name: image
+    optional: true
+container:
+  image: "{{ image }}"
+""",
+        values={},
+    )
+    prompts: list[tuple[str, str]] = []
+
+    def _fake_prompt(prompt: str, *, default: str, show_default: bool) -> str:
+        del show_default
+        prompts.append((prompt, default))
+        return default
+
+    monkeypatch.setattr(image, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(image.typer, "prompt", _fake_prompt)
+
+    values = await image._resolve_deploy_template_values(
+        account_client=_FakeDeployConfigClient(
+            pages="pages.meshagent.example",
+            mail="mail.meshagent.example",
+        ),
+        template=template,
+        room_name="Contact Room",
+        service_name="contact-form",
+        values_file=tmp_path / ".meshagent" / "values.yaml",
+        extra_values_files=[],
+        set_values=[],
+        image="repo/demo:1",
+    )
+
+    assert values["domain"] == "contact-room.pages.meshagent.example"
+    assert values["from_email"] == "contact-form@mail.meshagent.example"
+    assert prompts == [
+        ("Domain", "contact-room.pages.meshagent.example"),
+        ("From_email", "contact-form@mail.meshagent.example"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resolve_deploy_template_values_enforces_configured_route_suffix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    template = image.ServiceTemplateSpec.from_yaml(
+        yaml="""
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: demo
+variables:
+  - name: domain
+    type: route
+container:
+  image: image
+""",
+        values={},
+    )
+    monkeypatch.setattr(image, "_stdio_is_interactive", lambda: False)
+
+    with pytest.raises(typer.BadParameter, match="configured pages domain suffix"):
+        await image._resolve_deploy_template_values(
+            account_client=_FakeDeployConfigClient(pages="pages.meshagent.example"),
+            template=template,
+            room_name="room-1",
+            service_name="demo",
+            values_file=tmp_path / ".meshagent" / "values.yaml",
+            extra_values_files=[],
+            set_values=["domain=demo.example.com"],
+            image="repo/demo:1",
+        )
+
+
+@pytest.mark.asyncio
+async def test_resolve_deploy_template_values_enforces_configured_mail_domain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    template = image.ServiceTemplateSpec.from_yaml(
+        yaml="""
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: demo
+variables:
+  - name: from_email
+    type: email
+container:
+  image: image
+""",
+        values={},
+    )
+    monkeypatch.setattr(image, "_stdio_is_interactive", lambda: False)
+
+    with pytest.raises(typer.BadParameter, match="configured mail domain"):
+        await image._resolve_deploy_template_values(
+            account_client=_FakeDeployConfigClient(mail="mail.meshagent.example"),
+            template=template,
+            room_name="room-1",
+            service_name="demo",
+            values_file=tmp_path / ".meshagent" / "values.yaml",
+            extra_values_files=[],
+            set_values=["from_email=demo@example.com"],
+            image="repo/demo:1",
+        )
+
+
+@pytest.mark.asyncio
 async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -3349,14 +3619,13 @@ async def test_resolve_deploy_domain_prompts_for_dockerfile_exposed_port(
         )
 
     monkeypatch.setattr(image, "_stdio_is_interactive", lambda: True)
-    monkeypatch.setattr(image, "resolve_pages_domain", lambda: "meshagent.dev")
     monkeypatch.setattr(
         "meshagent.cli.tui.deploy_room.run_deploy_domain_prompt_tui",
         _fake_run_deploy_domain_prompt_tui,
     )
 
     domain = await image._resolve_deploy_domain(
-        account_client=SimpleNamespace(),
+        account_client=_FakeDeployConfigClient(pages="apps.meshagent.example"),
         project_id="project-1",
         room_name="room-1",
         explicit_domain=None,
@@ -3371,7 +3640,7 @@ async def test_resolve_deploy_domain_prompts_for_dockerfile_exposed_port(
         "service_name": "repo-web",
         "port": "8080",
         "room_name": "room-1",
-        "pages_domain": "meshagent.dev",
+        "pages_domain": "apps.meshagent.example",
     }
 
 
