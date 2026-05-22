@@ -60,6 +60,7 @@ AGENT_FOCUS = "backend-agent"
 CHATBOT_FOCUS = "chatbot"
 ANTHROPIC_CHATBOT_FOCUS = "chatbot-anthropic"
 CHATBOT_UI_FOCUS = "chatbot-ui"
+CONTACT_FORM_FOCUS = "contact-form"
 DEFAULT_LANGUAGE = "python"
 DEFAULT_FOCUS = AGENT_FOCUS
 CREATE_TEMPLATE_PACKAGE = "meshagent.cli.create_project_templates"
@@ -125,6 +126,12 @@ NPM_CHATBOT_UI_NEXT_STEPS = (
     "npm install",
     "npm run dev",
     "npm run deploy",
+)
+CONTACT_FORM_NEXT_STEPS = (
+    "./scripts/install.sh",
+    "meshagent rooms create --name <room> --if-not-exists",
+    "./scripts/dev.sh --room <room>",
+    "CONTACT_FORM_TO=you@example.com ./scripts/deploy.sh --room <room>",
 )
 NPM_AGENT_NEXT_STEPS = (
     "npm install",
@@ -205,6 +212,11 @@ FOCUSES: Mapping[str, CreateFocus] = {
         label="Agent UI",
         description="Browser chat interface for a deployed MeshAgent agent.",
     ),
+    CONTACT_FORM_FOCUS: CreateFocus(
+        id=CONTACT_FORM_FOCUS,
+        label="Contact Form",
+        description="Public HTML contact form that sends email through a room mailbox.",
+    ),
 }
 
 
@@ -259,6 +271,26 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
             ),
         ),
         next_steps=AGENT_NEXT_STEPS,
+    ),
+    ("python", CONTACT_FORM_FOCUS): CreateTemplate(
+        language_id="python",
+        focus_id=CONTACT_FORM_FOCUS,
+        label="Python Contact Form",
+        description="Public aiohttp contact form that sends email through room SMTP.",
+        files=_template_files(
+            "python",
+            CONTACT_FORM_FOCUS,
+            (
+                "pyproject.toml",
+                "server.py",
+                "Dockerfile",
+                ".dockerignore",
+                "scripts/install.sh",
+                "scripts/dev.sh",
+                "scripts/deploy.sh",
+            ),
+        ),
+        next_steps=CONTACT_FORM_NEXT_STEPS,
     ),
     ("javascript", WEB_FOCUS): CreateTemplate(
         language_id="javascript",
@@ -546,6 +578,14 @@ FOCUS_ALIASES = {
     "chat_ui": CHATBOT_UI_FOCUS,
     "chatbot-ui": CHATBOT_UI_FOCUS,
     "chatbot_ui": CHATBOT_UI_FOCUS,
+    "contact": CONTACT_FORM_FOCUS,
+    "contact-form": CONTACT_FORM_FOCUS,
+    "contact_form": CONTACT_FORM_FOCUS,
+    "contact-email": CONTACT_FORM_FOCUS,
+    "contact_email": CONTACT_FORM_FOCUS,
+    "email": CONTACT_FORM_FOCUS,
+    "email-form": CONTACT_FORM_FOCUS,
+    "email_form": CONTACT_FORM_FOCUS,
     "roomclient": AGENT_FOCUS,
     "room-client": AGENT_FOCUS,
     "web": WEB_FOCUS,
@@ -784,6 +824,7 @@ def _next_step_sections(
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
     section_specs = (
         ("Install dependencies", ("install",)),
+        ("Create room", ("rooms create",)),
         ("Run locally", ("dev",)),
         ("Deploy", ("deploy",)),
     )
@@ -849,6 +890,33 @@ def _print_agent_toolkit_guidance(template: CreateTemplate) -> None:
     click.secho(f"  {command}", fg="green")
 
 
+def _print_contact_form_mailbox_guidance(template: CreateTemplate) -> None:
+    if template.focus_id != CONTACT_FORM_FOCUS:
+        return
+    click.echo("")
+    click.secho(
+        "Before testing a submission, set up the sender mailbox for that room:",
+        fg="cyan",
+        bold=True,
+    )
+    click.echo("  New mailbox:")
+    click.secho(
+        "    meshagent mailbox create --address contact-<room-slug>@mail.meshagent.life --room <room> --queue contact-<room-slug>@mail.meshagent.life --public",
+        fg="green",
+    )
+    click.echo("  Existing mailbox for that room:")
+    click.secho(
+        "    meshagent mailbox update contact-<room-slug>@mail.meshagent.life --room <room> --queue contact-<room-slug>@mail.meshagent.life --public",
+        fg="green",
+    )
+    click.echo(
+        "Use that mailbox as CONTACT_FORM_FROM. If create returns 409, choose another room-specific local part; do not reuse a mailbox unless it is listed for this room. Set CONTACT_FORM_TO to the address that should receive submissions."
+    )
+    click.echo(
+        "If CONTACT_FORM_TO is also a private MeshAgent mailbox, use a public destination mailbox or an external delivery alias."
+    )
+
+
 def _print_created_report(
     *,
     template: CreateTemplate,
@@ -861,6 +929,7 @@ def _print_created_report(
     click.echo("")
     _print_next_steps(template.next_steps, enter_project_root=enter_project_root)
     _print_agent_toolkit_guidance(template)
+    _print_contact_form_mailbox_guidance(template)
 
 
 @click.command(
@@ -884,7 +953,8 @@ def _print_created_report(
     help=(
         "Project focus for non-interactive use. Use stable IDs: webserver "
         "(Web App), backend-agent (Agent Toolkit), chatbot (OpenAI Chatbot), "
-        "chatbot-anthropic (Anthropic Chatbot), or chatbot-ui (Agent UI)."
+        "chatbot-anthropic (Anthropic Chatbot), chatbot-ui (Agent UI), "
+        "or contact-form (Contact Form)."
     ),
 )
 @click.option(
