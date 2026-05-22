@@ -373,9 +373,9 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "meshagent rooms create --name <room> --if-not-exists" in dev_sh
     assert 'meshagent rooms create --name "$ROOM_NAME" --if-not-exists' in deploy_sh
     assert "--meshagent-token agentDefault" in deploy_sh
-    assert "--env \"CONTACT_FORM_FROM=$CONTACT_FORM_FROM\"" in deploy_sh
-    assert "--env \"CONTACT_FORM_TO=$CONTACT_FORM_TO\"" in deploy_sh
-    assert "--env \"SMTP_USERNAME=$SMTP_USERNAME\"" in deploy_sh
+    assert '--env "CONTACT_FORM_FROM=$CONTACT_FORM_FROM"' in deploy_sh
+    assert '--env "CONTACT_FORM_TO=$CONTACT_FORM_TO"' in deploy_sh
+    assert '--env "SMTP_USERNAME=$SMTP_USERNAME"' in deploy_sh
     assert "mailbox_from_room" in deploy_sh
     assert '"$@"' in deploy_sh
     assert "If the room does not exist yet, create it first:" in deploy_sh

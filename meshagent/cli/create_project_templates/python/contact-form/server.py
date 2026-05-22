@@ -226,7 +226,11 @@ def _build_message(values: dict[str, str]) -> EmailMessage:
 
 def _send_email(msg: EmailMessage) -> None:
     username, password, port, hostname = _smtp_config()
-    use_starttls = os.getenv("SMTP_STARTTLS", "true").lower() not in {"0", "false", "no"}
+    use_starttls = os.getenv("SMTP_STARTTLS", "true").lower() not in {
+        "0",
+        "false",
+        "no",
+    }
     with smtplib.SMTP(hostname, port, timeout=20) as smtp:
         if use_starttls:
             smtp.starttls()
@@ -293,7 +297,9 @@ async def submit_contact(request: web.Request) -> web.Response:
     if values["email"] and not is_valid_email(values["email"]):
         return web.Response(
             text=render_page(
-                flash=_flash(message="Please enter a valid email address.", kind="error"),
+                flash=_flash(
+                    message="Please enter a valid email address.", kind="error"
+                ),
                 values=values,
             ),
             content_type="text/html",
@@ -302,7 +308,9 @@ async def submit_contact(request: web.Request) -> web.Response:
     if values["phone"] and not is_valid_phone(values["phone"]):
         return web.Response(
             text=render_page(
-                flash=_flash(message="Please enter a valid phone number.", kind="error"),
+                flash=_flash(
+                    message="Please enter a valid phone number.", kind="error"
+                ),
                 values=values,
             ),
             content_type="text/html",
