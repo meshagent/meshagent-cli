@@ -2041,8 +2041,8 @@ async def test_wait_for_deployed_service_live_streams_logs_and_checks_liveness(
     async def _fake_to_thread(func, /, *args, **kwargs):
         return func(*args, **kwargs)
 
-    def _fake_start_deploy_log_stream(*, client, container_id: str):
-        del client
+    def _fake_start_deploy_log_stream(*, client, container_id: str, log_handler=None):
+        del client, log_handler
         captured["started_logs"].append(container_id)
         return fake_active_logs
 
@@ -2129,8 +2129,8 @@ async def test_wait_for_deployed_service_live_exits_when_container_restarts(
 
     fake_client = SimpleNamespace(services=_FakeServices(states))
 
-    def _fake_start_deploy_log_stream(*, client, container_id: str):
-        del client
+    def _fake_start_deploy_log_stream(*, client, container_id: str, log_handler=None):
+        del client, log_handler
         captured["started_logs"].append(container_id)
         return fake_active_logs
 
@@ -3367,13 +3367,20 @@ container:
     )
     prompts: list[tuple[str, str]] = []
 
-    def _fake_prompt(prompt: str, *, default: str, show_default: bool) -> str:
-        del show_default
-        prompts.append((prompt, default))
-        return default
+    async def _fake_run_deploy_template_variables_tui(*, variables):
+        from meshagent.cli.tui.deploy_room import DeployTemplateVariablesResult
+
+        values = {}
+        for variable in variables:
+            prompts.append((variable.title, variable.default))
+            values[variable.name] = variable.default
+        return DeployTemplateVariablesResult(status="completed", values=values)
 
     monkeypatch.setattr(image, "_stdio_is_interactive", lambda: True)
-    monkeypatch.setattr(image.typer, "prompt", _fake_prompt)
+    monkeypatch.setattr(
+        "meshagent.cli.tui.deploy_room.run_deploy_template_variables_tui",
+        _fake_run_deploy_template_variables_tui,
+    )
 
     values = await image._resolve_deploy_template_values(
         account_client=_FakeDeployConfigClient(

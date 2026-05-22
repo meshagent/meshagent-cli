@@ -70,6 +70,8 @@ CODEX_DEFAULT_PROFILE_OPTION_ID_PREFIX = "__codex_default_profile__:"
 CLAUDE_CONFIGURE_OPTION_ID = "__claude_configure__"
 CLAUDE_REMOVE_OPTION_ID = "__claude_remove__"
 CLAUDE_SKIP_OPTION_ID = "__claude_skip__"
+SAMPLE_CREATE_OPTION_ID = "__sample_create__"
+SAMPLE_SKIP_OPTION_ID = "__sample_skip__"
 PROJECT_CREATE_OPTION_ID = "__project_create__"
 PROJECT_EXIT_OPTION_ID = "__project_exit__"
 API_KEY_CREATE_OPTION_ID = "__api_key_create__"
@@ -208,6 +210,7 @@ class SetupWizardResult:
     status: Literal["completed", "canceled", "error"]
     message: str | None = None
     project_id: str | None = None
+    create_sample: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,6 +251,7 @@ SetupMode = Literal[
     "codex_profile_conflict",
     "codex_default_choice",
     "claude_choice",
+    "sample_choice",
     "busy",
     "error",
     "done",
@@ -630,13 +634,21 @@ class SetupWizardApp(App[None]):
 
         if self._mode == "claude_choice":
             if selected_id == CLAUDE_SKIP_OPTION_ID:
-                await self._finish_success()
+                self._show_sample_choice()
                 return
             if selected_id == CLAUDE_CONFIGURE_OPTION_ID:
                 await self._configure_claude()
                 return
             if selected_id == CLAUDE_REMOVE_OPTION_ID:
                 await self._clear_claude()
+                return
+
+        if self._mode == "sample_choice":
+            if selected_id == SAMPLE_CREATE_OPTION_ID:
+                await self._finish_success(create_sample=True)
+                return
+            if selected_id == SAMPLE_SKIP_OPTION_ID:
+                await self._finish_success(create_sample=False)
                 return
 
         if self._mode == "error" and selected_id == ERROR_EXIT_OPTION_ID:
@@ -1179,6 +1191,25 @@ class SetupWizardApp(App[None]):
             highlighted_id=highlighted_id,
         )
 
+    def _show_sample_choice(self) -> None:
+        self._mode = "sample_choice"
+        self._clear_error()
+        self._hide_input()
+        self._hide_status()
+        self._hide_url()
+        self._set_text(
+            title="Create Sample App",
+            message="Would you like to create a sample MeshAgent application now?",
+            help_text="Use Up/Down and Enter.",
+        )
+        self._set_options(
+            options=[
+                Option("Create a sample application", id=SAMPLE_CREATE_OPTION_ID),
+                Option("Skip for now", id=SAMPLE_SKIP_OPTION_ID),
+            ],
+            highlighted_id=SAMPLE_CREATE_OPTION_ID,
+        )
+
     async def _create_api_key(self, project_id: str, api_key_name: str) -> None:
         self._set_busy(
             title="Creating API Key",
@@ -1462,7 +1493,7 @@ class SetupWizardApp(App[None]):
 
     async def _maybe_continue_to_claude_setup(self) -> None:
         if not self._has_claude_code_cli or self._configure_claude_operation is None:
-            await self._finish_success()
+            self._show_sample_choice()
             return
 
         await self._ensure_llm_proxy_access_checked()
@@ -1492,7 +1523,7 @@ class SetupWizardApp(App[None]):
             self._selected_project_id is None
             or self._configure_claude_operation is None
         ):
-            await self._finish_success()
+            self._show_sample_choice()
             return
 
         self._set_busy(
@@ -1507,11 +1538,11 @@ class SetupWizardApp(App[None]):
             return
 
         self._configured_claude = True
-        await self._finish_success()
+        self._show_sample_choice()
 
     async def _clear_claude(self) -> None:
         if self._clear_claude_operation is None:
-            await self._finish_success()
+            self._show_sample_choice()
             return
 
         self._set_busy(
@@ -1526,9 +1557,9 @@ class SetupWizardApp(App[None]):
             return
 
         self._cleared_claude = True
-        await self._finish_success()
+        self._show_sample_choice()
 
-    async def _finish_success(self) -> None:
+    async def _finish_success(self, *, create_sample: bool = False) -> None:
         self._mode = "done"
         await self._stop_logo_dissolve()
         self._clear_error()
@@ -1589,6 +1620,8 @@ class SetupWizardApp(App[None]):
             message = f"{message} Claude is configured to use MeshAgent."
         elif self._cleared_claude:
             message = f"{message} Claude MeshAgent configuration was removed."
+        if create_sample:
+            message = f"{message} Opening the sample app wizard next."
         self._set_text(
             title="Setup Complete",
             message=message,
@@ -1598,6 +1631,7 @@ class SetupWizardApp(App[None]):
         self.result = SetupWizardResult(
             status="completed",
             project_id=self._selected_project_id,
+            create_sample=create_sample,
         )
 
         await self._run_logo_fade()

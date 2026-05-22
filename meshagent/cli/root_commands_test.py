@@ -130,6 +130,75 @@ def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
     assert existing_codex_profile_requests == ["project-123"]
 
 
+def test_setup_command_launches_create_after_sample_selection(monkeypatch) -> None:
+    created_args: list[list[str]] = []
+    asked: list[str] = []
+
+    async def _fake_get_active_project() -> str | None:
+        return None
+
+    async def _fake_get_access_token() -> str | None:
+        return "oauth-token"
+
+    async def _fake_run_setup_wizard_tui(**kwargs) -> SetupWizardResult:
+        del kwargs
+        return SetupWizardResult(
+            status="completed", project_id="project-123", create_sample=True
+        )
+
+    class _FakeClient:
+        async def get_user_profile(self, user_id: str):
+            assert user_id == "me"
+            return {
+                "id": "user-123",
+                "first_name": "Jesse",
+                "last_name": "Ezell",
+                "email": "jesse@example.com",
+            }
+
+        async def close(self) -> None:
+            return None
+
+    async def _fake_ask(*, project_id, message, model="gpt-5.5") -> None:
+        del project_id, model
+        asked.append(message)
+
+    monkeypatch.setattr(
+        "meshagent.cli.helper.get_active_project", _fake_get_active_project
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tui.setup.run_setup_wizard_tui", _fake_run_setup_wizard_tui
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.auth_async.get_access_token", _fake_get_access_token
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.local_settings.resolve_api_url",
+        lambda *, api_url=None: "https://api.meshagent.com",
+    )
+    monkeypatch.setattr("meshagent.cli.tool_integrations.has_codex_cli", lambda: False)
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.has_claude_code_cli", lambda: False
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.helper.CustomMeshagentClient",
+        lambda *, base_url, token: _FakeClient(),
+    )
+    monkeypatch.setattr("meshagent.cli.ask.ask", _fake_ask)
+    monkeypatch.setattr(root_commands, "_run_async", lambda coro: asyncio.run(coro))
+    monkeypatch.setattr(
+        "meshagent.cli.create.create_command.main",
+        lambda *, args, standalone_mode: created_args.append(list(args)),
+    )
+
+    callback = root_commands.setup_command.callback
+    assert callback is not None
+    callback()
+
+    assert len(asked) == 1
+    assert created_args == [["--interactive"]]
+
+
 def test_setup_command_passes_current_cli_path_to_claude_configuration(
     monkeypatch,
 ) -> None:

@@ -422,6 +422,9 @@ class _AskExternalThreadState(Protocol):
     def thread_status_text(self) -> str | None: ...
 
     @property
+    def thread_status(self) -> AgentThreadStatus | None: ...
+
+    @property
     def queued_message_labels(self) -> tuple[str, ...]: ...
 
     @property
@@ -474,6 +477,9 @@ class _AgentMessageChannelClient(Protocol):
     def thread_status_text(self) -> str | None: ...
 
     @property
+    def thread_status(self) -> AgentThreadStatus | None: ...
+
+    @property
     def queued_message_labels(self) -> tuple[str, ...]: ...
 
     @property
@@ -511,7 +517,38 @@ def _thread_status_text(status: object) -> str | None:
     return normalized
 
 
+def _format_grouped_status_digits(value: int) -> str:
+    text = str(value)
+    parts: list[str] = []
+    for index, char in enumerate(text):
+        if index > 0 and (len(text) - index) % 3 == 0:
+            parts.append(",")
+        parts.append(char)
+    return "".join(parts)
+
+
+def _format_agent_thread_status_text(message: AgentThreadStatus) -> str | None:
+    text = _thread_status_text(message.status)
+    if text is None:
+        return None
+    if message.lines_added is not None or message.lines_removed is not None:
+        parts = [text]
+        if message.lines_added is not None:
+            parts.append(f"+{_format_grouped_status_digits(message.lines_added)}")
+        if message.lines_removed is not None:
+            parts.append(f"-{_format_grouped_status_digits(message.lines_removed)}")
+        return " ".join(parts)
+    if message.total_bytes is not None and message.total_bytes > 100:
+        return f"{text} {_format_grouped_status_digits(message.total_bytes)} bytes"
+    return text
+
+
 def _ask_thread_status_feed_text(status: object) -> str | None:
+    if isinstance(status, AgentThreadStatus):
+        text = _format_agent_thread_status_text(status)
+        if text is None:
+            return None
+        return f"• {text}"
     text = _thread_status_text(status)
     if text is None:
         return None
@@ -1005,6 +1042,10 @@ class _AgentMessageSession:
         return self._client.thread_status_text
 
     @property
+    def thread_status(self) -> AgentThreadStatus | None:
+        return self._client.thread_status
+
+    @property
     def queued_message_labels(self) -> tuple[str, ...]:
         return self._client.queued_message_labels
 
@@ -1434,6 +1475,10 @@ class _AskSession:
         return self._session.thread_status_text
 
     @property
+    def thread_status(self) -> AgentThreadStatus | None:
+        return self._session.thread_status
+
+    @property
     def queued_message_labels(self) -> tuple[str, ...]:
         return self._session.queued_message_labels
 
@@ -1741,15 +1786,20 @@ def _is_cancelled_turn_error(error: Exception) -> bool:
     return isinstance(error, RoomException) and error.code == "cancelled"
 
 
+_ASK_SUPPRESSED_LOGGER_NAMES = ("agent-process", "openai_agent")
+
+
 @contextlib.contextmanager
 def _suppress_ask_process_logs() -> Any:
-    logger = logging.getLogger("agent-process")
-    previous_disabled = logger.disabled
-    logger.disabled = True
+    loggers = [logging.getLogger(name) for name in _ASK_SUPPRESSED_LOGGER_NAMES]
+    previous_disabled = {logger: logger.disabled for logger in loggers}
+    for logger in loggers:
+        logger.disabled = True
     try:
         yield
     finally:
-        logger.disabled = previous_disabled
+        for logger, disabled in previous_disabled.items():
+            logger.disabled = disabled
 
 
 def _suppress_textual_debug_features() -> None:
@@ -2832,7 +2882,7 @@ async def _run_ask_tui(
                 return
             if isinstance(message, AgentThreadStatus):
                 self._sync_session_messages()
-                self._set_thread_status_text(message.status)
+                self._set_thread_status_text(message)
                 return
             if isinstance(message, AgentTextContentStarted):
                 await self._prepare_active_assistant_text_item(item_id=message.item_id)
@@ -3208,7 +3258,10 @@ async def _run_ask_tui(
             self._render_turn_queue()
 
         def _set_thread_status_text(self, status: object) -> None:
-            self._status_text = _thread_status_text(status)
+            if isinstance(status, AgentThreadStatus):
+                self._status_text = _format_agent_thread_status_text(status)
+            else:
+                self._status_text = _thread_status_text(status)
             changed = self._set_thread_status_feed_entry(status)
             self._render_status_line()
             self._render_turn_queue()
@@ -3256,7 +3309,12 @@ async def _run_ask_tui(
                     self._thread_generation = generation
                     self._reset_current_thread_feed()
 
-            status = session.thread_status_text
+            thread_status = session.thread_status
+            status = (
+                _format_agent_thread_status_text(thread_status)
+                if thread_status is not None
+                else session.thread_status_text
+            )
             labels = list(session.queued_message_labels)
             active = status is not None and status.strip() != ""
             status_changed = active != self._external_thread_active
@@ -3268,14 +3326,16 @@ async def _run_ask_tui(
                 if status is not None and status.strip() != "":
                     status_changed = status_changed or status != self._status_text
                     self._status_text = status
-                    if self._set_thread_status_feed_entry(status):
+                    if self._set_thread_status_feed_entry(thread_status or status):
                         self._render_feed()
                         self._scroll_to_end()
             else:
                 next_status = status if active else None
                 status_changed = status_changed or next_status != self._status_text
                 self._status_text = next_status
-                if self._set_thread_status_feed_entry(next_status):
+                if self._set_thread_status_feed_entry(
+                    thread_status if active else next_status
+                ):
                     self._render_feed()
                     self._scroll_to_end()
 
@@ -3813,7 +3873,7 @@ async def _run_ask_tui(
             interactive=True,
             preamble_rule=preamble_rule,
         ) as created_session:
-            await _run_app(created_session.thread_session)
+            await _run_app(created_session)
 
 
 @app.async_command("ask", help="Send a one-shot LLM prompt.")

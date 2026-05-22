@@ -686,6 +686,52 @@ def test_show_claude_choice_requires_llm_proxy_access(monkeypatch) -> None:
     }
 
 
+def test_show_sample_choice_renders_create_option(monkeypatch) -> None:
+    app = _new_setup_app()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(app, "_clear_error", lambda: None)
+    monkeypatch.setattr(app, "_hide_input", lambda: None)
+    monkeypatch.setattr(app, "_hide_status", lambda: None)
+    monkeypatch.setattr(app, "_hide_url", lambda: None)
+    monkeypatch.setattr(
+        app,
+        "_set_text",
+        lambda *, title, message, help_text, centered=False: captured.update(
+            {
+                "title": title,
+                "message": message,
+                "help_text": help_text,
+                "centered": centered,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        app,
+        "_set_options",
+        lambda *, options, highlighted_id=None: captured.update(
+            {
+                "options": [(option.prompt, option.id) for option in options],
+                "highlighted_id": highlighted_id,
+            }
+        ),
+    )
+
+    app._show_sample_choice()
+
+    assert captured == {
+        "title": "Create Sample App",
+        "message": "Would you like to create a sample MeshAgent application now?",
+        "help_text": "Use Up/Down and Enter.",
+        "centered": False,
+        "options": [
+            ("Create a sample application", "__sample_create__"),
+            ("Skip for now", "__sample_skip__"),
+        ],
+        "highlighted_id": "__sample_create__",
+    }
+
+
 def test_finish_success_reports_codex_default_and_claude_configuration(
     monkeypatch,
 ) -> None:
@@ -735,3 +781,33 @@ def test_finish_success_reports_codex_default_and_claude_configuration(
     }
     assert app.result.status == "completed"
     assert app.result.project_id == "project-123"
+    assert app.result.create_sample is False
+
+
+def test_finish_success_can_request_sample_creation(monkeypatch) -> None:
+    app = _new_setup_app()
+    captured: dict[str, object] = {}
+
+    async def _noop() -> None:
+        return None
+
+    monkeypatch.setattr(app, "_stop_logo_dissolve", _noop)
+    monkeypatch.setattr(app, "_clear_error", lambda: None)
+    monkeypatch.setattr(app, "_hide_options", lambda: None)
+    monkeypatch.setattr(app, "_hide_input", lambda: None)
+    monkeypatch.setattr(app, "_hide_status", lambda: None)
+    monkeypatch.setattr(app, "_hide_url", lambda: None)
+    monkeypatch.setattr(
+        app,
+        "_set_text",
+        lambda *, title, message, help_text, centered=False: captured.update(
+            {"message": message}
+        ),
+    )
+    monkeypatch.setattr(app, "_run_logo_fade", _noop)
+    monkeypatch.setattr(app, "exit", lambda: None)
+
+    asyncio.run(app._finish_success(create_sample=True))
+
+    assert "Opening the sample app wizard next." in captured["message"]
+    assert app.result.create_sample is True

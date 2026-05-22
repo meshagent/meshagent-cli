@@ -44,7 +44,7 @@ def _display_name_from_profile(profile: User) -> str | None:
 
 
 def _run_async(coro):
-    asyncio.run(coro)
+    return asyncio.run(coro)
 
 
 def _current_meshagent_executable() -> str | None:
@@ -335,5 +335,12 @@ def setup_command(api_url: str | None = None):
                     ),
                 ),
             )
+            return result.create_sample
 
-    _run_async(runner())
+        return False
+
+    create_sample = _run_async(runner())
+    if create_sample:
+        from meshagent.cli.create import create_command
+
+        create_command.main(args=["--interactive"], standalone_mode=False)

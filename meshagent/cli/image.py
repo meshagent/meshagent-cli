@@ -8,7 +8,7 @@ import re
 import shlex
 import sys
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal, Optional
@@ -2505,28 +2505,41 @@ async def _resolve_deploy_template_values(
     variables = template.variables or []
     config = await account_client.get_config() if variables else _empty_deploy_config()
     if _stdio_is_interactive():
+        from meshagent.cli.tui.deploy_room import (
+            DeployTemplateVariablePrompt,
+            run_deploy_template_variables_tui,
+        )
+
+        prompts: list[DeployTemplateVariablePrompt] = []
         for variable in variables:
             current = values.get(variable.name, "").strip()
             if current != "":
                 continue
-            default = _template_variable_default(
-                config=config,
-                variable=variable,
-                room_name=room_name,
-                service_name=service_name,
+            prompts.append(
+                DeployTemplateVariablePrompt(
+                    name=variable.name,
+                    title=_template_variable_title(variable),
+                    description=(
+                        variable.description.strip()
+                        if variable.description is not None
+                        else ""
+                    ),
+                    default=_template_variable_default(
+                        config=config,
+                        variable=variable,
+                        room_name=room_name,
+                        service_name=service_name,
+                    ),
+                    optional=variable.optional,
+                )
             )
-            prompt = _template_variable_title(variable)
-            if variable.description is not None and variable.description.strip() != "":
-                print(f"[cyan]{prompt}:[/] {variable.description.strip()}")
-            if variable.optional:
-                entered = typer.prompt(
-                    prompt, default=default, show_default=default != ""
-                )
-            else:
-                entered = typer.prompt(
-                    prompt, default=default, show_default=default != ""
-                )
-            values[variable.name] = entered.strip()
+        if len(prompts) > 0:
+            result = await run_deploy_template_variables_tui(variables=prompts)
+            if result.status == "canceled":
+                print(f"[yellow]{result.message or 'Deploy canceled.'}[/yellow]")
+                raise typer.Exit(1)
+            for name, value in result.values.items():
+                values[name] = value.strip()
 
     missing = [
         variable.name
@@ -2589,6 +2602,7 @@ async def _upsert_email_mailbox(
     room_name: str,
     email: str,
     service_id: str,
+    status_handler: Callable[[str], Awaitable[None]] | None = None,
 ) -> None:
     normalized_email = email.strip().lower()
     if normalized_email == "":
@@ -2608,7 +2622,11 @@ async def _upsert_email_mailbox(
             public=True,
             annotations=annotations,
         )
-        print(f"[green]Created mailbox:[/] {normalized_email} -> {room_name}")
+        await _emit_deploy_status(
+            status_handler,
+            rich_message=f"[green]Created mailbox:[/] {normalized_email} -> {room_name}",
+            plain_message=f"Created mailbox: {normalized_email} -> {room_name}",
+        )
         return
 
     if existing.room != room_name:
@@ -2623,8 +2641,12 @@ async def _upsert_email_mailbox(
         and existing.public
         and existing.annotations == updated_annotations
     ):
-        print(
-            f"[green]Mailbox already configured:[/] {normalized_email} -> {room_name}"
+        await _emit_deploy_status(
+            status_handler,
+            rich_message=(
+                f"[green]Mailbox already configured:[/] {normalized_email} -> {room_name}"
+            ),
+            plain_message=f"Mailbox already configured: {normalized_email} -> {room_name}",
         )
         return
     await account_client.update_mailbox(
@@ -2635,7 +2657,11 @@ async def _upsert_email_mailbox(
         public=True,
         annotations=updated_annotations,
     )
-    print(f"[green]Updated mailbox:[/] {normalized_email} -> {room_name}")
+    await _emit_deploy_status(
+        status_handler,
+        rich_message=f"[green]Updated mailbox:[/] {normalized_email} -> {room_name}",
+        plain_message=f"Updated mailbox: {normalized_email} -> {room_name}",
+    )
 
 
 def _build_deploy_template_plan(*, service_spec: ServiceSpec) -> _ServiceDeployPlan:
@@ -2817,6 +2843,7 @@ async def _upsert_domain_route(
     port: str,
     extra_route_ports: list[_ExtraRoutePort],
     service_id: str,
+    status_handler: Callable[[str], Awaitable[None]] | None = None,
 ) -> None:
     route_annotations = {ANNOTATION_SERVICE_ID: service_id}
     paths = [RoutePathSpec(path="/", targetPort=port)]
@@ -2849,16 +2876,30 @@ async def _upsert_domain_route(
             _route_paths_match(existing.spec.paths, spec.paths)
             and existing.annotations == updated_annotations
         ):
-            print(f"[green]Route already configured:[/] {domain} -> {room_name}:{port}")
+            await _emit_deploy_status(
+                status_handler,
+                rich_message=(
+                    f"[green]Route already configured:[/] {domain} -> {room_name}:{port}"
+                ),
+                plain_message=f"Route already configured: {domain} -> {room_name}:{port}",
+            )
             return
         await account_client.update_route(
             project_id=project_id,
             domain=domain,
             spec=spec,
         )
-        print(f"[green]Updated route:[/] {domain} -> {room_name}:{port}")
+        await _emit_deploy_status(
+            status_handler,
+            rich_message=f"[green]Updated route:[/] {domain} -> {room_name}:{port}",
+            plain_message=f"Updated route: {domain} -> {room_name}:{port}",
+        )
     else:
-        print(f"[green]Created route:[/] {domain} -> {room_name}:{port}")
+        await _emit_deploy_status(
+            status_handler,
+            rich_message=f"[green]Created route:[/] {domain} -> {room_name}:{port}",
+            plain_message=f"Created route: {domain} -> {room_name}:{port}",
+        )
 
 
 async def _apply_deploy_plan(
@@ -2871,6 +2912,7 @@ async def _apply_deploy_plan(
     domain: str | None,
     email: str | None,
     extra_route_ports: list[_ExtraRoutePort],
+    status_handler: Callable[[str], Awaitable[None]] | None = None,
 ) -> _AppliedDeployPlanResult:
     route_target = (
         _resolve_domain_route_target(
@@ -2886,15 +2928,29 @@ async def _apply_deploy_plan(
         room_name=room_name,
         service_spec=deploy_plan.spec,
     )
-    print(
-        f"[green]Deployed service:[/] {deploy_plan.spec.metadata.name} "
-        f"({deploy_result.service_id})"
+    await _emit_deploy_status(
+        status_handler,
+        rich_message=(
+            f"[green]Deployed service:[/] {deploy_plan.spec.metadata.name} "
+            f"({deploy_result.service_id})"
+        ),
+        plain_message=(
+            f"Deployed service: {deploy_plan.spec.metadata.name} "
+            f"({deploy_result.service_id})"
+        ),
     )
     if not deploy_result.created:
         await client.services.restart(service_id=deploy_result.service_id)
-        print(
-            f"[green]Restarted service:[/] {deploy_plan.spec.metadata.name} "
-            f"({deploy_result.service_id})"
+        await _emit_deploy_status(
+            status_handler,
+            rich_message=(
+                f"[green]Restarted service:[/] {deploy_plan.spec.metadata.name} "
+                f"({deploy_result.service_id})"
+            ),
+            plain_message=(
+                f"Restarted service: {deploy_plan.spec.metadata.name} "
+                f"({deploy_result.service_id})"
+            ),
         )
     if domain is not None and route_target is not None:
         await _upsert_domain_route(
@@ -2905,6 +2961,7 @@ async def _apply_deploy_plan(
             port=route_target.port,
             extra_route_ports=extra_route_ports,
             service_id=deploy_plan.service_id_annotation,
+            status_handler=status_handler,
         )
     if email is not None:
         await _upsert_email_mailbox(
@@ -2913,6 +2970,7 @@ async def _apply_deploy_plan(
             room_name=room_name,
             email=email,
             service_id=deploy_plan.service_id_annotation,
+            status_handler=status_handler,
         )
     return _AppliedDeployPlanResult(
         service_id=deploy_result.service_id,
@@ -2939,13 +2997,66 @@ async def _get_service_runtime_state(
     return service_list.service_states.get(service_id)
 
 
+async def _drain_deploy_log_stream_tui(
+    stream: LogStream,
+    *,
+    log_handler: Callable[[str], Awaitable[None]],
+) -> int | None:
+    async def _logs() -> None:
+        async for line in stream.logs():
+            if line is not None:
+                await log_handler(line.rstrip("\n"))
+
+    async def _progress() -> None:
+        async for _ in stream.progress():
+            pass
+
+    logs_task = asyncio.create_task(_logs())
+    progress_task = asyncio.create_task(_progress())
+    try:
+        return await stream
+    finally:
+        await asyncio.gather(logs_task, progress_task, return_exceptions=True)
+
+
+async def _stream_build_job_logs_and_wait_for_exit_tui(
+    *,
+    client: RoomClient,
+    build_id: str,
+    log_handler: Callable[[str], Awaitable[None]],
+) -> int:
+    stream = client.containers.get_build_logs(build_id=build_id, follow=True)
+    try:
+        exit_code = await _drain_deploy_log_stream_tui(stream, log_handler=log_handler)
+    except Exception:
+        await asyncio.gather(stream.cancel(), return_exceptions=True)
+        raise
+
+    if exit_code is None:
+        raise RuntimeError("build log stream closed before an exit code was returned")
+
+    if exit_code != 0:
+        await log_handler(
+            f"Unable to complete build {build_id}: "
+            f"build failed with exit code {exit_code}."
+        )
+
+    return exit_code
+
+
 def _start_deploy_log_stream(
     *,
     client: RoomClient,
     container_id: str,
+    log_handler: Callable[[str], Awaitable[None]] | None = None,
 ) -> _ActiveDeployLogStream:
     stream = client.containers.logs(container_id=container_id, follow=True)
-    task = asyncio.create_task(_drain_stream_plain(stream, show_progress=False))
+    if log_handler is None:
+        task = asyncio.create_task(_drain_stream_plain(stream, show_progress=False))
+    else:
+        task = asyncio.create_task(
+            _drain_deploy_log_stream_tui(stream, log_handler=log_handler)
+        )
     return _ActiveDeployLogStream(container_id=container_id, stream=stream, task=task)
 
 
@@ -2958,6 +3069,18 @@ async def _stop_deploy_log_stream(
     if not active_logs.task.done():
         await asyncio.gather(active_logs.stream.cancel(), return_exceptions=True)
     await asyncio.gather(active_logs.task, return_exceptions=True)
+
+
+async def _emit_deploy_status(
+    handler: Callable[[str], Awaitable[None]] | None,
+    *,
+    rich_message: str,
+    plain_message: str | None = None,
+) -> None:
+    if handler is None:
+        print(rich_message)
+        return
+    await handler(plain_message or rich_message)
 
 
 def _print_service_exited_before_live(
@@ -2981,6 +3104,8 @@ async def _wait_for_deployed_service_live(
     previous_container_id: str | None,
     domain: str | None,
     liveness_path: str | None,
+    status_handler: Callable[[str], Awaitable[None]] | None = None,
+    log_handler: Callable[[str], Awaitable[None]] | None = None,
 ) -> None:
     active_logs: _ActiveDeployLogStream | None = None
     liveness_url = (
@@ -2989,12 +3114,28 @@ async def _wait_for_deployed_service_live(
         else None
     )
 
-    print(f"[cyan]Waiting for service to go live:[/] {service_name} ({service_id})")
+    await _emit_deploy_status(
+        status_handler,
+        rich_message=f"[cyan]Waiting for service to go live:[/] {service_name} ({service_id})",
+        plain_message=f"Waiting for service to go live: {service_name} ({service_id})",
+    )
     if domain is not None and liveness_url is not None:
-        print(f"[cyan]Waiting for liveness URL:[/] {liveness_url}")
+        await _emit_deploy_status(
+            status_handler,
+            rich_message=f"[cyan]Waiting for liveness URL:[/] {liveness_url}",
+            plain_message=f"Waiting for liveness URL: {liveness_url}",
+        )
     elif domain is not None:
-        print(
-            f"[yellow]Route created for {domain}, but the service has no HTTP liveness path to probe.[/]"
+        await _emit_deploy_status(
+            status_handler,
+            rich_message=(
+                f"[yellow]Route created for {domain}, but the service has no HTTP "
+                "liveness path to probe.[/]"
+            ),
+            plain_message=(
+                f"Route created for {domain}, but the service has no HTTP "
+                "liveness path to probe."
+            ),
         )
 
     try:
@@ -3015,29 +3156,56 @@ async def _wait_for_deployed_service_live(
                 continue
 
             if state.restart_count > 0:
-                _print_service_exited_before_live(
-                    service_name=service_name,
-                    service_id=service_id,
-                    exit_code=state.last_exit_code,
-                )
+                if status_handler is None:
+                    _print_service_exited_before_live(
+                        service_name=service_name,
+                        service_id=service_id,
+                        exit_code=state.last_exit_code,
+                    )
+                else:
+                    exit_code_text = (
+                        str(state.last_exit_code)
+                        if state.last_exit_code is not None
+                        else "unknown"
+                    )
+                    await status_handler(
+                        "Service container exited before the service was live: "
+                        f"{service_name} ({service_id}), exit code {exit_code_text}"
+                    )
                 raise typer.Exit(code=1)
 
             if active_logs is None and container_id is not None:
-                print(f"[cyan]Tailing container logs:[/] {container_id}")
+                await _emit_deploy_status(
+                    status_handler,
+                    rich_message=f"[cyan]Tailing container logs:[/] {container_id}",
+                    plain_message=f"Tailing container logs: {container_id}",
+                )
                 active_logs = _start_deploy_log_stream(
                     client=client,
                     container_id=container_id,
+                    log_handler=log_handler,
                 )
             elif (
                 active_logs is not None
                 and container_id is not None
                 and container_id != active_logs.container_id
             ):
-                _print_service_exited_before_live(
-                    service_name=service_name,
-                    service_id=service_id,
-                    exit_code=state.last_exit_code,
-                )
+                if status_handler is None:
+                    _print_service_exited_before_live(
+                        service_name=service_name,
+                        service_id=service_id,
+                        exit_code=state.last_exit_code,
+                    )
+                else:
+                    exit_code_text = (
+                        str(state.last_exit_code)
+                        if state.last_exit_code is not None
+                        else "unknown"
+                    )
+                    await status_handler(
+                        "Service container changed before the service was live: "
+                        f"{service_name} ({service_id}), exit code {exit_code_text}"
+                    )
                 raise typer.Exit(code=1)
 
             if container_id is None or state.state != "running":
@@ -3045,11 +3213,19 @@ async def _wait_for_deployed_service_live(
                 continue
 
             if liveness_url is None:
-                print(f"[green]Service is live:[/] {service_name} ({service_id})")
+                await _emit_deploy_status(
+                    status_handler,
+                    rich_message=f"[green]Service is live:[/] {service_name} ({service_id})",
+                    plain_message=f"Service is live: {service_name} ({service_id})",
+                )
                 return
 
             if await _probe_liveness_url(url=liveness_url):
-                print(f"[green]Liveness URL responded:[/] {liveness_url}")
+                await _emit_deploy_status(
+                    status_handler,
+                    rich_message=f"[green]Liveness URL responded:[/] {liveness_url}",
+                    plain_message=f"Liveness URL responded: {liveness_url}",
+                )
                 return
 
             await asyncio.sleep(_DEPLOY_WAIT_POLL_INTERVAL_SECONDS)
@@ -3184,6 +3360,8 @@ async def _run_image_build_stage(
     optimize: bool,
     cred: list[str],
     add_latest_tag: bool = False,
+    status_handler: Callable[[str], Awaitable[None]] | None = None,
+    log_handler: Callable[[str], Awaitable[None]] | None = None,
 ) -> None:
     del arch
     build_inputs = _resolve_build_stage_inputs(
@@ -3220,6 +3398,11 @@ async def _run_image_build_stage(
             if builder_name is not None
             else _default_builder_name(client=client)
         )
+        await _emit_deploy_status(
+            status_handler,
+            rich_message="[cyan]Preparing build context...[/cyan]",
+            plain_message="Preparing build context...",
+        )
         (
             archive_path,
             archive_size,
@@ -3231,6 +3414,11 @@ async def _run_image_build_stage(
         tags = [parsed_tag.value]
         if add_latest_tag and parsed_tag.latest_ref != parsed_tag.value:
             tags.append(parsed_tag.latest_ref)
+        await _emit_deploy_status(
+            status_handler,
+            rich_message="[cyan]Starting image build...[/cyan]",
+            plain_message="Starting image build...",
+        )
         build_id = await client.containers.build(
             tags=tags,
             mount_path=build_inputs.pack_spec.mount_path,
@@ -3243,9 +3431,16 @@ async def _run_image_build_stage(
             chunks=_iter_file_chunks(archive_path),
             size=archive_size,
         )
-        exit_code = await _stream_build_job_logs_and_wait_for_exit(
-            client=client, build_id=build_id
-        )
+        if log_handler is None:
+            exit_code = await _stream_build_job_logs_and_wait_for_exit(
+                client=client, build_id=build_id
+            )
+        else:
+            exit_code = await _stream_build_job_logs_and_wait_for_exit_tui(
+                client=client,
+                build_id=build_id,
+                log_handler=log_handler,
+            )
         if exit_code != 0:
             raise typer.Exit(code=exit_code)
     finally:
@@ -3969,63 +4164,105 @@ async def deploy_image(
             extra_route_ports=parsed_extra_route_ports,
             deploy_plan=deploy_plan,
         )
-        if pack is not None:
-            assert project_registry is not None
-            await _run_image_build_stage(
-                resolved_project_id=resolved_project_id,
-                resolved_room=resolved_room,
-                parsed_tag=parsed_tag,
-                project_registry=project_registry,
-                context_path=context_path,
-                dockerfile_path=dockerfile_path,
-                pack=pack,
-                arch=default_pack_architecture(),
-                builder_name=builder_name,
-                private=False,
-                optimize=optimize,
-                cred=cred,
-                add_latest_tag=latest,
-            )
-            await _delete_built_image_from_room_cache(
+
+        async def _run_deploy_operation(
+            *,
+            status_handler: Callable[[str], Awaitable[None]] | None = None,
+            log_handler: Callable[[str], Awaitable[None]] | None = None,
+        ) -> None:
+            if pack is not None:
+                assert project_registry is not None
+                await _run_image_build_stage(
+                    resolved_project_id=resolved_project_id,
+                    resolved_room=resolved_room,
+                    parsed_tag=parsed_tag,
+                    project_registry=project_registry,
+                    context_path=context_path,
+                    dockerfile_path=dockerfile_path,
+                    pack=pack,
+                    arch=default_pack_architecture(),
+                    builder_name=builder_name,
+                    private=False,
+                    optimize=optimize,
+                    cred=cred,
+                    add_latest_tag=latest,
+                    status_handler=status_handler,
+                    log_handler=log_handler,
+                )
+                await _delete_built_image_from_room_cache(
+                    client=client,
+                    parsed_tag=parsed_tag,
+                )
+            deploy_result = await _apply_deploy_plan(
+                account_client=account_client,
                 client=client,
-                parsed_tag=parsed_tag,
+                project_id=resolved_project_id,
+                room_name=resolved_room,
+                deploy_plan=deploy_plan,
+                domain=domain,
+                email=email,
+                extra_route_ports=parsed_extra_route_ports,
+                status_handler=status_handler,
             )
-        deploy_result = await _apply_deploy_plan(
-            account_client=account_client,
-            client=client,
-            project_id=resolved_project_id,
-            room_name=resolved_room,
-            deploy_plan=deploy_plan,
-            domain=domain,
-            email=email,
-            extra_route_ports=parsed_extra_route_ports,
-        )
-        if deploy_template_values is not None:
-            _save_deploy_template_values(
-                values_file=deploy_values_file,
-                values=deploy_template_values,
+            if deploy_template_values is not None:
+                _save_deploy_template_values(
+                    values_file=deploy_values_file,
+                    values=deploy_template_values,
+                )
+                await _emit_deploy_status(
+                    status_handler,
+                    rich_message=f"[green]Saved deploy values:[/] {deploy_values_file}",
+                    plain_message=f"Saved deploy values: {deploy_values_file}",
+                )
+            if not wait:
+                return
+            previous_container_id = (
+                previous_runtime_state.container_id
+                if previous_runtime_state is not None
+                else None
             )
-            print(f"[green]Saved deploy values:[/] {deploy_values_file}")
-        if wait:
+            liveness_path = (
+                _resolve_domain_liveness_path(
+                    service_spec=deploy_plan.spec,
+                    route_target=deploy_result.route_target,
+                )
+                if deploy_result.route_target is not None
+                else None
+            )
             await _wait_for_deployed_service_live(
                 client=client,
                 service_id=deploy_result.service_id,
                 service_name=deploy_plan.spec.metadata.name,
-                previous_container_id=(
-                    previous_runtime_state.container_id
-                    if previous_runtime_state is not None
-                    else None
-                ),
+                previous_container_id=previous_container_id,
                 domain=domain,
-                liveness_path=(
-                    _resolve_domain_liveness_path(
-                        service_spec=deploy_plan.spec,
-                        route_target=deploy_result.route_target,
-                    )
-                    if deploy_result.route_target is not None
-                    else None
-                ),
+                liveness_path=liveness_path,
+                status_handler=status_handler,
+                log_handler=log_handler,
             )
+
+        if _stdio_is_interactive():
+            from meshagent.cli.tui.deploy_room import run_deploy_progress_tui
+
+            async def _run_deploy_operation_in_tui(progress) -> None:
+                await _run_deploy_operation(
+                    status_handler=progress.status,
+                    log_handler=progress.log,
+                )
+
+            progress_result = await run_deploy_progress_tui(
+                operation=_run_deploy_operation_in_tui
+            )
+            if progress_result.status == "canceled":
+                print(
+                    f"[yellow]{progress_result.message or 'Deploy canceled.'}[/yellow]"
+                )
+                raise typer.Exit(1)
+            if progress_result.status == "error":
+                if isinstance(progress_result.exception, typer.Exit):
+                    raise progress_result.exception
+                raise typer.Exit(1) from progress_result.exception
+        else:
+            await _run_deploy_operation()
     finally:
         await client.__aexit__(None, None, None)
         await account_client.close()

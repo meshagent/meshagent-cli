@@ -124,6 +124,43 @@ class _FakeAskAdapter(LLMAdapter[object]):
         return {"ok": True}
 
 
+class _FakeStatusAskAdapter(_FakeAskAdapter):
+    async def create_response(
+        self,
+        *,
+        context: AgentSessionContext,
+        caller: Participant,
+        toolkits: list,
+        output_schema=None,
+        event_handler=None,
+        steering_callback=None,
+        model: str | None = None,
+        on_behalf_of=None,
+        tool_choice=None,
+        options=None,
+    ) -> object:
+        assert event_handler is not None
+        event_handler(
+            {
+                "type": "agent.event",
+                "state": "in_progress",
+                "headline": "Searching files",
+            }
+        )
+        return await super().create_response(
+            context=context,
+            caller=caller,
+            toolkits=toolkits,
+            output_schema=output_schema,
+            event_handler=event_handler,
+            steering_callback=steering_callback,
+            model=model,
+            on_behalf_of=on_behalf_of,
+            tool_choice=tool_choice,
+            options=options,
+        )
+
+
 class _FakeTTY:
     def __init__(self, *, is_tty: bool) -> None:
         self._is_tty = is_tty
@@ -477,8 +514,30 @@ async def test_ask_session_reuses_process_for_multiple_prompts() -> None:
         first = await session.ask(prompt="first")
         second = await session.ask(prompt="second")
 
-    assert first == "hello world"
-    assert second == "hello world"
+        assert first == "hello world"
+        assert second == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_ask_session_emits_custom_event_status_messages() -> None:
+    statuses: list[str | None] = []
+
+    async with ask_module._AskSession(
+        model="gpt-5.5",
+        llm_adapter=_FakeStatusAskAdapter(),
+    ) as session:
+        result = await session.ask(
+            prompt="hello",
+            on_message=lambda message: (
+                statuses.append(message.status)
+                if isinstance(message, AgentThreadStatus)
+                else None
+            ),
+        )
+        await asyncio.sleep(0)
+
+    assert result == "hello world"
+    assert "Searching files" in statuses
 
 
 @pytest.mark.asyncio
@@ -859,6 +918,50 @@ def test_ask_thread_status_feed_text_formats_active_status() -> None:
     assert ask_module._ask_thread_status_feed_text(None) is None
 
 
+def test_format_agent_thread_status_text_includes_change_counts() -> None:
+    assert (
+        ask_module._format_agent_thread_status_text(
+            AgentThreadStatus(
+                type=AGENT_EVENT_THREAD_STATUS,
+                thread_id="/threads/test.thread",
+                status="Writing src/app.py",
+                lines_added=1200,
+                lines_removed=34,
+            )
+        )
+        == "Writing src/app.py +1,200 -34"
+    )
+
+
+def test_format_agent_thread_status_text_includes_total_bytes() -> None:
+    assert (
+        ask_module._format_agent_thread_status_text(
+            AgentThreadStatus(
+                type=AGENT_EVENT_THREAD_STATUS,
+                thread_id="/threads/test.thread",
+                status="Reading bundle",
+                total_bytes=2048,
+            )
+        )
+        == "Reading bundle 2,048 bytes"
+    )
+
+
+def test_ask_thread_status_feed_text_formats_agent_status_metadata() -> None:
+    assert (
+        ask_module._ask_thread_status_feed_text(
+            AgentThreadStatus(
+                type=AGENT_EVENT_THREAD_STATUS,
+                thread_id="/threads/test.thread",
+                status="Writing src/app.py",
+                lines_added=1200,
+                lines_removed=34,
+            )
+        )
+        == "• Writing src/app.py +1,200 -34"
+    )
+
+
 def _png_bytes(color: str) -> bytes:
     image_buffer = io.BytesIO()
     Image.new("RGB", (16, 16), color).save(image_buffer, format="PNG")
@@ -1057,13 +1160,17 @@ def test_is_cancelled_turn_error_checks_room_exception_code() -> None:
 
 
 def test_suppress_ask_process_logs_restores_logger_state() -> None:
-    logger = ask_module.logging.getLogger("agent-process")
-    previous_disabled = logger.disabled
+    loggers = [
+        ask_module.logging.getLogger("agent-process"),
+        ask_module.logging.getLogger("openai_agent"),
+    ]
+    previous_disabled = {logger: logger.disabled for logger in loggers}
 
     with ask_module._suppress_ask_process_logs():
-        assert logger.disabled is True
+        assert all(logger.disabled is True for logger in loggers)
 
-    assert logger.disabled is previous_disabled
+    for logger in loggers:
+        assert logger.disabled is previous_disabled[logger]
 
 
 def test_build_ask_adapter_uses_websocket_mode_for_openai() -> None:

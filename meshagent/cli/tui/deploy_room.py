@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+import asyncio
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import Literal, Sequence
 
 
@@ -70,6 +72,40 @@ class DeployDomainPromptResult:
     status: Literal["completed", "skipped", "canceled"]
     domain: str | None = None
     message: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DeployTemplateVariablePrompt:
+    name: str
+    title: str
+    description: str
+    default: str
+    optional: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DeployTemplateVariablesResult:
+    status: Literal["completed", "canceled"]
+    values: dict[str, str] = field(default_factory=dict)
+    message: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DeployProgressResult:
+    status: Literal["completed", "canceled", "error"]
+    message: str | None = None
+    exception: BaseException | None = None
+
+
+class DeployProgressHandle:
+    def __init__(self, queue: asyncio.Queue[tuple[str, str]]) -> None:
+        self._queue = queue
+
+    async def status(self, message: str) -> None:
+        await self._queue.put(("status", message))
+
+    async def log(self, message: str) -> None:
+        await self._queue.put(("log", message))
 
 
 class DeployRoomPickerApp(App[None]):
@@ -513,5 +549,297 @@ async def run_deploy_domain_prompt_tui(
             status="canceled",
             message="Deploy canceled.",
         )
+
+    return app.result
+
+
+class DeployTemplateVariablesApp(App[None]):
+    CSS = """
+    Screen {
+        layout: vertical;
+        align: left top;
+        padding: 1 2;
+        background: #050911;
+    }
+    #deploy-vars-title {
+        width: 100%;
+        content-align: left middle;
+        color: #f4f7ff;
+        text-style: bold;
+        margin: 0 0 1 0;
+    }
+    #deploy-vars-message {
+        width: 100%;
+        content-align: left middle;
+        color: #cad6f4;
+        margin: 0 0 1 0;
+    }
+    #deploy-vars-description {
+        width: 100%;
+        content-align: left middle;
+        color: #95a7ce;
+        margin: 0 0 1 0;
+    }
+    #deploy-vars-input {
+        width: 100%;
+        margin: 1 0 0 0;
+    }
+    #deploy-vars-help {
+        width: 100%;
+        content-align: left middle;
+        color: #95a7ce;
+        margin: 1 0 0 0;
+    }
+    #deploy-vars-error {
+        width: 100%;
+        content-align: left middle;
+        color: #ff7b72;
+        margin: 1 0 0 0;
+    }
+    """
+
+    BINDINGS = [
+        Binding("ctrl+c", "cancel_deploy", "Cancel", priority=True),
+        Binding("escape", "cancel_deploy", "Cancel", priority=True),
+    ]
+
+    def __init__(self, *, variables: Sequence[DeployTemplateVariablePrompt]) -> None:
+        super().__init__()
+        self._variables = list(variables)
+        self._index = 0
+        self._values: dict[str, str] = {}
+        self._title_view: Static | None = None
+        self._message_view: Static | None = None
+        self._description_view: Static | None = None
+        self._input_view: Input | None = None
+        self._help_view: Static | None = None
+        self._error_view: Static | None = None
+        self.result = DeployTemplateVariablesResult(
+            status="canceled",
+            message="Deploy canceled.",
+        )
+
+    def compose(self) -> ComposeResult:
+        yield Static("MeshAgent Deploy", id="deploy-vars-title")
+        yield Static("", id="deploy-vars-message")
+        yield Static("", id="deploy-vars-description")
+        yield Input(id="deploy-vars-input", placeholder="value")
+        yield Static("", id="deploy-vars-help")
+        yield Static("", id="deploy-vars-error")
+
+    async def on_mount(self) -> None:
+        self._title_view = self.query_one("#deploy-vars-title", Static)
+        self._message_view = self.query_one("#deploy-vars-message", Static)
+        self._description_view = self.query_one("#deploy-vars-description", Static)
+        self._input_view = self.query_one("#deploy-vars-input", Input)
+        self._help_view = self.query_one("#deploy-vars-help", Static)
+        self._error_view = self.query_one("#deploy-vars-error", Static)
+        if len(self._variables) == 0:
+            self.result = DeployTemplateVariablesResult(status="completed", values={})
+            self.exit()
+            return
+        self._show_current_variable()
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id != "deploy-vars-input":
+            return
+        self._submit_current_value(event.value)
+
+    async def action_cancel_deploy(self) -> None:
+        self.result = DeployTemplateVariablesResult(
+            status="canceled",
+            message="Deploy canceled.",
+        )
+        self.exit()
+
+    def _show_current_variable(self) -> None:
+        variable = self._variables[self._index]
+        if self._message_view is not None:
+            self._message_view.update(
+                f"Deploy variable {self._index + 1} of {len(self._variables)}: {variable.title}"
+            )
+        if self._description_view is not None:
+            self._description_view.update(variable.description)
+        if self._help_view is not None:
+            self._help_view.update("Press Enter to continue. Esc or Ctrl+C cancels.")
+        if self._error_view is not None:
+            self._error_view.update("")
+        if self._input_view is None:
+            return
+        self._input_view.value = variable.default
+        self._input_view.placeholder = variable.name
+        self._input_view.focus()
+        self._input_view.cursor_position = len(self._input_view.value)
+
+    def _submit_current_value(self, value: str) -> None:
+        variable = self._variables[self._index]
+        resolved_value = value.strip()
+        if resolved_value == "" and not variable.optional:
+            if self._error_view is not None:
+                self._error_view.update(f"{variable.title} is required.")
+            return
+        self._values[variable.name] = resolved_value
+        self._index += 1
+        if self._index >= len(self._variables):
+            self.result = DeployTemplateVariablesResult(
+                status="completed",
+                values=dict(self._values),
+            )
+            self.exit()
+            return
+        self._show_current_variable()
+
+
+async def run_deploy_template_variables_tui(
+    *,
+    variables: Sequence[DeployTemplateVariablePrompt],
+) -> DeployTemplateVariablesResult:
+    app = DeployTemplateVariablesApp(variables=variables)
+
+    try:
+        await _run_app(app)
+    except KeyboardInterrupt:
+        return DeployTemplateVariablesResult(
+            status="canceled",
+            message="Deploy canceled.",
+        )
+
+    return app.result
+
+
+class DeployProgressApp(App[None]):
+    CSS = """
+    Screen {
+        layout: vertical;
+        align: left top;
+        padding: 1 2;
+        background: #050911;
+    }
+    #deploy-progress-title {
+        width: 100%;
+        content-align: left middle;
+        color: #f4f7ff;
+        text-style: bold;
+        margin: 0 0 1 0;
+    }
+    #deploy-progress-status {
+        width: 100%;
+        content-align: left middle;
+        color: #cad6f4;
+        margin: 0 0 1 0;
+    }
+    #deploy-progress-log {
+        width: 100%;
+        height: 1fr;
+        border: round #7ca9ff;
+        background: #0a1120;
+        color: #d8e2ff;
+        padding: 1 1;
+    }
+    #deploy-progress-help {
+        width: 100%;
+        content-align: left middle;
+        color: #95a7ce;
+        margin: 1 0 0 0;
+    }
+    """
+
+    BINDINGS = [
+        Binding("ctrl+c", "cancel_deploy", "Cancel", priority=True),
+    ]
+
+    def __init__(
+        self,
+        *,
+        operation: Callable[[DeployProgressHandle], Awaitable[None]],
+    ) -> None:
+        super().__init__()
+        self._operation = operation
+        self._queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+        self._operation_task: asyncio.Task[None] | None = None
+        self._consumer_task: asyncio.Task[None] | None = None
+        self._status_view: Static | None = None
+        self._log_view: Static | None = None
+        self._log_lines: list[str] = []
+        self.result = DeployProgressResult(
+            status="canceled", message="Deploy canceled."
+        )
+
+    def compose(self) -> ComposeResult:
+        yield Static("MeshAgent Deploy", id="deploy-progress-title")
+        yield Static("Starting deploy...", id="deploy-progress-status")
+        yield Static("", id="deploy-progress-log")
+        yield Static("Ctrl+C cancels.", id="deploy-progress-help")
+
+    async def on_mount(self) -> None:
+        self._status_view = self.query_one("#deploy-progress-status", Static)
+        self._log_view = self.query_one("#deploy-progress-log", Static)
+        self._consumer_task = asyncio.create_task(self._consume_events())
+        self._operation_task = asyncio.create_task(self._run_operation())
+
+    async def action_cancel_deploy(self) -> None:
+        if self._operation_task is not None and not self._operation_task.done():
+            self._operation_task.cancel()
+        self.result = DeployProgressResult(
+            status="canceled", message="Deploy canceled."
+        )
+        self.exit()
+
+    async def _run_operation(self) -> None:
+        handle = DeployProgressHandle(self._queue)
+        try:
+            await self._operation(handle)
+        except asyncio.CancelledError:
+            self.result = DeployProgressResult(
+                status="canceled", message="Deploy canceled."
+            )
+            raise
+        except BaseException as exc:
+            self.result = DeployProgressResult(
+                status="error",
+                message=str(exc),
+                exception=exc,
+            )
+            await self._queue.put(("status", f"Deploy failed: {exc}"))
+        else:
+            self.result = DeployProgressResult(status="completed")
+            await self._queue.put(("status", "Deploy complete."))
+        finally:
+            await asyncio.sleep(0)
+            self.exit()
+
+    async def _consume_events(self) -> None:
+        while True:
+            event_type, message = await self._queue.get()
+            if event_type == "status":
+                if self._status_view is not None:
+                    self._status_view.update(message)
+                continue
+            if event_type == "log":
+                self._append_log_line(message)
+
+    def _append_log_line(self, message: str) -> None:
+        self._log_lines.extend(message.rstrip().splitlines() or [""])
+        self._log_lines = self._log_lines[-200:]
+        if self._log_view is not None:
+            self._log_view.update("\n".join(self._log_lines))
+
+    async def on_unmount(self) -> None:
+        if self._consumer_task is not None:
+            if not self._consumer_task.done():
+                self._consumer_task.cancel()
+            await asyncio.gather(self._consumer_task, return_exceptions=True)
+
+
+async def run_deploy_progress_tui(
+    *,
+    operation: Callable[[DeployProgressHandle], Awaitable[None]],
+) -> DeployProgressResult:
+    app = DeployProgressApp(operation=operation)
+
+    try:
+        await _run_app(app)
+    except KeyboardInterrupt:
+        return DeployProgressResult(status="canceled", message="Deploy canceled.")
 
     return app.result
