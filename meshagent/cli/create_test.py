@@ -277,6 +277,118 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     assert diagnosis.python_source_uses_sdk is True
 
 
+def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
+    result = CliRunner().invoke(
+        create_command,
+        [
+            "--language",
+            "python",
+            "--focus",
+            "contact-form",
+            "--no-interactive",
+            str(tmp_path),
+        ],
+    )
+    diagnosis = diagnose_project(tmp_path)
+
+    assert result.exit_code == 0
+    assert "Created a minimal deployable Python Contact Form" in result.output
+    assert "2. Create room" in result.output
+    assert "3. Run locally" in result.output
+    assert "4. Deploy" in result.output
+    assert "meshagent rooms create --name <room> --if-not-exists" in result.output
+    assert (
+        "Before testing a submission, set up the sender mailbox for that room"
+        in result.output
+    )
+    assert "New mailbox:" in result.output
+    assert "Existing mailbox for that room:" in result.output
+    assert (
+        "meshagent mailbox create --address contact-<room-slug>@mail.meshagent.life --room <room> --queue contact-<room-slug>@mail.meshagent.life --public"
+        in result.output
+    )
+    assert (
+        "meshagent mailbox update contact-<room-slug>@mail.meshagent.life --room <room> --queue contact-<room-slug>@mail.meshagent.life --public"
+        in result.output
+    )
+    assert "If create returns 409" in result.output
+    assert "If CONTACT_FORM_TO is also a private MeshAgent mailbox" in result.output
+    assert "CONTACT_FORM_FROM" in result.output
+    assert "CONTACT_FORM_TO" in result.output
+    assert "./scripts/dev.sh --room <room>" in result.output
+    assert (
+        "CONTACT_FORM_TO=you@example.com ./scripts/deploy.sh --room <room>"
+        in result.output
+    )
+
+    pyproject = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
+    server_py = (tmp_path / "server.py").read_text(encoding="utf-8")
+    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")
+    dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
+    deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+
+    assert '"aiohttp[speedups]~=3.13.0"' in pyproject
+    assert '"meshagent-api==' in pyproject
+    assert "EmailMessage" in server_py
+    assert "smtplib.SMTP" in server_py
+    assert "CONTACT_FORM_FROM" in server_py
+    assert "CONTACT_FORM_TO" in server_py
+    assert "SMTP_HOSTNAME" in server_py
+    assert "MESHAGENT_MAIL_DOMAIN" in server_py
+    assert "Unable to send mail: {detail}" in server_py
+    assert 'app.router.add_get("/health", health)' in server_py
+    assert 'app.router.add_post("/contact", submit_contact)' in server_py
+    assert "asyncio.to_thread" in server_py
+    assert "starttls" in server_py
+    assert "await runner.cleanup()" in server_py
+    assert "except KeyboardInterrupt" in server_py
+    assert "Stopped contact form." in server_py
+    assert "webbrowser" not in server_py
+    assert "contact@mail.meshagent.life" in server_py
+    assert "you@example.com" in server_py
+    assert "python-sdk-slim" in dockerfile
+    assert "FROM scratch" in dockerfile
+    assert "LABEL meshagent.runtime=python" in dockerfile
+    assert "EXPOSE 8000" in dockerfile
+    assert 'PYTHON="${PYTHON:-python3.13}"' in install_sh
+    assert 'VENV="${VENV:-.venv}"' in install_sh
+    assert 'PIP_ONLY_BINARY="${PIP_ONLY_BINARY:-:all:}"' in install_sh
+    assert "CONTACT_FORM_FROM" in dev_sh
+    assert "mailbox_from_room" in dev_sh
+    assert "CONTACT_FORM_TO" in dev_sh
+    assert "SMTP_HOSTNAME" in dev_sh
+    assert "SMTP_USERNAME" in dev_sh
+    assert "mail.meshagent.life" in dev_sh
+    assert "Browser will launch at $LOCAL_URL" in dev_sh
+    assert "webbrowser.open(sys.argv[1])" in dev_sh
+    assert "CONTACT_FORM_OPEN_BROWSER" in dev_sh
+    assert "CONTACT_FORM_OPEN_BROWSER_PROMPT" not in dev_sh
+    assert "read -r OPEN_BROWSER_ANSWER" not in dev_sh
+    assert 'meshagent rooms create --name "$ROOM_NAME" --if-not-exists' in dev_sh
+    assert 'meshagent room connect "$@" -- "$VENV_PYTHON" -u server.py' in dev_sh
+    assert 'if [ "$status" -eq 130 ] || [ "$status" -eq 143 ]; then' in dev_sh
+    assert "Stopped contact form." in dev_sh
+    assert "If the room does not exist yet, create it first:" in dev_sh
+    assert "meshagent rooms create --name <room> --if-not-exists" in dev_sh
+    assert 'meshagent rooms create --name "$ROOM_NAME" --if-not-exists' in deploy_sh
+    assert "--meshagent-token agentDefault" in deploy_sh
+    assert '--env "CONTACT_FORM_FROM=$CONTACT_FORM_FROM"' in deploy_sh
+    assert '--env "CONTACT_FORM_TO=$CONTACT_FORM_TO"' in deploy_sh
+    assert '--env "SMTP_USERNAME=$SMTP_USERNAME"' in deploy_sh
+    assert "mailbox_from_room" in deploy_sh
+    assert '"$@"' in deploy_sh
+    assert "If the room does not exist yet, create it first:" in deploy_sh
+    assert (
+        'if ! meshagent deploy . \\\n  "$@" \\\n  --tag "$IMAGE_TAG" \\\n  --public'
+        in deploy_sh
+    )
+    assert diagnosis.language == "Python"
+    assert diagnosis.sdk == "meshagent-api"
+    assert diagnosis.has_health_route is True
+    assert diagnosis.has_http_port_hint is True
+
+
 def test_init_creates_javascript_webserver_non_interactively(tmp_path) -> None:
     result = CliRunner().invoke(
         create_command,
@@ -1136,7 +1248,7 @@ def test_init_rejects_unknown_focus(tmp_path) -> None:
     assert result.exit_code == 1
     assert "Unsupported focus: desktop" in result.output
     assert (
-        "webserver, backend-agent, chatbot, chatbot-anthropic, chatbot-ui"
+        "webserver, backend-agent, chatbot, chatbot-anthropic, chatbot-ui, contact-form"
         in result.output
     )
     assert not (tmp_path / "Dockerfile").exists()
@@ -1174,6 +1286,7 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
         "chatbot",
         "chatbot-anthropic",
         "chatbot-ui",
+        "contact-form",
     ]
     focus_labels = {choice[0]: choice[1] for choice in captured_focuses}
     assert focus_labels["webserver"] == "Web App"
@@ -1181,6 +1294,7 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
     assert focus_labels["chatbot"] == "OpenAI Chatbot"
     assert focus_labels["chatbot-anthropic"] == "Anthropic Chatbot"
     assert focus_labels["chatbot-ui"] == "Agent UI"
+    assert focus_labels["contact-form"] == "Contact Form"
     focus_descriptions = {choice[0]: choice[2] for choice in captured_focuses}
     assert focus_descriptions["webserver"] == (
         "Public HTTP service with a health endpoint."
@@ -1200,6 +1314,14 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
         "Browser chat interface for a deployed MeshAgent agent."
     )
     assert "TypeScript/Next.js" not in focus_descriptions["chatbot-ui"]
+    assert focus_descriptions["contact-form"] == (
+        "Public HTML contact form that sends email through a room mailbox."
+    )
+    assert {choice[0]: choice[3] for choice in captured_languages}["python"] == (
+        "webserver",
+        "backend-agent",
+        "contact-form",
+    )
     assert {choice[0]: choice[3] for choice in captured_languages}["react"] == (
         "webserver",
     )
