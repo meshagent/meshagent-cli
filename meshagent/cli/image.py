@@ -256,8 +256,7 @@ async def _select_deploy_room_interactively(*, project_id: str) -> str:
         if result.status == "completed" and result.selected_room_name is not None:
             return result.selected_room_name
 
-        print("[yellow]Deploy canceled.[/yellow]")
-        raise typer.Exit(0)
+        raise typer.Exit(130)
     finally:
         await account_client.close()
 
@@ -3233,6 +3232,17 @@ async def _wait_for_deployed_service_live(
         await _stop_deploy_log_stream(active_logs=active_logs)
 
 
+def _format_transfer_size(size: int) -> str:
+    if size < 1024:
+        return f"{size} B"
+    value = float(size)
+    for unit in ("KB", "MB", "GB"):
+        value /= 1024
+        if value < 1024:
+            return f"{value:.1f} {unit}"
+    return f"{value / 1024:.1f} TB"
+
+
 async def _iter_file_chunks(path: Path) -> AsyncIterator[bytes]:
     with path.open("rb") as file_obj:
         while True:
@@ -3243,6 +3253,27 @@ async def _iter_file_chunks(path: Path) -> AsyncIterator[bytes]:
             if chunk == b"":
                 return
             yield chunk
+
+
+async def _iter_file_chunks_with_progress(
+    *,
+    path: Path,
+    size: int,
+    status_handler: Callable[[str], Awaitable[None]] | None,
+) -> AsyncIterator[bytes]:
+    uploaded = 0
+    last_reported = 0
+    async for chunk in _iter_file_chunks(path):
+        uploaded += len(chunk)
+        if status_handler is not None and (
+            uploaded == size or uploaded - last_reported >= _BUILD_CONTEXT_CHUNK_SIZE
+        ):
+            last_reported = uploaded
+            await status_handler(
+                "Uploading build context "
+                f"({_format_transfer_size(uploaded)} / {_format_transfer_size(size)})..."
+            )
+        yield chunk
 
 
 async def _build_local_context_archive(
@@ -3414,10 +3445,11 @@ async def _run_image_build_stage(
         tags = [parsed_tag.value]
         if add_latest_tag and parsed_tag.latest_ref != parsed_tag.value:
             tags.append(parsed_tag.latest_ref)
+        archive_size_text = _format_transfer_size(archive_size)
         await _emit_deploy_status(
             status_handler,
-            rich_message="[cyan]Starting image build...[/cyan]",
-            plain_message="Starting image build...",
+            rich_message=f"[cyan]Uploading build context ({archive_size_text})...[/cyan]",
+            plain_message=f"Uploading build context ({archive_size_text})...",
         )
         build_id = await client.containers.build(
             tags=tags,
@@ -3428,8 +3460,17 @@ async def _run_image_build_stage(
             private=private,
             credentials=credentials,
             builder_name=resolved_builder_name,
-            chunks=_iter_file_chunks(archive_path),
+            chunks=_iter_file_chunks_with_progress(
+                path=archive_path,
+                size=archive_size,
+                status_handler=status_handler,
+            ),
             size=archive_size,
+        )
+        await _emit_deploy_status(
+            status_handler,
+            rich_message="[cyan]Starting image build...[/cyan]",
+            plain_message="Starting image build...",
         )
         if log_handler is None:
             exit_code = await _stream_build_job_logs_and_wait_for_exit(
@@ -3963,10 +4004,6 @@ async def deploy_image(
     identity_override = _normalize_deploy_identity(identity=identity)
 
     resolved_project_id = await resolve_project_id(project_id=project_id)
-    resolved_room = await _resolve_deploy_room(
-        project_id=resolved_project_id,
-        room=room,
-    )
     if pack is not None:
         project_registry, parsed_tag = await _resolve_room_registry_target(
             project_id=resolved_project_id,
@@ -4018,254 +4055,269 @@ async def deploy_image(
     deploy_values_file = _deploy_values_file_for_source(deploy_source_dir)
     loaded_deploy_template = _load_deploy_template(deploy_spec_file)
     meshagent_token_identity = _derive_service_name(parsed_tag=parsed_tag)
-    try:
-        account_client, client = await _with_client(
+
+    async def _run_deploy_flow(
+        *,
+        status_handler: Callable[[str], Awaitable[None]] | None = None,
+        log_handler: Callable[[str], Awaitable[None]] | None = None,
+    ) -> None:
+        nonlocal domain, email
+
+        resolved_room = await _resolve_deploy_room(
             project_id=resolved_project_id,
-            room=resolved_room,
+            room=room,
         )
-    except NotFoundError as exc:
-        print(
-            f"[red]{_format_deploy_room_not_found_message(room_name=resolved_room)}[/red]"
-        )
-        raise typer.Exit(1) from exc
-    try:
-        deploy_template_values: dict[str, str] | None = None
-        deploy_template_spec: ServiceTemplateSpec | None = None
-        if loaded_deploy_template is not None:
-            template_text, deploy_template_spec = loaded_deploy_template
-            deploy_template_values = await _resolve_deploy_template_values(
-                account_client=account_client,
-                template=deploy_template_spec,
-                room_name=resolved_room,
-                service_name=_derive_service_name(parsed_tag=parsed_tag),
-                values_file=deploy_values_file,
-                extra_values_files=values_file,
-                set_values=set_value,
-                image=parsed_tag.value,
-            )
-            rendered_template = ServiceTemplateSpec.from_yaml(
-                yaml=template_text,
-                values=deploy_template_values,
-            )
-            service_spec = rendered_template.to_service_spec()
-            existing_service = await _find_room_service_by_name(
-                account_client=account_client,
+        try:
+            account_client, client = await _with_client(
                 project_id=resolved_project_id,
-                room_name=resolved_room,
-                service_name=service_spec.metadata.name,
+                room=resolved_room,
             )
-            deploy_plan = _build_deploy_template_plan(service_spec=service_spec)
-            environment = (
-                deploy_plan.spec.container.environment
-                if deploy_plan.spec.container is not None
+        except NotFoundError as exc:
+            print(
+                f"[red]{_format_deploy_room_not_found_message(room_name=resolved_room)}[/red]"
+            )
+            raise typer.Exit(1) from exc
+        try:
+            deploy_template_values: dict[str, str] | None = None
+            deploy_template_spec: ServiceTemplateSpec | None = None
+            if loaded_deploy_template is not None:
+                template_text, deploy_template_spec = loaded_deploy_template
+                deploy_template_values = await _resolve_deploy_template_values(
+                    account_client=account_client,
+                    template=deploy_template_spec,
+                    room_name=resolved_room,
+                    service_name=_derive_service_name(parsed_tag=parsed_tag),
+                    values_file=deploy_values_file,
+                    extra_values_files=values_file,
+                    set_values=set_value,
+                    image=parsed_tag.value,
+                )
+                rendered_template = ServiceTemplateSpec.from_yaml(
+                    yaml=template_text,
+                    values=deploy_template_values,
+                )
+                service_spec = rendered_template.to_service_spec()
+                existing_service = await _find_room_service_by_name(
+                    account_client=account_client,
+                    project_id=resolved_project_id,
+                    room_name=resolved_room,
+                    service_name=service_spec.metadata.name,
+                )
+                deploy_plan = _build_deploy_template_plan(service_spec=service_spec)
+                environment = (
+                    deploy_plan.spec.container.environment
+                    if deploy_plan.spec.container is not None
+                    else None
+                )
+                await _validate_deploy_environment_secrets(
+                    client=client,
+                    environment=environment,
+                    resolved_identity=identity_override or meshagent_token_identity,
+                )
+            else:
+                existing_service = await _find_room_service_by_name(
+                    account_client=account_client,
+                    project_id=resolved_project_id,
+                    room_name=resolved_room,
+                    service_name=_derive_service_name(parsed_tag=parsed_tag),
+                )
+                storage = _resolve_deploy_storage(
+                    existing_service=existing_service,
+                    parsed_storage=parsed_storage,
+                    replace_room_mounts=len(room_mount) > 0,
+                    replace_project_mounts=len(project_mount) > 0,
+                    replace_image_mounts=len(image_mount) > 0,
+                    replace_empty_dir_mounts=len(empty_dir_mount) > 0,
+                    runtime_container=runtime_container,
+                )
+                _validate_packed_dockerfile_volume_mounts(
+                    dockerfile_metadata=packed_dockerfile_metadata,
+                    storage=storage,
+                )
+                resolved_environment = _resolve_deploy_environment(
+                    existing_service=existing_service,
+                    default_environment=(
+                        list(runtime_container.default_environment)
+                        if runtime_container is not None
+                        else None
+                    ),
+                    parsed_environment=parsed_environment,
+                    parsed_secret_environment=parsed_secret_environment,
+                    meshagent_token_scope=meshagent_token_scope,
+                    token_identity=meshagent_token_identity,
+                    identity_override=identity_override,
+                )
+                environment = resolved_environment.environment
+                await _validate_deploy_environment_secrets(
+                    client=client,
+                    environment=environment,
+                    resolved_identity=resolved_environment.identity,
+                )
+                deploy_plan = _build_deploy_service_spec(
+                    existing_service=existing_service,
+                    parsed_tag=parsed_tag,
+                    public=not private,
+                    validation_mode=normalized_validation_mode,
+                    liveness=normalized_liveness,
+                    environment=environment,
+                    storage=storage,
+                    default_ports=packed_default_ports,
+                    runtime_container=runtime_container,
+                    template=normalized_template,
+                )
+            previous_runtime_state = (
+                await _get_service_runtime_state(
+                    client=client,
+                    service_id=existing_service.id,
+                )
+                if existing_service is not None
+                and existing_service.id is not None
+                and existing_service.id != ""
                 else None
             )
-            await _validate_deploy_environment_secrets(
-                client=client,
-                environment=environment,
-                resolved_identity=identity_override or meshagent_token_identity,
-            )
-        else:
-            existing_service = await _find_room_service_by_name(
+            await _warn_missing_extra_route_ports(
                 account_client=account_client,
                 project_id=resolved_project_id,
                 room_name=resolved_room,
-                service_name=_derive_service_name(parsed_tag=parsed_tag),
+                extra_route_ports=parsed_extra_route_ports,
             )
-            storage = _resolve_deploy_storage(
+            if (
+                domain is None
+                and deploy_template_spec is not None
+                and deploy_template_values is not None
+            ):
+                route_values = _service_template_route_values(
+                    template=deploy_template_spec,
+                    values=deploy_template_values,
+                )
+                if route_values:
+                    domain = route_values[0]
+            if (
+                email is None
+                and deploy_template_spec is not None
+                and deploy_template_values is not None
+            ):
+                email_values = _service_template_email_values(
+                    template=deploy_template_spec,
+                    values=deploy_template_values,
+                )
+                if email_values:
+                    email = email_values[0]
+            domain = await _resolve_deploy_domain(
+                account_client=account_client,
+                project_id=resolved_project_id,
+                room_name=resolved_room,
+                explicit_domain=domain,
                 existing_service=existing_service,
-                parsed_storage=parsed_storage,
-                replace_room_mounts=len(room_mount) > 0,
-                replace_project_mounts=len(project_mount) > 0,
-                replace_image_mounts=len(image_mount) > 0,
-                replace_empty_dir_mounts=len(empty_dir_mount) > 0,
-                runtime_container=runtime_container,
+                dockerfile_default_ports=packed_default_ports,
+                extra_route_ports=parsed_extra_route_ports,
+                deploy_plan=deploy_plan,
             )
-            _validate_packed_dockerfile_volume_mounts(
-                dockerfile_metadata=packed_dockerfile_metadata,
-                storage=storage,
-            )
-            resolved_environment = _resolve_deploy_environment(
-                existing_service=existing_service,
-                default_environment=(
-                    list(runtime_container.default_environment)
-                    if runtime_container is not None
-                    else None
-                ),
-                parsed_environment=parsed_environment,
-                parsed_secret_environment=parsed_secret_environment,
-                meshagent_token_scope=meshagent_token_scope,
-                token_identity=meshagent_token_identity,
-                identity_override=identity_override,
-            )
-            environment = resolved_environment.environment
-            await _validate_deploy_environment_secrets(
-                client=client,
-                environment=environment,
-                resolved_identity=resolved_environment.identity,
-            )
-            deploy_plan = _build_deploy_service_spec(
-                existing_service=existing_service,
-                parsed_tag=parsed_tag,
-                public=not private,
-                validation_mode=normalized_validation_mode,
-                liveness=normalized_liveness,
-                environment=environment,
-                storage=storage,
-                default_ports=packed_default_ports,
-                runtime_container=runtime_container,
-                template=normalized_template,
-            )
-        previous_runtime_state = (
-            await _get_service_runtime_state(
-                client=client,
-                service_id=existing_service.id,
-            )
-            if existing_service is not None
-            and existing_service.id is not None
-            and existing_service.id != ""
-            else None
-        )
-        await _warn_missing_extra_route_ports(
-            account_client=account_client,
-            project_id=resolved_project_id,
-            room_name=resolved_room,
-            extra_route_ports=parsed_extra_route_ports,
-        )
-        if (
-            domain is None
-            and deploy_template_spec is not None
-            and deploy_template_values is not None
-        ):
-            route_values = _service_template_route_values(
-                template=deploy_template_spec,
-                values=deploy_template_values,
-            )
-            if route_values:
-                domain = route_values[0]
-        if (
-            email is None
-            and deploy_template_spec is not None
-            and deploy_template_values is not None
-        ):
-            email_values = _service_template_email_values(
-                template=deploy_template_spec,
-                values=deploy_template_values,
-            )
-            if email_values:
-                email = email_values[0]
-        domain = await _resolve_deploy_domain(
-            account_client=account_client,
-            project_id=resolved_project_id,
-            room_name=resolved_room,
-            explicit_domain=domain,
-            existing_service=existing_service,
-            dockerfile_default_ports=packed_default_ports,
-            extra_route_ports=parsed_extra_route_ports,
-            deploy_plan=deploy_plan,
-        )
 
-        async def _run_deploy_operation(
-            *,
-            status_handler: Callable[[str], Awaitable[None]] | None = None,
-            log_handler: Callable[[str], Awaitable[None]] | None = None,
-        ) -> None:
-            if pack is not None:
-                assert project_registry is not None
-                await _run_image_build_stage(
-                    resolved_project_id=resolved_project_id,
-                    resolved_room=resolved_room,
-                    parsed_tag=parsed_tag,
-                    project_registry=project_registry,
-                    context_path=context_path,
-                    dockerfile_path=dockerfile_path,
-                    pack=pack,
-                    arch=default_pack_architecture(),
-                    builder_name=builder_name,
-                    private=False,
-                    optimize=optimize,
-                    cred=cred,
-                    add_latest_tag=latest,
+            async def _run_deploy_operation(
+                *,
+                status_handler: Callable[[str], Awaitable[None]] | None = None,
+                log_handler: Callable[[str], Awaitable[None]] | None = None,
+            ) -> None:
+                if pack is not None:
+                    assert project_registry is not None
+                    await _run_image_build_stage(
+                        resolved_project_id=resolved_project_id,
+                        resolved_room=resolved_room,
+                        parsed_tag=parsed_tag,
+                        project_registry=project_registry,
+                        context_path=context_path,
+                        dockerfile_path=dockerfile_path,
+                        pack=pack,
+                        arch=default_pack_architecture(),
+                        builder_name=builder_name,
+                        private=False,
+                        optimize=optimize,
+                        cred=cred,
+                        add_latest_tag=latest,
+                        status_handler=status_handler,
+                        log_handler=log_handler,
+                    )
+                    await _delete_built_image_from_room_cache(
+                        client=client,
+                        parsed_tag=parsed_tag,
+                    )
+                deploy_result = await _apply_deploy_plan(
+                    account_client=account_client,
+                    client=client,
+                    project_id=resolved_project_id,
+                    room_name=resolved_room,
+                    deploy_plan=deploy_plan,
+                    domain=domain,
+                    email=email,
+                    extra_route_ports=parsed_extra_route_ports,
+                    status_handler=status_handler,
+                )
+                if deploy_template_values is not None:
+                    _save_deploy_template_values(
+                        values_file=deploy_values_file,
+                        values=deploy_template_values,
+                    )
+                    await _emit_deploy_status(
+                        status_handler,
+                        rich_message=f"[green]Saved deploy values:[/] {deploy_values_file}",
+                        plain_message=f"Saved deploy values: {deploy_values_file}",
+                    )
+                if not wait:
+                    return
+                previous_container_id = (
+                    previous_runtime_state.container_id
+                    if previous_runtime_state is not None
+                    else None
+                )
+                liveness_path = (
+                    _resolve_domain_liveness_path(
+                        service_spec=deploy_plan.spec,
+                        route_target=deploy_result.route_target,
+                    )
+                    if deploy_result.route_target is not None
+                    else None
+                )
+                await _wait_for_deployed_service_live(
+                    client=client,
+                    service_id=deploy_result.service_id,
+                    service_name=deploy_plan.spec.metadata.name,
+                    previous_container_id=previous_container_id,
+                    domain=domain,
+                    liveness_path=liveness_path,
                     status_handler=status_handler,
                     log_handler=log_handler,
                 )
-                await _delete_built_image_from_room_cache(
-                    client=client,
-                    parsed_tag=parsed_tag,
-                )
-            deploy_result = await _apply_deploy_plan(
-                account_client=account_client,
-                client=client,
-                project_id=resolved_project_id,
-                room_name=resolved_room,
-                deploy_plan=deploy_plan,
-                domain=domain,
-                email=email,
-                extra_route_ports=parsed_extra_route_ports,
-                status_handler=status_handler,
-            )
-            if deploy_template_values is not None:
-                _save_deploy_template_values(
-                    values_file=deploy_values_file,
-                    values=deploy_template_values,
-                )
-                await _emit_deploy_status(
-                    status_handler,
-                    rich_message=f"[green]Saved deploy values:[/] {deploy_values_file}",
-                    plain_message=f"Saved deploy values: {deploy_values_file}",
-                )
-            if not wait:
-                return
-            previous_container_id = (
-                previous_runtime_state.container_id
-                if previous_runtime_state is not None
-                else None
-            )
-            liveness_path = (
-                _resolve_domain_liveness_path(
-                    service_spec=deploy_plan.spec,
-                    route_target=deploy_result.route_target,
-                )
-                if deploy_result.route_target is not None
-                else None
-            )
-            await _wait_for_deployed_service_live(
-                client=client,
-                service_id=deploy_result.service_id,
-                service_name=deploy_plan.spec.metadata.name,
-                previous_container_id=previous_container_id,
-                domain=domain,
-                liveness_path=liveness_path,
+
+            await _run_deploy_operation(
                 status_handler=status_handler,
                 log_handler=log_handler,
             )
+        finally:
+            await client.__aexit__(None, None, None)
+            await account_client.close()
 
-        if _stdio_is_interactive():
-            from meshagent.cli.tui.deploy_room import run_deploy_progress_tui
+    if _stdio_is_interactive():
+        from meshagent.cli.tui.deploy_room import run_deploy_progress_tui
 
-            async def _run_deploy_operation_in_tui(progress) -> None:
-                await _run_deploy_operation(
-                    status_handler=progress.status,
-                    log_handler=progress.log,
-                )
-
-            progress_result = await run_deploy_progress_tui(
-                operation=_run_deploy_operation_in_tui
+        async def _run_deploy_flow_in_tui(progress) -> None:
+            await _run_deploy_flow(
+                status_handler=progress.status,
+                log_handler=progress.log,
             )
-            if progress_result.status == "canceled":
-                print(
-                    f"[yellow]{progress_result.message or 'Deploy canceled.'}[/yellow]"
-                )
-                raise typer.Exit(1)
-            if progress_result.status == "error":
-                if isinstance(progress_result.exception, typer.Exit):
-                    raise progress_result.exception
-                raise typer.Exit(1) from progress_result.exception
-        else:
-            await _run_deploy_operation()
-    finally:
-        await client.__aexit__(None, None, None)
-        await account_client.close()
+
+        progress_result = await run_deploy_progress_tui(
+            operation=_run_deploy_flow_in_tui
+        )
+        if progress_result.status == "canceled":
+            print(f"[yellow]{progress_result.message or 'Deploy canceled.'}[/yellow]")
+            raise typer.Exit(130)
+        if progress_result.status == "error":
+            if isinstance(progress_result.exception, typer.Exit):
+                raise progress_result.exception
+            raise typer.Exit(1) from progress_result.exception
+    else:
+        await _run_deploy_flow()
 
 
 @app.async_command(

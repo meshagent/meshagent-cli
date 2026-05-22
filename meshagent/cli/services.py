@@ -35,6 +35,7 @@ from meshagent.api.keys import parse_api_key
 
 import asyncio
 import shlex
+import uuid
 
 import os
 import signal
@@ -55,7 +56,7 @@ from meshagent.api import (
     ApiScope,
     RoomException,
 )
-from meshagent.api.client import Meshagent
+from meshagent.api.client import Meshagent, NotFoundError
 from meshagent.api.http import new_client_session
 from meshagent.cli.common_options import OutputFormatOption
 
@@ -678,6 +679,58 @@ def _find_service_by_service_annotation_id(
         if _annotation_service_id(service.metadata.annotations) == service_id:
             return service
     return None
+
+
+def _looks_like_uuid(value: str) -> bool:
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return False
+    return True
+
+
+async def _get_service_for_show(
+    *,
+    client: Meshagent,
+    project_id: str,
+    scope: _ServiceCommandScope,
+    identifier: str,
+) -> ServiceSpec:
+    normalized_identifier = identifier.strip()
+    if normalized_identifier == "":
+        print("[red]Service name or id cannot be empty.[/]")
+        raise typer.Exit(code=1)
+
+    try:
+        if scope.is_global:
+            if _looks_like_uuid(normalized_identifier):
+                return await client.get_service(
+                    project_id=project_id, service_id=normalized_identifier
+                )
+            return await client.get_service_by_name(
+                project_id=project_id, service_name=normalized_identifier
+            )
+
+        room_name = scope.room_name or ""
+        if _looks_like_uuid(normalized_identifier):
+            return await client.get_room_service(
+                project_id=project_id,
+                room_name=room_name,
+                service_id=normalized_identifier,
+            )
+        return await client.get_room_service_by_name(
+            project_id=project_id,
+            room_name=room_name,
+            service_name=normalized_identifier,
+        )
+    except NotFoundError:
+        scope_text = (
+            "global services" if scope.is_global else f"room '{scope.room_name}'"
+        )
+        print(
+            f"[red]No service found for '{normalized_identifier}' in {scope_text}.[/]"
+        )
+        raise typer.Exit(code=1)
 
 
 def _print_existing_service_id_error(service_id: str) -> None:
@@ -1797,23 +1850,25 @@ async def service_run(
 async def service_show(
     *,
     project_id: ProjectIdOption,
-    service_id: Annotated[str, typer.Argument(help="ID of the service to show")],
+    service_id: Annotated[
+        str,
+        typer.Argument(help="Service UUID or metadata name to show"),
+    ],
     room: Annotated[
         Optional[str], typer.Option("--room", help="Room name")
     ] = os.getenv("MESHAGENT_ROOM"),
 ):
-    """Show a services for the project."""
+    """Show a service for the project."""
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)
-        if room is not None:
-            service = await client.get_room_service(
-                project_id=project_id, service_id=service_id, room_name=room
-            )  # → List[Service]
-        else:
-            service = await client.get_service(
-                project_id=project_id, service_id=service_id
-            )  # → List[Service]
+        scope = _ServiceCommandScope(room_name=room)
+        service = await _get_service_for_show(
+            client=client,
+            project_id=project_id,
+            scope=scope,
+            identifier=service_id,
+        )
         print(service.model_dump(mode="json"))
     finally:
         await client.close()

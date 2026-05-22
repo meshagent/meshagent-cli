@@ -44,20 +44,10 @@ if [ -z "${CONTACT_FORM_FROM:-}" ]; then
     CONTACT_FORM_FROM="contact@mail.meshagent.com"
   fi
 fi
-if [ -n "$ROOM_NAME" ]; then
-  meshagent rooms create --name "$ROOM_NAME" --if-not-exists
-fi
-if ! meshagent deploy . \
+exec meshagent deploy . \
   "$@" \
   --tag "$IMAGE_TAG" \
   --meshagent-token agentDefault \
   --set "from_email=$CONTACT_FORM_FROM" \
   --set "to_email=$CONTACT_FORM_TO" \
-  --wait; then
-  echo "" >&2
-  echo "If the room does not exist yet, create it first:" >&2
-  echo "  meshagent rooms create --name <room> --if-not-exists" >&2
-  echo "Then run:" >&2
-  echo "  CONTACT_FORM_TO=you@example.com ./scripts/deploy.sh --room <room>" >&2
-  exit 1
-fi
+  --wait

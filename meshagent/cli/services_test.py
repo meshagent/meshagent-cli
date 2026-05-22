@@ -230,6 +230,10 @@ class _ServiceCommandClient(_UnusedServicesClient):
         self.update_room_calls: list[tuple[str, str, str, services.ServiceSpec]] = []
         self.list_calls: list[str] = []
         self.list_room_calls: list[tuple[str, str]] = []
+        self.get_calls: list[tuple[str, str]] = []
+        self.get_by_name_calls: list[tuple[str, str]] = []
+        self.get_room_calls: list[tuple[str, str, str]] = []
+        self.get_room_by_name_calls: list[tuple[str, str, str]] = []
         self.services: list[services.ServiceSpec] = []
         self.room_services: list[services.ServiceSpec] = []
 
@@ -251,6 +255,34 @@ class _ServiceCommandClient(_UnusedServicesClient):
 
     async def update_room_service(self, *, project_id, room_name, service_id, service):
         self.update_room_calls.append((project_id, room_name, service_id, service))
+
+    async def get_service(self, *, project_id, service_id):
+        self.get_calls.append((project_id, service_id))
+        for service in self.services:
+            if service.id == service_id:
+                return service.model_copy()
+        raise services.NotFoundError("not found")
+
+    async def get_service_by_name(self, *, project_id, service_name):
+        self.get_by_name_calls.append((project_id, service_name))
+        for service in self.services:
+            if service.metadata.name == service_name:
+                return service.model_copy()
+        raise services.NotFoundError("not found")
+
+    async def get_room_service(self, *, project_id, room_name, service_id):
+        self.get_room_calls.append((project_id, room_name, service_id))
+        for service in self.room_services:
+            if service.id == service_id:
+                return service.model_copy()
+        raise services.NotFoundError("not found")
+
+    async def get_room_service_by_name(self, *, project_id, room_name, service_name):
+        self.get_room_by_name_calls.append((project_id, room_name, service_name))
+        for service in self.room_services:
+            if service.metadata.name == service_name:
+                return service.model_copy()
+        raise services.NotFoundError("not found")
 
     async def list_services(self, *, project_id):
         self.list_calls.append(project_id)
@@ -1054,6 +1086,117 @@ async def test_service_update_template_room_prints_only_updated_service_id(
         )
     ]
     assert printed == ["[green]Updated service:[/] room-service-1"]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_service_show_resolves_room_service_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    printed = _capture_prints(monkeypatch)
+    client = _ServiceCommandClient()
+    client.room_services = [
+        _service_record(
+            id="550e8400-e29b-41d4-a716-446655440000",
+            name="meshagent-create-typescript-chatbot-ui",
+            service_annotation_id=None,
+        )
+    ]
+    _patch_service_command_runtime(monkeypatch, client=client)
+
+    await services.service_show(
+        project_id=None,
+        service_id="meshagent-create-typescript-chatbot-ui",
+        room="chatbot3",
+    )
+
+    assert client.get_room_by_name_calls == [
+        ("project-1", "chatbot3", "meshagent-create-typescript-chatbot-ui")
+    ]
+    assert client.list_room_calls == []
+    assert "550e8400-e29b-41d4-a716-446655440000" in printed[0]
+    assert "meshagent-create-typescript-chatbot-ui" in printed[0]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_service_show_resolves_room_service_by_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    printed = _capture_prints(monkeypatch)
+    client = _ServiceCommandClient()
+    service_id = "550e8400-e29b-41d4-a716-446655440000"
+    client.room_services = [
+        _service_record(
+            id=service_id,
+            name="meshagent-create-typescript-chatbot-ui",
+            service_annotation_id=None,
+        )
+    ]
+    _patch_service_command_runtime(monkeypatch, client=client)
+
+    await services.service_show(
+        project_id=None,
+        service_id=service_id,
+        room="chatbot3",
+    )
+
+    assert client.get_room_calls == [("project-1", "chatbot3", service_id)]
+    assert client.list_room_calls == []
+    assert service_id in printed[0]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_service_show_resolves_global_service_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    printed = _capture_prints(monkeypatch)
+    client = _ServiceCommandClient()
+    client.services = [
+        _service_record(
+            id="550e8400-e29b-41d4-a716-446655440000",
+            name="demo",
+            service_annotation_id=None,
+        )
+    ]
+    _patch_service_command_runtime(monkeypatch, client=client)
+
+    await services.service_show(
+        project_id=None,
+        service_id="demo",
+        room=None,
+    )
+
+    assert client.get_by_name_calls == [("project-1", "demo")]
+    assert client.list_calls == []
+    assert "550e8400-e29b-41d4-a716-446655440000" in printed[0]
+    assert "demo" in printed[0]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_service_show_prints_friendly_not_found_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    printed = _capture_prints(monkeypatch)
+    client = _ServiceCommandClient()
+    _patch_service_command_runtime(monkeypatch, client=client)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        await services.service_show(
+            project_id=None,
+            service_id="missing-service",
+            room="chatbot3",
+        )
+
+    assert exc_info.value.exit_code == 1
+    assert client.get_room_by_name_calls == [
+        ("project-1", "chatbot3", "missing-service")
+    ]
+    assert printed == [
+        "[red]No service found for 'missing-service' in room 'chatbot3'.[/]"
+    ]
     assert client.closed is True
 
 

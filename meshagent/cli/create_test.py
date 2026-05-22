@@ -409,14 +409,16 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "Stopped contact form." in dev_sh
     assert "If the room does not exist yet, create it first:" in dev_sh
     assert "meshagent rooms create --name <room> --if-not-exists" in dev_sh
-    assert 'meshagent rooms create --name "$ROOM_NAME" --if-not-exists' in deploy_sh
+    assert 'meshagent rooms create --name "$ROOM_NAME" --if-not-exists' not in deploy_sh
     assert "--meshagent-token agentDefault" in deploy_sh
     assert '--set "from_email=$CONTACT_FORM_FROM"' in deploy_sh
     assert '--set "to_email=$CONTACT_FORM_TO"' in deploy_sh
     assert "mailbox_from_room" in deploy_sh
     assert '"$@"' in deploy_sh
-    assert "If the room does not exist yet, create it first:" in deploy_sh
-    assert "if ! meshagent deploy ." in deploy_sh
+    assert "If you passed --room and the room does not exist yet" not in deploy_sh
+    assert "meshagent deploy will prompt for a room interactively" not in deploy_sh
+    assert "exec meshagent deploy ." in deploy_sh
+    assert 'if [ "$status" -eq 130 ]; then' not in deploy_sh
     assert '  "$@" \\' in deploy_sh
     assert '  --tag "$IMAGE_TAG" \\' in deploy_sh
     assert "  --meshagent-token agentDefault" in deploy_sh
