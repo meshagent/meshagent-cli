@@ -84,6 +84,27 @@ async def webhook_list(
         await client.close()
 
 
+@app.async_command("get", help="Get a webhook")
+async def webhook_get(
+    *,
+    project_id: ProjectIdOption,
+    webhook_id: Annotated[str, typer.Argument(help="ID of the webhook to get")],
+):
+    """Get a project webhook."""
+    client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        hooks = await client.list_webhooks(project_id)
+        for hook in hooks.get("webhooks", []):
+            if hook.get("id") == webhook_id:
+                print_json_table([hook])
+                return
+        print(f"[red]Webhook not found:[/] {webhook_id}")
+        raise typer.Exit(code=1)
+    finally:
+        await client.close()
+
+
 @app.async_command("delete", help="Delete a webhook")
 async def webhook_delete(
     *,

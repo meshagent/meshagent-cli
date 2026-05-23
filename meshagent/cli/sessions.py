@@ -249,8 +249,8 @@ async def list(
         await client.close()
 
 
-@app.async_command("show", help="Show events for a session")
-async def show(*, project_id: ProjectIdOption, session_id: str):
+@app.async_command("get", help="Get events for a session")
+async def get(*, project_id: ProjectIdOption, session_id: str):
     client = await get_client()
     try:
         events = await client.list_session_events(

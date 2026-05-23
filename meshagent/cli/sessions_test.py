@@ -94,6 +94,9 @@ async def test_list_prints_recent_sessions_as_rows(monkeypatch) -> None:
                     "id": "session-1",
                     "room_id": "room-1",
                     "room_name": "demo",
+                    "kind": "room",
+                    "agent_id": None,
+                    "agent_name": None,
                     "created_at": "2026-03-12T00:00:00Z",
                     "is_active": False,
                     "participants": {"user": 1},
@@ -138,6 +141,9 @@ async def test_list_passes_limit_and_room_name(monkeypatch) -> None:
                 "id": "session-1",
                 "room_id": "room-1",
                 "room_name": "demo-room",
+                "kind": "room",
+                "agent_id": None,
+                "agent_name": None,
                 "created_at": "2026-03-12T00:00:00Z",
                 "is_active": False,
                 "participants": None,
@@ -159,7 +165,7 @@ async def test_list_passes_limit_and_room_name(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_show_prints_session_events(monkeypatch) -> None:
+async def test_get_prints_session_events(monkeypatch) -> None:
     fake_client = _FakeClient(
         session_events=[
             {"type": "room.started", "data": {"room": "demo"}},
@@ -182,7 +188,7 @@ async def test_show_prints_session_events(monkeypatch) -> None:
     monkeypatch.setattr(sessions, "resolve_project_id", fake_resolve_project_id)
     monkeypatch.setattr(sessions, "print_json_table", fake_print_json_table)
 
-    await sessions.show(project_id="project-1", session_id="session-1")
+    await sessions.get(project_id="project-1", session_id="session-1")
 
     assert fake_client.list_session_events_calls == [("resolved-project", "session-1")]
     assert fake_client.closed is True

@@ -121,7 +121,7 @@ def test_agent_help_lists_command_descriptions() -> None:
     assert "│ delete  Delete a managed agent from the project." in result.output
     assert "│ update  Update a managed agent configuration." in result.output
     assert "│ list    List managed agents in the project." in result.output
-    assert "│ get     Show a managed agent configuration." in result.output
+    assert "│ get     Get a managed agent configuration." in result.output
 
 
 def test_room_agents_call_help_lists_call_targets() -> None:

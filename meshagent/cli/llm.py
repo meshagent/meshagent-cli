@@ -314,13 +314,13 @@ async def logger_update(
         await client.close()
 
 
-@logger_app.async_command("show")
-async def logger_show(
+@logger_app.async_command("get")
+async def logger_get(
     *,
     project_id: ProjectIdOption,
-    logger_id: Annotated[str, typer.Argument(help="LLM logger id to show")],
+    logger_id: Annotated[str, typer.Argument(help="LLM logger id to get")],
 ):
-    """Show an LLM logger."""
+    """Get an LLM logger."""
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)

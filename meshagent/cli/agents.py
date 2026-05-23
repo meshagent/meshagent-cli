@@ -644,7 +644,7 @@ async def agent_list_command(
         await account_client.close()
 
 
-@app.async_command("get", help="Show a managed agent configuration.")
+@app.async_command("get", help="Get a managed agent configuration.")
 async def agent_get_command(
     *,
     project_id: ProjectIdOption,

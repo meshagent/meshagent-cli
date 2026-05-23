@@ -239,13 +239,13 @@ async def feed_update(
         await client.close()
 
 
-@app.async_command("show")
-async def feed_show(
+@app.async_command("get")
+async def feed_get(
     *,
     project_id: ProjectIdOption,
-    feed_id: Annotated[str, typer.Argument(help="Feed id to show")],
+    feed_id: Annotated[str, typer.Argument(help="Feed id to get")],
 ):
-    """Show feed details."""
+    """Get feed details."""
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)

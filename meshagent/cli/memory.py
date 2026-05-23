@@ -638,6 +638,7 @@ async def drop_memory(
         raise typer.Exit(1)
 
 
+@app.async_command("get", help="Get metadata and datasets for a memory.")
 @app.async_command("inspect", help="Inspect metadata and datasets for a memory.")
 async def inspect_memory(
     *,

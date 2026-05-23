@@ -1090,7 +1090,7 @@ async def test_service_update_template_room_prints_only_updated_service_id(
 
 
 @pytest.mark.asyncio
-async def test_service_show_resolves_room_service_by_name(
+async def test_service_get_resolves_room_service_by_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     printed = _capture_prints(monkeypatch)
@@ -1104,7 +1104,7 @@ async def test_service_show_resolves_room_service_by_name(
     ]
     _patch_service_command_runtime(monkeypatch, client=client)
 
-    await services.service_show(
+    await services.service_get(
         project_id=None,
         service_id="meshagent-create-typescript-chatbot-ui",
         room="chatbot3",
@@ -1120,7 +1120,7 @@ async def test_service_show_resolves_room_service_by_name(
 
 
 @pytest.mark.asyncio
-async def test_service_show_resolves_room_service_by_id(
+async def test_service_get_resolves_room_service_by_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     printed = _capture_prints(monkeypatch)
@@ -1135,7 +1135,7 @@ async def test_service_show_resolves_room_service_by_id(
     ]
     _patch_service_command_runtime(monkeypatch, client=client)
 
-    await services.service_show(
+    await services.service_get(
         project_id=None,
         service_id=service_id,
         room="chatbot3",
@@ -1148,7 +1148,7 @@ async def test_service_show_resolves_room_service_by_id(
 
 
 @pytest.mark.asyncio
-async def test_service_show_resolves_global_service_by_name(
+async def test_service_get_resolves_global_service_by_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     printed = _capture_prints(monkeypatch)
@@ -1162,7 +1162,7 @@ async def test_service_show_resolves_global_service_by_name(
     ]
     _patch_service_command_runtime(monkeypatch, client=client)
 
-    await services.service_show(
+    await services.service_get(
         project_id=None,
         service_id="demo",
         room=None,
@@ -1176,7 +1176,7 @@ async def test_service_show_resolves_global_service_by_name(
 
 
 @pytest.mark.asyncio
-async def test_service_show_prints_friendly_not_found_message(
+async def test_service_get_prints_friendly_not_found_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     printed = _capture_prints(monkeypatch)
@@ -1184,7 +1184,7 @@ async def test_service_show_prints_friendly_not_found_message(
     _patch_service_command_runtime(monkeypatch, client=client)
 
     with pytest.raises(typer.Exit) as exc_info:
-        await services.service_show(
+        await services.service_get(
             project_id=None,
             service_id="missing-service",
             room="chatbot3",

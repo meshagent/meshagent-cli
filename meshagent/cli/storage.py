@@ -319,8 +319,8 @@ async def storage_cp_command(
             await account_client.close()
 
 
-@app.async_command("show", help="Print file contents from local disk or room storage.")
-async def storage_show_command(
+@app.async_command("get", help="Print file contents from local disk or room storage.")
+async def storage_get_command(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
@@ -348,7 +348,7 @@ async def storage_show_command(
             return
 
         if not room:
-            raise typer.BadParameter("To show a remote file, you must provide --room")
+            raise typer.BadParameter("To get a remote file, you must provide --room")
 
         account_client = await get_client()
         project_id = await resolve_project_id(project_id=project_id)

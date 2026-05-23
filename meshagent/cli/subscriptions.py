@@ -137,14 +137,14 @@ async def subscription_update(
         await client.close()
 
 
-@app.async_command("show")
-async def subscription_show(
+@app.async_command("get")
+async def subscription_get(
     *,
     project_id: ProjectIdOption,
     feed_id: Annotated[str, typer.Option("--feed-id", help="Feed id")],
-    subscription_id: Annotated[str, typer.Argument(help="Subscription id to show")],
+    subscription_id: Annotated[str, typer.Argument(help="Subscription id to get")],
 ):
-    """Show feed subscription details."""
+    """Get feed subscription details."""
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)

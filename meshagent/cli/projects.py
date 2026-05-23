@@ -194,6 +194,22 @@ async def list(
     await client.close()
 
 
+@app.async_command("get", help="Get a MeshAgent project.")
+async def get(
+    project_id: Annotated[str, typer.Argument(help="Project id to get")],
+    o: OutputFormatOption = "table",
+):
+    client = await get_client()
+    try:
+        project = await client.get_project(project_id)
+        if o == "json":
+            print(project)
+        else:
+            print_json_table([project], "id", "name", "project_key")
+    finally:
+        await client.close()
+
+
 @app.async_command(
     "activate", help="Set the active project for subsequent CLI commands."
 )

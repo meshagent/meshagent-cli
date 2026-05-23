@@ -208,13 +208,13 @@ async def mailbox_update(
         await client.close()
 
 
-@app.async_command("show")
-async def mailbox_show(
+@app.async_command("get")
+async def mailbox_get(
     *,
     project_id: ProjectIdOption,
-    address: Annotated[str, typer.Argument(help="Mailbox address to show")],
+    address: Annotated[str, typer.Argument(help="Mailbox address to get")],
 ):
-    """Show mailbox details."""
+    """Get mailbox details."""
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)

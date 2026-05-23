@@ -1846,19 +1846,19 @@ async def service_run(
         await my_client.close()
 
 
-@app.async_command("show")
-async def service_show(
+@app.async_command("get")
+async def service_get(
     *,
     project_id: ProjectIdOption,
     service_id: Annotated[
         str,
-        typer.Argument(help="Service UUID or metadata name to show"),
+        typer.Argument(help="Service UUID or metadata name to get"),
     ],
     room: Annotated[
         Optional[str], typer.Option("--room", help="Room name")
     ] = os.getenv("MESHAGENT_ROOM"),
 ):
-    """Show a service for the project."""
+    """Get a service for the project."""
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)

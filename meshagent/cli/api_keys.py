@@ -123,8 +123,8 @@ async def create(
         )
 
 
-@app.async_command("show", help="Show the activated API key for a project.")
-async def show(*, project_id: ProjectIdOption):
+@app.async_command("get", help="Get the activated API key for a project.")
+async def get(*, project_id: ProjectIdOption):
     key = await _require_active_api_key(project_id=project_id)
     typer.echo(key)
 

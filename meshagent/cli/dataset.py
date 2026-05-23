@@ -2129,6 +2129,51 @@ async def list_branches(
         await account_client.close()
 
 
+@branch_app.async_command("get", help="Get a dataset branch.")
+async def get_branch(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    branch: Annotated[str, typer.Option(..., "--branch", help="Branch name")],
+    namespace: NamespaceOption = None,
+    pretty: Annotated[
+        bool, typer.Option("--pretty/--no-pretty", help="Pretty-print JSON")
+    ] = True,
+):
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        room_name = resolve_room(room)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
+
+        async with RoomClient(
+            protocol_factory=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room_name),
+                token=connection.jwt,
+            ).create_factory()
+        ) as client:
+            branches = await client.datasets.list_branches(namespace=_ns(namespace))
+            for candidate in branches:
+                if candidate.name == branch:
+                    print(
+                        _json.dumps(
+                            candidate.model_dump(mode="json"),
+                            indent=2 if pretty else None,
+                        )
+                    )
+                    return
+            print(f"[red]Branch not found:[/] {branch}")
+            raise typer.Exit(1)
+
+    except RoomException as e:
+        print(e)
+        raise typer.Exit(1)
+    finally:
+        await account_client.close()
+
+
 @branch_app.async_command("create", help="Create a dataset branch.")
 async def create_branch(
     *,

@@ -262,13 +262,13 @@ async def route_update(
         await client.close()
 
 
-@app.async_command("show")
-async def route_show(
+@app.async_command("get")
+async def route_get(
     *,
     project_id: ProjectIdOption,
-    domain: Annotated[str, typer.Argument(help="Domain name to show")],
+    domain: Annotated[str, typer.Argument(help="Domain name to get")],
 ):
-    """Show route details."""
+    """Get route details."""
     client = await get_client()
     try:
         project_id = await resolve_project_id(project_id)

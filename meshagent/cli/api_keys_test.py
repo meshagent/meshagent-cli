@@ -91,7 +91,7 @@ async def test_list_marks_activated_api_key_in_table_output(
 
 
 @pytest.mark.asyncio
-async def test_show_prints_activated_api_key(
+async def test_get_prints_activated_api_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     printed: list[str] = []
@@ -108,7 +108,7 @@ async def test_show_prints_activated_api_key(
     monkeypatch.setattr(api_keys, "get_active_api_key", fake_get_active_api_key)
     monkeypatch.setattr(api_keys.typer, "echo", printed.append)
 
-    await api_keys.show(project_id="project-1")
+    await api_keys.get(project_id="project-1")
 
     assert printed == ["ma-key-1"]
 
@@ -137,7 +137,7 @@ async def test_env_prints_shell_export_for_activated_api_key(
 
 
 @pytest.mark.asyncio
-async def test_show_exits_when_no_activated_api_key(
+async def test_get_exits_when_no_activated_api_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     printed: list[str] = []
@@ -155,7 +155,7 @@ async def test_show_exits_when_no_activated_api_key(
     monkeypatch.setattr(api_keys, "print", printed.append)
 
     with pytest.raises(typer.Exit) as exc_info:
-        await api_keys.show(project_id="project-1")
+        await api_keys.get(project_id="project-1")
 
     assert exc_info.value.exit_code == 1
     assert printed == [

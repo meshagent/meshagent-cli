@@ -192,16 +192,16 @@ async def registry_update(
         await client.close()
 
 
-@app.async_command("show")
-async def registry_show(
+@app.async_command("get")
+async def registry_get(
     *,
     project_id: ProjectIdOption,
     repository_id: Annotated[
         str,
-        typer.Argument(help="Repository id to show"),
+        typer.Argument(help="Repository id to get"),
     ],
 ):
-    """Show registry details."""
+    """Get registry details."""
     client = await get_client()
     try:
         resolved_project_id = await resolve_project_id(project_id=project_id)

@@ -360,8 +360,8 @@ async def _connect_room(project_id: ProjectIdOption, room: RoomOption):
         raise
 
 
-@app.async_command("show", help="Print the full document JSON")
-async def sync_show(
+@app.async_command("get", help="Print the full document JSON")
+async def sync_get(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
