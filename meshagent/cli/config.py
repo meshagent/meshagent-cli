@@ -19,6 +19,8 @@ def _config_callback() -> None:
 
 def _config_value(config: MeshagentDeploymentConfig, path: str) -> str | None:
     match path:
+        case "version":
+            return config.version
         case "domains.studio":
             return config.domains.studio
         case "domains.accounts":
@@ -36,6 +38,7 @@ def _config_value(config: MeshagentDeploymentConfig, path: str) -> str | None:
         case _:
             supported_paths = ", ".join(
                 [
+                    "version",
                     "domains.studio",
                     "domains.accounts",
                     "domains.powerboards",

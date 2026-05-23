@@ -2,12 +2,14 @@ from meshagent.cli import async_typer
 
 import logging
 
+import click
 import os
 import sys
 import warnings
 from pathlib import Path
 
 from meshagent.cli.local_settings import apply_active_profile_api_url_environment
+from meshagent.cli.version_check import warn_if_cli_out_of_date
 
 
 def _configure_warning_filters() -> None:
@@ -57,6 +59,10 @@ app = async_typer.LazyTyper(no_args_is_help=True, name="meshagent")
 def _root_callback() -> None:
     apply_active_profile_api_url_environment()
     _configure_runtime()
+    ctx = click.get_current_context(silent=True)
+    if ctx is not None and ctx.invoked_subcommand == "version":
+        return
+    warn_if_cli_out_of_date()
 
 
 app.add_lazy_command(

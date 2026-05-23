@@ -4,7 +4,9 @@ import click
 from rich import print
 
 from meshagent.api.client import User
+from meshagent.cli.async_typer import _run_coroutine_sync
 from meshagent.cli.version import __version__
+from meshagent.cli.version_check import get_server_version_best_effort
 
 _SETUP_WELCOME_PROMPT = (
     "welcome {user_name} to meshagent and let them know they can use "
@@ -58,7 +60,9 @@ def _current_meshagent_executable() -> str | None:
     help="Print the version",
 )
 def version_command():
-    print(__version__)
+    server_version = _run_coroutine_sync(get_server_version_best_effort())
+    print(f"client: {__version__}")
+    print(f"server: {server_version or 'unavailable'}")
 
 
 @click.command("setup")

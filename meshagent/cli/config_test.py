@@ -39,6 +39,30 @@ def test_config_get_domains_pages_prints_pages_domain(
     assert fake_client.closed is True
 
 
+def test_config_get_version_prints_server_version(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake_client = _FakeConfigClient(
+        MeshagentDeploymentConfig(
+            domains=MeshagentDomains(),
+            version="0.41.5",
+        )
+    )
+
+    async def _fake_get_client() -> _FakeConfigClient:
+        return fake_client
+
+    monkeypatch.setattr(config, "get_client", _fake_get_client)
+
+    cli.app(["config", "get", "version"])
+
+    captured = capsys.readouterr()
+    assert captured.out == "0.41.5\n"
+    assert captured.err == ""
+    assert fake_client.closed is True
+
+
 def test_config_get_rejects_unknown_path(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

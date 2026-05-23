@@ -6,6 +6,52 @@ from meshagent.cli.local_settings import StoredUserProfile
 from meshagent.cli.tui.setup import SetupClaudeConfiguration, SetupWizardResult
 
 
+def test_version_command_prints_client_and_server_versions(
+    monkeypatch,
+    capsys,
+) -> None:
+    async def _fake_get_server_version_best_effort() -> str | None:
+        return "0.42.0"
+
+    monkeypatch.setattr(
+        root_commands,
+        "get_server_version_best_effort",
+        _fake_get_server_version_best_effort,
+    )
+    monkeypatch.setattr(root_commands, "__version__", "0.41.5")
+
+    callback = root_commands.version_command.callback
+    assert callback is not None
+    callback()
+
+    captured = capsys.readouterr()
+    assert captured.out == "client: 0.41.5\nserver: 0.42.0\n"
+    assert captured.err == ""
+
+
+def test_version_command_prints_unavailable_server_version(
+    monkeypatch,
+    capsys,
+) -> None:
+    async def _fake_get_server_version_best_effort() -> str | None:
+        return None
+
+    monkeypatch.setattr(
+        root_commands,
+        "get_server_version_best_effort",
+        _fake_get_server_version_best_effort,
+    )
+    monkeypatch.setattr(root_commands, "__version__", "0.41.5")
+
+    callback = root_commands.version_command.callback
+    assert callback is not None
+    callback()
+
+    captured = capsys.readouterr()
+    assert captured.out == "client: 0.41.5\nserver: unavailable\n"
+    assert captured.err == ""
+
+
 def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
     launched: list[dict[str, object]] = []
     existing_codex_profile_requests: list[str] = []
