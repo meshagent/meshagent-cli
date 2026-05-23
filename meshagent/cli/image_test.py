@@ -11,6 +11,7 @@ import typer
 
 from meshagent.api import ApiScope
 from meshagent.api.client import (
+    ConflictError,
     MeshagentDeploymentConfig,
     MeshagentDomains,
     NotFoundError,
@@ -126,6 +127,25 @@ ports:
     assert "Deploy spec" in result.output
     assert "Name: demo" in result.output
     assert "domain (optional, type=route)" in result.output
+
+
+def test_format_deploy_summary_includes_room_service_domain_and_emails() -> None:
+    summary = image._DeploySummary(
+        room_name="room-1",
+        service_name="web",
+        service_id="service-1",
+        domain="web.meshagent.app",
+        emails=("hello@mail.meshagent.app",),
+    )
+
+    rendered = image._format_deploy_summary(summary)
+
+    assert "Deploy complete" in rendered
+    assert (
+        "Service [bold]web[/bold] was deployed to room [bold]room-1[/bold]." in rendered
+    )
+    assert "Public domain: web.meshagent.app" in rendered
+    assert "Email: hello@mail.meshagent.app" in rendered
 
 
 @pytest.fixture(autouse=True)
@@ -438,8 +458,16 @@ async def test_select_deploy_room_can_create_new_room(
             assert project_id == "project-1"
             return True
 
-        async def create_room(self, *, project_id: str, name: str) -> Room:
-            created_rooms.append({"project_id": project_id, "name": name})
+        async def create_room(
+            self,
+            *,
+            project_id: str,
+            name: str,
+            permissions: dict[str, ApiScope],
+        ) -> Room:
+            created_rooms.append(
+                {"project_id": project_id, "name": name, "permissions": permissions}
+            )
             return Room(id="room-created", name=name, metadata={}, annotations={})
 
         async def close(self) -> None:
@@ -448,11 +476,14 @@ async def test_select_deploy_room_can_create_new_room(
     async def _fake_get_client() -> _FakeClient:
         return _FakeClient()
 
-    async def _fake_run_deploy_room_picker_tui(*, rooms, can_create_room):
+    async def _fake_run_deploy_room_picker_tui(
+        *, rooms, can_create_room, create_error=None
+    ):
         from meshagent.cli.tui.deploy_room import DeployRoomPickerResult
 
         assert rooms == []
         assert can_create_room is True
+        assert create_error is None
         return DeployRoomPickerResult(
             status="create",
             create_room_name="new-room",
@@ -470,12 +501,18 @@ async def test_select_deploy_room_can_create_new_room(
     room = await image._select_deploy_room_interactively(project_id="project-1")
 
     assert room == "new-room"
-    assert created_rooms == [{"project_id": "project-1", "name": "new-room"}]
+    assert created_rooms == [
+        {
+            "project_id": "project-1",
+            "name": "new-room",
+            "permissions": {"user-1": ApiScope.full()},
+        }
+    ]
     assert printed == ["[bold green]Created room new-room[/bold green]"]
 
 
 @pytest.mark.asyncio
-async def test_select_deploy_room_can_create_when_active_user_id_is_unavailable(
+async def test_select_deploy_room_create_requires_active_user_for_owner_grant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _FakeClient:
@@ -483,7 +520,14 @@ async def test_select_deploy_room_can_create_when_active_user_id_is_unavailable(
             assert project_id == "project-1"
             return True
 
-        async def create_room(self, *, project_id: str, name: str) -> Room:
+        async def create_room(
+            self,
+            *,
+            project_id: str,
+            name: str,
+            permissions: dict[str, ApiScope],
+        ) -> Room:
+            del permissions
             return Room(id="room-created", name=name, metadata={}, annotations={})
 
         async def close(self) -> None:
@@ -492,11 +536,14 @@ async def test_select_deploy_room_can_create_when_active_user_id_is_unavailable(
     async def _fake_get_client() -> _FakeClient:
         return _FakeClient()
 
-    async def _fake_run_deploy_room_picker_tui(*, rooms, can_create_room):
+    async def _fake_run_deploy_room_picker_tui(
+        *, rooms, can_create_room, create_error=None
+    ):
         from meshagent.cli.tui.deploy_room import DeployRoomPickerResult
 
         assert rooms == []
         assert can_create_room is True
+        assert create_error is None
         return DeployRoomPickerResult(
             status="create",
             create_room_name="new-room",
@@ -510,9 +557,106 @@ async def test_select_deploy_room_can_create_when_active_user_id_is_unavailable(
         _fake_run_deploy_room_picker_tui,
     )
 
+    with pytest.raises(typer.BadParameter) as exc_info:
+        await image._select_deploy_room_interactively(project_id="project-1")
+
+    assert "Unable to determine the active user" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_select_deploy_room_prompts_again_when_created_room_name_is_in_use(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_rooms: list[dict[str, object]] = []
+
+    class _FakeClient:
+        async def list_room_grants_by_user(
+            self,
+            *,
+            project_id: str,
+            user_id: str,
+            limit: int,
+            offset: int,
+            order_by: str,
+        ) -> list[ProjectRoomGrant]:
+            del project_id, user_id, limit, offset, order_by
+            return []
+
+        async def can_create_rooms(self, project_id: str) -> bool:
+            assert project_id == "project-1"
+            return True
+
+        async def create_room(
+            self,
+            *,
+            project_id: str,
+            name: str,
+            permissions: dict[str, ApiScope],
+        ) -> Room:
+            created_rooms.append(
+                {"project_id": project_id, "name": name, "permissions": permissions}
+            )
+            if name == "taken-room":
+                raise ConflictError("room already exists")
+            return Room(id="room-created", name=name, metadata={}, annotations={})
+
+        async def close(self) -> None:
+            return None
+
+    async def _fake_get_client() -> _FakeClient:
+        return _FakeClient()
+
+    picker_calls: list[dict[str, object]] = []
+
+    async def _fake_run_deploy_room_picker_tui(
+        *, rooms, can_create_room, create_error=None
+    ):
+        from meshagent.cli.tui.deploy_room import DeployRoomPickerResult
+
+        assert rooms == []
+        assert can_create_room is True
+        picker_calls.append({"create_error": create_error})
+        if len(picker_calls) == 1:
+            return DeployRoomPickerResult(
+                status="create",
+                create_room_name="taken-room",
+            )
+        return DeployRoomPickerResult(
+            status="create",
+            create_room_name="new-room",
+        )
+
+    monkeypatch.setattr(image, "get_active_user_id", lambda: "user-1")
+    monkeypatch.setattr(image, "get_client", _fake_get_client)
+    monkeypatch.setattr(image, "print", lambda message: None)
+    monkeypatch.setattr(
+        "meshagent.cli.tui.deploy_room.run_deploy_room_picker_tui",
+        _fake_run_deploy_room_picker_tui,
+    )
+
     room = await image._select_deploy_room_interactively(project_id="project-1")
 
     assert room == "new-room"
+    assert picker_calls == [
+        {"create_error": None},
+        {
+            "create_error": (
+                "Room name 'taken-room' is already in use. Enter a different room name."
+            )
+        },
+    ]
+    assert created_rooms == [
+        {
+            "project_id": "project-1",
+            "name": "taken-room",
+            "permissions": {"user-1": ApiScope.full()},
+        },
+        {
+            "project_id": "project-1",
+            "name": "new-room",
+            "permissions": {"user-1": ApiScope.full()},
+        },
+    ]
 
 
 def test_replace_meshagent_image_vars_defaults_to_pkg_dev(monkeypatch) -> None:
@@ -2952,11 +3096,12 @@ async def test_deploy_image_pack_fails_before_build_when_env_secret_is_missing(
         del project_id
         return "project-1"
 
+    printed: list[str] = []
     monkeypatch.setattr(image, "_run_image_build_stage", _fake_run_image_build_stage)
     monkeypatch.setattr(image, "_with_client", _fake_with_client)
     monkeypatch.setattr(image, "resolve_room", lambda room: room)
     monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
-    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
+    monkeypatch.setattr(image, "print", lambda message: printed.append(message))
 
     with pytest.raises(
         typer.BadParameter,
@@ -3030,11 +3175,12 @@ async def test_deploy_image_pack_requires_matching_volume_mount(
         del project_id
         return "project-1"
 
+    printed: list[str] = []
     monkeypatch.setattr(image, "_run_image_build_stage", _fake_run_image_build_stage)
     monkeypatch.setattr(image, "_with_client", _fake_with_client)
     monkeypatch.setattr(image, "resolve_room", lambda room: room)
     monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
-    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
+    monkeypatch.setattr(image, "print", lambda message: printed.append(message))
 
     with pytest.raises(
         typer.BadParameter,
@@ -3114,11 +3260,12 @@ async def test_deploy_image_pack_allows_matching_volume_mount(
         del project_id
         return "project-1"
 
+    printed: list[str] = []
     monkeypatch.setattr(image, "_run_image_build_stage", _fake_run_image_build_stage)
     monkeypatch.setattr(image, "_with_client", _fake_with_client)
     monkeypatch.setattr(image, "resolve_room", lambda room: room)
     monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
-    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
+    monkeypatch.setattr(image, "print", lambda message: printed.append(message))
 
     await image.deploy_image(
         project_id="project-1",
@@ -3477,7 +3624,8 @@ async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    captured: dict[str, object] = {}
+    captured: dict[str, object] = {"events": []}
+    printed: list[str] = []
     source_dir = tmp_path / "website"
     source_dir.mkdir()
     (source_dir / "Dockerfile").write_text(
@@ -3487,6 +3635,7 @@ async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
 
     async def _fake_run_image_build_stage(**kwargs) -> None:
         captured["build_kwargs"] = kwargs
+        captured["events"].append("build")
 
     class _FakeRoomClient:
         def __init__(self) -> None:
@@ -3497,6 +3646,7 @@ async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
             captured["restarted_service_id"] = service_id
 
         async def _delete_image(self, *, image: str) -> None:
+            captured["events"].append("delete")
             captured["deleted_image"] = image
 
         async def __aexit__(self, exc_type, exc, tb) -> None:
@@ -3513,6 +3663,7 @@ async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
         async def create_room_service(
             self, *, project_id: str, room_name: str, service
         ):
+            captured["events"].append("create")
             captured["created_service"] = (project_id, room_name, service)
             return "service-1"
 
@@ -3522,7 +3673,32 @@ async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
             project_id: str,
             spec,
         ) -> None:
+            captured["events"].append("route")
             captured["created_route"] = (project_id, spec)
+
+        async def get_mailbox(self, *, project_id: str, address: str):
+            captured["mailbox_lookup"] = (project_id, address)
+            raise NotFoundError("Status=404, body=mailbox not found")
+
+        async def create_mailbox(
+            self,
+            *,
+            project_id: str,
+            address: str,
+            room: str,
+            queue: str,
+            public: bool,
+            annotations,
+        ) -> None:
+            captured["events"].append("mailbox")
+            captured["created_mailbox"] = {
+                "project_id": project_id,
+                "address": address,
+                "room": room,
+                "queue": queue,
+                "public": public,
+                "annotations": annotations,
+            }
 
         async def close(self) -> None:
             captured["account_client_closed"] = True
@@ -3540,7 +3716,7 @@ async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
     monkeypatch.setattr(image, "_with_client", _fake_with_client)
     monkeypatch.setattr(image, "resolve_room", lambda room: room)
     monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
-    monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
+    monkeypatch.setattr(image, "print", lambda message: printed.append(message))
 
     await image.deploy_image(
         project_id="project-1",
@@ -3551,6 +3727,7 @@ async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
         dockerfile_path="/context/Dockerfile",
         optimize=True,
         domain="node.meshagent.dev",
+        email="hello@mail.meshagent.dev",
         extra_port=["3001:/messages"],
         validation_mode="cookie",
         room_mount=[],
@@ -3589,9 +3766,26 @@ async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
     assert route_spec.paths[1].path == "/messages"
     assert str(route_spec.paths[1].targetPort) == "3001"
     assert route_spec.annotations == {image.ANNOTATION_SERVICE_ID: "repo-web"}
+    assert captured["created_mailbox"] == {
+        "project_id": "project-1",
+        "address": "hello@mail.meshagent.dev",
+        "room": "room-1",
+        "queue": "hello@mail.meshagent.dev",
+        "public": True,
+        "annotations": {image.ANNOTATION_SERVICE_ID: "repo-web"},
+    }
+    assert captured["events"] == ["route", "mailbox", "build", "delete", "create"]
     assert "restarted_service_id" not in captured
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
+    assert printed[-1] == "\n".join(
+        [
+            "[bold green]Deploy complete[/bold green]",
+            "Service [bold]repo-web[/bold] was deployed to room [bold]room-1[/bold].",
+            "Public domain: node.meshagent.dev",
+            "Email: hello@mail.meshagent.dev",
+        ]
+    )
 
 
 @pytest.mark.asyncio

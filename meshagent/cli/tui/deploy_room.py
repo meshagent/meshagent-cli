@@ -166,10 +166,12 @@ class DeployRoomPickerApp(App[None]):
         *,
         rooms: Sequence[DeployRoomChoice],
         can_create_room: bool,
+        create_error: str | None = None,
     ) -> None:
         super().__init__()
         self._rooms = list(rooms)
         self._can_create_room = can_create_room
+        self._create_error = create_error
         self._mode: Literal["select", "create"] = "select"
         self._rooms_by_option_id = {
             _room_option_id(room.id): room for room in self._rooms
@@ -200,7 +202,10 @@ class DeployRoomPickerApp(App[None]):
         self._input_view = self.query_one("#deploy-room-input", Input)
         self._help_view = self.query_one("#deploy-room-help", Static)
         self._error_view = self.query_one("#deploy-room-error", Static)
-        self._show_room_selection()
+        if self._create_error is None:
+            self._show_room_selection()
+        else:
+            self._show_create_room_input(error_message=self._create_error)
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "deploy-room-input":
@@ -280,7 +285,7 @@ class DeployRoomPickerApp(App[None]):
             self._options_view.highlighted = 0
             self._options_view.focus()
 
-    def _show_create_room_input(self) -> None:
+    def _show_create_room_input(self, *, error_message: str | None = None) -> None:
         self._mode = "create"
         self._clear_error()
         self._set_text(
@@ -296,6 +301,8 @@ class DeployRoomPickerApp(App[None]):
         self._input_view.placeholder = "Room name"
         self._input_view.value = ""
         self._input_view.focus()
+        if error_message is not None:
+            self._show_error(error_message)
 
     def _submit_create_room_name(self, value: str) -> None:
         try:
@@ -358,17 +365,20 @@ async def run_deploy_room_picker_tui(
     *,
     rooms: Sequence[DeployRoomChoice],
     can_create_room: bool,
+    create_error: str | None = None,
 ) -> DeployRoomPickerResult:
     current_app = active_app.get(None)
     if isinstance(current_app, DeployProgressApp):
         return await current_app.prompt_room(
             rooms=rooms,
             can_create_room=can_create_room,
+            create_error=create_error,
         )
 
     app = DeployRoomPickerApp(
         rooms=rooms,
         can_create_room=can_create_room,
+        create_error=create_error,
     )
 
     try:
@@ -978,6 +988,7 @@ class DeployProgressApp(App[None]):
         *,
         rooms: Sequence[DeployRoomChoice],
         can_create_room: bool,
+        create_error: str | None = None,
     ) -> DeployRoomPickerResult:
         self._prompt_mode = "room"
         self._prompt_future = asyncio.get_running_loop().create_future()
@@ -987,7 +998,10 @@ class DeployProgressApp(App[None]):
             _room_option_id(room.id): room for room in self._rooms
         }
         self._can_create_room = can_create_room
-        self._show_room_selection()
+        if create_error is None:
+            self._show_room_selection()
+        else:
+            self._show_create_room_input(error_message=create_error)
         result = await self._prompt_future
         self._hide_prompt()
         return result
@@ -1129,7 +1143,7 @@ class DeployProgressApp(App[None]):
         self._options_view.highlighted = 0
         self._options_view.focus()
 
-    def _show_create_room_input(self) -> None:
+    def _show_create_room_input(self, *, error_message: str | None = None) -> None:
         self._room_mode = "create"
         self._set_status("Enter a name for the new room.")
         self._set_detail("")
@@ -1140,6 +1154,8 @@ class DeployProgressApp(App[None]):
         if self._options_view is not None:
             self._options_view.display = False
         self._set_input(value="", placeholder="Room name")
+        if error_message is not None:
+            self._set_error(error_message)
 
     def _submit_create_room_name(self, value: str) -> None:
         try:

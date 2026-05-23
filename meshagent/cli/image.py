@@ -235,28 +235,46 @@ async def _select_deploy_room_interactively(*, project_id: str) -> str:
             run_deploy_room_picker_tui,
         )
 
-        result = await run_deploy_room_picker_tui(
-            rooms=[
-                DeployRoomChoice(
-                    id=room.id,
-                    name=room.name,
-                    description=room.annotations.get("meshagent.storage.class", ""),
-                )
-                for room in rooms
-            ],
-            can_create_room=can_create_room,
-        )
-        if result.status == "create" and result.create_room_name is not None:
-            room = await account_client.create_room(
-                project_id=project_id,
-                name=result.create_room_name,
+        room_choices = [
+            DeployRoomChoice(
+                id=room.id,
+                name=room.name,
+                description=room.annotations.get("meshagent.storage.class", ""),
             )
-            print(f"[bold green]Created room {room.name}[/bold green]")
-            return room.name
-        if result.status == "completed" and result.selected_room_name is not None:
-            return result.selected_room_name
+            for room in rooms
+        ]
+        create_error: str | None = None
+        while True:
+            result = await run_deploy_room_picker_tui(
+                rooms=room_choices,
+                can_create_room=can_create_room,
+                create_error=create_error,
+            )
+            if result.status == "create" and result.create_room_name is not None:
+                active_user_id = get_active_user_id()
+                if active_user_id is None:
+                    raise typer.BadParameter(
+                        "Unable to determine the active user for the room owner "
+                        "grant. Run `meshagent auth login` or pass --room explicitly."
+                    )
+                try:
+                    room = await account_client.create_room(
+                        project_id=project_id,
+                        name=result.create_room_name,
+                        permissions={active_user_id: ApiScope.full()},
+                    )
+                except ConflictError:
+                    create_error = (
+                        f"Room name '{result.create_room_name}' is already in use. "
+                        "Enter a different room name."
+                    )
+                    continue
+                print(f"[bold green]Created room {room.name}[/bold green]")
+                return room.name
+            if result.status == "completed" and result.selected_room_name is not None:
+                return result.selected_room_name
 
-        raise typer.Exit(130)
+            raise typer.Exit(130)
     finally:
         await account_client.close()
 
@@ -402,6 +420,15 @@ class _AppliedDeployPlanResult:
     service_id: str
     created: bool
     route_target: _RoomRouteTarget | None
+
+
+@dataclass(frozen=True)
+class _DeploySummary:
+    room_name: str
+    service_name: str
+    service_id: str
+    domain: str | None
+    emails: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2911,6 +2938,8 @@ async def _apply_deploy_plan(
     domain: str | None,
     email: str | None,
     extra_route_ports: list[_ExtraRoutePort],
+    route_already_reserved: bool = False,
+    email_already_reserved: bool = False,
     status_handler: Callable[[str], Awaitable[None]] | None = None,
 ) -> _AppliedDeployPlanResult:
     route_target = (
@@ -2951,7 +2980,7 @@ async def _apply_deploy_plan(
                 f"({deploy_result.service_id})"
             ),
         )
-    if domain is not None and route_target is not None:
+    if domain is not None and route_target is not None and not route_already_reserved:
         await _upsert_domain_route(
             account_client=account_client,
             project_id=project_id,
@@ -2962,7 +2991,7 @@ async def _apply_deploy_plan(
             service_id=deploy_plan.service_id_annotation,
             status_handler=status_handler,
         )
-    if email is not None:
+    if email is not None and not email_already_reserved:
         await _upsert_email_mailbox(
             account_client=account_client,
             project_id=project_id,
@@ -2978,6 +3007,48 @@ async def _apply_deploy_plan(
     )
 
 
+async def _reserve_deploy_routing_resources(
+    *,
+    account_client,
+    project_id: str,
+    room_name: str,
+    deploy_plan: _ServiceDeployPlan,
+    domain: str | None,
+    email: str | None,
+    extra_route_ports: list[_ExtraRoutePort],
+    status_handler: Callable[[str], Awaitable[None]] | None = None,
+) -> tuple[bool, bool]:
+    route_reserved = False
+    email_reserved = False
+    if domain is not None:
+        route_target = _resolve_domain_route_target(
+            service_spec=deploy_plan.spec,
+            extra_route_ports=extra_route_ports,
+        )
+        await _upsert_domain_route(
+            account_client=account_client,
+            project_id=project_id,
+            room_name=room_name,
+            domain=domain,
+            port=route_target.port,
+            extra_route_ports=extra_route_ports,
+            service_id=deploy_plan.service_id_annotation,
+            status_handler=status_handler,
+        )
+        route_reserved = True
+    if email is not None:
+        await _upsert_email_mailbox(
+            account_client=account_client,
+            project_id=project_id,
+            room_name=room_name,
+            email=email,
+            service_id=deploy_plan.service_id_annotation,
+            status_handler=status_handler,
+        )
+        email_reserved = True
+    return route_reserved, email_reserved
+
+
 def _format_deploy_room_not_found_message(*, room_name: str) -> str:
     return (
         f"Room does not exist: {room_name}\n"
@@ -2985,6 +3056,30 @@ def _format_deploy_room_not_found_message(*, room_name: str) -> str:
         f"'meshagent rooms create {shlex.quote(room_name)} --if-not-exists', "
         "then retry deploy."
     )
+
+
+def _format_deploy_summary(summary: _DeploySummary) -> str:
+    lines = [
+        "[bold green]Deploy complete[/bold green]",
+        (
+            f"Service [bold]{summary.service_name}[/bold] "
+            f"was deployed to room [bold]{summary.room_name}[/bold]."
+        ),
+    ]
+    if summary.domain is not None:
+        lines.append(f"Public domain: {summary.domain}")
+    else:
+        lines.append("Public domain: none configured")
+    if len(summary.emails) > 0:
+        label = "Email" if len(summary.emails) == 1 else "Emails"
+        lines.append(f"{label}: {', '.join(summary.emails)}")
+    else:
+        lines.append("Email: none configured")
+    return "\n".join(lines)
+
+
+def _print_deploy_summary(summary: _DeploySummary) -> None:
+    print(_format_deploy_summary(summary))
 
 
 async def _get_service_runtime_state(
@@ -4060,7 +4155,7 @@ async def deploy_image(
         *,
         status_handler: Callable[[str], Awaitable[None]] | None = None,
         log_handler: Callable[[str], Awaitable[None]] | None = None,
-    ) -> None:
+    ) -> _DeploySummary:
         nonlocal domain, email
 
         resolved_room = await _resolve_deploy_room(
@@ -4213,12 +4308,28 @@ async def deploy_image(
                 extra_route_ports=parsed_extra_route_ports,
                 deploy_plan=deploy_plan,
             )
+            route_reserved = False
+            email_reserved = False
+            if pack is not None and (domain is not None or email is not None):
+                (
+                    route_reserved,
+                    email_reserved,
+                ) = await _reserve_deploy_routing_resources(
+                    account_client=account_client,
+                    project_id=resolved_project_id,
+                    room_name=resolved_room,
+                    deploy_plan=deploy_plan,
+                    domain=domain,
+                    email=email,
+                    extra_route_ports=parsed_extra_route_ports,
+                    status_handler=status_handler,
+                )
 
             async def _run_deploy_operation(
                 *,
                 status_handler: Callable[[str], Awaitable[None]] | None = None,
                 log_handler: Callable[[str], Awaitable[None]] | None = None,
-            ) -> None:
+            ) -> _AppliedDeployPlanResult:
                 if pack is not None:
                     assert project_registry is not None
                     await _run_image_build_stage(
@@ -4251,6 +4362,8 @@ async def deploy_image(
                     domain=domain,
                     email=email,
                     extra_route_ports=parsed_extra_route_ports,
+                    route_already_reserved=route_reserved,
+                    email_already_reserved=email_reserved,
                     status_handler=status_handler,
                 )
                 if deploy_template_values is not None:
@@ -4264,7 +4377,7 @@ async def deploy_image(
                         plain_message=f"Saved deploy values: {deploy_values_file}",
                     )
                 if not wait:
-                    return
+                    return deploy_result
                 previous_container_id = (
                     previous_runtime_state.container_id
                     if previous_runtime_state is not None
@@ -4288,10 +4401,18 @@ async def deploy_image(
                     status_handler=status_handler,
                     log_handler=log_handler,
                 )
+                return deploy_result
 
-            await _run_deploy_operation(
+            deploy_result = await _run_deploy_operation(
                 status_handler=status_handler,
                 log_handler=log_handler,
+            )
+            return _DeploySummary(
+                room_name=resolved_room,
+                service_name=deploy_plan.spec.metadata.name,
+                service_id=deploy_result.service_id,
+                domain=domain,
+                emails=(email,) if email is not None else (),
             )
         finally:
             await client.__aexit__(None, None, None)
@@ -4300,8 +4421,11 @@ async def deploy_image(
     if _stdio_is_interactive():
         from meshagent.cli.tui.deploy_room import run_deploy_progress_tui
 
+        deploy_summary: _DeploySummary | None = None
+
         async def _run_deploy_flow_in_tui(progress) -> None:
-            await _run_deploy_flow(
+            nonlocal deploy_summary
+            deploy_summary = await _run_deploy_flow(
                 status_handler=progress.status,
                 log_handler=progress.log,
             )
@@ -4316,8 +4440,10 @@ async def deploy_image(
             if isinstance(progress_result.exception, typer.Exit):
                 raise progress_result.exception
             raise typer.Exit(1) from progress_result.exception
+        if deploy_summary is not None:
+            _print_deploy_summary(deploy_summary)
     else:
-        await _run_deploy_flow()
+        _print_deploy_summary(await _run_deploy_flow())
 
 
 @app.async_command(
