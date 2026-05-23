@@ -317,7 +317,7 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "2. Create room" in result.output
     assert "3. Run locally" in result.output
     assert "4. Deploy" in result.output
-    assert "meshagent rooms create --name <room> --if-not-exists" in result.output
+    assert "meshagent rooms create <room> --if-not-exists" in result.output
     assert (
         "Before testing a submission, set up the sender mailbox for that room"
         in result.output
@@ -354,7 +354,7 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     deploy_yaml = (tmp_path / ".meshagent" / "deploy.yaml").read_text(encoding="utf-8")
 
     assert "Python Contact Form" in readme
-    assert "meshagent rooms create --name <room> --if-not-exists" in readme
+    assert "meshagent rooms create <room> --if-not-exists" in readme
     assert "./scripts/dev.sh --room <room>" in readme
     assert "CONTACT_FORM_TO=you@example.com ./scripts/deploy.sh --room <room>" in readme
     assert (
@@ -403,13 +403,13 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "CONTACT_FORM_OPEN_BROWSER" in dev_sh
     assert "CONTACT_FORM_OPEN_BROWSER_PROMPT" not in dev_sh
     assert "read -r OPEN_BROWSER_ANSWER" not in dev_sh
-    assert 'meshagent rooms create --name "$ROOM_NAME" --if-not-exists' in dev_sh
+    assert 'meshagent rooms create "$ROOM_NAME" --if-not-exists' in dev_sh
     assert 'meshagent room connect "$@" -- "$VENV_PYTHON" -u server.py' in dev_sh
     assert 'if [ "$status" -eq 130 ] || [ "$status" -eq 143 ]; then' in dev_sh
     assert "Stopped contact form." in dev_sh
     assert "If the room does not exist yet, create it first:" in dev_sh
-    assert "meshagent rooms create --name <room> --if-not-exists" in dev_sh
-    assert 'meshagent rooms create --name "$ROOM_NAME" --if-not-exists' not in deploy_sh
+    assert "meshagent rooms create <room> --if-not-exists" in dev_sh
+    assert 'meshagent rooms create "$ROOM_NAME" --if-not-exists' not in deploy_sh
     assert "--meshagent-token agentDefault" in deploy_sh
     assert '--set "from_email=$CONTACT_FORM_FROM"' in deploy_sh
     assert '--set "to_email=$CONTACT_FORM_TO"' in deploy_sh

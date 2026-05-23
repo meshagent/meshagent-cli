@@ -8,6 +8,7 @@ from rich import print
 
 from meshagent.api import RoomException
 from meshagent.api.client import ProjectRoomGrant, Room
+from meshagent.api.participant_token import ApiScope
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import OutputFormatOption, ProjectIdOption
 from meshagent.cli.helper import (
@@ -16,6 +17,7 @@ from meshagent.cli.helper import (
     resolve_project_id,
     resolve_room,
 )
+from meshagent.cli.local_settings import get_active_user_id
 
 app = async_typer.AsyncTyper(help="Create, list, and manage rooms in a project")
 
@@ -34,7 +36,7 @@ async def _resolve_room_id_or_fail(
     if room_id:
         return room_id
     if not room_name:
-        raise RoomException("You must provide either --id or --name.")
+        raise RoomException("You must provide either --id or a room name.")
     room = await account_client.get_room(project_id=project_id, name=room_name)
     return room.id
 
@@ -104,9 +106,20 @@ async def _list_my_rooms(
     help="Create a room in the project.",
 )
 async def room_create_command(
+    name: Annotated[Optional[str], typer.Argument(help="Room name")] = None,
     *,
     project_id: ProjectIdOption,
-    name: Annotated[str, typer.Option(..., help="Room name")],
+    name_option: Annotated[
+        Optional[str],
+        typer.Option("--name", help="Room name", hidden=True),
+    ] = None,
+    owner: Annotated[
+        bool,
+        typer.Option(
+            "--owner/--no-owner",
+            help="Add the active user as the room owner.",
+        ),
+    ] = True,
     if_not_exists: Annotated[
         bool, typer.Option(help="Do not error if the room already exists")
     ] = False,
@@ -125,17 +138,30 @@ async def room_create_command(
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
+        room_name = name if name is not None else name_option
+        if room_name is None or room_name.strip() == "":
+            raise RoomException("Room name is required.")
 
         meta_obj = _maybe_parse_json("metadata", metadata)
         annotations_obj = _maybe_parse_string_dict_json("annotations", annotations)
+        permissions: dict[str, ApiScope] | None = None
+        if owner:
+            active_user_id = get_active_user_id()
+            if active_user_id is None:
+                raise RoomException(
+                    "Unable to determine the active user for the owner grant. "
+                    "Run `meshagent auth login` or pass --no-owner."
+                )
+            permissions = {active_user_id: ApiScope.full()}
 
-        print(f"[bold green]Creating room {name}[/bold green]")
+        print(f"[bold green]Creating room {room_name}[/bold green]")
         room = await account_client.create_room(
             project_id=project_id,
-            name=name,
+            name=room_name,
             if_not_exists=if_not_exists,
             metadata=meta_obj,
             annotations=annotations_obj,
+            permissions=permissions,
         )
 
         print(
@@ -307,17 +333,22 @@ async def room_list_command(
 
 @app.async_command("get")
 async def room_get_command(
+    room: Annotated[Optional[str], typer.Argument(help="Room name or ID")] = None,
     *,
     project_id: ProjectIdOption,
-    name: Optional[str] = None,
+    name: Annotated[
+        Optional[str],
+        typer.Option("--name", help="Room name", hidden=True),
+    ] = None,
 ):
     """
-    Get a single room by name (handy for resolving the ID).
+    Get a single room by name or ID.
     """
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        room_name = resolve_room(name)
+        room_selector = room if room is not None else name
+        room_name = resolve_room(room_selector)
 
         print(f"[bold green]Fetching room '{room_name}'...[/bold green]")
         r = await account_client.get_room(project_id=project_id, name=room_name)

@@ -2982,7 +2982,7 @@ def _format_deploy_room_not_found_message(*, room_name: str) -> str:
     return (
         f"Room does not exist: {room_name}\n"
         "Create it first with "
-        f"'meshagent rooms create --name {shlex.quote(room_name)} --if-not-exists', "
+        f"'meshagent rooms create {shlex.quote(room_name)} --if-not-exists', "
         "then retry deploy."
     )
 

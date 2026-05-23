@@ -13,7 +13,7 @@ Minimal public aiohttp contact form that sends email through room SMTP.
 2. Create a room:
 
    ```bash
-   meshagent rooms create --name <room> --if-not-exists
+   meshagent rooms create <room> --if-not-exists
    ```
 
 3. Run locally:

@@ -54,7 +54,7 @@ if [ -z "${CONTACT_FORM_FROM:-}" ]; then
 fi
 export CONTACT_FORM_FROM CONTACT_FORM_TO PORT SMTP_HOSTNAME SMTP_PORT SMTP_USERNAME
 if [ -n "$ROOM_NAME" ]; then
-  meshagent rooms create --name "$ROOM_NAME" --if-not-exists
+  meshagent rooms create "$ROOM_NAME" --if-not-exists
 fi
 LOCAL_URL="http://127.0.0.1:$PORT/"
 launch_browser_when_ready() {
@@ -86,7 +86,7 @@ fi
 if [ "$status" -ne 0 ]; then
   echo "" >&2
   echo "If the room does not exist yet, create it first:" >&2
-  echo "  meshagent rooms create --name <room> --if-not-exists" >&2
+  echo "  meshagent rooms create <room> --if-not-exists" >&2
   echo "Then run:" >&2
   echo "  ./scripts/dev.sh --room <room>" >&2
   exit "$status"

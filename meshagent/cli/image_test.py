@@ -199,7 +199,7 @@ def test_root_deploy_help_mentions_existing_room_flow() -> None:
     assert "Existing room name." in result.output
     assert "--public --domain <domain>" in result.output
     assert "meshagent config get domains.pages" in normalized_output
-    assert "create --name <room> --if-not-exists" not in result.output
+    assert "create <room> --if-not-exists" not in result.output
     assert "return a public URL" in normalized_output
     assert ".meshagent.dev" not in result.output
     assert ".meshagent.life" not in result.output
@@ -280,7 +280,7 @@ async def test_deploy_image_missing_room_prints_create_room_guidance(
     assert printed == [
         "[red]Room does not exist: missing-room\n"
         "Create it first with "
-        "'meshagent rooms create --name missing-room --if-not-exists', "
+        "'meshagent rooms create missing-room --if-not-exists', "
         "then retry deploy.[/red]"
     ]
 

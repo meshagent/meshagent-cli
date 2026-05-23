@@ -6,7 +6,7 @@ from typing import Annotated
 import typer
 from rich import print
 
-from meshagent.api.client import Meshagent
+from meshagent.api.client import Meshagent, NotFoundError
 from meshagent.cli import async_typer
 from meshagent.cli.helper import (
     get_client,
@@ -97,6 +97,21 @@ async def _create_project_id(
         raise RuntimeError("Project creation did not return a valid id.")
 
     return resolved_project_id
+
+
+def _project_id_from_payload(project: dict[str, object]) -> str:
+    project_id = project.get("id")
+    if not isinstance(project_id, str) or project_id.strip() == "":
+        raise RuntimeError("Project lookup did not return a valid id.")
+    return project_id.strip()
+
+
+async def _resolve_project_id_or_key(client: Meshagent, selector: str) -> str:
+    try:
+        return _project_id_from_payload(await client.get_project(selector))
+    except NotFoundError:
+        project = await client.get_project_by_key(selector)
+        return _project_id_from_payload(project)
 
 
 def _should_launch_activate_tui(
@@ -196,16 +211,17 @@ async def list(
 
 @app.async_command("get", help="Get a MeshAgent project.")
 async def get(
-    project_id: Annotated[str, typer.Argument(help="Project id to get")],
+    project: Annotated[str, typer.Argument(help="Project id or key to get")],
     o: OutputFormatOption = "table",
 ):
     client = await get_client()
     try:
-        project = await client.get_project(project_id)
+        project_id = await _resolve_project_id_or_key(client, project)
+        project_info = await client.get_project(project_id)
         if o == "json":
-            print(project)
+            print(project_info)
         else:
-            print_json_table([project], "id", "name", "project_key")
+            print_json_table([project_info], "id", "name", "project_key")
     finally:
         await client.close()
 
@@ -217,7 +233,9 @@ async def activate(
     project_id: Annotated[
         str | None,
         typer.Argument(
-            help=("Project id. If omitted, an interactive picker is shown in a TTY."),
+            help=(
+                "Project id or key. If omitted, an interactive picker is shown in a TTY."
+            ),
         ),
     ] = None,
     interactive: bool = typer.Option(
@@ -278,19 +296,18 @@ async def activate(
             print("[red]project_id required[/red]")
             raise typer.Exit(code=1)
 
-        selectable_projects = await _list_selectable_projects(
-            client,
-            active_project_id=None,
-        )
-        for project in selectable_projects:
-            if project.id == selected_project_id:
-                await set_active_project(project_id=selected_project_id)
-                if return_project_id:
-                    return selected_project_id
-                print(selected_project_id)
-                return None
+        try:
+            resolved_project_id = await _resolve_project_id_or_key(
+                client, selected_project_id
+            )
+        except NotFoundError:
+            print(f"[red]Invalid project id or key: {selected_project_id}[/red]")
+            raise typer.Exit(code=1)
 
-        print(f"[red]Invalid project id: {selected_project_id}[/red]")
-        raise typer.Exit(code=1)
+        await set_active_project(project_id=resolved_project_id)
+        if return_project_id:
+            return resolved_project_id
+        print(resolved_project_id)
+        return None
     finally:
         await client.close()

@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from meshagent.api.client import NotFoundError
 from meshagent.cli import projects
 
 
@@ -20,9 +21,25 @@ class _FakeClient:
     async def list_projects(self) -> dict[str, list[dict[str, str]]]:
         return {"projects": self._project_rows}
 
+    async def get_project(self, project_id: str) -> dict[str, str]:
+        for project in self._project_rows:
+            if project["id"] == project_id:
+                return project
+        raise NotFoundError("not found")
+
+    async def get_project_by_key(self, project_key: str) -> dict[str, str]:
+        for project in self._project_rows:
+            if project.get("project_key") == project_key:
+                return project
+        raise NotFoundError("not found")
+
     async def create_project(self, name: str) -> dict[str, str]:
         self.created_project_names.append(name)
-        created_row = {"id": self._created_project_id, "name": name}
+        created_row = {
+            "id": self._created_project_id,
+            "name": name,
+            "project_key": name.lower().replace(" ", "-"),
+        }
         self._project_rows.append(created_row)
         return created_row
 
@@ -101,6 +118,34 @@ async def test_activate_sets_selected_project(monkeypatch) -> None:
 
     result = await projects.activate(
         project_id="project-1",
+        interactive=False,
+        return_project_id=False,
+    )
+
+    assert result is None
+    assert active_project_ids == ["project-1"]
+    assert output == ["project-1"]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_activate_accepts_project_key(monkeypatch) -> None:
+    active_project_ids: list[str | None] = []
+    output: list[str] = []
+    client = _FakeClient([{"id": "project-1", "name": "Foo", "project_key": "foo"}])
+
+    async def _fake_get_client():
+        return client
+
+    async def _fake_set_active_project(project_id: str | None) -> None:
+        active_project_ids.append(project_id)
+
+    monkeypatch.setattr(projects, "get_client", _fake_get_client)
+    monkeypatch.setattr(projects, "set_active_project", _fake_set_active_project)
+    monkeypatch.setattr(projects, "print", output.append)
+
+    result = await projects.activate(
+        project_id="foo",
         interactive=False,
         return_project_id=False,
     )

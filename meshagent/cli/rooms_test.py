@@ -29,6 +29,7 @@ class _FakeRoomsClient:
         self.closed = False
         self.list_rooms_calls: list[dict[str, object]] = []
         self.list_room_grants_by_user_calls: list[dict[str, object]] = []
+        self.create_room_calls: list[dict[str, object]] = []
 
     async def list_rooms(
         self,
@@ -72,6 +73,33 @@ class _FakeRoomsClient:
         )
         return self.room_grants_result
 
+    async def create_room(
+        self,
+        *,
+        project_id: str,
+        name: str,
+        if_not_exists: bool = False,
+        metadata: dict[str, object] | None = None,
+        annotations: dict[str, str] | None = None,
+        permissions: dict[str, ApiScope] | None = None,
+    ) -> Room:
+        self.create_room_calls.append(
+            {
+                "project_id": project_id,
+                "name": name,
+                "if_not_exists": if_not_exists,
+                "metadata": metadata,
+                "annotations": annotations,
+                "permissions": permissions,
+            }
+        )
+        return Room(
+            id="room-created",
+            name=name,
+            metadata=metadata or {},
+            annotations=annotations or {},
+        )
+
     async def close(self) -> None:
         self.closed = True
 
@@ -111,6 +139,65 @@ def test_rooms_create_help_does_not_mention_deploy_prerequisite() -> None:
     assert "Create a room in the project." in result.output
     assert "Use this before meshagent deploy --room" not in result.output
     assert "meshagent deploy PATH --room" not in result.output
+
+
+def test_rooms_create_help_uses_positional_name_and_no_owner_flag() -> None:
+    result = CliRunner().invoke(
+        async_typer.get_command(cli.app),
+        ["rooms", "create", "--help"],
+    )
+
+    assert result.exit_code == 0
+    normalized = " ".join(result.output.split())
+    assert "NAME" in normalized
+    assert "--no-owner" in result.output
+    assert "--name" not in result.output
+
+
+@pytest.mark.asyncio
+async def test_room_create_adds_active_user_as_owner_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeRoomsClient(rooms_result=[])
+    _patch_room_list_command(monkeypatch, client=client)
+    monkeypatch.setattr(rooms, "get_active_user_id", lambda: "user-active")
+    monkeypatch.setattr(rooms, "print", lambda *args, **kwargs: None)
+
+    await rooms.room_create_command(
+        "demo",
+        project_id="project-1",
+        if_not_exists=True,
+        metadata='{"team":"core"}',
+        annotations='{"meshagent.storage.class":"ephemeral"}',
+    )
+
+    assert len(client.create_room_calls) == 1
+    call = client.create_room_calls[0]
+    assert call["project_id"] == "resolved-project"
+    assert call["name"] == "demo"
+    assert call["if_not_exists"] is True
+    assert call["metadata"] == {"team": "core"}
+    assert call["annotations"] == {"meshagent.storage.class": "ephemeral"}
+    assert call["permissions"] == {"user-active": ApiScope.full()}
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_room_create_no_owner_skips_owner_grant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeRoomsClient(rooms_result=[])
+    _patch_room_list_command(monkeypatch, client=client)
+    monkeypatch.setattr(rooms, "get_active_user_id", lambda: "user-active")
+    monkeypatch.setattr(rooms, "print", lambda *args, **kwargs: None)
+
+    await rooms.room_create_command(
+        "demo",
+        project_id="project-1",
+        owner=False,
+    )
+
+    assert client.create_room_calls[0]["permissions"] is None
 
 
 def test_route_create_help_mentions_short_domains_and_service_id_annotation() -> None:

@@ -129,7 +129,7 @@ NPM_CHATBOT_UI_NEXT_STEPS = (
 )
 CONTACT_FORM_NEXT_STEPS = (
     "./scripts/install.sh",
-    "meshagent rooms create --name <room> --if-not-exists",
+    "meshagent rooms create <room> --if-not-exists",
     "./scripts/dev.sh --room <room>",
     "CONTACT_FORM_TO=you@example.com ./scripts/deploy.sh --room <room>",
 )
