@@ -522,7 +522,7 @@ async def test_images_inspect_renders_detail_tables(
 
 
 @pytest.mark.asyncio
-async def test_with_client_uses_room_url_from_connection_info(
+async def test_with_client_uses_configured_websocket_room_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     connection = SimpleNamespace(
@@ -560,6 +560,11 @@ async def test_with_client_uses_room_url_from_connection_info(
     monkeypatch.setattr(containers, "get_client", _fake_get_client)
     monkeypatch.setattr(containers, "resolve_project_id", _fake_resolve_project_id)
     monkeypatch.setattr(containers, "resolve_room", lambda room: f"{room}-resolved")
+    monkeypatch.setattr(
+        containers,
+        "websocket_room_url",
+        lambda room_name: f"wss://configured-router/{room_name}",
+    )
     monkeypatch.setattr(containers, "WebSocketClientProtocol", _FakeProtocol)
     monkeypatch.setattr(containers, "RoomClient", _FakeRoomClient)
 
@@ -574,7 +579,7 @@ async def test_with_client_uses_room_url_from_connection_info(
     ]
     assert protocol_calls == [
         {
-            "url": "wss://room-router.meshagent.dev/custom/room-endpoint",
+            "url": "wss://configured-router/room-1-resolved",
             "token": "jwt-token",
         }
     ]

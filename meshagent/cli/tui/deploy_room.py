@@ -7,7 +7,7 @@ import re
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Literal, Sequence
+from typing import Any, Literal, Protocol, Sequence
 
 import typer
 
@@ -93,6 +93,25 @@ class DeployTemplateVariablesResult:
     message: str | None = None
 
 
+class _DeployDomainPromptHandler(Protocol):
+    async def __call__(
+        self,
+        *,
+        service_name: str,
+        port: str,
+        room_name: str,
+        pages_domain: str,
+    ) -> DeployDomainPromptResult: ...
+
+
+class _DeployTemplateVariablesPromptHandler(Protocol):
+    async def __call__(
+        self,
+        *,
+        variables: Sequence[DeployTemplateVariablePrompt],
+    ) -> DeployTemplateVariablesResult: ...
+
+
 @dataclass(frozen=True, slots=True)
 class DeployProgressResult:
     status: Literal["completed", "canceled", "error"]
@@ -106,9 +125,15 @@ class DeployProgressHandle:
         queue: asyncio.Queue[tuple[str, str]],
         *,
         status_recorder: Callable[[str], None] | None = None,
+        domain_prompt_handler: _DeployDomainPromptHandler | None = None,
+        template_variables_prompt_handler: (
+            _DeployTemplateVariablesPromptHandler | None
+        ) = None,
     ) -> None:
         self._queue = queue
         self._status_recorder = status_recorder
+        self._domain_prompt_handler = domain_prompt_handler
+        self._template_variables_prompt_handler = template_variables_prompt_handler
 
     async def status(self, message: str) -> None:
         if self._status_recorder is not None:
@@ -116,8 +141,39 @@ class DeployProgressHandle:
         await self._queue.put(("status", message))
         await self._queue.put(("status_log", message))
 
+    async def transient_status(self, message: str) -> None:
+        if self._status_recorder is not None:
+            self._status_recorder(message)
+        await self._queue.put(("status", message))
+
     async def log(self, message: str) -> None:
         await self._queue.put(("log", message))
+
+    async def prompt_domain(
+        self,
+        *,
+        service_name: str,
+        port: str,
+        room_name: str,
+        pages_domain: str,
+    ) -> DeployDomainPromptResult:
+        if self._domain_prompt_handler is None:
+            raise RuntimeError("deploy domain prompt is not available")
+        return await self._domain_prompt_handler(
+            service_name=service_name,
+            port=port,
+            room_name=room_name,
+            pages_domain=pages_domain,
+        )
+
+    async def prompt_template_variables(
+        self,
+        *,
+        variables: Sequence[DeployTemplateVariablePrompt],
+    ) -> DeployTemplateVariablesResult:
+        if self._template_variables_prompt_handler is None:
+            raise RuntimeError("deploy template variable prompt is not available")
+        return await self._template_variables_prompt_handler(variables=variables)
 
 
 class DeployRoomPickerApp(App[None]):
@@ -1066,6 +1122,8 @@ class DeployProgressApp(App[None]):
         handle = DeployProgressHandle(
             self._queue,
             status_recorder=self._record_status_message,
+            domain_prompt_handler=self.prompt_domain,
+            template_variables_prompt_handler=self.prompt_template_variables,
         )
         try:
             await self._operation(handle)
@@ -1110,7 +1168,8 @@ class DeployProgressApp(App[None]):
                     self._options_view.display = False
                 self._set_detail("")
                 self._clear_error()
-                self._set_help("Deploy failed. Press Enter or Ctrl+C to close.")
+                self._set_help("Deploy failed.")
+                self.exit()
                 return
             self.exit()
 

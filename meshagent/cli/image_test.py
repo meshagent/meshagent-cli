@@ -3841,10 +3841,6 @@ async def test_resolve_deploy_domain_prompts_for_dockerfile_exposed_port(
         )
 
     monkeypatch.setattr(image, "_stdio_is_interactive", lambda: True)
-    monkeypatch.setattr(
-        "meshagent.cli.tui.deploy_room.run_deploy_domain_prompt_tui",
-        _fake_run_deploy_domain_prompt_tui,
-    )
 
     domain = await image._resolve_deploy_domain(
         account_client=_FakeDeployConfigClient(pages="apps.meshagent.example"),
@@ -3855,6 +3851,7 @@ async def test_resolve_deploy_domain_prompts_for_dockerfile_exposed_port(
         dockerfile_default_ports=default_ports,
         extra_route_ports=[],
         deploy_plan=deploy_plan,
+        domain_prompt_handler=_fake_run_deploy_domain_prompt_tui,
     )
 
     assert domain == "chat.example.com"

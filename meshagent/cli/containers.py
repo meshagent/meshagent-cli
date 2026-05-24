@@ -30,6 +30,7 @@ from meshagent.cli.helper import (
     split_container_mount,
     split_image_mount,
 )
+from meshagent.api.helpers import websocket_room_url
 from meshagent.api import (
     RoomClient,
     WebSocketClientProtocol,
@@ -555,7 +556,7 @@ async def _with_client(
         connection = await account_client.connect_room(project_id=project_id, room=room)
 
         proto = WebSocketClientProtocol(
-            url=connection.room_url,
+            url=websocket_room_url(room_name=room),
             token=connection.jwt,
         )
         client_cm = RoomClient(protocol_factory=proto.create_factory())

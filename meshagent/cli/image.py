@@ -11,7 +11,7 @@ import tempfile
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Literal, Optional, Protocol, TYPE_CHECKING
 from urllib.parse import urlparse
 
 from aiohttp import ClientTimeout
@@ -103,6 +103,20 @@ from meshagent.cli.meshagent_images import (
     meshagent_image_prefix as resolve_meshagent_image_prefix,
 )
 from meshagent.cli.version import __version__
+
+if TYPE_CHECKING:
+    from meshagent.cli.tui.deploy_room import DeployDomainPromptResult
+
+
+class _DeployDomainPromptHandler(Protocol):
+    async def __call__(
+        self,
+        *,
+        service_name: str,
+        port: str,
+        room_name: str,
+        pages_domain: str,
+    ) -> "DeployDomainPromptResult": ...
 
 
 app = async_typer.AsyncTyper(help="Pack local directories as OCI images")
@@ -2361,6 +2375,8 @@ async def _resolve_deploy_domain(
     dockerfile_default_ports: list[PortSpec] | None,
     extra_route_ports: list[_ExtraRoutePort],
     deploy_plan: _ServiceDeployPlan,
+    phase_handler: Callable[[str], Awaitable[None]] | None = None,
+    domain_prompt_handler: _DeployDomainPromptHandler | None = None,
 ) -> str | None:
     if explicit_domain is not None:
         return explicit_domain
@@ -2376,6 +2392,8 @@ async def _resolve_deploy_domain(
         return None
 
     if existing_service is not None:
+        if phase_handler is not None:
+            await phase_handler("Checking existing domain routes...")
         existing_route = await _find_existing_domain_route_for_service(
             account_client=account_client,
             project_id=project_id,
@@ -2388,10 +2406,17 @@ async def _resolve_deploy_domain(
     if not _stdio_is_interactive():
         return None
 
-    from meshagent.cli.tui.deploy_room import run_deploy_domain_prompt_tui
+    if domain_prompt_handler is None:
+        from meshagent.cli.tui.deploy_room import run_deploy_domain_prompt_tui
 
+        domain_prompt_handler = run_deploy_domain_prompt_tui
+
+    if phase_handler is not None:
+        await phase_handler("Loading domain configuration...")
     config = await account_client.get_config()
-    result = await run_deploy_domain_prompt_tui(
+    if phase_handler is not None:
+        await phase_handler("Prompting for deploy domain...")
+    result = await domain_prompt_handler(
         service_name=deploy_plan.spec.metadata.name,
         port=route_target.port,
         room_name=room_name,
@@ -4226,13 +4251,39 @@ async def deploy_image(
     async def _run_deploy_flow(
         *,
         status_handler: Callable[[str], Awaitable[None]] | None = None,
+        transient_status_handler: Callable[[str], Awaitable[None]] | None = None,
+        domain_prompt_handler: _DeployDomainPromptHandler | None = None,
         log_handler: Callable[[str], Awaitable[None]] | None = None,
     ) -> _DeploySummary:
         nonlocal domain, email
 
+        async def _emit_deploy_phase(
+            *,
+            rich_message: str,
+            plain_message: str,
+        ) -> None:
+            if transient_status_handler is not None:
+                await transient_status_handler(plain_message)
+                return
+            await _emit_deploy_status(
+                status_handler,
+                rich_message=rich_message,
+                plain_message=plain_message,
+            )
+
+        async def _emit_plain_deploy_phase(message: str) -> None:
+            await _emit_deploy_phase(
+                rich_message=f"[cyan]{message}[/]",
+                plain_message=message,
+            )
+
         resolved_room = await _resolve_deploy_room(
             project_id=resolved_project_id,
             room=room,
+        )
+        await _emit_deploy_phase(
+            rich_message=f"[cyan]Connecting to room:[/] {resolved_room}",
+            plain_message=f"Connecting to room '{resolved_room}'...",
         )
         try:
             account_client, client = await _with_client(
@@ -4245,10 +4296,18 @@ async def deploy_image(
             )
             raise typer.Exit(1) from exc
         try:
+            await _emit_deploy_phase(
+                rich_message=f"[cyan]Preparing deploy in room:[/] {resolved_room}",
+                plain_message=f"Preparing deploy in room '{resolved_room}'...",
+            )
             deploy_template_values: dict[str, str] | None = None
             deploy_template_spec: ServiceTemplateSpec | None = None
             if loaded_deploy_template is not None:
                 template_text, deploy_template_spec = loaded_deploy_template
+                await _emit_deploy_phase(
+                    rich_message="[cyan]Resolving deploy template values[/]",
+                    plain_message="Resolving deploy template values...",
+                )
                 deploy_template_values = await _resolve_deploy_template_values(
                     account_client=account_client,
                     template=deploy_template_spec,
@@ -4264,6 +4323,10 @@ async def deploy_image(
                     values=deploy_template_values,
                 )
                 service_spec = rendered_template.to_service_spec()
+                await _emit_deploy_phase(
+                    rich_message="[cyan]Looking up existing service[/]",
+                    plain_message="Looking up existing service...",
+                )
                 existing_service = await _find_room_service_by_name(
                     account_client=account_client,
                     project_id=resolved_project_id,
@@ -4276,12 +4339,20 @@ async def deploy_image(
                     if deploy_plan.spec.container is not None
                     else None
                 )
+                await _emit_deploy_phase(
+                    rich_message="[cyan]Validating environment secrets[/]",
+                    plain_message="Validating environment secrets...",
+                )
                 await _validate_deploy_environment_secrets(
                     client=client,
                     environment=environment,
                     resolved_identity=identity_override or meshagent_token_identity,
                 )
             else:
+                await _emit_deploy_phase(
+                    rich_message="[cyan]Looking up existing service[/]",
+                    plain_message="Looking up existing service...",
+                )
                 existing_service = await _find_room_service_by_name(
                     account_client=account_client,
                     project_id=resolved_project_id,
@@ -4315,6 +4386,10 @@ async def deploy_image(
                     identity_override=identity_override,
                 )
                 environment = resolved_environment.environment
+                await _emit_deploy_phase(
+                    rich_message="[cyan]Validating environment secrets[/]",
+                    plain_message="Validating environment secrets...",
+                )
                 await _validate_deploy_environment_secrets(
                     client=client,
                     environment=environment,
@@ -4341,6 +4416,10 @@ async def deploy_image(
                 and existing_service.id is not None
                 and existing_service.id != ""
                 else None
+            )
+            await _emit_deploy_phase(
+                rich_message="[cyan]Checking deploy route inputs[/]",
+                plain_message="Checking deploy route inputs...",
             )
             await _warn_missing_extra_route_ports(
                 account_client=account_client,
@@ -4370,6 +4449,10 @@ async def deploy_image(
                 )
                 if email_values:
                     email = email_values[0]
+            await _emit_deploy_phase(
+                rich_message="[cyan]Resolving deploy domain[/]",
+                plain_message="Resolving deploy domain...",
+            )
             domain = await _resolve_deploy_domain(
                 account_client=account_client,
                 project_id=resolved_project_id,
@@ -4379,6 +4462,8 @@ async def deploy_image(
                 dockerfile_default_ports=packed_default_ports,
                 extra_route_ports=parsed_extra_route_ports,
                 deploy_plan=deploy_plan,
+                phase_handler=_emit_plain_deploy_phase,
+                domain_prompt_handler=domain_prompt_handler,
             )
             route_reserved = False
             email_reserved = False
@@ -4499,6 +4584,8 @@ async def deploy_image(
             nonlocal deploy_summary
             deploy_summary = await _run_deploy_flow(
                 status_handler=progress.status,
+                transient_status_handler=progress.transient_status,
+                domain_prompt_handler=progress.prompt_domain,
                 log_handler=progress.log,
             )
 
@@ -4509,6 +4596,8 @@ async def deploy_image(
             print(f"[yellow]{progress_result.message or 'Deploy canceled.'}[/yellow]")
             raise typer.Exit(130)
         if progress_result.status == "error":
+            if progress_result.message is not None:
+                print(f"[red]{progress_result.message}[/red]")
             if isinstance(progress_result.exception, typer.Exit):
                 raise progress_result.exception
             raise typer.Exit(1) from progress_result.exception
