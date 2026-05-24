@@ -124,7 +124,11 @@ _BUILD_CONTEXT_CHUNK_SIZE = 1024 * 1024
 _CLIENT_CLOSE_TIMEOUT_SECONDS = 2.0
 _DEFAULT_CONTEXT_MOUNT_PATH = "/context"
 _DEFAULT_REPOSITORY_TOKEN_TTL_SECONDS = 3600
+_DEPLOY_CACHE_CLEANUP_TIMEOUT_SECONDS = 30.0
 _DEPLOY_LIVENESS_REQUEST_TIMEOUT_SECONDS = 2.0
+_DEPLOY_SERVICE_APPLY_TIMEOUT_SECONDS = 60.0
+_DEPLOY_SERVICE_RESTART_TIMEOUT_SECONDS = 60.0
+_DEPLOY_WAIT_TIMEOUT_SECONDS = 300.0
 _DEPLOY_WAIT_POLL_INTERVAL_SECONDS = 1.0
 _GENERATED_PACK_DOCKERFILE_NAME = ".meshagent-pack.Dockerfile"
 _DEPLOY_SPEC_PATH = Path(".meshagent/deploy.yaml")
@@ -2246,7 +2250,14 @@ async def _delete_built_image_from_room_cache(
     parsed_tag: _ParsedImageTag,
 ) -> None:
     try:
-        await client.containers.delete_image(image=parsed_tag.value)
+        await asyncio.wait_for(
+            client.containers.delete_image(image=parsed_tag.value),
+            timeout=_DEPLOY_CACHE_CLEANUP_TIMEOUT_SECONDS,
+        )
+    except TimeoutError as exc:
+        raise RuntimeError(
+            "timed out cleaning up the room build cache after publish"
+        ) from exc
     except RoomException as exc:
         if exc.code in {ErrorCode.NOT_FOUND, ErrorCode.CONTAINER_NOT_FOUND}:
             return
@@ -2694,6 +2705,11 @@ async def _upsert_email_mailbox(
     if normalized_email == "":
         raise typer.BadParameter("--email cannot be empty")
     annotations = {ANNOTATION_SERVICE_ID: service_id}
+    await _emit_deploy_status(
+        status_handler,
+        rich_message=f"[cyan]Configuring mailbox:[/] {normalized_email}",
+        plain_message=f"Configuring mailbox: {normalized_email}",
+    )
     try:
         existing = await account_client.get_mailbox(
             project_id=project_id,
@@ -2910,7 +2926,13 @@ async def _upsert_room_service(
     project_id: str,
     room_name: str,
     service_spec: ServiceSpec,
+    status_handler: Callable[[str], Awaitable[None]] | None = None,
 ) -> _RoomServiceUpsertResult:
+    await _emit_deploy_status(
+        status_handler,
+        rich_message=f"[cyan]Checking service:[/] {service_spec.metadata.name}",
+        plain_message=f"Checking service: {service_spec.metadata.name}",
+    )
     existing_service = await _find_room_service_by_name(
         account_client=account_client,
         project_id=project_id,
@@ -2918,6 +2940,11 @@ async def _upsert_room_service(
         service_name=service_spec.metadata.name,
     )
     if existing_service is None:
+        await _emit_deploy_status(
+            status_handler,
+            rich_message=f"[cyan]Creating service:[/] {service_spec.metadata.name}",
+            plain_message=f"Creating service: {service_spec.metadata.name}",
+        )
         service_id = await account_client.create_room_service(
             project_id=project_id,
             room_name=room_name,
@@ -2930,6 +2957,11 @@ async def _upsert_room_service(
             f"existing service {service_spec.metadata.name} is missing an id"
         )
     service_spec.id = existing_service.id
+    await _emit_deploy_status(
+        status_handler,
+        rich_message=f"[cyan]Updating service:[/] {service_spec.metadata.name}",
+        plain_message=f"Updating service: {service_spec.metadata.name}",
+    )
     await account_client.update_room_service(
         project_id=project_id,
         room_name=room_name,
@@ -2959,6 +2991,11 @@ async def _upsert_domain_route(
     service_id: str,
     status_handler: Callable[[str], Awaitable[None]] | None = None,
 ) -> None:
+    await _emit_deploy_status(
+        status_handler,
+        rich_message=f"[cyan]Configuring route:[/] {domain} -> {room_name}:{port}",
+        plain_message=f"Configuring route: {domain} -> {room_name}:{port}",
+    )
     route_annotations = {ANNOTATION_SERVICE_ID: service_id}
     paths = [RoutePathSpec(path="/", targetPort=port)]
     paths.extend(
@@ -3046,6 +3083,7 @@ async def _apply_deploy_plan(
         project_id=project_id,
         room_name=room_name,
         service_spec=deploy_plan.spec,
+        status_handler=status_handler,
     )
     await _emit_deploy_status(
         status_handler,
@@ -3059,7 +3097,27 @@ async def _apply_deploy_plan(
         ),
     )
     if not deploy_result.created:
-        await client.services.restart(service_id=deploy_result.service_id)
+        await _emit_deploy_status(
+            status_handler,
+            rich_message=(
+                f"[cyan]Restarting service:[/] {deploy_plan.spec.metadata.name} "
+                f"({deploy_result.service_id})"
+            ),
+            plain_message=(
+                f"Restarting service: {deploy_plan.spec.metadata.name} "
+                f"({deploy_result.service_id})"
+            ),
+        )
+        try:
+            await asyncio.wait_for(
+                client.services.restart(service_id=deploy_result.service_id),
+                timeout=_DEPLOY_SERVICE_RESTART_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as exc:
+            raise RuntimeError(
+                "timed out restarting deployed service "
+                f"{deploy_plan.spec.metadata.name} ({deploy_result.service_id})"
+            ) from exc
         await _emit_deploy_status(
             status_handler,
             rich_message=(
@@ -4506,23 +4564,49 @@ async def deploy_image(
                         status_handler=status_handler,
                         log_handler=log_handler,
                     )
+                    await _emit_deploy_status(
+                        status_handler,
+                        rich_message="[green]Image build complete[/]",
+                        plain_message="Image build complete.",
+                    )
+                    await _emit_deploy_status(
+                        status_handler,
+                        rich_message="[cyan]Cleaning up room build cache[/]",
+                        plain_message="Cleaning up room build cache...",
+                    )
                     await _delete_built_image_from_room_cache(
                         client=client,
                         parsed_tag=parsed_tag,
                     )
-                deploy_result = await _apply_deploy_plan(
-                    account_client=account_client,
-                    client=client,
-                    project_id=resolved_project_id,
-                    room_name=resolved_room,
-                    deploy_plan=deploy_plan,
-                    domain=domain,
-                    email=email,
-                    extra_route_ports=parsed_extra_route_ports,
-                    route_already_reserved=route_reserved,
-                    email_already_reserved=email_reserved,
-                    status_handler=status_handler,
+                    await _emit_deploy_status(
+                        status_handler,
+                        rich_message="[green]Room build cache cleaned[/]",
+                        plain_message="Room build cache cleaned.",
+                    )
+                await _emit_deploy_status(
+                    status_handler,
+                    rich_message="[cyan]Applying service deploy[/]",
+                    plain_message="Applying service deploy...",
                 )
+                try:
+                    deploy_result = await asyncio.wait_for(
+                        _apply_deploy_plan(
+                            account_client=account_client,
+                            client=client,
+                            project_id=resolved_project_id,
+                            room_name=resolved_room,
+                            deploy_plan=deploy_plan,
+                            domain=domain,
+                            email=email,
+                            extra_route_ports=parsed_extra_route_ports,
+                            route_already_reserved=route_reserved,
+                            email_already_reserved=email_reserved,
+                            status_handler=status_handler,
+                        ),
+                        timeout=_DEPLOY_SERVICE_APPLY_TIMEOUT_SECONDS,
+                    )
+                except TimeoutError as exc:
+                    raise RuntimeError("timed out applying service deploy") from exc
                 if deploy_template_values is not None:
                     _save_deploy_template_values(
                         values_file=deploy_values_file,
@@ -4548,16 +4632,25 @@ async def deploy_image(
                     if deploy_result.route_target is not None
                     else None
                 )
-                await _wait_for_deployed_service_live(
-                    client=client,
-                    service_id=deploy_result.service_id,
-                    service_name=deploy_plan.spec.metadata.name,
-                    previous_container_id=previous_container_id,
-                    domain=domain,
-                    liveness_path=liveness_path,
-                    status_handler=status_handler,
-                    log_handler=log_handler,
-                )
+                try:
+                    await asyncio.wait_for(
+                        _wait_for_deployed_service_live(
+                            client=client,
+                            service_id=deploy_result.service_id,
+                            service_name=deploy_plan.spec.metadata.name,
+                            previous_container_id=previous_container_id,
+                            domain=domain,
+                            liveness_path=liveness_path,
+                            status_handler=status_handler,
+                            log_handler=log_handler,
+                        ),
+                        timeout=_DEPLOY_WAIT_TIMEOUT_SECONDS,
+                    )
+                except TimeoutError as exc:
+                    raise RuntimeError(
+                        "timed out waiting for deployed service to become live: "
+                        f"{deploy_plan.spec.metadata.name} ({deploy_result.service_id})"
+                    ) from exc
                 return deploy_result
 
             deploy_result = await _run_deploy_operation(

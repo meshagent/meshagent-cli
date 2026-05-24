@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import re
 from datetime import datetime, timezone
@@ -2890,11 +2891,170 @@ async def test_delete_built_image_from_room_cache_ignores_missing_image() -> Non
 
 
 @pytest.mark.asyncio
+async def test_delete_built_image_from_room_cache_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(image, "_DEPLOY_CACHE_CLEANUP_TIMEOUT_SECONDS", 0.01)
+
+    class _FakeContainers:
+        async def delete_image(self, *, image: str) -> None:
+            del image
+            await asyncio.sleep(1)
+
+    client = SimpleNamespace(containers=_FakeContainers())
+
+    with pytest.raises(RuntimeError, match="timed out cleaning up"):
+        await image._delete_built_image_from_room_cache(
+            client=client,
+            parsed_tag=image._parse_build_tag("registry.meshagent.com/repo/web:1"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_apply_deploy_plan_reports_service_apply_steps() -> None:
+    statuses: list[str] = []
+    existing_service = ServiceSpec(
+        version="v1",
+        kind="Service",
+        id="service-1",
+        metadata=ServiceMetadata(name="repo-web"),
+        ports=[PortSpec(num=8080, type="http", published=True)],
+        container=ContainerSpec(image="repo/web:old"),
+    )
+    deploy_plan = image._ServiceDeployPlan(
+        spec=ServiceSpec(
+            version="v1",
+            kind="Service",
+            metadata=ServiceMetadata(name="repo-web"),
+            ports=[PortSpec(num=8080, type="http", published=True)],
+            container=ContainerSpec(image="repo/web:2"),
+        ),
+        service_id_annotation="repo-web",
+    )
+
+    class _FakeServices:
+        async def restart(self, *, service_id: str) -> None:
+            assert service_id == "service-1"
+
+    class _FakeRoomClient:
+        def __init__(self) -> None:
+            self.services = _FakeServices()
+
+    class _FakeAccountClient:
+        async def list_room_services(self, *, project_id: str, room_name: str):
+            assert project_id == "project-1"
+            assert room_name == "room-1"
+            return [existing_service]
+
+        async def update_room_service(
+            self,
+            *,
+            project_id: str,
+            room_name: str,
+            service_id: str,
+            service,
+        ) -> None:
+            assert project_id == "project-1"
+            assert room_name == "room-1"
+            assert service_id == "service-1"
+            assert service.container is not None
+            assert service.container.image == "repo/web:2"
+
+    async def _status(message: str) -> None:
+        statuses.append(message)
+
+    result = await image._apply_deploy_plan(
+        account_client=_FakeAccountClient(),
+        client=_FakeRoomClient(),
+        project_id="project-1",
+        room_name="room-1",
+        deploy_plan=deploy_plan,
+        domain=None,
+        email=None,
+        extra_route_ports=[],
+        status_handler=_status,
+    )
+
+    assert result.service_id == "service-1"
+    assert statuses == [
+        "Checking service: repo-web",
+        "Updating service: repo-web",
+        "Deployed service: repo-web (service-1)",
+        "Restarting service: repo-web (service-1)",
+        "Restarted service: repo-web (service-1)",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_apply_deploy_plan_times_out_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(image, "_DEPLOY_SERVICE_RESTART_TIMEOUT_SECONDS", 0.01)
+    existing_service = ServiceSpec(
+        version="v1",
+        kind="Service",
+        id="service-1",
+        metadata=ServiceMetadata(name="repo-web"),
+        ports=[PortSpec(num=8080, type="http", published=True)],
+        container=ContainerSpec(image="repo/web:old"),
+    )
+    deploy_plan = image._ServiceDeployPlan(
+        spec=ServiceSpec(
+            version="v1",
+            kind="Service",
+            metadata=ServiceMetadata(name="repo-web"),
+            ports=[PortSpec(num=8080, type="http", published=True)],
+            container=ContainerSpec(image="repo/web:2"),
+        ),
+        service_id_annotation="repo-web",
+    )
+
+    class _FakeServices:
+        async def restart(self, *, service_id: str) -> None:
+            del service_id
+            await asyncio.sleep(60)
+
+    class _FakeRoomClient:
+        def __init__(self) -> None:
+            self.services = _FakeServices()
+
+    class _FakeAccountClient:
+        async def list_room_services(self, *, project_id: str, room_name: str):
+            del project_id, room_name
+            return [existing_service]
+
+        async def update_room_service(
+            self,
+            *,
+            project_id: str,
+            room_name: str,
+            service_id: str,
+            service,
+        ) -> None:
+            del project_id, room_name, service_id, service
+
+    with pytest.raises(RuntimeError, match="timed out restarting deployed service"):
+        await image._apply_deploy_plan(
+            account_client=_FakeAccountClient(),
+            client=_FakeRoomClient(),
+            project_id="project-1",
+            room_name="room-1",
+            deploy_plan=deploy_plan,
+            domain=None,
+            email=None,
+            extra_route_ports=[],
+        )
+
+
+@pytest.mark.asyncio
 async def test_deploy_image_pack_builds_before_deploying(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from meshagent.cli.tui.deploy_room import DeployDomainPromptResult
+    from meshagent.cli.tui.deploy_room import (
+        DeployDomainPromptResult,
+        DeployProgressResult,
+    )
 
     captured: dict[str, object] = {"events": []}
     source_dir = tmp_path / "website"
@@ -2919,6 +3079,35 @@ async def test_deploy_image_pack_builds_before_deploying(
             "pages_domain": pages_domain,
         }
         return DeployDomainPromptResult(status="skipped")
+
+    async def _fake_run_deploy_progress_tui(*, operation):
+        class _FakeProgress:
+            async def status(self, message: str) -> None:
+                del message
+
+            async def transient_status(self, message: str) -> None:
+                del message
+
+            async def log(self, message: str) -> None:
+                del message
+
+            async def prompt_domain(
+                self,
+                *,
+                service_name: str,
+                port: str,
+                room_name: str,
+                pages_domain: str,
+            ) -> DeployDomainPromptResult:
+                return await _fake_run_deploy_domain_prompt_tui(
+                    service_name=service_name,
+                    port=port,
+                    room_name=room_name,
+                    pages_domain=pages_domain,
+                )
+
+        await operation(_FakeProgress())
+        return DeployProgressResult(status="completed")
 
     class _FakeRoomClient:
         def __init__(self) -> None:
@@ -2971,6 +3160,10 @@ async def test_deploy_image_pack_builds_before_deploying(
     monkeypatch.setattr(
         "meshagent.cli.tui.deploy_room.run_deploy_domain_prompt_tui",
         _fake_run_deploy_domain_prompt_tui,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tui.deploy_room.run_deploy_progress_tui",
+        _fake_run_deploy_progress_tui,
     )
     monkeypatch.setenv("MESHAGENT_ARCH", "arm64")
     monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
