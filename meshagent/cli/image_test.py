@@ -2139,6 +2139,70 @@ def test_parse_environment_secret_variables_rejects_invalid_format() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [200, 302, 401, 403])
+async def test_probe_liveness_url_accepts_reachable_statuses(
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+) -> None:
+    class _FakeResponse:
+        status = status_code
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+
+        def get(self, *args, **kwargs):
+            del args, kwargs
+            return _FakeResponse()
+
+    monkeypatch.setattr(
+        image, "new_client_session", lambda *args, **kwargs: _FakeSession()
+    )
+
+    assert await image._probe_liveness_url(url="https://sheets.meshagent.dev/") is True
+
+
+@pytest.mark.asyncio
+async def test_probe_liveness_url_rejects_server_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeResponse:
+        status = 502
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+
+        def get(self, *args, **kwargs):
+            del args, kwargs
+            return _FakeResponse()
+
+    monkeypatch.setattr(
+        image, "new_client_session", lambda *args, **kwargs: _FakeSession()
+    )
+
+    assert await image._probe_liveness_url(url="https://sheets.meshagent.dev/") is False
+
+
+@pytest.mark.asyncio
 async def test_wait_for_deployed_service_live_streams_logs_and_checks_liveness(
     monkeypatch: pytest.MonkeyPatch,
     _stub_deploy_wait: dict[str, object],
@@ -2313,6 +2377,31 @@ async def test_wait_for_deployed_service_live_exits_when_container_restarts(
         "exit code 137" in message and "before the service was live" in message
         for message in captured["prints"]
     )
+
+
+@pytest.mark.asyncio
+async def test_stop_deploy_log_stream_cancels_local_drain_task() -> None:
+    canceled = False
+
+    async def _never_returns() -> None:
+        await asyncio.Future()
+
+    class _FakeStream:
+        async def cancel(self) -> None:
+            nonlocal canceled
+            canceled = True
+
+    task = asyncio.create_task(_never_returns())
+    active_logs = image._ActiveDeployLogStream(
+        container_id="container-1",
+        stream=_FakeStream(),
+        task=task,
+    )
+
+    await image._stop_deploy_log_stream(active_logs=active_logs)
+
+    assert canceled is True
+    assert task.cancelled()
 
 
 @pytest.mark.asyncio

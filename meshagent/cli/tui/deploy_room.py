@@ -870,6 +870,7 @@ class DeployProgressApp(App[None]):
     BINDINGS = [
         Binding("ctrl+c", "cancel_deploy", "Cancel", priority=True),
         Binding("escape", "prompt_escape", "Back", priority=True),
+        Binding("ctrl+y", "copy_deploy_logs", "Copy logs", show=False),
     ]
 
     def __init__(
@@ -1021,6 +1022,8 @@ class DeployProgressApp(App[None]):
         await self.action_cancel_deploy()
 
     async def action_cancel_deploy(self) -> None:
+        if self._copy_selected_text_to_clipboard():
+            return
         if self._prompt_future is not None and not self._prompt_future.done():
             if self._prompt_mode == "domain":
                 self._prompt_future.set_result(
@@ -1049,6 +1052,23 @@ class DeployProgressApp(App[None]):
             status="canceled", message="Deploy canceled."
         )
         self.exit()
+
+    def action_copy_deploy_logs(self) -> None:
+        logs = "\n".join(self._log_lines).rstrip()
+        if logs == "":
+            self._set_help("No deploy logs to copy.")
+            return
+        self.copy_to_clipboard(logs)
+        self._set_help("Copied deploy logs.")
+
+    def _copy_selected_text_to_clipboard(self) -> bool:
+        selected_text = self.screen.get_selected_text()
+        if selected_text is None or selected_text == "":
+            return False
+        self.copy_to_clipboard(selected_text)
+        self.screen.clear_selection()
+        self._set_help("Copied selection.")
+        return True
 
     async def prompt_room(
         self,

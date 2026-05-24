@@ -233,3 +233,40 @@ async def test_deploy_progress_error_exits_when_event_queue_does_not_drain(
     assert app.result.status == "error"
     assert app.result.message == "Status=400, body=validation failed"
     assert exited
+
+
+@pytest.mark.asyncio
+async def test_deploy_progress_ctrl_c_copies_selection_before_canceling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exited = False
+    app = DeployProgressApp(operation=lambda handle: asyncio.sleep(0))
+
+    def nonlocal_set_exited() -> None:
+        nonlocal exited
+        exited = True
+
+    monkeypatch.setattr(app, "_copy_selected_text_to_clipboard", lambda: True)
+    monkeypatch.setattr(app, "exit", lambda *args, **kwargs: nonlocal_set_exited())
+
+    await app.action_cancel_deploy()
+
+    assert app.result.status == "canceled"
+    assert exited is False
+
+
+def test_deploy_progress_copy_deploy_logs_copies_buffered_logs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    copied: list[str] = []
+    help_messages: list[str] = []
+    app = DeployProgressApp(operation=lambda handle: asyncio.sleep(0))
+    app._log_lines = ["line one", "line two"]
+
+    monkeypatch.setattr(app, "copy_to_clipboard", copied.append)
+    monkeypatch.setattr(app, "_set_help", help_messages.append)
+
+    app.action_copy_deploy_logs()
+
+    assert copied == ["line one\nline two"]
+    assert help_messages == ["Copied deploy logs."]

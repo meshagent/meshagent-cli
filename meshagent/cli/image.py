@@ -2900,7 +2900,7 @@ async def _probe_liveness_url(*, url: str) -> bool:
                 status_code = resp.status
     except Exception:
         return False
-    return 200 <= status_code < 400
+    return 200 <= status_code < 400 or status_code in {401, 403}
 
 
 async def _find_room_service_by_name(
@@ -3259,6 +3259,9 @@ async def _drain_deploy_log_stream_tui(
     try:
         return await stream
     finally:
+        for task in (logs_task, progress_task):
+            if not task.done():
+                task.cancel()
         await asyncio.gather(logs_task, progress_task, return_exceptions=True)
 
 
@@ -3311,6 +3314,7 @@ async def _stop_deploy_log_stream(
         return
     if not active_logs.task.done():
         await asyncio.gather(active_logs.stream.cancel(), return_exceptions=True)
+        active_logs.task.cancel()
     await asyncio.gather(active_logs.task, return_exceptions=True)
 
 
