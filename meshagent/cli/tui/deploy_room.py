@@ -49,6 +49,7 @@ DEPLOY_ROOM_CANCEL_OPTION_ID = "__deploy_room_cancel__"
 DEPLOY_ROOM_CREATE_OPTION_ID = "__deploy_room_create__"
 DEPLOY_ROOM_OPTION_ID_PREFIX = "__deploy_room__:"
 SUBDOMAIN_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+DEPLOY_PROGRESS_QUEUE_DRAIN_TIMEOUT_SECONDS = 1.0
 
 
 def _room_option_id(room_id: str) -> str:
@@ -1159,7 +1160,13 @@ class DeployProgressApp(App[None]):
             self.result = DeployProgressResult(status="completed")
             await self._queue.put(("status", "Deploy complete."))
         finally:
-            await self._queue.join()
+            try:
+                await asyncio.wait_for(
+                    self._queue.join(),
+                    timeout=DEPLOY_PROGRESS_QUEUE_DRAIN_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                pass
             if self.result.status == "error":
                 self._prompt_mode = "finished"
                 if self._input_view is not None:

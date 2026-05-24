@@ -3,6 +3,7 @@ import asyncio
 import pytest
 import typer
 
+from meshagent.cli.tui import deploy_room
 from meshagent.cli.tui.deploy_room import (
     DeployDomainPromptApp,
     DeployDomainPromptResult,
@@ -199,4 +200,36 @@ async def test_deploy_progress_error_uses_last_status_message(
         "Deploy failed: Service container exited before the service was live",
     ]
     assert captured_logs == ["Service container exited before the service was live"]
+    assert exited
+
+
+@pytest.mark.asyncio
+async def test_deploy_progress_error_exits_when_event_queue_does_not_drain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exited = False
+
+    async def _operation(handle: DeployProgressHandle) -> None:
+        raise RuntimeError("Status=400, body=validation failed")
+
+    app = DeployProgressApp(operation=_operation)
+
+    def nonlocal_set_exited() -> None:
+        nonlocal exited
+        exited = True
+
+    monkeypatch.setattr(
+        deploy_room,
+        "DEPLOY_PROGRESS_QUEUE_DRAIN_TIMEOUT_SECONDS",
+        0.01,
+    )
+    monkeypatch.setattr(app, "_set_detail", lambda message: None)
+    monkeypatch.setattr(app, "_clear_error", lambda: None)
+    monkeypatch.setattr(app, "_set_help", lambda message: None)
+    monkeypatch.setattr(app, "exit", lambda *args, **kwargs: nonlocal_set_exited())
+
+    await asyncio.wait_for(app._run_operation(), timeout=0.2)
+
+    assert app.result.status == "error"
+    assert app.result.message == "Status=400, body=validation failed"
     assert exited
