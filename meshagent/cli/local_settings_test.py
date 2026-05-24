@@ -116,7 +116,7 @@ def test_switch_active_profile_matches_email_and_updates_process_api_url(
     )
 
 
-def test_resolve_api_url_prefers_explicit_then_profile_then_environment(
+def test_resolve_api_url_prefers_explicit_then_environment_then_profile(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -134,7 +134,7 @@ def test_resolve_api_url_prefers_explicit_then_profile_then_environment(
         api_url="https://profile.meshagent.test",
     )
 
-    assert local_settings.resolve_api_url() == "https://profile.meshagent.test"
+    assert local_settings.resolve_api_url() == "https://env.meshagent.test"
     assert (
         local_settings.resolve_api_url(api_url="https://explicit.meshagent.test/")
         == "https://explicit.meshagent.test"

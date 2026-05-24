@@ -371,13 +371,13 @@ def resolve_api_url(*, api_url: str | None = None) -> str:
     if explicit_api_url is not None:
         return explicit_api_url
 
-    active_api_url = get_active_api_url()
-    if active_api_url is not None:
-        return active_api_url
-
     env_api_url = normalize_api_url(os.getenv("MESHAGENT_API_URL"))
     if env_api_url is not None:
         return env_api_url
+
+    active_api_url = get_active_api_url()
+    if active_api_url is not None:
+        return active_api_url
 
     return DEFAULT_API_URL
 
