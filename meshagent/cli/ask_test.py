@@ -1227,9 +1227,11 @@ async def test_resolve_ask_access_token_prefers_meshagent_token(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_ask_command_uses_oauth_token_and_prints_result(monkeypatch) -> None:
+async def test_ask_command_uses_oauth_token_and_renders_markdown_by_default(
+    monkeypatch,
+) -> None:
     captured: dict[str, object] = {}
-    printed: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    rendered: list[object] = []
 
     async def _fake_get_access_token() -> str:
         return "oauth-token"
@@ -1255,10 +1257,19 @@ async def test_ask_command_uses_oauth_token_and_prints_result(monkeypatch) -> No
     monkeypatch.setattr(ask_module, "resolve_project_id", _fake_resolve_project_id)
     monkeypatch.setattr(ask_module, "_build_ask_adapter", _fake_build_ask_adapter)
 
-    def _fake_echo(*args: object, **kwargs: object) -> None:
-        printed.append((args, dict(kwargs)))
+    class _FakeConsole:
+        def print(self, value: object) -> None:
+            rendered.append(value)
 
-    monkeypatch.setattr(ask_module.click, "echo", _fake_echo)
+    monkeypatch.setattr(ask_module, "Console", _FakeConsole)
+    monkeypatch.setattr(ask_module, "Markdown", lambda text: ("markdown", text))
+    monkeypatch.setattr(
+        ask_module.click,
+        "echo",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("streaming output should not be used")
+        ),
+    )
 
     await ask_module.ask(
         project_id="project-123",
@@ -1271,11 +1282,7 @@ async def test_ask_command_uses_oauth_token_and_prints_result(monkeypatch) -> No
         "project_id": "project-123",
         "access_token": "oauth-token",
     }
-    assert printed == [
-        (("hello",), {"nl": False}),
-        ((" world",), {"nl": False}),
-        ((), {}),
-    ]
+    assert rendered == [("markdown", "hello world")]
 
 
 def test_meshagent_ask_cli_invocation_prints_streamed_response(
@@ -1311,6 +1318,8 @@ def test_meshagent_ask_cli_invocation_prints_streamed_response(
             "project-123",
             "--message",
             "hello",
+            "--format",
+            "text",
             "--model",
             "gpt-5.5",
         ],
@@ -1603,6 +1612,7 @@ async def test_ask_command_prefers_meshagent_token_over_oauth(monkeypatch) -> No
     await ask_module.ask(
         project_id="project-123",
         message="hello",
+        format="text",
         model="gpt-5.5",
     )
 

@@ -405,7 +405,7 @@ class _RoomRouteTarget:
 
 @dataclass(frozen=True)
 class _ExtraRoutePort:
-    port: int
+    target_port: int | str
     path: str
 
 
@@ -1530,27 +1530,56 @@ def _parse_extra_route_ports(*, values: list[str]) -> list[_ExtraRoutePort]:
     seen_paths: set[str] = set()
     for value in values:
         raw_value = value.strip()
-        if ":" not in raw_value:
+        if ":/" not in raw_value:
             raise typer.BadParameter(
-                "--extra-port must use PORT:/path, for example 3001:/messages"
+                "--extra-port must use TARGET:/path, for example 3001:/messages "
+                "or assistant:/messages"
             )
-        raw_port, raw_path = raw_value.split(":", 1)
-        try:
-            port = int(raw_port)
-        except ValueError:
-            raise typer.BadParameter("--extra-port PORT must be an integer") from None
-        if port <= 0:
-            raise typer.BadParameter("--extra-port PORT must be positive")
-        path = raw_path.strip()
-        if path == "" or not path.startswith("/"):
-            raise typer.BadParameter("--extra-port path must start with /")
+        raw_target_port, raw_path_suffix = raw_value.split(":/", 1)
+        target_port = _parse_extra_route_target_port(raw_target_port)
+        path = f"/{raw_path_suffix.strip()}"
         if path == "/":
             raise typer.BadParameter("--extra-port path must not be /")
+        if "//" in path:
+            raise typer.BadParameter("--extra-port path must not contain //")
         if path in seen_paths:
             raise typer.BadParameter(f"--extra-port path is duplicated: {path}")
         seen_paths.add(path)
-        extra_ports.append(_ExtraRoutePort(port=port, path=path))
+        extra_ports.append(_ExtraRoutePort(target_port=target_port, path=path))
     return extra_ports
+
+
+def _parse_extra_route_target_port(raw_target_port: str) -> int | str:
+    target_port = raw_target_port.strip()
+    if target_port == "":
+        raise typer.BadParameter("--extra-port target must not be empty")
+    if "/" in target_port:
+        raise typer.BadParameter("--extra-port target must not contain /")
+
+    if target_port.isdecimal():
+        port = int(target_port)
+        if port <= 0:
+            raise typer.BadParameter("--extra-port PORT must be positive")
+        return port
+
+    service_parts = target_port.split(":")
+    if len(service_parts) > 2:
+        raise typer.BadParameter(
+            "--extra-port target must be PORT, SERVICE, or SERVICE:PORT"
+        )
+    service_name = service_parts[0].strip()
+    if service_name == "":
+        raise typer.BadParameter("--extra-port service name must not be empty")
+    if len(service_parts) == 2:
+        service_port = service_parts[1].strip()
+        if service_port == "":
+            raise typer.BadParameter("--extra-port service port must not be empty")
+        if not service_port.isdecimal():
+            raise typer.BadParameter("--extra-port service port must be an integer")
+        if int(service_port) <= 0:
+            raise typer.BadParameter("--extra-port service port must be positive")
+        return f"{service_name}:{service_port}"
+    return service_name
 
 
 def _parse_meshagent_token_scope(*, value: str) -> ApiScope:
@@ -2223,12 +2252,16 @@ def _update_request_validation_annotations(
         )
     elif validation_mode == "none":
         updated_annotations.pop(ANNOTATION_REQUEST_VALIDATION_METHOD, None)
-    elif not public:
-        updated_annotations[ANNOTATION_REQUEST_VALIDATION_METHOD] = (
-            _COOKIE_VALIDATION_METHOD
-        )
     elif (
-        updated_annotations.get(ANNOTATION_REQUEST_VALIDATION_METHOD)
+        public
+        and updated_annotations.get(ANNOTATION_REQUEST_VALIDATION_METHOD)
+        == _COOKIE_VALIDATION_METHOD
+    ):
+        del updated_annotations[ANNOTATION_REQUEST_VALIDATION_METHOD]
+    elif (
+        validation_mode == "default"
+        and not public
+        and updated_annotations.get(ANNOTATION_REQUEST_VALIDATION_METHOD)
         == _COOKIE_VALIDATION_METHOD
     ):
         del updated_annotations[ANNOTATION_REQUEST_VALIDATION_METHOD]
@@ -2272,7 +2305,9 @@ def _resolve_domain_route_target(
     extra_route_ports: list[_ExtraRoutePort] | None = None,
 ) -> _RoomRouteTarget:
     extra_port_nums = {
-        extra_route_port.port for extra_route_port in extra_route_ports or []
+        extra_route_port.target_port
+        for extra_route_port in extra_route_ports or []
+        if isinstance(extra_route_port.target_port, int)
     }
     published_ports = [
         port
@@ -2726,6 +2761,17 @@ def _service_has_published_port(*, service_spec: ServiceSpec, port: int) -> bool
     return False
 
 
+def _service_matches_route_target(*, service_spec: ServiceSpec, target: str) -> bool:
+    service_name, _, service_port_text = target.partition(":")
+    if service_spec.metadata.name != service_name and service_spec.id != service_name:
+        return False
+    published_ports = [port for port in service_spec.ports or [] if port.published]
+    if service_port_text == "":
+        return len(published_ports) > 0
+    service_port = int(service_port_text)
+    return any(port.num == service_port for port in published_ports)
+
+
 async def _warn_missing_extra_route_ports(
     *,
     account_client: Meshagent,
@@ -2740,17 +2786,34 @@ async def _warn_missing_extra_route_ports(
         room_name=room_name,
     )
     for extra_route_port in extra_route_ports:
+        target_port = extra_route_port.target_port
+        if isinstance(target_port, int):
+            if any(
+                _service_has_published_port(
+                    service_spec=service,
+                    port=target_port,
+                )
+                for service in services
+            ):
+                continue
+            print(
+                "[yellow]Warning:[/] no service currently publishes "
+                f"port {target_port} in room {room_name}; "
+                f"route path {extra_route_port.path} may not resolve."
+            )
+            continue
+
         if any(
-            _service_has_published_port(
+            _service_matches_route_target(
                 service_spec=service,
-                port=extra_route_port.port,
+                target=target_port,
             )
             for service in services
         ):
             continue
         print(
-            "[yellow]Warning:[/] no service currently publishes "
-            f"port {extra_route_port.port} in room {room_name}; "
+            "[yellow]Warning:[/] no service currently matches "
+            f"target {target_port} in room {room_name}; "
             f"route path {extra_route_port.path} may not resolve."
         )
 
@@ -2874,7 +2937,10 @@ async def _upsert_domain_route(
     route_annotations = {ANNOTATION_SERVICE_ID: service_id}
     paths = [RoutePathSpec(path="/", targetPort=port)]
     paths.extend(
-        RoutePathSpec(path=extra_route_port.path, targetPort=extra_route_port.port)
+        RoutePathSpec(
+            path=extra_route_port.path,
+            targetPort=extra_route_port.target_port,
+        )
         for extra_route_port in extra_route_ports
     )
     spec = RouteSpec(
@@ -3578,6 +3644,11 @@ async def _run_image_build_stage(
                 log_handler=log_handler,
             )
         if exit_code != 0:
+            await _emit_deploy_status(
+                status_handler,
+                rich_message=f"[red]Image build failed:[/] exit code {exit_code}",
+                plain_message=f"Image build failed: exit code {exit_code}",
+            )
             raise typer.Exit(code=exit_code)
     finally:
         if context_archive_temp_dir is not None:
@@ -3938,8 +4009,9 @@ async def deploy_image(
         typer.Option(
             "--extra-port",
             help=(
-                "Add an extra route path to DOMAIN as PORT:/path. Can be passed "
-                "multiple times. The port must already be published by a room service."
+                "Add an extra route path to DOMAIN as TARGET:/path. TARGET can be "
+                "PORT, SERVICE, or SERVICE:PORT. Can be passed multiple times. "
+                "The target must already be published by a room service."
             ),
         ),
     ] = [],

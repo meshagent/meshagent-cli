@@ -21,13 +21,21 @@ variables:
     title: Destination email
     description: Email address that receives contact form submissions.
 container:
-  image: "{{ image }}"
+  image: meshagent/python:default
   template: agent
+  command: python -m server
+  working_dir: /app
   environment:
     - name: CONTACT_FORM_FROM
       value: "{{ from_email }}"
     - name: CONTACT_FORM_TO
       value: "{{ to_email }}"
+  storage:
+    images:
+      - image: "{{ image }}"
+        path: /app
+        subpath: app
+        read_only: true
   private: false
 ports:
   - num: 8000

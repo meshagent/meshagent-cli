@@ -26,6 +26,34 @@ def test_meshagent_image_prefix_uses_dev_registry_for_life_profile(
     )
 
 
+def test_meshagent_image_prefix_uses_dev_registry_for_localhost_profile(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("MESHAGENT_IMAGE_PREFIX", raising=False)
+    monkeypatch.delenv("MESHAGENT_API_URL", raising=False)
+    monkeypatch.setattr(
+        meshagent_images,
+        "get_active_api_url",
+        lambda: "http://localhost:8080",
+    )
+
+    assert meshagent_images.meshagent_image_prefix() == (
+        "us-central1-docker.pkg.dev/meshagent-life/meshagent-public/"
+    )
+
+
+def test_meshagent_image_prefix_uses_dev_registry_for_loopback_env(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("MESHAGENT_IMAGE_PREFIX", raising=False)
+    monkeypatch.setenv("MESHAGENT_API_URL", "http://127.0.0.1:8080")
+    monkeypatch.setattr(meshagent_images, "get_active_api_url", lambda: None)
+
+    assert meshagent_images.meshagent_image_prefix() == (
+        "us-central1-docker.pkg.dev/meshagent-life/meshagent-public/"
+    )
+
+
 def test_meshagent_image_prefix_uses_prod_registry_by_default(monkeypatch) -> None:
     monkeypatch.delenv("MESHAGENT_IMAGE_PREFIX", raising=False)
     monkeypatch.delenv("MESHAGENT_API_URL", raising=False)

@@ -3021,18 +3021,15 @@ async def test_deploy_image_pack_builds_before_deploying(
     assert service_spec.container is not None
     assert service_spec.container.image == "registry.meshagent.com/repo/web:1"
     assert service_spec.metadata.annotations is not None
-    assert (
-        service_spec.metadata.annotations[image.ANNOTATION_REQUEST_VALIDATION_METHOD]
-        == "cookie"
+    assert image.ANNOTATION_REQUEST_VALIDATION_METHOD not in (
+        service_spec.metadata.annotations
     )
     assert service_spec.ports is not None
     assert service_spec.ports[0].num == 8080
     assert service_spec.ports[0].published is True
     assert service_spec.ports[0].public is None
     assert service_spec.ports[0].liveness == "/"
-    assert service_spec.ports[0].annotations == {
-        image.ANNOTATION_REQUEST_VALIDATION_METHOD: "cookie"
-    }
+    assert service_spec.ports[0].annotations is None
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
 
@@ -3788,6 +3785,30 @@ async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
     )
 
 
+def test_parse_extra_route_ports_accepts_numeric_and_named_targets() -> None:
+    parsed = image._parse_extra_route_ports(
+        values=[
+            "3001:/messages",
+            "assistant:/chat",
+            "assistant:3002:/events",
+        ]
+    )
+
+    assert parsed == [
+        image._ExtraRoutePort(target_port=3001, path="/messages"),
+        image._ExtraRoutePort(target_port="assistant", path="/chat"),
+        image._ExtraRoutePort(target_port="assistant:3002", path="/events"),
+    ]
+
+
+def test_parse_extra_route_ports_rejects_invalid_service_port() -> None:
+    with pytest.raises(
+        typer.BadParameter,
+        match="--extra-port service port must be an integer",
+    ):
+        image._parse_extra_route_ports(values=["assistant:messages:/messages"])
+
+
 @pytest.mark.asyncio
 async def test_resolve_deploy_domain_prompts_for_dockerfile_exposed_port(
     monkeypatch: pytest.MonkeyPatch,
@@ -3973,7 +3994,7 @@ async def test_warn_missing_extra_route_ports_logs_unpublished_ports(
         project_id="project-1",
         room_name="room-1",
         extra_route_ports=[
-            image._ExtraRoutePort(port=3001, path="/messages"),
+            image._ExtraRoutePort(target_port=3001, path="/messages"),
         ],
     )
 
@@ -4016,7 +4037,48 @@ async def test_warn_missing_extra_route_ports_skips_published_ports(
         project_id="project-1",
         room_name="room-1",
         extra_route_ports=[
-            image._ExtraRoutePort(port=3001, path="/messages"),
+            image._ExtraRoutePort(target_port=3001, path="/messages"),
+        ],
+    )
+
+    assert captured["messages"] == []
+
+
+@pytest.mark.asyncio
+async def test_warn_missing_extra_route_ports_skips_named_published_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {"messages": []}
+
+    class _FakeAccountClient:
+        async def list_room_services(
+            self,
+            *,
+            project_id: str,
+            room_name: str,
+        ) -> list[ServiceSpec]:
+            del project_id, room_name
+            return [
+                ServiceSpec(
+                    id="service-1",
+                    version="v1",
+                    kind="Service",
+                    metadata=ServiceMetadata(name="assistant"),
+                    ports=[PortSpec(num=3001, published=True)],
+                )
+            ]
+
+    def _fake_print(message: str) -> None:
+        captured["messages"].append(message)
+
+    monkeypatch.setattr(image, "print", _fake_print)
+
+    await image._warn_missing_extra_route_ports(
+        account_client=_FakeAccountClient(),
+        project_id="project-1",
+        room_name="room-1",
+        extra_route_ports=[
+            image._ExtraRoutePort(target_port="assistant:3001", path="/messages"),
         ],
     )
 
@@ -4159,9 +4221,8 @@ async def test_deploy_image_sets_cookie_validation_when_private(
     assert isinstance(created_service, tuple)
     service_spec = created_service[2]
     assert service_spec.metadata.annotations is not None
-    assert (
-        service_spec.metadata.annotations[image.ANNOTATION_REQUEST_VALIDATION_METHOD]
-        == "cookie"
+    assert image.ANNOTATION_REQUEST_VALIDATION_METHOD not in (
+        service_spec.metadata.annotations
     )
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
@@ -4441,17 +4502,13 @@ async def test_deploy_image_sets_cookie_validation_on_private_published_ports(
     assert isinstance(updated_service, tuple)
     updated_spec = updated_service[3]
     assert updated_spec.metadata.annotations is not None
-    assert (
-        updated_spec.metadata.annotations[image.ANNOTATION_REQUEST_VALIDATION_METHOD]
-        == "cookie"
+    assert image.ANNOTATION_REQUEST_VALIDATION_METHOD not in (
+        updated_spec.metadata.annotations
     )
     assert updated_spec.ports is not None
     assert updated_spec.ports[0].liveness == "/"
     assert updated_spec.ports[0].public is None
-    assert updated_spec.ports[0].annotations == {
-        "keep": "1",
-        image.ANNOTATION_REQUEST_VALIDATION_METHOD: "cookie",
-    }
+    assert updated_spec.ports[0].annotations == {"keep": "1"}
     assert captured["restarted_service_id"] == "service-1"
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True

@@ -14,8 +14,21 @@ variables:
     type: route
     optional: true
 container:
-  image: "{{ image }}"
+  image: meshagent/node:default
   template: none
+  command: node server.js
+  working_dir: /app
+  environment:
+    - name: HOSTNAME
+      value: "0.0.0.0"
+    - name: PORT
+      value: "3000"
+  storage:
+    images:
+      - image: "{{ image }}"
+        path: /app
+        subpath: app
+        read_only: true
   private: false
 ports:
   - num: 3000

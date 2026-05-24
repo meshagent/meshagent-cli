@@ -23,7 +23,9 @@ def _with_trailing_slash(value: str) -> str:
 
 def _api_url_uses_dev_images(api_url: str) -> bool:
     host = urlparse(api_url).hostname or ""
-    return host == "meshagent.life" or host.endswith(".meshagent.life")
+    return host in {"localhost", "127.0.0.1", "::1"} or (
+        host == "meshagent.life" or host.endswith(".meshagent.life")
+    )
 
 
 def _active_or_environment_api_url() -> str:

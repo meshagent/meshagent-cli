@@ -9,6 +9,14 @@ variables:
     description: Image tag built and deployed by meshagent deploy.
     optional: true
 container:
-  image: "{{ image }}"
+  image: meshagent/node:default
   template: agent
+  command: node index.js
+  working_dir: /app
+  storage:
+    images:
+      - image: "{{ image }}"
+        path: /app
+        subpath: app
+        read_only: true
   private: false

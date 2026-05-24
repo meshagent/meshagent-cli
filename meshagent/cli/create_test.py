@@ -2,9 +2,44 @@ from __future__ import annotations
 
 from click.testing import CliRunner
 
+from meshagent.api.specs.service import ServiceTemplateSpec
 from meshagent.cli import create as create_module
 from meshagent.cli.doctor import diagnose_project
 from meshagent.cli.create import create_command
+
+
+def _assert_runtime_image_mount_deploy_yaml(
+    project_path,
+    *,
+    runtime: str,
+    command: str,
+) -> ServiceTemplateSpec:
+    deploy_yaml = (project_path / ".meshagent" / "deploy.yaml").read_text(
+        encoding="utf-8"
+    )
+    spec = ServiceTemplateSpec.from_yaml(
+        deploy_yaml,
+        values={
+            "image": "registry.example.com/test-app:dev",
+            "from_email": "from@example.com",
+            "to_email": "to@example.com",
+        },
+    )
+
+    assert spec.container is not None
+    container = spec.container
+    assert container.image == f"meshagent/{runtime}:default"
+    assert container.command == command
+    assert container.working_dir == "/app"
+    assert container.storage is not None
+    assert container.storage.images is not None
+    assert len(container.storage.images) == 1
+    image_mount = container.storage.images[0]
+    assert image_mount.image == "registry.example.com/test-app:dev"
+    assert image_mount.path == "/app"
+    assert image_mount.subpath == "app"
+    assert image_mount.read_only is True
+    return spec
 
 
 def _assert_node_content_toolkit(
@@ -133,6 +168,11 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     assert "LABEL meshagent.runtime=python" in dockerfile
     assert 'CMD ["-m", "server"]' in dockerfile
     assert "EXPOSE" not in dockerfile
+    _assert_runtime_image_mount_deploy_yaml(
+        tmp_path,
+        runtime="python",
+        command="python -m server",
+    )
     assert 'PYTHON="${PYTHON:-python3.13}"' in install_sh
     assert 'VENV="${VENV:-.venv}"' in install_sh
     assert 'PIP_ONLY_BINARY="${PIP_ONLY_BINARY:-:all:}"' in install_sh
@@ -284,6 +324,11 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     assert "FROM scratch" in dockerfile
     assert "LABEL meshagent.runtime=python" in dockerfile
     assert "EXPOSE 8000" in dockerfile
+    _assert_runtime_image_mount_deploy_yaml(
+        tmp_path,
+        runtime="python",
+        command="python -m server",
+    )
     assert 'PYTHON="${PYTHON:-python3.13}"' in install_sh
     assert 'VENV="${VENV:-.venv}"' in install_sh
     assert 'PIP_ONLY_BINARY="${PIP_ONLY_BINARY:-:all:}"' in install_sh
@@ -389,6 +434,11 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "FROM scratch" in dockerfile
     assert "LABEL meshagent.runtime=python" in dockerfile
     assert "EXPOSE 8000" in dockerfile
+    _assert_runtime_image_mount_deploy_yaml(
+        tmp_path,
+        runtime="python",
+        command="python -m server",
+    )
     assert 'PYTHON="${PYTHON:-python3.13}"' in install_sh
     assert 'VENV="${VENV:-.venv}"' in install_sh
     assert 'PIP_ONLY_BINARY="${PIP_ONLY_BINARY:-:all:}"' in install_sh
@@ -497,6 +547,11 @@ def test_init_creates_javascript_webserver_non_interactively(tmp_path) -> None:
     assert "FROM scratch" in dockerfile_text
     assert "LABEL meshagent.runtime=node" in dockerfile_text
     assert "EXPOSE 3000" in dockerfile_text
+    _assert_runtime_image_mount_deploy_yaml(
+        tmp_path,
+        runtime="node",
+        command="node index.js",
+    )
 
 
 def test_init_creates_javascript_backend_agent_non_interactively(tmp_path) -> None:
@@ -547,6 +602,11 @@ def test_init_creates_javascript_backend_agent_non_interactively(tmp_path) -> No
     assert "FROM scratch" in dockerfile
     assert "LABEL meshagent.runtime=node" in dockerfile
     assert "EXPOSE" not in dockerfile
+    _assert_runtime_image_mount_deploy_yaml(
+        tmp_path,
+        runtime="node",
+        command="node index.js",
+    )
 
 
 def test_init_creates_typescript_webserver_non_interactively(tmp_path) -> None:
@@ -609,6 +669,11 @@ def test_init_creates_typescript_webserver_non_interactively(tmp_path) -> None:
     assert "FROM scratch" in dockerfile_text
     assert "LABEL meshagent.runtime=node" in dockerfile_text
     assert "EXPOSE 3000" in dockerfile_text
+    _assert_runtime_image_mount_deploy_yaml(
+        tmp_path,
+        runtime="node",
+        command="node index.js",
+    )
     assert diagnosis.language == "TypeScript"
     assert diagnosis.javascript_flavor == "Node.js/TypeScript"
     assert diagnosis.sdk == "@meshagent/meshagent"
@@ -661,6 +726,11 @@ def test_init_creates_typescript_backend_agent_non_interactively(tmp_path) -> No
     assert "FROM scratch" in dockerfile
     assert "LABEL meshagent.runtime=node" in dockerfile
     assert "EXPOSE" not in dockerfile
+    _assert_runtime_image_mount_deploy_yaml(
+        tmp_path,
+        runtime="node",
+        command="node index.js",
+    )
     assert diagnosis.language == "TypeScript"
     assert diagnosis.javascript_flavor == "Node.js/TypeScript"
     assert diagnosis.sdk == "@meshagent/meshagent"
@@ -727,6 +797,11 @@ def test_init_creates_typescript_chatbot_non_interactively(tmp_path) -> None:
     assert "FROM scratch" in dockerfile
     assert "LABEL meshagent.runtime=node" in dockerfile
     assert "EXPOSE 3000" in dockerfile
+    _assert_runtime_image_mount_deploy_yaml(
+        tmp_path,
+        runtime="node",
+        command="node index.js",
+    )
     assert diagnosis.language == "TypeScript"
     assert diagnosis.javascript_flavor == "Node.js/TypeScript"
     assert diagnosis.sdk is None
@@ -804,6 +879,11 @@ def test_init_creates_typescript_anthropic_chatbot_non_interactively(
     assert "FROM scratch" in dockerfile
     assert "LABEL meshagent.runtime=node" in dockerfile
     assert "EXPOSE 3000" in dockerfile
+    _assert_runtime_image_mount_deploy_yaml(
+        tmp_path,
+        runtime="node",
+        command="node index.js",
+    )
     assert diagnosis.language == "TypeScript"
     assert diagnosis.javascript_flavor == "Node.js/TypeScript"
     assert diagnosis.sdk is None
@@ -966,7 +1046,7 @@ def test_init_creates_typescript_chatbot_ui_non_interactively(tmp_path) -> None:
     assert '"build": "next build"' in package_json
     assert '"start": "node .next/standalone/server.js"' in package_json
     assert (
-        '"deploy": "meshagent deploy . --tag meshagent-create-typescript-chatbot-ui:dev --private --validation-mode=cookie --extra-port=3001:/messages --liveness /health --wait"'
+        '"deploy": "meshagent deploy . --tag meshagent-create-typescript-chatbot-ui:dev --private --validation-mode=cookie --extra-port=assistant:/messages --liveness /health --wait"'
         in package_json
     )
     assert 'from "@msgpack/msgpack"' in page_tsx
@@ -983,6 +1063,16 @@ def test_init_creates_typescript_chatbot_ui_non_interactively(tmp_path) -> None:
     assert 'CMD ["server.js"]' in dockerfile
     assert "ENV HOSTNAME=0.0.0.0" in dockerfile
     assert "EXPOSE 3000" in dockerfile
+    spec = _assert_runtime_image_mount_deploy_yaml(
+        tmp_path,
+        runtime="node",
+        command="node server.js",
+    )
+    assert spec.container is not None
+    assert spec.container.environment is not None
+    env = {entry.name: entry.value for entry in spec.container.environment}
+    assert env["HOSTNAME"] == "0.0.0.0"
+    assert env["PORT"] == "3000"
 
 
 def test_init_rejects_react_backend_agent(tmp_path) -> None:

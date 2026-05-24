@@ -101,11 +101,20 @@ class DeployProgressResult:
 
 
 class DeployProgressHandle:
-    def __init__(self, queue: asyncio.Queue[tuple[str, str]]) -> None:
+    def __init__(
+        self,
+        queue: asyncio.Queue[tuple[str, str]],
+        *,
+        status_recorder: Callable[[str], None] | None = None,
+    ) -> None:
         self._queue = queue
+        self._status_recorder = status_recorder
 
     async def status(self, message: str) -> None:
+        if self._status_recorder is not None:
+            self._status_recorder(message)
         await self._queue.put(("status", message))
+        await self._queue.put(("status_log", message))
 
     async def log(self, message: str) -> None:
         await self._queue.put(("log", message))
@@ -824,6 +833,7 @@ class DeployProgressApp(App[None]):
         self._log_view: RichLog | None = None
         self._help_view: Static | None = None
         self._log_lines: list[str] = []
+        self._last_status_message = "Starting deploy..."
         self._prompt_mode: Literal["domain", "room", "variables", "finished"] | None = (
             None
         )
@@ -1053,7 +1063,10 @@ class DeployProgressApp(App[None]):
         return result
 
     async def _run_operation(self) -> None:
-        handle = DeployProgressHandle(self._queue)
+        handle = DeployProgressHandle(
+            self._queue,
+            status_recorder=self._record_status_message,
+        )
         try:
             await self._operation(handle)
         except asyncio.CancelledError:
@@ -1069,20 +1082,21 @@ class DeployProgressApp(App[None]):
                     exception=exc,
                 )
             else:
-                message = str(exc) or "Deploy failed."
+                message = self._last_status_message or "Deploy failed."
                 self.result = DeployProgressResult(
                     status="error",
                     message=message,
                     exception=exc,
                 )
-                await self._queue.put(("status", message))
+                await self._queue.put(("status", f"Deploy failed: {message}"))
         except BaseException as exc:
+            message = str(exc) or self._last_status_message or "Deploy failed."
             self.result = DeployProgressResult(
                 status="error",
-                message=str(exc),
+                message=message,
                 exception=exc,
             )
-            await self._queue.put(("status", f"Deploy failed: {exc}"))
+            await self._queue.put(("status", f"Deploy failed: {message}"))
         else:
             self.result = DeployProgressResult(status="completed")
             await self._queue.put(("status", "Deploy complete."))
@@ -1111,6 +1125,16 @@ class DeployProgressApp(App[None]):
                 self._set_log_visible(True)
                 self._append_log_line(message)
                 self._queue.task_done()
+                continue
+            if event_type == "status_log":
+                self._set_log_visible(True)
+                self._append_log_line(message)
+                self._queue.task_done()
+
+    def _record_status_message(self, message: str) -> None:
+        normalized_message = message.strip()
+        if normalized_message != "":
+            self._last_status_message = normalized_message
 
     def _show_room_selection(self) -> None:
         self._room_mode = "select"

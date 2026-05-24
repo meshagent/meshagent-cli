@@ -3891,7 +3891,7 @@ async def ask(
             help="Output format for non-interactive responses.",
             case_sensitive=False,
         ),
-    ] = "text",
+    ] = "markdown",
     model: Annotated[
         str,
         typer.Option("--model", help="Name of the LLM model to use"),
