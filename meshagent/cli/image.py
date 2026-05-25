@@ -66,6 +66,7 @@ from meshagent.api.registry_auth import DEFAULT_REGISTRY_HOST, DEFAULT_REGISTRY_
 from meshagent.api.room_server_client import (
     DockerSecret,
     LogStream,
+    PublishedBuildImage,
     RoomException,
     ServiceRuntimeState,
 )
@@ -2264,6 +2265,88 @@ async def _delete_built_image_from_room_cache(
         raise
 
 
+def _select_published_build_image(
+    *,
+    published_images: list[PublishedBuildImage],
+    parsed_tag: _ParsedImageTag,
+) -> PublishedBuildImage:
+    for published_image in published_images:
+        if published_image.tag == parsed_tag.value:
+            return published_image
+    if len(published_images) > 0:
+        return published_images[0]
+    raise RuntimeError("build completed without a published image digest")
+
+
+async def _resolve_completed_build_image(
+    *,
+    client: RoomClient,
+    build_id: str,
+    parsed_tag: _ParsedImageTag,
+) -> PublishedBuildImage:
+    builds = await client.containers.list_builds()
+    for build in builds:
+        if build.id != build_id:
+            continue
+        return _select_published_build_image(
+            published_images=build.published_images,
+            parsed_tag=parsed_tag,
+        )
+    raise RuntimeError(f"completed build was not found: {build_id}")
+
+
+def _deploy_plan_with_published_image(
+    *,
+    deploy_plan: _ServiceDeployPlan,
+    parsed_tag: _ParsedImageTag,
+    published_image: PublishedBuildImage,
+) -> _ServiceDeployPlan:
+    container = deploy_plan.spec.container
+    if container is None:
+        raise RuntimeError("deploy plan does not contain a container spec")
+    container_updates: dict[str, object] = {}
+    if container.image == parsed_tag.value:
+        container_updates["image"] = published_image.resolved_ref
+    if container.storage is not None and container.storage.images is not None:
+        image_mounts = []
+        storage_updated = False
+        for image_mount in container.storage.images:
+            if image_mount.image == parsed_tag.value:
+                image_mounts.append(
+                    image_mount.model_copy(
+                        update={"image": published_image.resolved_ref}
+                    )
+                )
+                storage_updated = True
+            else:
+                image_mounts.append(image_mount)
+        if storage_updated:
+            container_updates["storage"] = container.storage.model_copy(
+                update={"images": image_mounts}
+            )
+    updated_container = (
+        container.model_copy(update=container_updates)
+        if container_updates
+        else container
+    )
+    return _ServiceDeployPlan(
+        spec=deploy_plan.spec.model_copy(update={"container": updated_container}),
+        service_id_annotation=deploy_plan.service_id_annotation,
+    )
+
+
+def _format_published_image_summary(published_image: PublishedBuildImage) -> str:
+    stats = published_image.stats
+    if stats is None:
+        return f"{published_image.resolved_ref}"
+    return (
+        f"{published_image.resolved_ref} "
+        f"({stats.layer_count} layers, "
+        f"{_format_transfer_size(stats.total_layer_size_bytes)} layers, "
+        f"{_format_transfer_size(stats.total_size_bytes)} total)"
+    )
+
+
 def _update_request_validation_annotations(
     *,
     annotations: dict[str, str],
@@ -3641,7 +3724,7 @@ async def _run_image_build_stage(
     add_latest_tag: bool = False,
     status_handler: Callable[[str], Awaitable[None]] | None = None,
     log_handler: Callable[[str], Awaitable[None]] | None = None,
-) -> None:
+) -> PublishedBuildImage:
     del arch
     build_inputs = _resolve_build_stage_inputs(
         context_path=context_path,
@@ -3737,6 +3820,22 @@ async def _run_image_build_stage(
                 plain_message=f"Image build failed: exit code {exit_code}",
             )
             raise typer.Exit(code=exit_code)
+        published_image = await _resolve_completed_build_image(
+            client=client,
+            build_id=build_id,
+            parsed_tag=parsed_tag,
+        )
+        await _emit_deploy_status(
+            status_handler,
+            rich_message=(
+                "[green]Published image:[/] "
+                f"{_format_published_image_summary(published_image)}"
+            ),
+            plain_message=(
+                f"Published image: {_format_published_image_summary(published_image)}"
+            ),
+        )
+        return published_image
     finally:
         if context_archive_temp_dir is not None:
             context_archive_temp_dir.cleanup()
@@ -4549,9 +4648,10 @@ async def deploy_image(
                 status_handler: Callable[[str], Awaitable[None]] | None = None,
                 log_handler: Callable[[str], Awaitable[None]] | None = None,
             ) -> _AppliedDeployPlanResult:
+                nonlocal deploy_plan
                 if pack is not None:
                     assert project_registry is not None
-                    await _run_image_build_stage(
+                    published_image = await _run_image_build_stage(
                         resolved_project_id=resolved_project_id,
                         resolved_room=resolved_room,
                         parsed_tag=parsed_tag,
@@ -4567,6 +4667,11 @@ async def deploy_image(
                         add_latest_tag=latest,
                         status_handler=status_handler,
                         log_handler=log_handler,
+                    )
+                    deploy_plan = _deploy_plan_with_published_image(
+                        deploy_plan=deploy_plan,
+                        parsed_tag=parsed_tag,
+                        published_image=published_image,
                     )
                     await _emit_deploy_status(
                         status_handler,

@@ -31,7 +31,11 @@ from meshagent.api.image_runtime import (
 from meshagent.api.error_codes import ErrorCode
 from meshagent.api.room_ports import ROOM_INTERNAL_API_PORT
 from meshagent.cli import async_typer, cli, image
-from meshagent.api.room_server_client import RoomException, ServiceRuntimeState
+from meshagent.api.room_server_client import (
+    PublishedBuildImage,
+    RoomException,
+    ServiceRuntimeState,
+)
 from meshagent.api.specs.service import (
     ContainerMountSpec,
     ContainerSpec,
@@ -58,6 +62,19 @@ class _FakeParticipant:
         if name == "name":
             return self._name
         return None
+
+
+def _fake_published_build_image(
+    *,
+    tag: str = "registry.meshagent.com/repo/web:1",
+    resolved_ref: str = "registry.meshagent.com/repo/web@sha256:digest",
+) -> PublishedBuildImage:
+    return PublishedBuildImage(
+        tag=tag,
+        digest="sha256:digest",
+        resolved_ref=resolved_ref,
+        optimized=True,
+    )
 
 
 def _route_for_service(
@@ -298,7 +315,7 @@ async def test_deploy_image_missing_room_prints_create_room_guidance(
         )
 
     assert exc_info.value.exit_code == 1
-    assert printed == [
+    assert printed[-1:] == [
         "[red]Room does not exist: missing-room\n"
         "Create it first with "
         "'meshagent rooms create missing-room --if-not-exists', "
@@ -930,6 +947,14 @@ async def test_pack_image_streams_generated_build_context_and_waits_for_exit(
             captured["streamed_context"] = bytes(streamed)
             return "build-1"
 
+        async def list_builds(self):
+            return [
+                SimpleNamespace(
+                    id="build-1",
+                    published_images=[_fake_published_build_image()],
+                )
+            ]
+
     class _FakeRoomClient:
         def __init__(self) -> None:
             self.containers = _FakeContainers()
@@ -1060,6 +1085,14 @@ async def test_build_image_streams_context_and_waits_for_exit(
             captured["streamed_context"] = bytes(streamed)
             return "build-1"
 
+        async def list_builds(self):
+            return [
+                SimpleNamespace(
+                    id="build-1",
+                    published_images=[_fake_published_build_image()],
+                )
+            ]
+
     class _FakeRoomClient:
         def __init__(self) -> None:
             self.containers = _FakeContainers()
@@ -1180,8 +1213,9 @@ async def test_build_image_normalizes_shorthand_room_registry_tag(
         captured["project_id_arg"] = project_id
         return "project-1"
 
-    async def _fake_run_image_build_stage(**kwargs) -> None:
+    async def _fake_run_image_build_stage(**kwargs) -> PublishedBuildImage:
         captured["build_stage_kwargs"] = kwargs
+        return _fake_published_build_image()
 
     monkeypatch.setattr(image, "get_client", _fake_get_client)
     monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
@@ -1237,6 +1271,14 @@ async def test_build_image_pack_streams_context_and_defaults_context_path(
                 streamed.extend(chunk)
             captured["streamed_context"] = bytes(streamed)
             return "build-1"
+
+        async def list_builds(self):
+            return [
+                SimpleNamespace(
+                    id="build-1",
+                    published_images=[_fake_published_build_image()],
+                )
+            ]
 
     class _FakeRoomClient:
         def __init__(self) -> None:
@@ -1343,6 +1385,14 @@ async def test_build_image_pack_preserves_ignored_dockerfile_and_dockerignore(
             async for _chunk in kwargs["chunks"]:
                 pass
             return "build-1"
+
+        async def list_builds(self):
+            return [
+                SimpleNamespace(
+                    id="build-1",
+                    published_images=[_fake_published_build_image()],
+                )
+            ]
 
     class _FakeRoomClient:
         def __init__(self) -> None:
@@ -1625,6 +1675,14 @@ async def test_build_image_can_disable_room_image_optimization(
                 pass
             return "build-1"
 
+        async def list_builds(self):
+            return [
+                SimpleNamespace(
+                    id="build-1",
+                    published_images=[_fake_published_build_image()],
+                )
+            ]
+
     class _FakeRoomClient:
         def __init__(self) -> None:
             self.containers = _FakeContainers()
@@ -1895,6 +1953,21 @@ async def test_run_image_build_stage_requests_repository_token_and_prepends_regi
         async def build(self, **kwargs) -> str:
             captured["build_kwargs"] = kwargs
             return "build-1"
+
+        async def list_builds(self):
+            return [
+                SimpleNamespace(
+                    id="build-1",
+                    published_images=[
+                        _fake_published_build_image(
+                            tag="registry.meshagent.com/powerboards/test:latest",
+                            resolved_ref=(
+                                "registry.meshagent.com/powerboards/test@sha256:digest"
+                            ),
+                        )
+                    ],
+                )
+            ]
 
     class _FakeRoomClient:
         def __init__(self) -> None:
@@ -3153,9 +3226,10 @@ async def test_deploy_image_pack_builds_before_deploying(
         encoding="utf-8",
     )
 
-    async def _fake_run_image_build_stage(**kwargs) -> None:
+    async def _fake_run_image_build_stage(**kwargs) -> PublishedBuildImage:
         captured["build_kwargs"] = kwargs
         captured["events"].append("build")
+        return _fake_published_build_image()
 
     async def _fake_run_deploy_domain_prompt_tui(
         *, service_name: str, port: str, room_name: str, pages_domain: str
@@ -3301,7 +3375,9 @@ async def test_deploy_image_pack_builds_before_deploying(
     assert isinstance(created_service, tuple)
     service_spec = created_service[2]
     assert service_spec.container is not None
-    assert service_spec.container.image == "registry.meshagent.com/repo/web:1"
+    assert (
+        service_spec.container.image == "registry.meshagent.com/repo/web@sha256:digest"
+    )
     assert service_spec.metadata.annotations is not None
     assert image.ANNOTATION_REQUEST_VALIDATION_METHOD not in (
         service_spec.metadata.annotations
@@ -3329,9 +3405,10 @@ async def test_deploy_image_pack_fails_before_build_when_env_secret_is_missing(
         encoding="utf-8",
     )
 
-    async def _fake_run_image_build_stage(**kwargs) -> None:
+    async def _fake_run_image_build_stage(**kwargs) -> PublishedBuildImage:
         del kwargs
         captured["build_called"] = True
+        return _fake_published_build_image()
 
     class _FakeSecrets:
         async def exists(
@@ -3427,8 +3504,9 @@ async def test_deploy_image_pack_requires_matching_volume_mount(
         encoding="utf-8",
     )
 
-    async def _fake_run_image_build_stage(**kwargs) -> None:
+    async def _fake_run_image_build_stage(**kwargs) -> PublishedBuildImage:
         captured["build_kwargs"] = kwargs
+        return _fake_published_build_image()
 
     class _FakeRoomClient:
         async def __aexit__(self, exc_type, exc, tb) -> None:
@@ -3497,9 +3575,10 @@ async def test_deploy_image_pack_allows_matching_volume_mount(
         encoding="utf-8",
     )
 
-    async def _fake_run_image_build_stage(**kwargs) -> None:
+    async def _fake_run_image_build_stage(**kwargs) -> PublishedBuildImage:
         captured["build_kwargs"] = kwargs
         captured["events"].append("build")
+        return _fake_published_build_image()
 
     class _FakeRoomClient:
         def __init__(self) -> None:
@@ -3594,9 +3673,10 @@ CMD ["/app/dist/index.js"]
         encoding="utf-8",
     )
 
-    async def _fake_run_image_build_stage(**kwargs) -> None:
+    async def _fake_run_image_build_stage(**kwargs) -> PublishedBuildImage:
         captured["build_kwargs"] = kwargs
         captured["events"].append("build")
+        return _fake_published_build_image()
 
     class _FakeRoomClient:
         def __init__(self) -> None:
@@ -3670,7 +3750,7 @@ CMD ["/app/dist/index.js"]
     assert service_spec.container.storage.images is not None
     assert service_spec.container.storage.images == [
         ImageStorageMountSpec(
-            image="registry.meshagent.com/repo/web:1",
+            image="registry.meshagent.com/repo/web@sha256:digest",
             path=IMAGE_RUNTIME_MOUNT_PATH,
             subpath=IMAGE_RUNTIME_MOUNT_SUBPATH,
             read_only=True,
@@ -3912,9 +3992,10 @@ async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
         encoding="utf-8",
     )
 
-    async def _fake_run_image_build_stage(**kwargs) -> None:
+    async def _fake_run_image_build_stage(**kwargs) -> PublishedBuildImage:
         captured["build_kwargs"] = kwargs
         captured["events"].append("build")
+        return _fake_published_build_image()
 
     class _FakeRoomClient:
         def __init__(self) -> None:
