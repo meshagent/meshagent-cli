@@ -3072,6 +3072,81 @@ async def test_delete_built_image_from_room_cache_times_out(
         )
 
 
+def test_built_service_image_refs_selects_built_refs() -> None:
+    old_digest = "sha256:" + "a" * 64
+    new_digest = "sha256:" + "b" * 64
+    other_digest = "sha256:" + "c" * 64
+    existing_service = ServiceSpec(
+        version="v1",
+        kind="Service",
+        metadata=ServiceMetadata(name="repo-web"),
+        container=ContainerSpec(
+            image=f"registry.meshagent.com/repo/web@{old_digest}",
+            storage=ContainerMountSpec(
+                images=[
+                    ImageStorageMountSpec(
+                        image=f"registry.meshagent.com/repo/web@{old_digest}",
+                        path="/app",
+                    ),
+                    ImageStorageMountSpec(
+                        image=f"registry.meshagent.com/repo/web@{new_digest}",
+                        path="/current",
+                    ),
+                    ImageStorageMountSpec(
+                        image=f"registry.meshagent.com/repo/other@{other_digest}",
+                        path="/other",
+                    ),
+                    ImageStorageMountSpec(
+                        image="meshagent/node:default",
+                        path="/runtime",
+                    ),
+                    ImageStorageMountSpec(
+                        image="registry.meshagent.com/repo/web:latest",
+                        path="/tag",
+                    ),
+                    ImageStorageMountSpec(
+                        image="registry.meshagent.com/repo/web:old",
+                        path="/old-tag",
+                    ),
+                ]
+            ),
+        ),
+    )
+    refs = image._built_service_image_refs(
+        service_spec=existing_service,
+        parsed_tag=image._parse_build_tag("registry.meshagent.com/repo/web:1"),
+        project_registry="registry.meshagent.com",
+    )
+
+    assert refs == [
+        f"registry.meshagent.com/repo/web@{old_digest}",
+        f"registry.meshagent.com/repo/web@{new_digest}",
+        "registry.meshagent.com/repo/web:latest",
+        "registry.meshagent.com/repo/web:old",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_delete_replaced_built_service_images_ignores_missing_image() -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeContainers:
+        async def delete_image(self, *, image: str) -> None:
+            captured["deleted_image"] = image
+            raise RoomException("image not found", code=ErrorCode.NOT_FOUND)
+
+    client = SimpleNamespace(containers=_FakeContainers())
+
+    await image._delete_replaced_built_service_images(
+        client=client,
+        image_refs=["registry.meshagent.com/repo/web@sha256:" + "a" * 64],
+    )
+
+    assert captured["deleted_image"] == (
+        "registry.meshagent.com/repo/web@sha256:" + "a" * 64
+    )
+
+
 @pytest.mark.asyncio
 async def test_apply_deploy_plan_reports_service_apply_steps() -> None:
     statuses: list[str] = []

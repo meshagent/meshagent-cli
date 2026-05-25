@@ -2265,6 +2265,77 @@ async def _delete_built_image_from_room_cache(
         raise
 
 
+def _service_image_refs(service_spec: ServiceSpec | None) -> list[str]:
+    if service_spec is None or service_spec.container is None:
+        return []
+
+    image_refs: list[str] = []
+    if service_spec.container.image is not None:
+        image_refs.append(service_spec.container.image)
+    storage = service_spec.container.storage
+    if storage is not None and storage.images is not None:
+        image_refs.extend(image_mount.image for image_mount in storage.images)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for image_ref in image_refs:
+        if image_ref not in seen:
+            deduped.append(image_ref)
+            seen.add(image_ref)
+    return deduped
+
+
+def _is_built_service_image_ref(
+    *,
+    image_ref: str,
+    parsed_tag: _ParsedImageTag,
+    project_registry: str,
+) -> bool:
+    repository_ref = f"{project_registry}/{parsed_tag.repository}"
+    return image_ref.startswith(f"{repository_ref}:") or image_ref.startswith(
+        f"{repository_ref}@"
+    )
+
+
+def _built_service_image_refs(
+    *,
+    service_spec: ServiceSpec | None,
+    parsed_tag: _ParsedImageTag,
+    project_registry: str,
+) -> list[str]:
+    built_refs: list[str] = []
+    for image_ref in _service_image_refs(service_spec):
+        if not _is_built_service_image_ref(
+            image_ref=image_ref,
+            parsed_tag=parsed_tag,
+            project_registry=project_registry,
+        ):
+            continue
+        built_refs.append(image_ref)
+    return built_refs
+
+
+async def _delete_replaced_built_service_images(
+    *,
+    client: RoomClient,
+    image_refs: list[str],
+) -> None:
+    for image_ref in image_refs:
+        try:
+            await asyncio.wait_for(
+                client.containers.delete_image(image=image_ref),
+                timeout=_DEPLOY_CACHE_CLEANUP_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as exc:
+            raise RuntimeError(
+                "timed out cleaning up replaced service image after deploy"
+            ) from exc
+        except RoomException as exc:
+            if exc.code in {ErrorCode.NOT_FOUND, ErrorCode.CONTAINER_NOT_FOUND}:
+                continue
+            raise
+
+
 def _select_published_build_image(
     *,
     published_images: list[PublishedBuildImage],
@@ -4649,6 +4720,7 @@ async def deploy_image(
                 log_handler: Callable[[str], Awaitable[None]] | None = None,
             ) -> _AppliedDeployPlanResult:
                 nonlocal deploy_plan
+                replaced_image_refs: list[str] = []
                 if pack is not None:
                     assert project_registry is not None
                     published_image = await _run_image_build_stage(
@@ -4672,6 +4744,11 @@ async def deploy_image(
                         deploy_plan=deploy_plan,
                         parsed_tag=parsed_tag,
                         published_image=published_image,
+                    )
+                    replaced_image_refs = _built_service_image_refs(
+                        service_spec=existing_service,
+                        parsed_tag=parsed_tag,
+                        project_registry=project_registry,
                     )
                     await _emit_deploy_status(
                         status_handler,
@@ -4726,7 +4803,27 @@ async def deploy_image(
                         rich_message=f"[green]Saved deploy values:[/] {deploy_values_file}",
                         plain_message=f"Saved deploy values: {deploy_values_file}",
                     )
+
+                async def _cleanup_replaced_service_images() -> None:
+                    if len(replaced_image_refs) == 0:
+                        return
+                    await _emit_deploy_status(
+                        status_handler,
+                        rich_message="[cyan]Cleaning up replaced service image[/]",
+                        plain_message="Cleaning up replaced service image...",
+                    )
+                    await _delete_replaced_built_service_images(
+                        client=client,
+                        image_refs=replaced_image_refs,
+                    )
+                    await _emit_deploy_status(
+                        status_handler,
+                        rich_message="[green]Replaced service image cleaned[/]",
+                        plain_message="Replaced service image cleaned.",
+                    )
+
                 if not wait:
+                    await _cleanup_replaced_service_images()
                     return deploy_result
                 previous_container_id = (
                     previous_runtime_state.container_id
@@ -4760,6 +4857,7 @@ async def deploy_image(
                         "timed out waiting for deployed service to become live: "
                         f"{deploy_plan.spec.metadata.name} ({deploy_result.service_id})"
                     ) from exc
+                await _cleanup_replaced_service_images()
                 return deploy_result
 
             deploy_result = await _run_deploy_operation(
