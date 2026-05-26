@@ -1,0 +1,25 @@
+{
+  "name": "meshagent-create-typescript-room-chat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "next build",
+    "dev": "meshagent room connect -- node dev-server.mjs",
+    "deploy": "meshagent deploy . --tag meshagent-create-typescript-room-chat:dev --private --validation-mode=cookie --liveness /health --wait",
+    "start": "node .next/standalone/server.js"
+  },
+  "dependencies": {
+    "@meshagent/meshagent": "^__MESHAGENT_CLIENT_VERSION__",
+    "@meshagent/meshagent-node-ts": "^__MESHAGENT_CLIENT_VERSION__",
+    "next": "^16.2.6",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.8.0"
+  }
+}
