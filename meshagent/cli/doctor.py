@@ -15,7 +15,6 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
-from meshagent.cli.meshagent_images import meshagent_image_prefix
 from meshagent.cli.version import __version__ as MESHAGENT_CLIENT_VERSION
 
 
@@ -52,31 +51,8 @@ PYTHON_VIRTUAL_ENV_SCAN_IGNORES = {
     "obj",
     "target",
 }
-DOCKERFILE_TEMPLATE_PACKAGE = "meshagent.cli.doctor_dockerfiles"
 DOCTOR_TEMPLATE_PACKAGE = "meshagent.cli.doctor_templates"
 PYTHON_PYPROJECT_TEMPLATE = "python-pyproject.toml"
-DOCKERFILE_BACKEND_TEMPLATE_BY_LANGUAGE = {
-    "Python": "backend-agent/python.Dockerfile",
-    "TypeScript": "backend-agent/typescript.Dockerfile",
-    "JavaScript": "backend-agent/javascript.Dockerfile",
-    ".NET": "backend-agent/dotnet.Dockerfile",
-    "Dart": "backend-agent/dart.Dockerfile",
-}
-DOCKERFILE_WEBSERVER_TEMPLATE_BY_LANGUAGE = {
-    "Python": "webserver/python.Dockerfile",
-    "TypeScript": "webserver/typescript.Dockerfile",
-    "JavaScript": "webserver/javascript.Dockerfile",
-    ".NET": "webserver/dotnet.Dockerfile",
-    "Dart": "webserver/dart.Dockerfile",
-    "Go": "webserver/go.Dockerfile",
-    "Ruby": "webserver/ruby.Dockerfile",
-}
-DOCKERFILE_WEBSERVER_TEMPLATE_BY_JAVASCRIPT_FLAVOR = {
-    "React/Vite": "webserver/react-vite.Dockerfile",
-    "Vite": "webserver/react-vite.Dockerfile",
-    "React": "webserver/react.Dockerfile",
-    "Next.js": "webserver/nextjs.Dockerfile",
-}
 
 
 @dataclass(frozen=True)
@@ -101,7 +77,6 @@ class ProjectDiagnosis:
     python_virtualenv_versions: tuple[tuple[str, str], ...]
     liveness_path: str
     start_command: str
-    dockerfile: str
 
 
 @dataclass(frozen=True)
@@ -916,46 +891,12 @@ def _start_command(language: str, javascript_flavor: str | None) -> str:
     }.get(language, "<start command>")
 
 
-def _read_dockerfile_template(template_name: str) -> str:
-    resource = resources.files(DOCKERFILE_TEMPLATE_PACKAGE)
-    for part in template_name.split("/"):
-        resource = resource.joinpath(part)
-    return resource.read_text(encoding="utf-8")
-
-
 def _read_doctor_template(template_name: str) -> str:
     return (
         resources.files(DOCTOR_TEMPLATE_PACKAGE)
         .joinpath(template_name)
         .read_text(encoding="utf-8")
     )
-
-
-def _render_dockerfile_template(template_name: str) -> str:
-    return (
-        _read_dockerfile_template(template_name)
-        .replace("__MESHAGENT_IMAGE_PREFIX__", meshagent_image_prefix())
-        .replace("__MESHAGENT_CLIENT_VERSION__", MESHAGENT_CLIENT_VERSION)
-        .strip()
-    )
-
-
-def _dockerfile_for(
-    language: str,
-    javascript_flavor: str | None,
-    *,
-    headless_backend_agent: bool = False,
-) -> str:
-    if headless_backend_agent:
-        template_name = DOCKERFILE_BACKEND_TEMPLATE_BY_LANGUAGE.get(language)
-        return _render_dockerfile_template(template_name) if template_name else ""
-
-    template_name = DOCKERFILE_WEBSERVER_TEMPLATE_BY_JAVASCRIPT_FLAVOR.get(
-        javascript_flavor or ""
-    )
-    if template_name is None:
-        template_name = DOCKERFILE_WEBSERVER_TEMPLATE_BY_LANGUAGE.get(language)
-    return _render_dockerfile_template(template_name) if template_name else ""
 
 
 def _liveness_path_for(
@@ -1024,11 +965,6 @@ def diagnose_project(root: Path) -> ProjectDiagnosis:
         python_virtualenv_versions=python_virtualenv_versions,
         liveness_path=liveness_path,
         start_command=_start_command(language, javascript_flavor),
-        dockerfile=_dockerfile_for(
-            language,
-            javascript_flavor,
-            headless_backend_agent=is_headless_backend_agent,
-        ),
     )
 
 
@@ -1089,7 +1025,7 @@ def _can_autofix_python_project_metadata(diagnosis: ProjectDiagnosis) -> bool:
     return diagnosis.language == "Python" and _is_single_file_python_server(diagnosis)
 
 
-def _can_autofix_node_dockerfile(diagnosis: ProjectDiagnosis) -> bool:
+def _can_use_node_dockerfile_recommendation(diagnosis: ProjectDiagnosis) -> bool:
     scripts = dict(diagnosis.package_scripts)
     if diagnosis.language == "JavaScript":
         return (
@@ -1106,16 +1042,6 @@ def _can_autofix_node_dockerfile(diagnosis: ProjectDiagnosis) -> bool:
             and scripts.get("start") == "node dist/index.js"
             and _has_package_dependency(diagnosis, "@vercel/ncc")
         )
-    return False
-
-
-def _can_autofix_dockerfile(diagnosis: ProjectDiagnosis) -> bool:
-    if diagnosis.dockerfile == "" or diagnosis.has_dockerfile:
-        return False
-    if diagnosis.language == "Python":
-        return _can_autofix_python_project_metadata(diagnosis)
-    if diagnosis.language in {"JavaScript", "TypeScript"}:
-        return _can_autofix_node_dockerfile(diagnosis)
     return False
 
 
@@ -1178,14 +1104,6 @@ def _python_pyproject_for(diagnosis: ProjectDiagnosis) -> str:
 
 def _autofix_plan(diagnosis: ProjectDiagnosis) -> tuple[DoctorAutoFix, ...]:
     fixes: list[DoctorAutoFix] = []
-    if _can_autofix_dockerfile(diagnosis):
-        fixes.append(
-            DoctorAutoFix(
-                description="Create Dockerfile from MeshAgent doctor recommendation",
-                path=diagnosis.root / "Dockerfile",
-                contents=f"{diagnosis.dockerfile.rstrip()}\n",
-            )
-        )
     if (
         diagnosis.language == "Python"
         and not diagnosis.python_has_pyproject
@@ -1446,7 +1364,7 @@ def _deployment_checks(diagnosis: ProjectDiagnosis) -> list[str]:
         if (
             diagnosis.javascript_flavor in {"Node.js", "Node.js/TypeScript"}
             and not diagnosis.has_dockerfile
-            and not _can_autofix_node_dockerfile(diagnosis)
+            and not _can_use_node_dockerfile_recommendation(diagnosis)
         ):
             if diagnosis.language == "TypeScript":
                 checks.append(
@@ -1592,7 +1510,10 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
             "Deployment artifact found: " + ", ".join(diagnosis.deployment_artifacts),
         )
     else:
-        _echo_finding("error", "Deployment artifact: add Dockerfile or meshagent.yaml")
+        _echo_finding(
+            "warning",
+            "Dockerfile missing: add Dockerfile or meshagent.yaml",
+        )
     if _has_deploy_spec(diagnosis.root):
         _echo_finding("ok", "Deploy spec found: .meshagent/deploy.yaml")
     else:
@@ -1776,12 +1697,6 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
                 f"   - {fix.description}: {_display_path(diagnosis.root, fix.path)}"
             )
         next_step_number += 1
-    if not diagnosis.has_deployment_artifact and diagnosis.dockerfile != "":
-        click.echo(f"{next_step_number}. Add a Dockerfile like:")
-        click.echo("")
-        click.echo(textwrap.indent(diagnosis.dockerfile, "   "))
-        click.echo("")
-        next_step_number += 1
     sdk_checks = _sdk_checks(diagnosis)
     if sdk_checks:
         click.echo(f"{next_step_number}. SDK checks:")
@@ -1834,7 +1749,7 @@ def _print_fix_report(*, diagnosis: ProjectDiagnosis) -> None:
 @click.option(
     "--fix",
     is_flag=True,
-    help="Create obvious missing project files such as Dockerfile or pyproject.toml.",
+    help="Create obvious missing project files such as pyproject.toml.",
 )
 @click.argument(
     "path",
