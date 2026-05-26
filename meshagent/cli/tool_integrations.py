@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol, Sequence
 
-import click
+import typer
 
 from meshagent.cli.local_settings import (
     get_active_project,
@@ -754,9 +754,9 @@ def maybe_configure_local_tool_integrations(
     api_url: str | None = None,
     meshagent_executable: str | None = None,
     model: str = CODEX_DEFAULT_MODEL,
-    confirm_fn: ConfirmFn = click.confirm,
-    prompt_fn: PromptFn = click.prompt,
-    echo_fn: Callable[[str], None] = click.echo,
+    confirm_fn: ConfirmFn = typer.confirm,
+    prompt_fn: PromptFn = typer.prompt,
+    echo_fn: Callable[[str], None] = typer.echo,
     which: Callable[[str], str | None] = shutil.which,
     config_path: Path = CODEX_CONFIG_PATH,
 ) -> None:

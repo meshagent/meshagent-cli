@@ -1,8 +1,8 @@
 from types import SimpleNamespace
 
 import pytest
-import click
-from click.testing import CliRunner
+import typer
+from typer._click.testing import CliRunner
 
 from meshagent.api import ApiScope, ParticipantToken
 from meshagent.api.client import NotFoundError
@@ -110,11 +110,8 @@ def test_room_connect_runs_command_with_connected_room_env(
     monkeypatch.setattr(room_connect.subprocess, "run", _fake_run)
     monkeypatch.setenv("UNCHANGED_ENV", "keep-me")
 
-    result = CliRunner().invoke(
-        get_command(root_cli.app),
-        [
-            "room",
-            "connect",
+    exit_code = room_connect.connect_command.main(
+        args=[
             "--project-id",
             "project-input",
             "--room",
@@ -126,9 +123,10 @@ def test_room_connect_runs_command_with_connected_room_env(
             "-c",
             "print('hello')",
         ],
+        standalone_mode=False,
     )
 
-    assert result.exit_code == 23
+    assert exit_code == 23
     assert account_client.connect_calls == [
         {"project_id": "project-1", "room": "room-input"}
     ]
@@ -153,6 +151,86 @@ def test_room_connect_runs_command_with_connected_room_env(
     )
     assert captured_env["OPENAI_API_KEY"] == "room-jwt"
     assert captured_env["ANTHROPIC_API_KEY"] == "room-jwt"
+
+
+def test_room_connect_ignores_ambient_participant_token_for_other_room(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ambient_token = ParticipantToken(name="ambient-agent", project_id="project-1")
+    ambient_token.add_room_grant("old-room")
+    ambient_token.add_api_grant(ApiScope.agent_default())
+    captured_run: dict[str, object] = {}
+
+    async def _fake_get_access_token() -> str:
+        return "oauth-access-token"
+
+    async def _fake_connect_room(
+        self: room_connect.CustomMeshagentClient,
+        *,
+        project_id: str,
+        room: str,
+    ) -> SimpleNamespace:
+        assert self.token == "oauth-access-token"
+        assert project_id == "project-1"
+        assert room == "target-room"
+        return SimpleNamespace(
+            jwt="target-room-jwt",
+            room_name=room,
+            room_url="wss://room-proxy.meshagent.test/rooms/target-room",
+        )
+
+    async def _fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id is None
+        return "project-1"
+
+    def _fake_run(command, *, check: bool, env: dict[str, str]):
+        captured_run["command"] = command
+        captured_run["check"] = check
+        captured_run["env"] = env
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setenv(
+        "MESHAGENT_TOKEN",
+        ambient_token.to_jwt(token="ambient-signing-secret-with-enough-bytes"),
+    )
+    monkeypatch.setenv("MESHAGENT_ROOM", "old-room")
+    monkeypatch.delenv("MESHAGENT_API_KEY", raising=False)
+    monkeypatch.delenv("MESHAGENT_SESSION_ID", raising=False)
+    monkeypatch.setattr(
+        room_connect.auth_async, "get_access_token", _fake_get_access_token
+    )
+    monkeypatch.setattr(
+        room_connect.CustomMeshagentClient,
+        "connect_room",
+        _fake_connect_room,
+    )
+    monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(
+        room_connect,
+        "resolve_api_url",
+        lambda: "https://env.meshagent.test",
+    )
+    monkeypatch.setattr(room_connect.subprocess, "run", _fake_run)
+
+    exit_code = get_command(root_cli.app).main(
+        args=[
+            "room",
+            "connect",
+            "--room",
+            "target-room",
+            "--",
+            "env",
+        ],
+        prog_name="meshagent",
+        standalone_mode=False,
+    )
+
+    assert exit_code == 0
+    assert captured_run["command"] == ["env"]
+    captured_env = captured_run["env"]
+    assert isinstance(captured_env, dict)
+    assert captured_env["MESHAGENT_TOKEN"] == "target-room-jwt"
+    assert captured_env["MESHAGENT_ROOM"] == "target-room"
 
 
 @pytest.mark.asyncio
@@ -319,7 +397,7 @@ async def test_room_connect_build_env_requires_identity_for_secret_env(
     monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
     monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
     with pytest.raises(
-        click.BadParameter, match="--identity is required when using --env-secret"
+        typer.BadParameter, match="--identity is required when using --env-secret"
     ):
         await room_connect._build_connected_command_env(
             project_id="project-input",
@@ -346,7 +424,7 @@ async def test_room_connect_build_env_requires_identity_for_meshagent_token(
     monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
     monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
     with pytest.raises(
-        click.BadParameter,
+        typer.BadParameter,
         match="--identity is required when using --meshagent-token",
     ):
         await room_connect._build_connected_command_env(
@@ -375,7 +453,7 @@ async def test_room_connect_build_env_requires_identity_for_role(
     monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
 
     with pytest.raises(
-        click.BadParameter, match="--identity is required when using --role"
+        typer.BadParameter, match="--identity is required when using --role"
     ):
         await room_connect._build_connected_command_env(
             project_id="project-input",
@@ -634,10 +712,7 @@ async def test_room_connect_build_env_with_identity_fetches_secret_without_conne
 
 
 def test_room_connect_requires_command_after_separator() -> None:
-    result = CliRunner().invoke(
-        get_command(root_cli.app),
-        ["room", "connect", "--"],
-    )
+    result = CliRunner().invoke(room_connect.connect_command, ["--"])
 
     assert result.exit_code == 2
     assert "Pass the local command after --" in result.output

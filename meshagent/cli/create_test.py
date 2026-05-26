@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from click.testing import CliRunner
+from typer._click.testing import CliRunner
 
 from meshagent.api.specs.service import ServiceTemplateSpec
 from meshagent.cli import create as create_module
@@ -1296,9 +1296,15 @@ def test_init_rejects_unknown_language(tmp_path) -> None:
 
     assert result.exit_code == 1
     assert "Unsupported language: rust" in result.output
-    assert (
-        "python, javascript, typescript, react, dotnet, dart-flutter" in result.output
-    )
+    for expected_language in (
+        "python",
+        "javascript",
+        "typescript",
+        "react",
+        "dotnet",
+        "dart-flutter",
+    ):
+        assert expected_language in result.output
     assert not (tmp_path / "Dockerfile").exists()
 
 
@@ -1310,10 +1316,15 @@ def test_init_rejects_unknown_focus(tmp_path) -> None:
 
     assert result.exit_code == 1
     assert "Unsupported focus: desktop" in result.output
-    assert (
-        "webserver, backend-agent, chatbot, chatbot-anthropic, chatbot-ui, contact-form"
-        in result.output
-    )
+    for expected_focus in (
+        "webserver",
+        "backend-agent",
+        "chatbot",
+        "chatbot-anthropic",
+        "chatbot-ui",
+        "contact-form",
+    ):
+        assert expected_focus in result.output
     assert not (tmp_path / "Dockerfile").exists()
 
 
@@ -1556,11 +1567,10 @@ def test_init_tui_focus_screen_asks_for_webserver_or_backend_agent(
     ]
 
 
-def test_init_tui_existing_project_screen_offers_doctor_or_subfolder(
+def test_init_tui_existing_project_screen_offers_subfolder_or_cancel(
     monkeypatch,
 ) -> None:
     from meshagent.cli.tui.create import (
-        CREATE_EXISTING_DOCTOR_OPTION_ID,
         CREATE_EXISTING_SUBFOLDER_OPTION_ID,
         CreateExistingProjectApp,
     )
@@ -1596,7 +1606,6 @@ def test_init_tui_existing_project_screen_offers_doctor_or_subfolder(
         "message": "This directory already contains project files.",
         "help_text": "Choose an option. Esc or Ctrl+C cancels.",
         "options": [
-            ("Run meshagent doctor here.", CREATE_EXISTING_DOCTOR_OPTION_ID),
             (
                 "Create a new project in a new subfolder.",
                 CREATE_EXISTING_SUBFOLDER_OPTION_ID,
@@ -1664,35 +1673,6 @@ def test_init_tui_existing_project_subfolder_prompt_rejects_used_folder(
     assert submitted is False
     assert errors == ["Folder is already in use. Enter an empty folder name."]
     assert app.result.status == "canceled"
-
-
-def test_init_existing_code_interactive_can_run_doctor_here(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    (tmp_path / "server.py").write_text("print('already here')\n", encoding="utf-8")
-    doctor_paths: list[object] = []
-
-    monkeypatch.setattr(create_module, "_stdio_is_interactive", lambda: True)
-    monkeypatch.setattr(
-        create_module,
-        "_run_existing_project_tui",
-        lambda *, root: create_module.ExistingProjectSelection(action="run-doctor"),
-    )
-    monkeypatch.setattr(create_module, "_run_doctor", doctor_paths.append)
-    monkeypatch.setattr(
-        create_module,
-        "_run_create_tui",
-        lambda *, language_choices, focus_choices: (_ for _ in ()).throw(
-            AssertionError("language/focus TUI should not launch")
-        ),
-    )
-
-    result = CliRunner().invoke(create_command, [str(tmp_path)])
-
-    assert result.exit_code == 0
-    assert doctor_paths == [tmp_path.resolve()]
-    assert not (tmp_path / "Dockerfile").exists()
 
 
 def test_init_existing_code_interactive_creates_project_in_subfolder(

@@ -1,4 +1,4 @@
-from click.testing import CliRunner
+from typer._click.testing import CliRunner
 from datetime import datetime, timezone
 import json
 import pyarrow as pa

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from click.testing import CliRunner
+import json
+
+from typer._click.testing import CliRunner
 
 from meshagent.cli import doctor as doctor_module
 from meshagent.cli.doctor import (
@@ -62,7 +64,7 @@ def test_doctor_reports_python_roomclient_deploy_gaps(tmp_path) -> None:
     assert " -e MESHAGENT_" not in result.output
     assert "--no-optimize" not in result.output
     assert "Deployment checks" in result.output
-    assert "Auto-fix missing files" in result.output
+    assert "Auto-fix project files" in result.output
     assert "meshagent doctor --fix" in result.output
     assert "Create pyproject.toml" in result.output
     assert "python-sdk-slim" in result.output
@@ -125,6 +127,8 @@ def test_doctor_fix_writes_missing_python_pyproject_only(tmp_path) -> None:
     assert result.exit_code == 0
     assert "Applied fixes" in result.output
     assert "Wrote pyproject.toml" in result.output
+    assert "Create Dockerfile from MeshAgent doctor recommendation" in result.output
+    assert "Create pyproject.toml with Python runtime metadata" in result.output
     assert "Run `meshagent doctor` and address remaining findings" in result.output
 
     pyproject = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
@@ -173,13 +177,51 @@ def test_doctor_fix_skips_node_project_without_ncc_metadata(tmp_path) -> None:
     fix_result = CliRunner().invoke(doctor_command, ["--fix", str(tmp_path)])
 
     assert result.exit_code == 0
-    assert "meshagent doctor --fix" not in result.output
+    assert "meshagent doctor --fix" in result.output
     assert "Node ncc optimization check" in result.output
     assert '"build": "ncc build server.js -o dist"' in result.output
     assert fix_result.exit_code == 0
-    assert "No auto-fixable missing files were found" in fix_result.output
+    assert "Applied fixes" in fix_result.output
+    assert "Update package.json MeshAgent SDK version and deploy script" in (
+        fix_result.output
+    )
     assert not (tmp_path / "Dockerfile").exists()
+    package_json = json.loads((tmp_path / "package.json").read_text(encoding="utf-8"))
+    assert package_json["dependencies"]["@meshagent/meshagent"] == (
+        MESHAGENT_CLIENT_VERSION
+    )
 
+<<<<<<< HEAD
+=======
+
+def test_doctor_fix_writes_node_dockerfile_when_ncc_metadata_matches(
+    tmp_path,
+) -> None:
+    (tmp_path / "package.json").write_text(
+        '{"scripts":{"build":"ncc build server.js -o dist",'
+        '"start":"node dist/index.js"},'
+        '"devDependencies":{"@vercel/ncc":"^0.38.3"}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "server.js").write_text(
+        "console.log('hello');\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, ["--fix", str(tmp_path)])
+
+    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+
+    assert result.exit_code == 0
+    assert "Applied fixes" in result.output
+    assert "Create Dockerfile from MeshAgent doctor recommendation" in result.output
+    assert "node-sdk" in dockerfile
+    assert "RUN npm run build" in dockerfile
+    assert "COPY --from=build /app/dist/index.js /app/index.js" in dockerfile
+    assert "LABEL meshagent.runtime=node" in dockerfile
+
+
+>>>>>>> main
 def test_doctor_fix_reports_no_autofix_for_empty_project(tmp_path) -> None:
     (tmp_path / ".gitkeep").write_text("", encoding="utf-8")
 
@@ -283,7 +325,7 @@ def test_doctor_allows_headless_python_backend_agent_without_ports(tmp_path) -> 
         "Headless backend-agent rule: RoomClient-only services can omit"
         in result.output
     )
-    assert "[warning] RoomClient deploy-token check" in result.output
+    assert "RoomClient deploy-token check" not in result.output
     assert "[error] RoomClient deployment needs" not in result.output
     assert "--meshagent-token agentDefault" in result.output
     assert "--meshagent-token full" not in result.output
@@ -427,6 +469,193 @@ def test_doctor_reports_javascript_roomclient_deploy_gaps(tmp_path) -> None:
     assert diagnosis.liveness_path == "/health"
 
 
+def test_doctor_warns_when_javascript_roomclient_has_no_deploy_script(
+    tmp_path,
+) -> None:
+    (tmp_path / "package.json").write_text(
+        '{"scripts":{"start":"node server.js"},'
+        '"dependencies":{"@meshagent/meshagent":"0.38.4"}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "Dockerfile").write_text(
+        'FROM scratch\nVOLUME ["/data"]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "server.js").write_text(
+        "import { RoomClient } from '@meshagent/meshagent';\n"
+        "server.listen(Number(process.env.PORT || 3000), '0.0.0.0');\n"
+        "if (req.url === '/health') {}\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert (
+        "[warning] RoomClient deploy-token check: add a package.json deploy script"
+        in result.output
+    )
+    assert "`--tag`" in result.output
+    assert "`--meshagent-token agentDefault`" in result.output
+    assert "meshagent doctor --fix" in result.output
+
+    fix_result = CliRunner().invoke(doctor_command, ["--fix", str(tmp_path)])
+    package_json = json.loads((tmp_path / "package.json").read_text(encoding="utf-8"))
+
+    assert fix_result.exit_code == 0
+    assert "Update package.json MeshAgent SDK version and deploy script" in (
+        fix_result.output
+    )
+    deploy_script = package_json["scripts"]["deploy"]
+    assert deploy_script.startswith("meshagent deploy .")
+    assert '--room "$MESHAGENT_ROOM"' in deploy_script
+    assert f"--tag {tmp_path.name}:latest" in deploy_script
+    assert "--public" in deploy_script
+    assert "--domain <domain>" in deploy_script
+    assert "--liveness /health" in deploy_script
+    assert "--room-mount /:/data:rw" in deploy_script
+    assert "--wait" in deploy_script
+    assert "--meshagent-token agentDefault" in deploy_script
+    assert package_json["dependencies"]["@meshagent/meshagent"] == (
+        MESHAGENT_CLIENT_VERSION
+    )
+
+
+def test_doctor_warns_when_javascript_roomclient_deploy_script_lacks_token(
+    tmp_path,
+) -> None:
+    (tmp_path / "package.json").write_text(
+        '{"scripts":{"start":"node server.js","deploy":"meshagent deploy . --wait"},'
+        '"dependencies":{"@meshagent/meshagent":"0.38.4"}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "server.js").write_text(
+        "import { RoomClient } from '@meshagent/meshagent';\n"
+        "server.listen(Number(process.env.PORT || 3000), '0.0.0.0');\n"
+        "if (req.url === '/health') {}\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert (
+        "[warning] RoomClient deploy-token check: package.json deploy script should "
+        "include `--tag` and `--meshagent-token agentDefault`."
+    ) in result.output
+    assert "meshagent doctor --fix" in result.output
+
+    fix_result = CliRunner().invoke(doctor_command, ["--fix", str(tmp_path)])
+    package_json = json.loads((tmp_path / "package.json").read_text(encoding="utf-8"))
+
+    assert fix_result.exit_code == 0
+    assert package_json["scripts"]["deploy"] == (
+        f"meshagent deploy . --wait --tag {tmp_path.name}:latest "
+        "--meshagent-token agentDefault"
+    )
+    assert package_json["dependencies"]["@meshagent/meshagent"] == (
+        MESHAGENT_CLIENT_VERSION
+    )
+
+
+def test_doctor_fix_replaces_javascript_roomclient_deploy_token_value(
+    tmp_path,
+) -> None:
+    (tmp_path / "package.json").write_text(
+        '{"scripts":{"start":"node server.js",'
+        '"deploy":"meshagent deploy . --meshagent-token full"},'
+        '"dependencies":{"@meshagent/meshagent":"0.38.4"}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "server.js").write_text(
+        "import { RoomClient } from '@meshagent/meshagent';\n"
+        "server.listen(Number(process.env.PORT || 3000), '0.0.0.0');\n"
+        "if (req.url === '/health') {}\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, ["--fix", str(tmp_path)])
+    package_json = json.loads((tmp_path / "package.json").read_text(encoding="utf-8"))
+
+    assert result.exit_code == 0
+    assert package_json["scripts"]["deploy"] == (
+        f"meshagent deploy . --meshagent-token agentDefault "
+        f"--tag {tmp_path.name}:latest"
+    )
+    assert package_json["dependencies"]["@meshagent/meshagent"] == (
+        MESHAGENT_CLIENT_VERSION
+    )
+
+
+def test_doctor_fix_adds_mount_for_javascript_dockerfile_volume(
+    tmp_path,
+) -> None:
+    (tmp_path / "package.json").write_text(
+        '{"scripts":{"start":"node server.js",'
+        '"deploy":"meshagent deploy . --wait --tag app:latest '
+        '--meshagent-token agentDefault"},'
+        '"dependencies":{"@meshagent/meshagent":"0.38.4"}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "Dockerfile").write_text(
+        'FROM scratch\nVOLUME ["/data"]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "server.js").write_text(
+        "import { RoomClient } from '@meshagent/meshagent';\n"
+        "server.listen(Number(process.env.PORT || 3000), '0.0.0.0');\n"
+        "if (req.url === '/health') {}\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert (
+        "[warning] RoomClient deploy-token check: package.json deploy script should "
+        "include a mount for Dockerfile volume `/data`."
+    ) in result.output
+
+    fix_result = CliRunner().invoke(doctor_command, ["--fix", str(tmp_path)])
+    package_json = json.loads((tmp_path / "package.json").read_text(encoding="utf-8"))
+
+    assert fix_result.exit_code == 0
+    assert package_json["scripts"]["deploy"] == (
+        "meshagent deploy . --wait --tag app:latest "
+        "--meshagent-token agentDefault --room-mount /:/data:rw"
+    )
+
+
+def test_doctor_accepts_javascript_roomclient_deploy_script_with_token(
+    tmp_path,
+) -> None:
+    (tmp_path / "package.json").write_text(
+        '{"scripts":{"start":"node server.js",'
+        '"deploy":"meshagent deploy . --wait --tag app:latest '
+        '--meshagent-token agentDefault"},'
+        '"dependencies":{"@meshagent/meshagent":"0.38.4"}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "server.js").write_text(
+        "import { RoomClient } from '@meshagent/meshagent';\n"
+        "server.listen(Number(process.env.PORT || 3000), '0.0.0.0');\n"
+        "if (req.url === '/health') {}\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert (
+        "[ok] RoomClient deploy-token check: package.json deploy script injects "
+        "`--meshagent-token agentDefault`."
+    ) in result.output
+    assert "[warning] RoomClient deploy-token check" not in result.output
+    assert "Deploy from this directory:" in result.output
+    assert "npm run deploy" in result.output
+    assert "meshagent deploy ." not in result.output
+
+
 def test_doctor_reports_node_roomclient_commonjs_guidance(tmp_path) -> None:
     (tmp_path / "package.json").write_text(
         '{"type":"module","scripts":{"start":"node server.js"},'
@@ -501,6 +730,10 @@ def test_doctor_reports_typescript_node_build_guidance(tmp_path, monkeypatch) ->
     assert "`node dist/server.js`" in result.output
     assert "tsconfig `module: NodeNext`" in result.output
     assert 'curl -fsS "$PUBLIC_URL/"' in result.output
+    assert (
+        "[warning] RoomClient deploy-token check: add a package.json deploy script"
+        in result.output
+    )
     assert "--meshagent-token agentDefault" in result.output
     assert "--meshagent-token full" not in result.output
 
@@ -722,7 +955,7 @@ def test_doctor_warns_for_non_optimized_python_dockerfile(tmp_path) -> None:
     assert "[ok] Deployment artifact found: Dockerfile" in result.output
     assert "[warning] Dockerfile is not MeshAgent-optimized" in result.output
     assert "LABEL meshagent.runtime=python or node" in result.output
-    assert "Auto-fix missing files" not in result.output
+    assert "Auto-fix project files" not in result.output
 
 
 def test_doctor_finding_labels_use_rich_status_colors() -> None:

@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from importlib import resources
 from typing import Annotated, Any, Literal, Protocol, runtime_checkable
 
-import click
 import typer
 from rich.console import Console
 from rich.markdown import Markdown
@@ -1851,7 +1850,7 @@ async def _run_ask_tui(
         from textual.containers import Horizontal, Vertical, VerticalScroll
         from textual.widgets import Markdown as TextualMarkdown, Static, TextArea
     except ImportError as exc:
-        click.echo(
+        typer.echo(
             "Textual is required for interactive ask mode. Install meshagent-cli dependencies and retry."
         )
         raise typer.Exit(1) from exc
@@ -3907,7 +3906,7 @@ async def ask(
     resolved_project_id = await resolve_project_id(project_id=project_id)
     access_token = await _resolve_ask_access_token()
     if access_token is None:
-        click.echo(
+        typer.echo(
             "No MeshAgent token or OAuth access token available. "
             "Set MESHAGENT_TOKEN or run `meshagent auth login` first."
         )
@@ -3931,14 +3930,14 @@ async def ask(
         return
 
     if message is None:
-        click.echo(
+        typer.echo(
             "Prompt required. Pass `-m/--message`, or run in a TTY for interactive mode."
         )
         raise typer.Exit(1)
 
     normalized_format = format.strip().lower()
     if normalized_format not in {"text", "markdown"}:
-        click.echo(f"Unsupported format: {format}. Expected one of: text, markdown.")
+        typer.echo(f"Unsupported format: {format}. Expected one of: text, markdown.")
         raise typer.Exit(1)
 
     if normalized_format == "markdown":
@@ -3957,7 +3956,7 @@ async def ask(
         nonlocal wrote_output
         if isinstance(message, AgentTextContentDelta):
             wrote_output = True
-            click.echo(message.text, nl=False)
+            typer.echo(message.text, nl=False)
 
     result = await _run_ask_process(
         prompt=message,
@@ -3967,9 +3966,9 @@ async def ask(
         preamble_rule=preamble_rule,
     )
     if wrote_output:
-        click.echo()
+        typer.echo()
     else:
-        click.echo(result)
+        typer.echo(result)
 
 
 ask_command = async_typer.get_command(app, materialize_lazy=True)

@@ -1,6 +1,10 @@
-import click
+from typing import Annotated
+
+import typer
+from typer import _click as typer_click
 from rich import print
 
+from meshagent.cli import async_typer
 from meshagent.cli.tool_integrations import (
     launch_claude,
     launch_codex,
@@ -10,15 +14,16 @@ from meshagent.cli.tool_integrations import (
 
 def _exit_with_launch_error(message: str) -> None:
     print(f"[red]{message}[/red]")
-    raise click.exceptions.Exit(1)
+    raise typer_click.exceptions.Exit(1)
 
 
-@click.group("launch")
-def launch_group() -> None:
-    """Launch supported CLI apps through MeshAgent."""
+app = async_typer.AsyncTyper(
+    help="Launch supported CLI apps through MeshAgent.",
+    add_completion=False,
+)
 
 
-@launch_group.command(
+@app.command(
     "codex",
     context_settings={
         "ignore_unknown_options": True,
@@ -26,23 +31,22 @@ def launch_group() -> None:
     },
     help="Launch Codex through MeshAgent for the active project.",
 )
-@click.option(
-    "--project-id",
-    type=str,
-    default=None,
-    help="A MeshAgent project id. If empty, the activated project will be used.",
-)
-@click.option(
-    "--api-url",
-    type=str,
-    default=None,
-    help="Override the MeshAgent API URL for this Codex launch.",
-)
-@click.pass_context
 def launch_codex_command(
-    ctx: click.Context,
-    project_id: str | None,
-    api_url: str | None,
+    ctx: typer.Context,
+    project_id: Annotated[
+        str | None,
+        typer.Option(
+            "--project-id",
+            help="A MeshAgent project id. If empty, the activated project will be used.",
+        ),
+    ] = None,
+    api_url: Annotated[
+        str | None,
+        typer.Option(
+            "--api-url",
+            help="Override the MeshAgent API URL for this Codex launch.",
+        ),
+    ] = None,
 ) -> None:
     try:
         exit_code = launch_codex(
@@ -55,10 +59,10 @@ def launch_codex_command(
         _exit_with_launch_error(str(exc))
         return
 
-    raise click.exceptions.Exit(exit_code)
+    raise typer_click.exceptions.Exit(exit_code)
 
 
-@launch_group.command(
+@app.command(
     "claude",
     context_settings={
         "ignore_unknown_options": True,
@@ -66,23 +70,22 @@ def launch_codex_command(
     },
     help="Launch Claude through MeshAgent for the active project.",
 )
-@click.option(
-    "--project-id",
-    type=str,
-    default=None,
-    help="A MeshAgent project id. If empty, the activated project will be used.",
-)
-@click.option(
-    "--api-url",
-    type=str,
-    default=None,
-    help="Override the MeshAgent API URL for this Claude launch.",
-)
-@click.pass_context
 def launch_claude_command(
-    ctx: click.Context,
-    project_id: str | None,
-    api_url: str | None,
+    ctx: typer.Context,
+    project_id: Annotated[
+        str | None,
+        typer.Option(
+            "--project-id",
+            help="A MeshAgent project id. If empty, the activated project will be used.",
+        ),
+    ] = None,
+    api_url: Annotated[
+        str | None,
+        typer.Option(
+            "--api-url",
+            help="Override the MeshAgent API URL for this Claude launch.",
+        ),
+    ] = None,
 ) -> None:
     try:
         exit_code = launch_claude(
@@ -95,4 +98,7 @@ def launch_claude_command(
         _exit_with_launch_error(str(exc))
         return
 
-    raise click.exceptions.Exit(exit_code)
+    raise typer_click.exceptions.Exit(exit_code)
+
+
+launch_group = async_typer.get_command(app)

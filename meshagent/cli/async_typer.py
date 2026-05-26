@@ -9,10 +9,11 @@ from dataclasses import dataclass
 from functools import partial, wraps
 from typing import Any, Callable, Sequence, TypeVar
 
-import click
 import typer
 from meshagent.api import RoomException
+from typer import _click as typer_click
 from typer import Typer
+from typer.core import TyperArgument, TyperCommand, TyperGroup, TyperOption
 from typer.main import DeveloperExceptionConfig
 from typer.main import _typer_developer_exception_attr_name
 from typer.main import except_hook
@@ -21,6 +22,8 @@ from typer.main import get_group as get_typer_group
 from typer.main import get_install_completion_arguments
 
 T = TypeVar("T")
+ClickCommand = typer_click.Command
+ClickGroup = TyperGroup
 
 
 @dataclass(frozen=True)
@@ -35,7 +38,7 @@ class LazyCommandRegistration:
     command_path: tuple[str, ...] = ()
 
 
-class LazyLoadedCommand(click.Command):
+class LazyLoadedCommand(TyperCommand):
     def __init__(
         self,
         *,
@@ -49,9 +52,9 @@ class LazyLoadedCommand(click.Command):
             deprecated=registration.deprecated,
         )
         self._registration = registration
-        self._loaded_command: click.Command | None = None
+        self._loaded_command: typer_click.Command | None = None
 
-    def _load_command(self) -> click.Command:
+    def _load_command(self) -> typer_click.Command:
         if self._loaded_command is not None:
             return self._loaded_command
 
@@ -64,14 +67,18 @@ class LazyLoadedCommand(click.Command):
             ) from exc
 
         source_app = target if isinstance(target, AsyncTyper) else None
-        command = _coerce_to_click_command(target)
+        command = (
+            _coerce_to_click_group(target)
+            if len(self._registration.command_path) > 0
+            else _coerce_to_click_command(target)
+        )
         for segment in self._registration.command_path:
-            if not isinstance(command, click.Group):
+            if not _is_click_group(command):
                 raise RuntimeError(
                     f"{self._registration.module}.{self._registration.attribute} does not expose subcommand path "
                     f"{' '.join(self._registration.command_path)}"
                 )
-            resolved = command.get_command(click.Context(command), segment)
+            resolved = command.get_command(typer_click.Context(command), segment)
             if resolved is None:
                 raise RuntimeError(
                     f"{self._registration.module}.{self._registration.attribute} has no subcommand {segment}"
@@ -89,8 +96,10 @@ class LazyLoadedCommand(click.Command):
 
     def _load_command_for_args(
         self, args: list[str]
-    ) -> tuple[click.Command, list[str]]:
+    ) -> tuple[typer_click.Command, list[str]]:
         if len(self._registration.command_path) == 0 or len(args) == 0:
+            return self._load_command(), args
+        if args[0].startswith("-"):
             return self._load_command(), args
 
         module = importlib.import_module(self._registration.module)
@@ -101,11 +110,9 @@ class LazyLoadedCommand(click.Command):
                 f"{self._registration.module} has no attribute {self._registration.attribute}"
             ) from exc
 
-        command = _coerce_to_click_command(target)
-        if not isinstance(command, click.Group):
-            return self._load_command(), args
+        command = _coerce_to_click_group(target)
 
-        sibling = command.get_command(click.Context(command), args[0])
+        sibling = command.get_command(typer_click.Context(command), args[0])
         if sibling is None or args[0] == self._registration.command_path[0]:
             return self._load_command(), args
         return sibling, args[1:]
@@ -114,9 +121,9 @@ class LazyLoadedCommand(click.Command):
         self,
         info_name: str | None,
         args: list[str],
-        parent: click.Context | None = None,
+        parent: typer_click.Context | None = None,
         **extra: Any,
-    ) -> click.Context:
+    ) -> typer_click.Context:
         command, resolved_args = self._load_command_for_args(args)
         return command.make_context(
             info_name,
@@ -126,27 +133,39 @@ class LazyLoadedCommand(click.Command):
         )
 
     def shell_complete(
-        self, ctx: click.Context, incomplete: str
-    ) -> list[click.shell_completion.CompletionItem]:
+        self, ctx: typer_click.Context, incomplete: str
+    ) -> list[typer_click.shell_completion.CompletionItem]:
         return self._load_command().shell_complete(ctx, incomplete)
 
-    def get_help(self, ctx: click.Context) -> str:
+    def get_help(self, ctx: typer_click.Context) -> str:
         return self._load_command().get_help(ctx)
 
 
-def _coerce_to_click_command(target: Any) -> click.Command:
-    if isinstance(target, click.Command):
+def _is_click_group(command: ClickCommand) -> bool:
+    return isinstance(command, TyperGroup)
+
+
+def _coerce_to_click_command(target: Any) -> ClickCommand:
+    if isinstance(target, typer_click.Command):
         return target
     if isinstance(target, Typer):
         return get_command(target)
     raise TypeError(f"Unsupported lazy command target: {target!r}")
 
 
-def _materialize_command(command: click.Command) -> click.Command:
+def _coerce_to_click_group(target: Any) -> ClickGroup:
+    if isinstance(target, TyperGroup):
+        return target
+    if isinstance(target, Typer):
+        return get_typer_group(target)
+    raise TypeError(f"Unsupported lazy command group target: {target!r}")
+
+
+def _materialize_command(command: ClickCommand) -> ClickCommand:
     if isinstance(command, LazyLoadedCommand):
         return _materialize_command(command._load_command())
 
-    if isinstance(command, click.Group):
+    if _is_click_group(command):
         command.commands = {
             name: _materialize_command(subcommand)
             for name, subcommand in command.commands.items()
@@ -187,9 +206,9 @@ def _rewrite_deprecated_option_aliases(
 
 
 def _attach_deprecated_option_aliases(
-    command: click.Command,
+    command: ClickCommand,
     aliases: dict[str, str],
-) -> click.Command:
+) -> ClickCommand:
     if len(aliases) == 0:
         return command
 
@@ -199,9 +218,9 @@ def _attach_deprecated_option_aliases(
     def make_context(
         info_name: str | None,
         args: list[str],
-        parent: click.Context | None = None,
+        parent: typer_click.Context | None = None,
         **extra: Any,
-    ) -> click.Context:
+    ) -> typer_click.Context:
         return original_make_context(
             info_name,
             _rewrite_deprecated_option_aliases(args, aliases),
@@ -214,11 +233,11 @@ def _attach_deprecated_option_aliases(
 
 
 def get_command(
-    typer_instance: Typer | click.Command,
+    typer_instance: Typer | typer_click.Command,
     *,
     materialize_lazy: bool = False,
-) -> click.Command:
-    if isinstance(typer_instance, click.Command):
+) -> ClickCommand:
+    if isinstance(typer_instance, typer_click.Command):
         click_command = typer_instance
     elif isinstance(typer_instance, LazyTyper):
         if len(typer_instance.registered_lazy_commands) > 0:
@@ -344,9 +363,11 @@ def _run_coroutine_sync(
     return result["value"]  # type: ignore[return-value]
 
 
-def _missing_parameter_name(error: click.MissingParameter) -> str:
+def _missing_parameter_name(
+    error: typer_click.exceptions.MissingParameter,
+) -> str:
     param = error.param
-    if isinstance(param, click.Option):
+    if isinstance(param, TyperOption):
         for option_name in param.opts:
             if option_name.startswith("--"):
                 return option_name
@@ -354,7 +375,7 @@ def _missing_parameter_name(error: click.MissingParameter) -> str:
             return param.opts[0]
         if param.secondary_opts:
             return param.secondary_opts[0]
-    if isinstance(param, click.Argument) and param.name is not None:
+    if isinstance(param, TyperArgument) and param.name is not None:
         return param.name
     if param is not None and param.name is not None:
         return param.name
@@ -384,11 +405,11 @@ class AsyncTyper(Typer):
 
         try:
             return get_command(self)(*args, **kwargs)
-        except click.MissingParameter as e:
+        except typer_click.exceptions.MissingParameter as e:
             if explicit_standalone_mode:
                 raise
             missing_name = _missing_parameter_name(e)
-            click.secho(
+            typer.secho(
                 f" Required parameter is missing: {missing_name}",
                 fg="red",
                 err=True,
@@ -396,23 +417,23 @@ class AsyncTyper(Typer):
             if e.ctx is not None:
                 typer.echo(e.ctx.get_help(), err=True)
             raise SystemExit(e.exit_code)
-        except click.ClickException as e:
+        except typer_click.exceptions.ClickException as e:
             if explicit_standalone_mode:
                 raise
             e.show()
             raise SystemExit(e.exit_code)
-        except click.Abort:
+        except typer_click.exceptions.Abort:
             if explicit_standalone_mode:
                 raise
             raise SystemExit(1)
-        except click.exceptions.Exit as e:
+        except typer_click.exceptions.Exit as e:
             if explicit_standalone_mode:
                 raise
             raise SystemExit(e.exit_code)
         except RoomException as e:
             if explicit_standalone_mode:
                 raise
-            click.secho(str(e), fg="red", err=True)
+            typer.secho(str(e), fg="red", err=True)
             raise SystemExit(1)
         except Exception as e:
             setattr(

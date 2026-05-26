@@ -1,6 +1,7 @@
 import asyncio
 
-import click
+from typer import _click as click
+from typer.core import TyperOption
 
 from meshagent.api.specs.service import ContainerSpec, ServiceMetadata, ServiceSpec
 from meshagent.cli import task_runner
@@ -85,7 +86,7 @@ def test_task_runner_join_help_hides_mcp_flags() -> None:
     visible_options = {
         option
         for param in join_command.params
-        if isinstance(param, click.Option) and not param.hidden
+        if isinstance(param, TyperOption) and not param.hidden
         for option in param.opts
     }
 

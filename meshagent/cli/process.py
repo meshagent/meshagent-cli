@@ -1,5 +1,4 @@
 import typer
-import click
 import contextlib
 import inspect
 import jwt
@@ -1518,13 +1517,13 @@ async def _run_process_run_tui(
 
             def _write_message(agent_message: AgentMessage) -> None:
                 if isinstance(agent_message, AgentTextContentDelta):
-                    click.echo(agent_message.text, nl=False)
+                    typer.echo(agent_message.text, nl=False)
 
             await _current_session().ask(
                 prompt=message,
                 on_message=_write_message,
             )
-            click.echo()
+            typer.echo()
             return
 
         if thread_storage != "none" and thread_dir is not None:
@@ -2210,13 +2209,13 @@ async def _run_process_use_tui(
 
             def _write_message(agent_message: AgentMessage) -> None:
                 if isinstance(agent_message, AgentTextContentDelta):
-                    click.echo(agent_message.text, nl=False)
+                    typer.echo(agent_message.text, nl=False)
 
             await chat_client.ask(
                 prompt=message,
                 on_message=_write_message,
             )
-            click.echo()
+            typer.echo()
             return
 
         thread_sidebar = _ProcessThreadSidebar(

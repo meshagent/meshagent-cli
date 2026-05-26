@@ -1,8 +1,8 @@
 import importlib
 import types
 
-import click
-from click.testing import CliRunner
+import typer
+from typer._click.testing import CliRunner
 
 from meshagent.cli import async_typer
 
@@ -19,7 +19,7 @@ def _module_with_app(
 
     @app.command(command_name)
     def _command() -> None:
-        click.echo(output)
+        typer.echo(output)
 
     module.app = app
     return module
@@ -36,7 +36,7 @@ def _module_with_alias_app(*, module_name: str, command_name: str) -> types.Modu
 
     @app.command(command_name)
     def _command(web_search: bool = False) -> None:
-        click.echo(f"web_search={web_search}")
+        typer.echo(f"web_search={web_search}")
 
     module.app = app
     return module
@@ -196,7 +196,7 @@ def test_deprecated_option_aliases_are_rewritten_before_parsing() -> None:
         web_search: bool = False,
         time: bool = True,
     ) -> None:
-        click.echo(
+        typer.echo(
             f"require_toolkit={require_toolkit} web_search={web_search} time={time}"
         )
 

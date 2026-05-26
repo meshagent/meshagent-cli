@@ -5,8 +5,8 @@ from typing import Annotated, Optional
 import os
 import importlib.util
 from pathlib import Path
-import click
 import shlex
+from typer import _click as typer_click
 
 from rich import print
 
@@ -125,7 +125,7 @@ def execute_via_root(app, line: str, *, prog_name="meshagent") -> int:
     try:
         cmd.main(args=shlex.split(line), prog_name=prog_name, standalone_mode=False)
         return 0
-    except click.ClickException as e:
+    except typer_click.exceptions.ClickException as e:
         e.show()
         return e.exit_code
 
