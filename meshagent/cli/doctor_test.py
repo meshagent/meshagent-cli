@@ -191,8 +191,6 @@ def test_doctor_fix_skips_node_project_without_ncc_metadata(tmp_path) -> None:
         MESHAGENT_CLIENT_VERSION
     )
 
-<<<<<<< HEAD
-=======
 
 def test_doctor_fix_writes_node_dockerfile_when_ncc_metadata_matches(
     tmp_path,
@@ -221,7 +219,6 @@ def test_doctor_fix_writes_node_dockerfile_when_ncc_metadata_matches(
     assert "LABEL meshagent.runtime=node" in dockerfile
 
 
->>>>>>> main
 def test_doctor_fix_reports_no_autofix_for_empty_project(tmp_path) -> None:
     (tmp_path / ".gitkeep").write_text("", encoding="utf-8")
 
