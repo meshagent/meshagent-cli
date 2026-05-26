@@ -42,7 +42,7 @@ from textual._context import active_app
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.events import Key
-from textual.widgets import Input, OptionList, RichLog, Static
+from textual.widgets import Input, Log, OptionList, Static
 from textual.widgets.option_list import Option
 
 DEPLOY_ROOM_CANCEL_OPTION_ID = "__deploy_room_cancel__"
@@ -888,7 +888,7 @@ class DeployProgressApp(App[None]):
         self._input_view: Input | None = None
         self._options_view: OptionList | None = None
         self._error_view: Static | None = None
-        self._log_view: RichLog | None = None
+        self._log_view: Log | None = None
         self._help_view: Static | None = None
         self._log_lines: list[str] = []
         self._last_status_message = "Starting deploy..."
@@ -915,7 +915,7 @@ class DeployProgressApp(App[None]):
         yield Input(id="deploy-progress-input", placeholder="value")
         yield OptionList(id="deploy-progress-options")
         yield Static("", id="deploy-progress-error")
-        yield RichLog(id="deploy-progress-log", wrap=True, markup=False)
+        yield Log(id="deploy-progress-log")
         yield Static("Ctrl+C cancels.", id="deploy-progress-help")
 
     async def on_mount(self) -> None:
@@ -924,7 +924,7 @@ class DeployProgressApp(App[None]):
         self._input_view = self.query_one("#deploy-progress-input", Input)
         self._options_view = self.query_one("#deploy-progress-options", OptionList)
         self._error_view = self.query_one("#deploy-progress-error", Static)
-        self._log_view = self.query_one("#deploy-progress-log", RichLog)
+        self._log_view = self.query_one("#deploy-progress-log", Log)
         self._help_view = self.query_one("#deploy-progress-help", Static)
         self._hide_prompt()
         self._set_log_visible(False)
@@ -1023,6 +1023,9 @@ class DeployProgressApp(App[None]):
 
     async def action_cancel_deploy(self) -> None:
         if self._copy_selected_text_to_clipboard():
+            return
+        if self._prompt_mode == "finished":
+            self.exit()
             return
         if self._prompt_future is not None and not self._prompt_future.done():
             if self._prompt_mode == "domain":
@@ -1188,17 +1191,21 @@ class DeployProgressApp(App[None]):
             except TimeoutError:
                 pass
             if self.result.status == "error":
-                self._prompt_mode = "finished"
-                if self._input_view is not None:
-                    self._input_view.display = False
-                if self._options_view is not None:
-                    self._options_view.display = False
-                self._set_detail("")
-                self._clear_error()
-                self._set_help("Deploy failed.")
-                self.exit()
+                self._show_finished_error()
                 return
             self.exit()
+
+    def _show_finished_error(self) -> None:
+        self._prompt_mode = "finished"
+        if self._input_view is not None:
+            self._input_view.display = False
+        if self._options_view is not None:
+            self._options_view.display = False
+        self._set_detail("")
+        self._clear_error()
+        self._set_help(
+            "Deploy failed. Press Enter, Esc, or Ctrl+C to exit. Ctrl+Y copies logs."
+        )
 
     async def _consume_events(self) -> None:
         while True:
@@ -1399,7 +1406,10 @@ class DeployProgressApp(App[None]):
         self._log_lines.extend(message.rstrip().splitlines() or [""])
         self._log_lines = self._log_lines[-200:]
         if self._log_view is not None:
-            self._log_view.write(message.rstrip("\n"), scroll_end=True)
+            self._log_view.write_lines(
+                message.rstrip("\n").splitlines() or [""],
+                scroll_end=True,
+            )
 
     async def on_unmount(self) -> None:
         if self._consumer_task is not None:

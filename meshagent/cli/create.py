@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from importlib import resources
+from importlib.resources.abc import Traversable
 from pathlib import Path
 import shlex
 import sys
@@ -44,7 +45,6 @@ IGNORED_DIR_NAMES = {
     ".git",
     ".venv",
     "__pycache__",
-    "bin",
     "build",
     "dist",
     "node_modules",
@@ -62,6 +62,7 @@ AGENT_FOCUS = "backend-agent"
 CHATBOT_FOCUS = "chatbot"
 ANTHROPIC_CHATBOT_FOCUS = "chatbot-anthropic"
 CHATBOT_UI_FOCUS = "chatbot-ui"
+ROOM_CHAT_FOCUS = "room-chat"
 CONTACT_FORM_FOCUS = "contact-form"
 DEFAULT_LANGUAGE = "python"
 DEFAULT_FOCUS = AGENT_FOCUS
@@ -75,7 +76,7 @@ class CreateTemplate:
     focus_id: str
     label: str
     description: str
-    files: Mapping[str, str]
+    template_dir: str
     next_steps: tuple[str, ...]
 
 
@@ -154,9 +155,30 @@ AGENT_PROCESS_NAMES = {
     "dotnet": "meshagent-create-dotnet-agent",
     "dart-flutter": "meshagent-create-dart-agent",
 }
-COMMON_GUIDANCE_FILES: Mapping[str, str] = {
-    "AGENTS.md": "_common/AGENTS.md",
-    "CLAUDE.md": "_common/CLAUDE.md",
+TEMPLATE_IGNORED_DIR_NAMES = {
+    ".git",
+    ".mypy_cache",
+    ".next",
+    ".npm-cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+    "obj",
+    "target",
+    "venv",
+}
+TEMPLATE_IGNORED_FILE_NAMES = {
+    ".DS_Store",
+    ".gitkeep",
+    "package-lock.json",
+}
+TEMPLATE_IGNORED_SUFFIXES = {
+    ".pyc",
+    ".pyo",
 }
 
 LANGUAGES: Mapping[str, CreateLanguage] = {
@@ -218,6 +240,11 @@ FOCUSES: Mapping[str, CreateFocus] = {
         label="Agent UI",
         description="Browser chat interface for a deployed MeshAgent agent.",
     ),
+    ROOM_CHAT_FOCUS: CreateFocus(
+        id=ROOM_CHAT_FOCUS,
+        label="Room Chat",
+        description="Browser multi-user chat backed by the room messaging API.",
+    ),
     CONTACT_FORM_FOCUS: CreateFocus(
         id=CONTACT_FORM_FOCUS,
         label="Contact Form",
@@ -226,33 +253,8 @@ FOCUSES: Mapping[str, CreateFocus] = {
 }
 
 
-def _template_files(
-    language_id: str,
-    focus_id: str,
-    file_names: Sequence[str],
-) -> Mapping[str, str]:
-    files = {
-        "README.md": f"{language_id}/{focus_id}/README.md",
-        ".meshagent/deploy.yaml": f"{language_id}/{focus_id}/.meshagent/deploy.yaml",
-        **COMMON_GUIDANCE_FILES,
-    }
-    files.update(
-        {file_name: f"{language_id}/{focus_id}/{file_name}" for file_name in file_names}
-    )
-    return files
-
-
-def _with_project_guidance_files(
-    language_id: str,
-    focus_id: str,
-    files: Mapping[str, str],
-) -> Mapping[str, str]:
-    return {
-        "README.md": f"{language_id}/{focus_id}/README.md",
-        ".meshagent/deploy.yaml": f"{language_id}/{focus_id}/.meshagent/deploy.yaml",
-        **COMMON_GUIDANCE_FILES,
-        **files,
-    }
+def _template_dir(language_id: str, focus_id: str) -> str:
+    return f"{language_id}/{focus_id}"
 
 
 TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
@@ -261,19 +263,7 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         focus_id=WEB_FOCUS,
         label="Python Web App",
         description="Async Python public HTTP service with a health route.",
-        files=_template_files(
-            "python",
-            WEB_FOCUS,
-            (
-                "pyproject.toml",
-                "server.py",
-                "dev-content.json",
-                ".dockerignore",
-                "scripts/install.sh",
-                "scripts/dev.sh",
-                "scripts/deploy.sh",
-            ),
-        ),
+        template_dir=_template_dir("python", WEB_FOCUS),
         next_steps=WEBSERVER_NEXT_STEPS,
     ),
     ("python", AGENT_FOCUS): CreateTemplate(
@@ -281,18 +271,7 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         focus_id=AGENT_FOCUS,
         label="Python Agent Toolkit",
         description="Headless Python service that exposes custom tools to agents.",
-        files=_template_files(
-            "python",
-            AGENT_FOCUS,
-            (
-                "pyproject.toml",
-                "server.py",
-                ".dockerignore",
-                "scripts/install.sh",
-                "scripts/dev.sh",
-                "scripts/deploy.sh",
-            ),
-        ),
+        template_dir=_template_dir("python", AGENT_FOCUS),
         next_steps=AGENT_NEXT_STEPS,
     ),
     ("python", CONTACT_FORM_FOCUS): CreateTemplate(
@@ -300,18 +279,7 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         focus_id=CONTACT_FORM_FOCUS,
         label="Python Contact Form",
         description="Public aiohttp contact form that sends email through room SMTP.",
-        files=_template_files(
-            "python",
-            CONTACT_FORM_FOCUS,
-            (
-                "pyproject.toml",
-                "server.py",
-                ".dockerignore",
-                "scripts/install.sh",
-                "scripts/dev.sh",
-                "scripts/deploy.sh",
-            ),
-        ),
+        template_dir=_template_dir("python", CONTACT_FORM_FOCUS),
         next_steps=CONTACT_FORM_NEXT_STEPS,
     ),
     ("javascript", WEB_FOCUS): CreateTemplate(
@@ -319,17 +287,7 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         focus_id=WEB_FOCUS,
         label="JavaScript Web App",
         description="Node.js public HTTP service with a health route.",
-        files=_template_files(
-            "javascript",
-            WEB_FOCUS,
-            (
-                "package.json",
-                ".npmrc",
-                "server.js",
-                "dev-content.json",
-                ".dockerignore",
-            ),
-        ),
+        template_dir=_template_dir("javascript", WEB_FOCUS),
         next_steps=NPM_WEBSERVER_NEXT_STEPS,
     ),
     ("javascript", AGENT_FOCUS): CreateTemplate(
@@ -337,16 +295,7 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         focus_id=AGENT_FOCUS,
         label="JavaScript Agent Toolkit",
         description="Headless Node.js service that exposes custom tools to agents.",
-        files=_template_files(
-            "javascript",
-            AGENT_FOCUS,
-            (
-                "package.json",
-                ".npmrc",
-                "server.js",
-                ".dockerignore",
-            ),
-        ),
+        template_dir=_template_dir("javascript", AGENT_FOCUS),
         next_steps=NPM_AGENT_NEXT_STEPS,
     ),
     ("typescript", WEB_FOCUS): CreateTemplate(
@@ -354,18 +303,7 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         focus_id=WEB_FOCUS,
         label="TypeScript Web App",
         description="TypeScript public HTTP service with a health route.",
-        files=_template_files(
-            "typescript",
-            WEB_FOCUS,
-            (
-                "package.json",
-                ".npmrc",
-                "tsconfig.json",
-                "src/server.ts",
-                "src/dev-content.json",
-                ".dockerignore",
-            ),
-        ),
+        template_dir=_template_dir("typescript", WEB_FOCUS),
         next_steps=NPM_WEBSERVER_NEXT_STEPS,
     ),
     ("typescript", AGENT_FOCUS): CreateTemplate(
@@ -373,17 +311,7 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         focus_id=AGENT_FOCUS,
         label="TypeScript Agent Toolkit",
         description="Headless TypeScript service that exposes custom tools to agents.",
-        files=_template_files(
-            "typescript",
-            AGENT_FOCUS,
-            (
-                "package.json",
-                ".npmrc",
-                "tsconfig.json",
-                "src/server.ts",
-                ".dockerignore",
-            ),
-        ),
+        template_dir=_template_dir("typescript", AGENT_FOCUS),
         next_steps=NPM_AGENT_NEXT_STEPS,
     ),
     ("typescript", CHATBOT_FOCUS): CreateTemplate(
@@ -391,17 +319,7 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         focus_id=CHATBOT_FOCUS,
         label="TypeScript OpenAI Chatbot",
         description="Browser chatbot backed by the room OpenAI proxy.",
-        files=_with_project_guidance_files(
-            "typescript",
-            CHATBOT_FOCUS,
-            {
-                "package.json": "typescript/chatbot/package.json",
-                ".npmrc": "typescript/backend-agent/.npmrc",
-                "tsconfig.json": "typescript/backend-agent/tsconfig.json",
-                "src/server.ts": "typescript/chatbot/src/server.ts",
-                ".dockerignore": "typescript/backend-agent/.dockerignore",
-            },
-        ),
+        template_dir=_template_dir("typescript", CHATBOT_FOCUS),
         next_steps=NPM_WEBSERVER_NEXT_STEPS,
     ),
     ("typescript", ANTHROPIC_CHATBOT_FOCUS): CreateTemplate(
@@ -409,17 +327,7 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         focus_id=ANTHROPIC_CHATBOT_FOCUS,
         label="TypeScript Anthropic Chatbot",
         description="Browser chatbot backed by the room Anthropic proxy.",
-        files=_with_project_guidance_files(
-            "typescript",
-            ANTHROPIC_CHATBOT_FOCUS,
-            {
-                "package.json": "typescript/chatbot-anthropic/package.json",
-                ".npmrc": "typescript/backend-agent/.npmrc",
-                "tsconfig.json": "typescript/backend-agent/tsconfig.json",
-                "src/server.ts": "typescript/chatbot-anthropic/src/server.ts",
-                ".dockerignore": "typescript/backend-agent/.dockerignore",
-            },
-        ),
+        template_dir=_template_dir("typescript", ANTHROPIC_CHATBOT_FOCUS),
         next_steps=NPM_WEBSERVER_NEXT_STEPS,
     ),
     ("react", WEB_FOCUS): CreateTemplate(
@@ -427,21 +335,7 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         focus_id=WEB_FOCUS,
         label="React/Vite Web App",
         description="React/Vite browser app served as a public route.",
-        files=_template_files(
-            "react",
-            WEB_FOCUS,
-            (
-                "package.json",
-                ".npmrc",
-                "tsconfig.json",
-                "vite.config.ts",
-                "index.html",
-                "scripts/dev-content-toolkit.js",
-                "src/dev-content.json",
-                "src/main.tsx",
-                ".dockerignore",
-            ),
-        ),
+        template_dir=_template_dir("react", WEB_FOCUS),
         next_steps=NPM_STATIC_WEBSERVER_NEXT_STEPS,
     ),
     ("typescript", CHATBOT_UI_FOCUS): CreateTemplate(
@@ -449,22 +343,15 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         focus_id=CHATBOT_UI_FOCUS,
         label="TypeScript Agent UI",
         description="Browser chat interface for a deployed MeshAgent agent.",
-        files=_template_files(
-            "typescript",
-            CHATBOT_UI_FOCUS,
-            (
-                "package.json",
-                ".npmrc",
-                "tsconfig.json",
-                "next.config.ts",
-                "next-env.d.ts",
-                "app/layout.tsx",
-                "app/page.tsx",
-                "app/globals.css",
-                "app/health/route.ts",
-                ".dockerignore",
-            ),
-        ),
+        template_dir=_template_dir("typescript", CHATBOT_UI_FOCUS),
+        next_steps=NPM_CHATBOT_UI_NEXT_STEPS,
+    ),
+    ("typescript", ROOM_CHAT_FOCUS): CreateTemplate(
+        language_id="typescript",
+        focus_id=ROOM_CHAT_FOCUS,
+        label="TypeScript Room Chat",
+        description="Browser multi-user chat backed by the room messaging API.",
+        template_dir=_template_dir("typescript", ROOM_CHAT_FOCUS),
         next_steps=NPM_CHATBOT_UI_NEXT_STEPS,
     ),
     ("dotnet", WEB_FOCUS): CreateTemplate(
@@ -472,18 +359,7 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         focus_id=WEB_FOCUS,
         label=".NET Web App",
         description="ASP.NET Core public HTTP service with a health route.",
-        files=_template_files(
-            "dotnet",
-            WEB_FOCUS,
-            (
-                "MeshAgentHello.csproj",
-                "Program.cs",
-                ".dockerignore",
-                "scripts/install.sh",
-                "scripts/dev.sh",
-                "scripts/deploy.sh",
-            ),
-        ),
+        template_dir=_template_dir("dotnet", WEB_FOCUS),
         next_steps=WEBSERVER_NEXT_STEPS,
     ),
     ("dotnet", AGENT_FOCUS): CreateTemplate(
@@ -491,18 +367,7 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         focus_id=AGENT_FOCUS,
         label=".NET Agent Toolkit",
         description="Headless .NET service that exposes custom tools to agents.",
-        files=_template_files(
-            "dotnet",
-            AGENT_FOCUS,
-            (
-                "MeshAgentHello.csproj",
-                "Program.cs",
-                ".dockerignore",
-                "scripts/install.sh",
-                "scripts/dev.sh",
-                "scripts/deploy.sh",
-            ),
-        ),
+        template_dir=_template_dir("dotnet", AGENT_FOCUS),
         next_steps=AGENT_NEXT_STEPS,
     ),
     ("dart-flutter", WEB_FOCUS): CreateTemplate(
@@ -510,20 +375,7 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         focus_id=WEB_FOCUS,
         label="Flutter Web App",
         description="Flutter browser app served as a public route.",
-        files=_template_files(
-            "dart-flutter",
-            WEB_FOCUS,
-            (
-                "pubspec.yaml",
-                "lib/main.dart",
-                "tool/dev_room_proof.dart",
-                "web/index.html",
-                ".dockerignore",
-                "scripts/install.sh",
-                "scripts/dev.sh",
-                "scripts/deploy.sh",
-            ),
-        ),
+        template_dir=_template_dir("dart-flutter", WEB_FOCUS),
         next_steps=STATIC_WEBSERVER_NEXT_STEPS,
     ),
     ("dart-flutter", AGENT_FOCUS): CreateTemplate(
@@ -531,18 +383,7 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         focus_id=AGENT_FOCUS,
         label="Dart Agent Toolkit",
         description="Headless Dart service that exposes custom tools to agents.",
-        files=_template_files(
-            "dart-flutter",
-            AGENT_FOCUS,
-            (
-                "pubspec.yaml",
-                "bin/server.dart",
-                ".dockerignore",
-                "scripts/install.sh",
-                "scripts/dev.sh",
-                "scripts/deploy.sh",
-            ),
-        ),
+        template_dir=_template_dir("dart-flutter", AGENT_FOCUS),
         next_steps=AGENT_NEXT_STEPS,
     ),
 }
@@ -596,6 +437,12 @@ FOCUS_ALIASES = {
     "chat_ui": CHATBOT_UI_FOCUS,
     "chatbot-ui": CHATBOT_UI_FOCUS,
     "chatbot_ui": CHATBOT_UI_FOCUS,
+    "multi-user-chat": ROOM_CHAT_FOCUS,
+    "multi_user_chat": ROOM_CHAT_FOCUS,
+    "room-chat": ROOM_CHAT_FOCUS,
+    "room_chat": ROOM_CHAT_FOCUS,
+    "room-ui": ROOM_CHAT_FOCUS,
+    "room_ui": ROOM_CHAT_FOCUS,
     "contact": CONTACT_FORM_FOCUS,
     "contact-form": CONTACT_FORM_FOCUS,
     "contact_form": CONTACT_FORM_FOCUS,
@@ -637,10 +484,15 @@ def _has_existing_project_content(root: Path) -> bool:
 
 
 def _read_create_template(template_name: str) -> str:
+    resource = _create_template_resource(template_name)
+    return resource.read_text(encoding="utf-8")
+
+
+def _create_template_resource(template_name: str) -> Traversable:
     resource = resources.files(CREATE_TEMPLATE_PACKAGE)
     for part in template_name.split("/"):
         resource = resource.joinpath(part)
-    return resource.read_text(encoding="utf-8")
+    return resource
 
 
 def _render_create_template(template_name: str) -> str:
@@ -657,6 +509,41 @@ def _write_file(path: Path, template_name: str) -> None:
     path.write_text(_render_create_template(template_name), encoding="utf-8")
     if path.suffix == ".sh":
         path.chmod(0o755)
+
+
+def _is_ignored_template_path(path: Path) -> bool:
+    if any(part in TEMPLATE_IGNORED_DIR_NAMES for part in path.parts[:-1]):
+        return True
+    if path.name in TEMPLATE_IGNORED_FILE_NAMES:
+        return True
+    return path.suffix in TEMPLATE_IGNORED_SUFFIXES
+
+
+def _walk_template_files(template_dir: str) -> tuple[str, ...]:
+    root = _create_template_resource(template_dir)
+    if not root.is_dir():
+        raise FileNotFoundError(f"Create template directory not found: {template_dir}")
+
+    files: list[str] = []
+
+    def walk(resource: Traversable, relative_dir: Path) -> None:
+        children = sorted(resource.iterdir(), key=lambda child: child.name)
+        for child in children:
+            relative_path = relative_dir / child.name
+            if child.is_dir():
+                if child.name not in TEMPLATE_IGNORED_DIR_NAMES:
+                    walk(child, relative_path)
+                continue
+            if _is_ignored_template_path(relative_path):
+                continue
+            files.append(relative_path.as_posix())
+
+    walk(root, Path())
+    return tuple(files)
+
+
+def _template_output_files(template: CreateTemplate) -> tuple[str, ...]:
+    return _walk_template_files(template.template_dir)
 
 
 def _supported_language_text() -> str:
@@ -832,8 +719,8 @@ def _new_project_subfolder(root: Path, folder_name: str | None) -> Path:
 
 
 def _write_template(root: Path, template: CreateTemplate) -> None:
-    for name, template_name in template.files.items():
-        _write_file(root / name, template_name)
+    for name in _walk_template_files(template.template_dir):
+        _write_file(root / name, f"{template.template_dir}/{name}")
 
 
 def _next_step_sections(
@@ -941,7 +828,7 @@ def _print_created_report(
 ) -> None:
     typer.echo("")
     typer.echo(f"Created a minimal deployable {template.label} project:")
-    for name in template.files:
+    for name in _template_output_files(template):
         typer.echo(f"  {name}")
     typer.echo("")
     _print_next_steps(template.next_steps, enter_project_root=enter_project_root)
@@ -980,7 +867,7 @@ def _create_command(
                 "Project focus for non-interactive use. Use stable IDs: webserver "
                 "(Web App), backend-agent (Agent Toolkit), chatbot (OpenAI Chatbot), "
                 "chatbot-anthropic (Anthropic Chatbot), chatbot-ui (Agent UI), "
-                "or contact-form (Contact Form)."
+                "room-chat (Room Chat), or contact-form (Contact Form)."
             ),
         ),
     ] = None,

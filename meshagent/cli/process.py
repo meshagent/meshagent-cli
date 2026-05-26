@@ -2828,6 +2828,8 @@ def _token_from_websocket_protocol_header(request: web.Request) -> str | None:
 
     for protocol in protocols.split(","):
         normalized = protocol.strip()
+        if normalized[:16].casefold() == "meshagent-agent.":
+            return normalized[16:]
         if normalized[:16].casefold() == "meshagent-token.":
             return normalized[16:]
         if normalized[:7].casefold() == "bearer.":

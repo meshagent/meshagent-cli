@@ -1,0 +1,37 @@
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: typescript-room-chat
+  description: TypeScript Room Chat created by meshagent create.
+variables:
+  - name: image
+    title: Container image
+    description: Image tag built and deployed by meshagent deploy.
+    optional: true
+  - name: domain
+    title: Private domain
+    description: Private room route domain for the deployed web service.
+    type: route
+    optional: true
+container:
+  image: meshagent/node:default
+  template: none
+  command: node server.js
+  working_dir: /app
+  environment:
+    - name: HOSTNAME
+      value: "0.0.0.0"
+    - name: PORT
+      value: "3000"
+  storage:
+    images:
+      - image: "{{ image }}"
+        path: /app
+        subpath: app
+        read_only: true
+  private: false
+ports:
+  - num: 3000
+    type: http
+    published: true
+    liveness: /health

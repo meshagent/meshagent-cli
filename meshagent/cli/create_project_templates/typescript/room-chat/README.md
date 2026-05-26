@@ -1,0 +1,30 @@
+# TypeScript Room Chat
+
+Browser multi-user chat for a MeshAgent room. The app connects with `RoomClient.withIAP()`, so deployed users authenticate through the room IAP cookie instead of a browser-visible access token.
+
+## Next Steps
+
+1. Install dependencies:
+
+   ```bash
+   npm install
+   ```
+
+2. Run locally:
+
+   ```bash
+   npm run dev
+   ```
+
+   The dev script runs through `meshagent room connect` and starts a local raw
+   websocket proxy at `/.well-known/meshagent/room/connect`. Browser clients connect to that
+   relative endpoint while the dev server forwards the websocket upgrade to the
+   connected room using the `MESHAGENT_TOKEN` supplied to the process.
+
+3. Deploy:
+
+   ```bash
+   npm run deploy
+   ```
+
+Open the deployed private route from a room-authenticated browser session. The client connects to `./.well-known/meshagent/room/connect`, lists remote room messaging participants, and sends direct chat messages to the selected participant.

@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+from textual.widgets import Log
 import typer
 
 from meshagent.cli.tui import deploy_room
@@ -9,6 +10,7 @@ from meshagent.cli.tui.deploy_room import (
     DeployDomainPromptResult,
     DeployProgressApp,
     DeployProgressHandle,
+    DeployProgressResult,
     DeployTemplateVariablePrompt,
     DeployTemplateVariablesResult,
     DeployTemplateVariablesApp,
@@ -69,6 +71,17 @@ def test_deploy_template_variables_rejects_empty_required_value() -> None:
 
     assert app.result.status == "canceled"
     assert app._index == 0
+
+
+def test_deploy_progress_uses_selectable_log_widget() -> None:
+    app = DeployProgressApp(operation=lambda handle: asyncio.sleep(0))
+
+    log_widget = next(
+        widget for widget in app.compose() if widget.id == "deploy-progress-log"
+    )
+
+    assert isinstance(log_widget, Log)
+    assert log_widget.allow_select is True
 
 
 @pytest.mark.asyncio
@@ -166,6 +179,7 @@ async def test_deploy_progress_error_uses_last_status_message(
 ) -> None:
     captured_statuses: list[str] = []
     captured_logs: list[str] = []
+    help_messages: list[str] = []
     exited = False
 
     async def _operation(handle: DeployProgressHandle) -> None:
@@ -183,7 +197,7 @@ async def test_deploy_progress_error_uses_last_status_message(
     monkeypatch.setattr(app, "_set_log_visible", lambda visible: None)
     monkeypatch.setattr(app, "_set_detail", lambda message: None)
     monkeypatch.setattr(app, "_clear_error", lambda: None)
-    monkeypatch.setattr(app, "_set_help", lambda message: None)
+    monkeypatch.setattr(app, "_set_help", help_messages.append)
     monkeypatch.setattr(app, "exit", lambda *args, **kwargs: nonlocal_set_exited())
 
     consumer_task = asyncio.create_task(app._consume_events())
@@ -200,11 +214,15 @@ async def test_deploy_progress_error_uses_last_status_message(
         "Deploy failed: Service container exited before the service was live",
     ]
     assert captured_logs == ["Service container exited before the service was live"]
-    assert exited
+    assert app._prompt_mode == "finished"
+    assert help_messages[-1] == (
+        "Deploy failed. Press Enter, Esc, or Ctrl+C to exit. Ctrl+Y copies logs."
+    )
+    assert exited is False
 
 
 @pytest.mark.asyncio
-async def test_deploy_progress_error_exits_when_event_queue_does_not_drain(
+async def test_deploy_progress_error_stays_open_when_event_queue_does_not_drain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     exited = False
@@ -229,6 +247,33 @@ async def test_deploy_progress_error_exits_when_event_queue_does_not_drain(
     monkeypatch.setattr(app, "exit", lambda *args, **kwargs: nonlocal_set_exited())
 
     await asyncio.wait_for(app._run_operation(), timeout=0.2)
+
+    assert app.result.status == "error"
+    assert app.result.message == "Status=400, body=validation failed"
+    assert app._prompt_mode == "finished"
+    assert exited is False
+
+
+@pytest.mark.asyncio
+async def test_deploy_progress_ctrl_c_exits_finished_error_without_canceling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exited = False
+    app = DeployProgressApp(operation=lambda handle: asyncio.sleep(0))
+    app._prompt_mode = "finished"
+    app.result = DeployProgressResult(
+        status="error",
+        message="Status=400, body=validation failed",
+    )
+
+    def nonlocal_set_exited() -> None:
+        nonlocal exited
+        exited = True
+
+    monkeypatch.setattr(app, "_copy_selected_text_to_clipboard", lambda: False)
+    monkeypatch.setattr(app, "exit", lambda *args, **kwargs: nonlocal_set_exited())
+
+    await app.action_cancel_deploy()
 
     assert app.result.status == "error"
     assert app.result.message == "Status=400, body=validation failed"
