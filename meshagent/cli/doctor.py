@@ -8,7 +8,6 @@ from pathlib import Path
 import re
 import shlex
 import shutil
-import textwrap
 import tomllib
 from typing import Annotated, Iterable
 import xml.etree.ElementTree as ET
@@ -18,7 +17,6 @@ from rich.console import Console
 from rich.markup import escape
 
 from meshagent.cli import async_typer
-from meshagent.cli.meshagent_images import meshagent_image_prefix
 from meshagent.cli.version import __version__ as MESHAGENT_CLIENT_VERSION
 
 
