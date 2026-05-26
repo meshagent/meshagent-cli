@@ -19,6 +19,7 @@ from typer.main import except_hook
 from typer.main import get_command as get_typer_command
 from typer.main import get_group as get_typer_group
 from typer.main import get_install_completion_arguments
+from typer.core import TyperCommand, TyperGroup
 
 T = TypeVar("T")
 
@@ -136,6 +137,8 @@ class LazyLoadedCommand(click.Command):
 
 def _coerce_to_click_command(target: Any) -> click.Command:
     if isinstance(target, click.Command):
+        return target
+    if isinstance(target, (TyperCommand, TyperGroup)):
         return target
     if isinstance(target, Typer):
         return get_command(target)

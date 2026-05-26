@@ -71,6 +71,15 @@ def test_root_registers_create_and_doctor_as_visible_commands() -> None:
     assert "init" not in registrations
 
 
+def test_lazy_loader_accepts_typer_command_targets(monkeypatch) -> None:
+    from meshagent.cli.ask import ask_command
+
+    non_matching_click_command = type("NonMatchingClickCommand", (), {})
+    monkeypatch.setattr(async_typer.click, "Command", non_matching_click_command)
+
+    assert async_typer._coerce_to_click_command(ask_command) is ask_command
+
+
 def test_app_prints_room_exception_without_traceback(capsys) -> None:
     app = async_typer.AsyncTyper()
 
