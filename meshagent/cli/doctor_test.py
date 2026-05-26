@@ -935,6 +935,22 @@ def test_doctor_reports_existing_dockerfile(tmp_path) -> None:
     assert "[ok] Deployment artifact found: Dockerfile" in result.output
 
 
+def test_doctor_warns_when_deploy_spec_exists_without_dockerfile(tmp_path) -> None:
+    (tmp_path / ".meshagent").mkdir()
+    (tmp_path / ".meshagent" / "deploy.yaml").write_text("", encoding="utf-8")
+    (tmp_path / "server.py").write_text(
+        "print('python app')\nif '/health': pass\nPORT = 8000\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "[ok] Deployment artifact found: .meshagent/deploy.yaml" in result.output
+    assert "[warning] Dockerfile missing: add Dockerfile or meshagent.yaml" in result.output
+    assert "[ok] Deploy spec found: .meshagent/deploy.yaml" in result.output
+
+
 def test_doctor_warns_for_non_optimized_python_dockerfile(tmp_path) -> None:
     (tmp_path / "Dockerfile").write_text(
         'FROM python:3.13-slim\nWORKDIR /app\nCOPY . .\nCMD ["python", "server.py"]\n',

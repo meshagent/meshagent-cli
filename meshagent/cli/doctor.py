@@ -1734,7 +1734,7 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
             "ok",
             "Deployment artifact found: " + ", ".join(diagnosis.deployment_artifacts),
         )
-    else:
+    if not diagnosis.has_dockerfile:
         _echo_finding(
             "warning",
             "Dockerfile missing: add Dockerfile or meshagent.yaml",
@@ -1851,7 +1851,7 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
         else:
             _echo_finding(
                 "ok",
-                f"Python Dockerfile check targets Python {PYTHON_REQUIRED_VERSION}",
+                f"Python runtime metadata allows Python {PYTHON_REQUIRED_VERSION}",
             )
         if diagnosis.python_virtualenv_versions:
             if any(
@@ -1919,12 +1919,6 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
             typer.echo(
                 f"   - {fix.description}: {_display_path(diagnosis.root, fix.path)}"
             )
-        next_step_number += 1
-    if not diagnosis.has_deployment_artifact and diagnosis.dockerfile != "":
-        typer.echo(f"{next_step_number}. Add a Dockerfile like:")
-        typer.echo("")
-        typer.echo(textwrap.indent(diagnosis.dockerfile, "   "))
-        typer.echo("")
         next_step_number += 1
     sdk_checks = _sdk_checks(diagnosis)
     if sdk_checks:
