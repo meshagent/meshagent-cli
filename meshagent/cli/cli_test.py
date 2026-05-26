@@ -1,5 +1,8 @@
 import warnings
+import sys
+import types
 
+import click
 from click.testing import CliRunner
 import pytest
 
@@ -78,6 +81,36 @@ def test_lazy_loader_accepts_typer_command_targets(monkeypatch) -> None:
     monkeypatch.setattr(async_typer.click, "Command", non_matching_click_command)
 
     assert async_typer._coerce_to_click_command(ask_command) is ask_command
+
+
+def test_lazy_loader_resolves_command_path_from_typer_group(monkeypatch) -> None:
+    module = types.ModuleType("meshagent.cli._lazy_path_test")
+    module.app = async_typer.AsyncTyper()
+
+    @module.app.command("describe")
+    def describe_command() -> None:
+        pass
+
+    @module.app.command("build", hidden=True)
+    def build_command() -> None:
+        pass
+
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    monkeypatch.setattr(
+        async_typer,
+        "get_typer_command",
+        lambda _target: click.Command("describe"),
+    )
+
+    command = async_typer.LazyLoadedCommand(
+        registration=async_typer.LazyCommandRegistration(
+            name="build",
+            module=module.__name__,
+            command_path=("build",),
+        )
+    )
+
+    assert command._load_command().name == "build"
 
 
 def test_app_prints_room_exception_without_traceback(capsys) -> None:

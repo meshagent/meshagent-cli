@@ -65,7 +65,11 @@ class LazyLoadedCommand(click.Command):
             ) from exc
 
         source_app = target if isinstance(target, AsyncTyper) else None
-        command = _coerce_to_click_command(target)
+        command = (
+            _coerce_to_click_group(target)
+            if len(self._registration.command_path) > 0
+            else _coerce_to_click_command(target)
+        )
         for segment in self._registration.command_path:
             if not isinstance(command, click.Group):
                 raise RuntimeError(
@@ -102,7 +106,7 @@ class LazyLoadedCommand(click.Command):
                 f"{self._registration.module} has no attribute {self._registration.attribute}"
             ) from exc
 
-        command = _coerce_to_click_command(target)
+        command = _coerce_to_click_group(target)
         if not isinstance(command, click.Group):
             return self._load_command(), args
 
@@ -143,6 +147,16 @@ def _coerce_to_click_command(target: Any) -> click.Command:
     if isinstance(target, Typer):
         return get_command(target)
     raise TypeError(f"Unsupported lazy command target: {target!r}")
+
+
+def _coerce_to_click_group(target: Any) -> click.Group:
+    if isinstance(target, click.Group):
+        return target
+    if isinstance(target, TyperGroup):
+        return target
+    if isinstance(target, Typer):
+        return get_typer_group(target)
+    raise TypeError(f"Unsupported lazy command group target: {target!r}")
 
 
 def _materialize_command(command: click.Command) -> click.Command:
