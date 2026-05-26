@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from click.testing import CliRunner
+from typer._click.testing import CliRunner
 import pytest
 import typer
 

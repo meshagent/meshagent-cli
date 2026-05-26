@@ -2,7 +2,6 @@ import json
 import os
 from typing import Annotated, Any, Awaitable, Callable, Literal, Optional
 
-import click
 import typer
 from rich import print
 
@@ -426,14 +425,14 @@ async def _run_agent_use_tui(
 
             def _write_message(agent_message: AgentMessage) -> None:
                 if isinstance(agent_message, AgentTextContentDelta):
-                    click.echo(agent_message.text, nl=False)
+                    typer.echo(agent_message.text, nl=False)
 
             response_text = await session.ask(
                 prompt=message,
                 on_message=_write_message if output == "text" else None,
             )
             if output == "json":
-                click.echo(
+                typer.echo(
                     json.dumps(
                         {
                             "thread_path": session.thread_id,
@@ -443,7 +442,7 @@ async def _run_agent_use_tui(
                     )
                 )
             else:
-                click.echo()
+                typer.echo()
             return
 
         await ask_module._run_ask_tui(

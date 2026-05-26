@@ -4,7 +4,7 @@ import io
 
 import pytest
 import typer
-from click.testing import CliRunner
+from typer._click.testing import CliRunner
 from PIL import Image
 
 from meshagent.agents import AgentSessionContext
@@ -1264,7 +1264,7 @@ async def test_ask_command_uses_oauth_token_and_renders_markdown_by_default(
     monkeypatch.setattr(ask_module, "Console", _FakeConsole)
     monkeypatch.setattr(ask_module, "Markdown", lambda text: ("markdown", text))
     monkeypatch.setattr(
-        ask_module.click,
+        ask_module.typer,
         "echo",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("streaming output should not be used")
@@ -1440,7 +1440,7 @@ async def test_ask_command_prints_markdown_without_streaming(monkeypatch) -> Non
     monkeypatch.setattr(ask_module, "Console", _FakeConsole)
     monkeypatch.setattr(ask_module, "Markdown", lambda text: ("markdown", text))
     monkeypatch.setattr(
-        ask_module.click,
+        ask_module.typer,
         "echo",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("streaming output should not be used")
@@ -1527,7 +1527,7 @@ async def test_ask_command_requires_message_when_not_tty(monkeypatch) -> None:
         ask_module.auth_async, "get_access_token", _fake_get_access_token
     )
     monkeypatch.setattr(ask_module, "resolve_project_id", _fake_resolve_project_id)
-    monkeypatch.setattr(ask_module.click, "echo", printed.append)
+    monkeypatch.setattr(ask_module.typer, "echo", printed.append)
     monkeypatch.setattr(ask_module.sys, "stdin", _FakeTTY(is_tty=False))
     monkeypatch.setattr(ask_module.sys, "stdout", _FakeTTY(is_tty=False))
 
@@ -1558,7 +1558,7 @@ async def test_ask_command_requires_oauth_access_token(monkeypatch) -> None:
         ask_module.auth_async, "get_access_token", _fake_get_access_token
     )
     monkeypatch.setattr(ask_module, "resolve_project_id", _fake_resolve_project_id)
-    monkeypatch.setattr(ask_module.click, "echo", printed.append)
+    monkeypatch.setattr(ask_module.typer, "echo", printed.append)
 
     with pytest.raises(typer.Exit) as exc:
         await ask_module.ask(
@@ -1607,7 +1607,7 @@ async def test_ask_command_prefers_meshagent_token_over_oauth(monkeypatch) -> No
     def _fake_echo(*args: object, **kwargs: object) -> None:
         printed.append((args, dict(kwargs)))
 
-    monkeypatch.setattr(ask_module.click, "echo", _fake_echo)
+    monkeypatch.setattr(ask_module.typer, "echo", _fake_echo)
 
     await ask_module.ask(
         project_id="project-123",

@@ -4,7 +4,9 @@ import inspect
 from pathlib import Path
 from typing import Literal
 
-import click
+import typer
+from typer import _click as click
+from typer.core import TyperOption
 import aiohttp
 import pytest
 
@@ -297,7 +299,7 @@ def test_join_help_uses_canonical_tool_flag_names(
     visible_options = {
         option
         for param in join_command.params
-        if isinstance(param, click.Option) and not param.hidden
+        if isinstance(param, TyperOption) and not param.hidden
         for option in param.opts
     }
 
@@ -316,7 +318,7 @@ def test_chatbot_use_help_hides_removed_tool_request_options() -> None:
             for option in param.opts
         )
         for param in use_command.params
-        if isinstance(param, click.Option)
+        if isinstance(param, TyperOption)
     )
 
 
@@ -374,7 +376,7 @@ def test_resolved_channels_accept_websocket_channel_url() -> None:
 
 
 def test_resolved_channels_reject_websocket_channel_without_port() -> None:
-    with pytest.raises(click.BadParameter):
+    with pytest.raises(typer.BadParameter):
         process._resolved_channels(
             runtime="process",
             channel=["websocket://127.0.0.1"],

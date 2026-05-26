@@ -1,9 +1,11 @@
 import asyncio
+from typing import Annotated
 
-import click
+import typer
 from rich import print
 
 from meshagent.api.client import User
+from meshagent.cli import async_typer
 from meshagent.cli.async_typer import _run_coroutine_sync
 from meshagent.cli.version import __version__
 from meshagent.cli.version_check import get_server_version_best_effort
@@ -55,24 +57,29 @@ def _current_meshagent_executable() -> str | None:
     return resolve_current_meshagent_executable()
 
 
-@click.command(
+app = async_typer.AsyncTyper()
+
+
+@app.command(
     "version",
     help="Print the version",
 )
-def version_command():
+def _version_command() -> None:
     server_version = _run_coroutine_sync(get_server_version_best_effort())
     print(f"client: {__version__}")
     print(f"server: {server_version or 'unavailable'}")
 
 
-@click.command("setup")
-@click.option(
-    "--api-url",
-    type=str,
-    default=None,
-    help="Persist this API URL on the saved profile and use it for setup login.",
-)
-def setup_command(api_url: str | None = None):
+@app.command("setup")
+def _setup_command(
+    api_url: Annotated[
+        str | None,
+        typer.Option(
+            "--api-url",
+            help="Persist this API URL on the saved profile and use it for setup login.",
+        ),
+    ] = None,
+) -> None:
     """Perform initial login and project/api key activation."""
 
     async def runner():
@@ -348,3 +355,8 @@ def setup_command(api_url: str | None = None):
         from meshagent.cli.create import create_command
 
         create_command.main(args=["--interactive"], standalone_mode=False)
+
+
+_root_command_group = async_typer.get_command(app)
+version_command = _root_command_group.commands["version"]
+setup_command = _root_command_group.commands["setup"]

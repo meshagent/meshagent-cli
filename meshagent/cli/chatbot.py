@@ -1,5 +1,5 @@
 import typer
-import click
+from typer._click.globals import get_current_context
 from rich import print
 from typing import Annotated, Any, Optional, List, Literal, Awaitable, Callable
 import inspect
@@ -456,9 +456,9 @@ async def _run_process_run_tui(
         if message is not None:
             await session.ask(
                 prompt=message,
-                on_delta=lambda text: click.echo(text, nl=False),
+                on_delta=lambda text: typer.echo(text, nl=False),
             )
-            click.echo()
+            typer.echo()
             return
 
         await ask_module._run_ask_tui(
@@ -761,9 +761,9 @@ async def _run_process_use_tui(
         if message is not None:
             await session.ask(
                 prompt=message,
-                on_delta=lambda text: click.echo(text, nl=False),
+                on_delta=lambda text: typer.echo(text, nl=False),
             )
-            click.echo()
+            typer.echo()
             return
 
         await ask_module._run_ask_tui(
@@ -931,7 +931,7 @@ class _ToolkitChannelConfig:
 
 
 def _current_command_runtime() -> Literal["chatbot", "process"]:
-    context = click.get_current_context(silent=True)
+    context = get_current_context(silent=True)
     while context is not None:
         info_name = context.info_name
         if info_name == "chatbot":

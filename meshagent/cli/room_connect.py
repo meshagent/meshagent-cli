@@ -5,14 +5,16 @@ import os
 import subprocess
 from typing import Sequence
 
-import click
+import jwt
+import typer
+from typer import _click as typer_click
 from pydantic import ValidationError
 from rich import print
 
 from meshagent.api import ApiScope, ParticipantToken, RoomException
 from meshagent.api.client import NotFoundError
 from meshagent.api.helpers import websocket_room_url
-from meshagent.cli import async_typer
+from meshagent.cli import async_typer, auth_async
 from meshagent.cli.helper import (
     CustomMeshagentClient,
     get_client,
@@ -53,15 +55,40 @@ def _normalize_room_url(*, room_url: str) -> str:
     return normalized
 
 
+def _is_participant_token(*, value: str) -> bool:
+    try:
+        ParticipantToken.from_jwt(value, validate=False)
+    except jwt.InvalidTokenError:
+        return False
+    return True
+
+
+async def _get_account_client_for_room_connect(*, room: str) -> CustomMeshagentClient:
+    meshagent_token = os.getenv("MESHAGENT_TOKEN")
+    if (
+        meshagent_token is not None
+        and os.getenv("MESHAGENT_API_KEY") is None
+        and os.getenv("MESHAGENT_SESSION_ID") is None
+        and room != os.getenv("MESHAGENT_ROOM")
+        and _is_participant_token(value=meshagent_token)
+    ):
+        return CustomMeshagentClient(
+            base_url=resolve_api_url(),
+            token=await auth_async.get_access_token(),
+        )
+
+    return await get_client()
+
+
 def _parse_environment_variables(*, values: Sequence[str]) -> list[tuple[str, str]]:
     environment: list[tuple[str, str]] = []
     for value in values:
         if "=" not in value:
-            raise click.BadParameter("--env must be in the form 'KEY=VALUE'")
+            raise typer.BadParameter("--env must be in the form 'KEY=VALUE'")
         name, env_value = value.split("=", 1)
         resolved_name = name.strip()
         if resolved_name == "":
-            raise click.BadParameter("--env must include a non-empty variable name")
+            raise typer.BadParameter("--env must include a non-empty variable name")
         environment.append((resolved_name, env_value))
     return environment
 
@@ -72,18 +99,18 @@ def _parse_environment_secret_variables(
     environment: list[_ParsedEnvironmentSecretVariable] = []
     for value in values:
         if "=" not in value:
-            raise click.BadParameter(
+            raise typer.BadParameter(
                 "--env-secret must be in the form 'NAME=SECRET_ID'"
             )
         name, secret_source = value.split("=", 1)
         resolved_name = name.strip()
         if resolved_name == "":
-            raise click.BadParameter(
+            raise typer.BadParameter(
                 "--env-secret must include a non-empty variable name"
             )
         resolved_source = secret_source.strip()
         if resolved_source == "":
-            raise click.BadParameter(
+            raise typer.BadParameter(
                 "--env-secret must include a non-empty secret source"
             )
         environment.append(
@@ -101,7 +128,7 @@ def _normalize_connect_identity(*, identity: str | None) -> str | None:
 
     normalized_identity = identity.strip()
     if normalized_identity == "":
-        raise click.BadParameter("--identity cannot be empty")
+        raise typer.BadParameter("--identity cannot be empty")
     return normalized_identity
 
 
@@ -111,21 +138,21 @@ def _normalize_connect_role(*, role: str | None) -> str:
 
     normalized_role = role.strip()
     if normalized_role == "":
-        raise click.BadParameter("--role cannot be empty")
+        raise typer.BadParameter("--role cannot be empty")
     return normalized_role
 
 
 def _normalize_connect_template(*, template: str) -> str:
     normalized_template = template.strip()
     if normalized_template not in {"agent", "none"}:
-        raise click.BadParameter("--template must be agent or none")
+        raise typer.BadParameter("--template must be agent or none")
     return normalized_template
 
 
 def _parse_meshagent_token_scope(*, value: str) -> ApiScope:
     cleaned = value.strip()
     if cleaned == "":
-        raise click.BadParameter("--meshagent-token cannot be empty")
+        raise typer.BadParameter("--meshagent-token cannot be empty")
     if cleaned == "userDefault":
         return ApiScope.user_default()
     if cleaned == "agentDefault":
@@ -135,7 +162,7 @@ def _parse_meshagent_token_scope(*, value: str) -> ApiScope:
     try:
         return ApiScope.model_validate_json(cleaned)
     except (ValidationError, ValueError) as exc:
-        raise click.BadParameter(
+        raise typer.BadParameter(
             "--meshagent-token must be one of userDefault, agentDefault, full, "
             "or a JSON ApiScope object"
         ) from exc
@@ -150,7 +177,7 @@ def _decode_environment_secret_value(
     try:
         return data.decode()
     except UnicodeDecodeError as exc:
-        raise click.BadParameter(
+        raise typer.BadParameter(
             f"environment variable '{env_name}' references secret '{secret_id}', "
             "but room connect env secrets must contain UTF-8 text"
         ) from exc
@@ -170,7 +197,7 @@ async def _mint_connected_meshagent_token(
         and os.getenv("MESHAGENT_API_KEY") is None
         and os.getenv("MESHAGENT_SECRET") is None
     ):
-        raise click.ClickException(
+        raise typer_click.exceptions.ClickException(
             "Minting a connected room token locally requires an API key or "
             "signing secret. Set MESHAGENT_API_KEY, activate an API key for the "
             "project, or set MESHAGENT_SECRET."
@@ -193,7 +220,7 @@ async def _resolve_connected_room_inputs(
     resolved_room = resolve_room(room)
     if resolved_room is None:
         print("[red]--room is required (or set MESHAGENT_ROOM).[/red]")
-        raise click.exceptions.Exit(1)
+        raise typer_click.exceptions.Exit(1)
     return resolved_project_id, resolved_room
 
 
@@ -228,7 +255,9 @@ async def _connect_room_env(
     )
     owns_account_client = account_client is None
     if account_client is None:
-        account_client = await get_client()
+        account_client = await _get_account_client_for_room_connect(
+            room=resolved_room,
+        )
     try:
         return await _connect_room_env_resolved(
             project_id=resolved_project_id,
@@ -277,7 +306,7 @@ def _run_connected_command(
         )
     except OSError as exc:
         error_message = exc.strerror or str(exc)
-        raise click.ClickException(
+        raise typer_click.exceptions.ClickException(
             f"Failed to start {command[0]}: {error_message}"
         ) from exc
 
@@ -332,17 +361,17 @@ async def _build_connected_command_env(
         if uses_local_token:
             if normalized_identity is None:
                 if role is not None:
-                    raise click.BadParameter("--identity is required when using --role")
+                    raise typer.BadParameter("--identity is required when using --role")
                 if parsed_secret_environment and meshagent_token_scope is not None:
-                    raise click.BadParameter(
+                    raise typer.BadParameter(
                         "--identity is required when using --env-secret or "
                         "--meshagent-token"
                     )
                 if parsed_secret_environment:
-                    raise click.BadParameter(
+                    raise typer.BadParameter(
                         "--identity is required when using --env-secret"
                     )
-                raise click.BadParameter(
+                raise typer.BadParameter(
                     "--identity is required when using --meshagent-token"
                 )
             room_env = await _mint_connected_room_env(
@@ -357,7 +386,9 @@ async def _build_connected_command_env(
             if parsed_secret_environment:
                 account_client = await get_client()
         else:
-            account_client = await get_client()
+            account_client = await _get_account_client_for_room_connect(
+                room=resolved_room,
+            )
             room_env = await _connect_room_env_resolved(
                 project_id=resolved_project_id,
                 room=resolved_room,
@@ -396,13 +427,13 @@ async def _build_connected_command_env(
                         for_identity=resolved_secret_identity,
                     )
                 except NotFoundError as exc:
-                    raise click.BadParameter(
+                    raise typer.BadParameter(
                         f"environment variable '{env_var.name}' references missing "
                         f"secret '{resolved_secret_identity}/{env_var.source}'. Save the "
                         "room secret first, then retry room connect."
                     ) from exc
                 except RoomException as exc:
-                    raise click.ClickException(str(exc)) from exc
+                    raise typer_click.exceptions.ClickException(str(exc)) from exc
                 child_env[env_var.name] = _decode_environment_secret_value(
                     env_name=env_var.name,
                     secret_id=f"{resolved_secret_identity}/{env_var.source}",
@@ -415,8 +446,15 @@ async def _build_connected_command_env(
             await account_client.close()
 
 
-@click.command(
+app = async_typer.AsyncTyper(add_completion=False)
+
+
+@app.command(
     "connect",
+    context_settings={
+        "ignore_unknown_options": True,
+        "allow_extra_args": True,
+    },
     help=(
         "Connect to a room and run a local command with "
         "MESHAGENT_API_URL, MESHAGENT_PROJECT_ID, MESHAGENT_TOKEN, "
@@ -424,70 +462,69 @@ async def _build_connected_command_env(
         "the default agent template. Use -- before the local command."
     ),
 )
-@click.option(
-    "--project-id",
-    help="A MeshAgent project id. If empty, the activated project will be used.",
-)
-@click.option("--room", help="Room name")
-@click.option(
-    "--env",
-    "-e",
-    multiple=True,
-    help="Set environment variable as KEY=VALUE",
-)
-@click.option(
-    "--env-secret",
-    multiple=True,
-    help="Set environment variable from a room secret as NAME=SECRET_ID",
-)
-@click.option(
-    "--identity",
-    help=(
-        "Identity name to use for the connected token, --meshagent-token, and "
-        "--env-secret. Required with --role, --meshagent-token, and --env-secret. "
-        "When set, room connect mints a participant token locally."
+def _connect_command(
+    ctx: typer.Context,
+    command: list[str] | None = typer.Argument(
+        None,
     ),
-)
-@click.option(
-    "--role",
-    help=(
-        "Participant role for locally minted tokens. Requires --identity and "
-        "defaults to agent."
+    project_id: str | None = typer.Option(
+        None,
+        "--project-id",
+        help="A MeshAgent project id. If empty, the activated project will be used.",
     ),
-)
-@click.option(
-    "--meshagent-token",
-    help=(
-        "Inject MESHAGENT_TOKEN using userDefault, agentDefault, full, "
-        "or a JSON ApiScope object."
+    room: str | None = typer.Option(None, "--room", help="Room name"),
+    env: list[str] | None = typer.Option(
+        None,
+        "--env",
+        "-e",
+        help="Set environment variable as KEY=VALUE",
     ),
-)
-@click.option(
-    "--template",
-    default="agent",
-    show_default=True,
-    help=(
-        "Allowed values: agent, none. agent: MeshAgent sets MESHAGENT_TOKEN, "
-        "OPENAI_API_KEY, and ANTHROPIC_API_KEY to a room-scoped MeshAgent token, "
-        "and sets OPENAI_BASE_URL, ANTHROPIC_BASE_URL, MESHAGENT_API_URL, "
-        "MESHAGENT_PROJECT_ID, and MESHAGENT_ROOM from the connected room unless "
-        "manually set. none: MeshAgent applies no template defaults."
+    env_secret: list[str] | None = typer.Option(
+        None,
+        "--env-secret",
+        help="Set environment variable from a room secret as NAME=SECRET_ID",
     ),
-)
-@click.argument("command", nargs=-1, type=click.UNPROCESSED)
-def connect_command(
-    project_id: str | None,
-    room: str | None,
-    env: tuple[str, ...],
-    env_secret: tuple[str, ...],
-    identity: str | None,
-    role: str | None,
-    meshagent_token: str | None,
-    template: str,
-    command: tuple[str, ...],
+    identity: str | None = typer.Option(
+        None,
+        "--identity",
+        help=(
+            "Identity name to use for the connected token, --meshagent-token, and "
+            "--env-secret. Required with --role, --meshagent-token, and "
+            "--env-secret. When set, room connect mints a participant token locally."
+        ),
+    ),
+    role: str | None = typer.Option(
+        None,
+        "--role",
+        help=(
+            "Participant role for locally minted tokens. Requires --identity and "
+            "defaults to agent."
+        ),
+    ),
+    meshagent_token: str | None = typer.Option(
+        None,
+        "--meshagent-token",
+        help=(
+            "Inject MESHAGENT_TOKEN using userDefault, agentDefault, full, "
+            "or a JSON ApiScope object."
+        ),
+    ),
+    template: str = typer.Option(
+        "agent",
+        "--template",
+        show_default=True,
+        help=(
+            "Allowed values: agent, none. agent: MeshAgent sets MESHAGENT_TOKEN, "
+            "OPENAI_API_KEY, and ANTHROPIC_API_KEY to a room-scoped MeshAgent token, "
+            "and sets OPENAI_BASE_URL, ANTHROPIC_BASE_URL, MESHAGENT_API_URL, "
+            "MESHAGENT_PROJECT_ID, and MESHAGENT_ROOM from the connected room unless "
+            "manually set. none: MeshAgent applies no template defaults."
+        ),
+    ),
 ) -> None:
-    if len(command) == 0:
-        raise click.UsageError(
+    command_values = tuple(command or ctx.args)
+    if len(command_values) == 0:
+        raise typer_click.exceptions.UsageError(
             "Pass the local command after --, for example: "
             "meshagent room connect -- python script.py"
         )
@@ -496,14 +533,17 @@ def connect_command(
         _build_connected_command_env(
             project_id=project_id,
             room=room,
-            env=env,
-            env_secret=env_secret,
+            env=env or (),
+            env_secret=env_secret or (),
             identity=identity,
             role=role,
             meshagent_token=meshagent_token,
             template=template,
         )
     )
-    raise click.exceptions.Exit(
-        _run_connected_command(command=command, child_env=child_env)
+    raise typer.Exit(
+        _run_connected_command(command=command_values, child_env=child_env)
     )
+
+
+connect_command = async_typer.get_command(app)

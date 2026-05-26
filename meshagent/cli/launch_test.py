@@ -1,4 +1,4 @@
-from click.testing import CliRunner
+from typer._click.testing import CliRunner
 
 from meshagent.cli import cli as root_cli
 from meshagent.cli.async_typer import get_command

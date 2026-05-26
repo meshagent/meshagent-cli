@@ -6,10 +6,12 @@ from importlib import resources
 from pathlib import Path
 import shlex
 import sys
-from typing import Literal, Mapping, Sequence
+from typing import Annotated, Literal, Mapping, Sequence
 
-import click
+import typer
+from typer import _click as typer_click
 
+from meshagent.cli import async_typer
 from meshagent.cli.meshagent_images import render_meshagent_image_prefix_template
 from meshagent.cli.version import __version__ as MESHAGENT_CLIENT_VERSION
 
@@ -93,7 +95,7 @@ class CreateFocus:
 
 @dataclass(frozen=True, slots=True)
 class ExistingProjectSelection:
-    action: Literal["run-doctor", "create-subfolder"]
+    action: Literal["create-subfolder"]
     subfolder_name: str | None = None
 
 
@@ -688,8 +690,8 @@ def _resolve_language_id(language: str | None) -> str:
     language_id = LANGUAGE_ALIASES.get(normalized)
     if language_id is None:
         expected = _supported_language_text()
-        raise click.ClickException(
-            f"Unsupported language: {language}. Expected one of: {expected}."
+        raise typer_click.exceptions.ClickException(
+            f"Unsupported language: {language}.\nExpected one of: {expected}."
         )
     return language_id
 
@@ -702,8 +704,8 @@ def _resolve_focus_id(focus: str | None) -> str:
     focus_id = FOCUS_ALIASES.get(normalized)
     if focus_id is None:
         expected = _supported_focus_text()
-        raise click.ClickException(
-            f"Unsupported focus: {focus}. Expected one of: {expected}."
+        raise typer_click.exceptions.ClickException(
+            f"Unsupported focus: {focus}.\nExpected one of: {expected}."
         )
     return focus_id
 
@@ -720,9 +722,10 @@ def _resolve_template(language_id: str, focus_id: str) -> CreateTemplate:
         if template_language_id == language_id
     ]
     supported_text = ", ".join(supported) if supported else "none"
-    raise click.ClickException(
-        f"Unsupported template combination: {language.label} does not support "
-        f"{focus_id}. Supported focus: {supported_text}."
+    raise typer_click.exceptions.ClickException(
+        "Unsupported template combination.\n"
+        f"{language.label} does not support {focus_id}. "
+        f"Supported focus: {supported_text}."
     )
 
 
@@ -817,17 +820,19 @@ def _run_existing_project_tui(*, root: Path) -> ExistingProjectSelection | None:
 
 def _validate_subfolder_name(folder_name: str | None) -> str:
     if folder_name is None:
-        raise click.ClickException("Folder name cannot be empty.")
+        raise typer_click.exceptions.ClickException("Folder name cannot be empty.")
 
     resolved_folder_name = folder_name.strip()
     if resolved_folder_name == "":
-        raise click.ClickException("Folder name cannot be empty.")
+        raise typer_click.exceptions.ClickException("Folder name cannot be empty.")
     if (
         resolved_folder_name in {".", ".."}
         or "/" in resolved_folder_name
         or "\\" in resolved_folder_name
     ):
-        raise click.ClickException("Folder name must be a single new subfolder name.")
+        raise typer_click.exceptions.ClickException(
+            "Folder name must be a single new subfolder name."
+        )
     return resolved_folder_name
 
 
@@ -835,14 +840,10 @@ def _new_project_subfolder(root: Path, folder_name: str | None) -> Path:
     resolved_folder_name = _validate_subfolder_name(folder_name)
     target = root / resolved_folder_name
     if target.exists():
-        raise click.ClickException(f"Subfolder already exists: {target}")
+        raise typer_click.exceptions.ClickException(
+            f"Subfolder already exists: {target}"
+        )
     return target
-
-
-def _run_doctor(root: Path) -> None:
-    from meshagent.cli.doctor import _print_report, diagnose_project
-
-    _print_report(diagnose_project(root))
 
 
 def _write_template(root: Path, template: CreateTemplate) -> None:
@@ -880,15 +881,15 @@ def _print_next_steps(
     *,
     enter_project_root: Path | None = None,
 ) -> None:
-    click.secho("Next steps:", fg="cyan", bold=True)
+    typer.secho("Next steps:", fg="cyan", bold=True)
     if enter_project_root is not None:
-        click.secho(f"  cd {shlex.quote(str(enter_project_root))}", fg="green")
+        typer.secho(f"  cd {shlex.quote(str(enter_project_root))}", fg="green")
     for index, (title, section_steps) in enumerate(_next_step_sections(steps), start=1):
         if index > 1:
-            click.echo("")
-        click.secho(f"  {index}. {title}", fg="blue", bold=True)
+            typer.echo("")
+        typer.secho(f"  {index}. {title}", fg="blue", bold=True)
         for step in section_steps:
-            click.secho(f"     {step}", fg="green")
+            typer.secho(f"     {step}", fg="green")
 
 
 def _paired_agent_deploy_command(template: CreateTemplate) -> str | None:
@@ -912,38 +913,38 @@ def _print_agent_toolkit_guidance(template: CreateTemplate) -> None:
     command = _paired_agent_deploy_command(template)
     if command is None:
         return
-    click.echo("")
-    click.secho(
+    typer.echo("")
+    typer.secho(
         "To install an agent in your room that uses this tool run:",
         fg="cyan",
         bold=True,
     )
-    click.secho(f"  {command}", fg="green")
+    typer.secho(f"  {command}", fg="green")
 
 
 def _print_contact_form_mailbox_guidance(template: CreateTemplate) -> None:
     if template.focus_id != CONTACT_FORM_FOCUS:
         return
-    click.echo("")
-    click.secho(
+    typer.echo("")
+    typer.secho(
         "Before testing a submission, set up the sender mailbox for that room:",
         fg="cyan",
         bold=True,
     )
-    click.echo("  New mailbox:")
-    click.secho(
+    typer.echo("  New mailbox:")
+    typer.secho(
         "    meshagent mailbox create --address contact-<room-slug>@mail.meshagent.com --room <room> --queue contact-<room-slug>@mail.meshagent.com --public",
         fg="green",
     )
-    click.echo("  Existing mailbox for that room:")
-    click.secho(
+    typer.echo("  Existing mailbox for that room:")
+    typer.secho(
         "    meshagent mailbox update contact-<room-slug>@mail.meshagent.com --room <room> --queue contact-<room-slug>@mail.meshagent.com --public",
         fg="green",
     )
-    click.echo(
+    typer.echo(
         "Use that mailbox as CONTACT_FORM_FROM. If create returns 409, choose another room-specific local part; do not reuse a mailbox unless it is listed for this room. Set CONTACT_FORM_TO to the address that should receive submissions."
     )
-    click.echo(
+    typer.echo(
         "If CONTACT_FORM_TO is also a private MeshAgent mailbox, use a public destination mailbox or an external delivery alias."
     )
 
@@ -953,72 +954,74 @@ def _print_created_report(
     template: CreateTemplate,
     enter_project_root: Path | None = None,
 ) -> None:
-    click.echo("")
-    click.echo(f"Created a minimal deployable {template.label} project:")
+    typer.echo("")
+    typer.echo(f"Created a minimal deployable {template.label} project:")
     for name in template.files:
-        click.echo(f"  {name}")
-    click.echo("")
+        typer.echo(f"  {name}")
+    typer.echo("")
     _print_next_steps(template.next_steps, enter_project_root=enter_project_root)
     _print_agent_toolkit_guidance(template)
     _print_contact_form_mailbox_guidance(template)
 
 
-@click.command(
+app = async_typer.AsyncTyper(add_completion=False)
+
+
+@app.command(
     "create",
     help="Create a minimal deployable project.",
 )
-@click.option(
-    "--language",
-    "-l",
-    type=str,
-    default=None,
-    help=(
-        "Template language for non-interactive use. "
-        "Supported: python, javascript, typescript, react, dotnet, dart/flutter."
-    ),
-)
-@click.option(
-    "--focus",
-    type=str,
-    default=None,
-    help=(
-        "Project focus for non-interactive use. Use stable IDs: webserver "
-        "(Web App), backend-agent (Agent Toolkit), chatbot (OpenAI Chatbot), "
-        "chatbot-anthropic (Anthropic Chatbot), chatbot-ui (Agent UI), "
-        "or contact-form (Contact Form)."
-    ),
-)
-@click.option(
-    "--interactive/--no-interactive",
-    default=None,
-    help=(
-        "Run or bypass the interactive template picker. Defaults to interactive "
-        "when attached to a TTY and language or focus is missing."
-    ),
-)
-@click.argument(
-    "path",
-    required=False,
-    type=click.Path(file_okay=False, dir_okay=True, path_type=Path),
-)
-def create_command(
-    path: Path | None = None,
-    language: str | None = None,
-    focus: str | None = None,
-    interactive: bool | None = None,
+def _create_command(
+    path: Annotated[
+        Path | None,
+        typer.Argument(file_okay=False, dir_okay=True),
+    ] = None,
+    language: Annotated[
+        str | None,
+        typer.Option(
+            "--language",
+            "-l",
+            help=(
+                "Template language for non-interactive use. "
+                "Supported: python, javascript, typescript, react, dotnet, dart/flutter."
+            ),
+        ),
+    ] = None,
+    focus: Annotated[
+        str | None,
+        typer.Option(
+            "--focus",
+            help=(
+                "Project focus for non-interactive use. Use stable IDs: webserver "
+                "(Web App), backend-agent (Agent Toolkit), chatbot (OpenAI Chatbot), "
+                "chatbot-anthropic (Anthropic Chatbot), chatbot-ui (Agent UI), "
+                "or contact-form (Contact Form)."
+            ),
+        ),
+    ] = None,
+    interactive: Annotated[
+        bool | None,
+        typer.Option(
+            "--interactive/--no-interactive",
+            help=(
+                "Run or bypass the interactive template picker. Defaults to interactive "
+                "when attached to a TTY and language or focus is missing."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Create a minimal project that can be deployed on MeshAgent."""
 
     root = (path or Path.cwd()).resolve()
     root.mkdir(parents=True, exist_ok=True)
 
-    click.echo("meshagent create")
-    click.echo(f"Project: {root}")
+    typer.echo("meshagent create")
+    typer.echo(f"Project: {root}")
     enter_project_root: Path | None = None
 
     is_interactive_stdio = _stdio_is_interactive()
     if interactive is True and not is_interactive_stdio:
-        raise click.ClickException(
+        raise typer_click.exceptions.ClickException(
             "Interactive mode requires a TTY. Pass --language, --focus, and "
             "--no-interactive when running from a script."
         )
@@ -1027,11 +1030,7 @@ def create_command(
         if interactive is not False and is_interactive_stdio:
             existing_project_selection = _run_existing_project_tui(root=root)
             if existing_project_selection is None:
-                click.echo("Create canceled.")
-                return
-            if existing_project_selection.action == "run-doctor":
-                click.echo("")
-                _run_doctor(root)
+                typer.echo("Create canceled.")
                 return
 
             root = _new_project_subfolder(
@@ -1040,14 +1039,14 @@ def create_command(
             )
             root.mkdir(parents=True, exist_ok=False)
             enter_project_root = root
-            click.echo(f"New project: {root}")
+            typer.echo(f"New project: {root}")
         else:
-            click.echo("")
-            click.echo("Existing application code or deployment metadata was detected.")
-            click.echo("No files were written.")
-            click.echo("")
-            click.echo("Recommended next step for existing projects:")
-            click.echo("  meshagent doctor")
+            typer.echo("")
+            typer.echo("Existing application code or deployment metadata was detected.")
+            typer.echo("No files were written.")
+            typer.echo("")
+            typer.echo("Recommended next step for existing projects:")
+            typer.echo("  meshagent doctor")
             return
 
     if _should_launch_tui(
@@ -1062,7 +1061,7 @@ def create_command(
             focus_choices=_focus_choices(),
         )
         if selection is None:
-            click.echo("Create canceled.")
+            typer.echo("Create canceled.")
             return
         language_id, focus_id = selection
     else:
@@ -1072,3 +1071,6 @@ def create_command(
     template = _resolve_template(language_id, focus_id)
     _write_template(root, template)
     _print_created_report(template=template, enter_project_root=enter_project_root)
+
+
+create_command = async_typer.get_command(app)

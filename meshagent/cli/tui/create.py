@@ -42,12 +42,10 @@ from textual.widgets.option_list import Option
 
 CREATE_BACK_OPTION_ID = "__init_back__"
 CREATE_CANCEL_OPTION_ID = "__init_cancel__"
-CREATE_EXISTING_DOCTOR_OPTION_ID = "__init_existing_doctor__"
 CREATE_EXISTING_SUBFOLDER_OPTION_ID = "__init_existing_subfolder__"
 CREATE_LANGUAGE_OPTION_ID_PREFIX = "__init_language__:"
 CREATE_FOCUS_OPTION_ID_PREFIX = "__init_focus__:"
 
-EXISTING_ACTION_DOCTOR = "run-doctor"
 EXISTING_ACTION_SUBFOLDER = "create-subfolder"
 
 
@@ -98,7 +96,7 @@ class CreateWizardResult:
 class CreateExistingProjectResult:
     status: Literal["completed", "canceled"]
     message: str | None = None
-    action: Literal["run-doctor", "create-subfolder"] | None = None
+    action: Literal["create-subfolder"] | None = None
     subfolder_name: str | None = None
 
 
@@ -216,14 +214,6 @@ class CreateExistingProjectApp(App[None]):
         if not isinstance(selected_id, str):
             return
 
-        if selected_id == CREATE_EXISTING_DOCTOR_OPTION_ID:
-            self.result = CreateExistingProjectResult(
-                status="completed",
-                action=EXISTING_ACTION_DOCTOR,
-            )
-            self.exit()
-            return
-
         if selected_id == CREATE_EXISTING_SUBFOLDER_OPTION_ID:
             self._show_subfolder_prompt()
             return
@@ -302,10 +292,6 @@ class CreateExistingProjectApp(App[None]):
         )
         self._set_options(
             [
-                Option(
-                    "Run meshagent doctor here.",
-                    id=CREATE_EXISTING_DOCTOR_OPTION_ID,
-                ),
                 Option(
                     "Create a new project in a new subfolder.",
                     id=CREATE_EXISTING_SUBFOLDER_OPTION_ID,

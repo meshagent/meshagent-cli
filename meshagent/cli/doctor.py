@@ -3,18 +3,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib import resources
 import json
+import posixpath
 from pathlib import Path
 import re
+import shlex
 import shutil
 import textwrap
 import tomllib
-from typing import Iterable
+from typing import Annotated, Iterable
 import xml.etree.ElementTree as ET
 
-import click
+import typer
 from rich.console import Console
 from rich.markup import escape
 
+from meshagent.cli import async_typer
 from meshagent.cli.meshagent_images import meshagent_image_prefix
 from meshagent.cli.version import __version__ as MESHAGENT_CLIENT_VERSION
 
@@ -109,6 +112,7 @@ class DoctorAutoFix:
     description: str
     path: Path
     contents: str
+    overwrite: bool = False
 
 
 def _iter_files(root: Path) -> Iterable[Path]:
@@ -1032,7 +1036,7 @@ def diagnose_project(root: Path) -> ProjectDiagnosis:
     )
 
 
-def _deploy_command(diagnosis: ProjectDiagnosis) -> str:
+def _meshagent_deploy_command(diagnosis: ProjectDiagnosis) -> str:
     parts = [
         "meshagent deploy .",
         '--room "$MESHAGENT_ROOM"',
@@ -1049,9 +1053,102 @@ def _deploy_command(diagnosis: ProjectDiagnosis) -> str:
     parts.append("--wait")
     if _is_static_javascript_flavor(diagnosis.javascript_flavor):
         parts.insert(-1, "--room-mount /:/data:rw")
+    for mount_arg in _deploy_volume_mount_args(diagnosis):
+        if mount_arg not in parts:
+            parts.insert(-1, mount_arg)
     if _needs_roomclient_runtime(diagnosis):
         parts.append("--meshagent-token agentDefault")
     return " ".join(parts)
+
+
+def _deploy_command(diagnosis: ProjectDiagnosis) -> str:
+    if _is_javascript_project(diagnosis.language):
+        scripts = dict(diagnosis.package_scripts)
+        if isinstance(scripts.get("deploy"), str):
+            return "npm run deploy"
+    return _meshagent_deploy_command(diagnosis)
+
+
+def _dockerfile_volume_paths(diagnosis: ProjectDiagnosis) -> tuple[str, ...]:
+    dockerfile = diagnosis.root / "Dockerfile"
+    if not dockerfile.is_file():
+        return ()
+
+    from meshagent.cli.image import _parse_packed_dockerfile_metadata
+
+    metadata = _parse_packed_dockerfile_metadata(local_packed_dockerfile=dockerfile)
+    if metadata is None:
+        return ()
+    return metadata.volumes
+
+
+def _deploy_mount_arg_for_volume_path(volume_path: str) -> str:
+    if volume_path == "/data":
+        return "--room-mount /:/data:rw"
+    return f"--empty-dir-mount {volume_path}"
+
+
+def _deploy_volume_mount_args(diagnosis: ProjectDiagnosis) -> tuple[str, ...]:
+    mount_args: list[str] = []
+    for volume_path in _dockerfile_volume_paths(diagnosis):
+        mount_arg = _deploy_mount_arg_for_volume_path(volume_path)
+        if mount_arg not in mount_args:
+            mount_args.append(mount_arg)
+    return tuple(mount_args)
+
+
+def _split_option_value(token: str, option: str) -> str | None:
+    if token.startswith(f"{option}="):
+        return token.removeprefix(f"{option}=")
+    return None
+
+
+def _deploy_mount_value_path(*, option: str, value: str) -> str:
+    if option == "--image-mount":
+        _, _, mount_spec = value.partition("=")
+        value = mount_spec
+    if option in {"--room-mount", "--project-mount"}:
+        parts = value.split(":")
+        if len(parts) < 2:
+            return ""
+        return posixpath.normpath(parts[1].strip())
+    mount_path = value.split(":", 1)[0]
+    return posixpath.normpath(mount_path.strip())
+
+
+def _deploy_script_mounts_volume_path(deploy_script: str, volume_path: str) -> bool:
+    try:
+        tokens = shlex.split(deploy_script, comments=False, posix=True)
+    except ValueError:
+        return False
+
+    expected_path = posixpath.normpath(volume_path)
+    mount_options = {
+        "--empty-dir-mount",
+        "--room-mount",
+        "--project-mount",
+        "--image-mount",
+    }
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        for option in mount_options:
+            option_value = _split_option_value(token, option)
+            if option_value is not None and (
+                _deploy_mount_value_path(option=option, value=option_value)
+                == expected_path
+            ):
+                return True
+        if token in mount_options and index + 1 < len(tokens):
+            if (
+                _deploy_mount_value_path(option=token, value=tokens[index + 1])
+                == expected_path
+            ):
+                return True
+            index += 2
+            continue
+        index += 1
+    return False
 
 
 def _suggested_image_tag(root: Path) -> str:
@@ -1065,6 +1162,51 @@ def _needs_roomclient_runtime(diagnosis: ProjectDiagnosis) -> bool:
     return diagnosis.sdk is not None or (
         diagnosis.language == "Python" and diagnosis.python_source_uses_sdk
     )
+
+
+def _javascript_roomclient_deploy_token_finding(
+    diagnosis: ProjectDiagnosis,
+) -> tuple[str, str] | None:
+    if not _needs_roomclient_runtime(diagnosis) or not _is_javascript_project(
+        diagnosis.language
+    ):
+        return None
+
+    scripts = dict(diagnosis.package_scripts)
+    deploy_script = scripts.get("deploy")
+    if deploy_script is None:
+        return (
+            "warning",
+            "RoomClient deploy-token check: add a package.json deploy script "
+            "that runs `meshagent deploy` with `--tag` and "
+            "`--meshagent-token agentDefault`.",
+        )
+    missing_args: list[str] = []
+    if re.search(r"(?:^|\s)--tag(?:=|\s)", deploy_script) is None:
+        missing_args.append("`--tag`")
+    for volume_path in _dockerfile_volume_paths(diagnosis):
+        if not _deploy_script_mounts_volume_path(deploy_script, volume_path):
+            missing_args.append(f"a mount for Dockerfile volume `{volume_path}`")
+    if "--meshagent-token agentDefault" not in deploy_script:
+        missing_args.append("`--meshagent-token agentDefault`")
+    if missing_args:
+        return (
+            "warning",
+            "RoomClient deploy-token check: package.json deploy script should "
+            f"include {' and '.join(missing_args)}.",
+        )
+    return (
+        "ok",
+        "RoomClient deploy-token check: package.json deploy script injects "
+        "`--meshagent-token agentDefault`.",
+    )
+
+
+def _javascript_roomclient_deploy_script_is_fixable(
+    diagnosis: ProjectDiagnosis,
+) -> bool:
+    deploy_token_finding = _javascript_roomclient_deploy_token_finding(diagnosis)
+    return deploy_token_finding is not None and deploy_token_finding[0] == "warning"
 
 
 def _supports_meshagent_optimized_dockerfile(diagnosis: ProjectDiagnosis) -> bool:
@@ -1176,6 +1318,74 @@ def _python_pyproject_for(diagnosis: ProjectDiagnosis) -> str:
     )
 
 
+def _package_json_with_autofixes(diagnosis: ProjectDiagnosis) -> str | None:
+    package_json = _read_json(diagnosis.root / "package.json")
+    if not package_json:
+        return None
+    changed = False
+    for key in (
+        "dependencies",
+        "devDependencies",
+        "peerDependencies",
+        "optionalDependencies",
+    ):
+        dependencies = package_json.get(key)
+        if not isinstance(dependencies, dict):
+            continue
+        declared_version = _declared_dependency_version(
+            dependencies.get("@meshagent/meshagent")
+        )
+        if declared_version is None or not _version_is_behind(
+            declared_version, MESHAGENT_CLIENT_VERSION
+        ):
+            continue
+        dependencies["@meshagent/meshagent"] = MESHAGENT_CLIENT_VERSION
+        changed = True
+        break
+    if _javascript_roomclient_deploy_script_is_fixable(diagnosis):
+        scripts = package_json.get("scripts")
+        if not isinstance(scripts, dict):
+            scripts = {}
+            package_json["scripts"] = scripts
+        deploy_script = scripts.get("deploy")
+        if not isinstance(deploy_script, str) or deploy_script.strip() == "":
+            scripts["deploy"] = _meshagent_deploy_command(diagnosis)
+            changed = True
+        else:
+            fixed_deploy_script = deploy_script
+            if re.search(r"(?:^|\s)--tag(?:=|\s)", fixed_deploy_script) is None:
+                fixed_deploy_script = (
+                    f"{fixed_deploy_script.rstrip()} "
+                    f"--tag {_suggested_image_tag(diagnosis.root)}"
+                )
+            for volume_path in _dockerfile_volume_paths(diagnosis):
+                if not _deploy_script_mounts_volume_path(
+                    fixed_deploy_script, volume_path
+                ):
+                    fixed_deploy_script = (
+                        f"{fixed_deploy_script.rstrip()} "
+                        f"{_deploy_mount_arg_for_volume_path(volume_path)}"
+                    )
+            if "--meshagent-token agentDefault" not in fixed_deploy_script:
+                token_fixed_deploy_script = re.sub(
+                    r"--meshagent-token(?:=|\s+)\S+",
+                    "--meshagent-token agentDefault",
+                    fixed_deploy_script,
+                )
+                if token_fixed_deploy_script == fixed_deploy_script:
+                    fixed_deploy_script = (
+                        f"{fixed_deploy_script.rstrip()} --meshagent-token agentDefault"
+                    )
+                else:
+                    fixed_deploy_script = token_fixed_deploy_script
+            if fixed_deploy_script != deploy_script:
+                scripts["deploy"] = fixed_deploy_script
+                changed = True
+    if not changed:
+        return None
+    return f"{json.dumps(package_json, indent=2)}\n"
+
+
 def _autofix_plan(diagnosis: ProjectDiagnosis) -> tuple[DoctorAutoFix, ...]:
     fixes: list[DoctorAutoFix] = []
     if _can_autofix_dockerfile(diagnosis):
@@ -1198,6 +1408,19 @@ def _autofix_plan(diagnosis: ProjectDiagnosis) -> tuple[DoctorAutoFix, ...]:
                 contents=_python_pyproject_for(diagnosis),
             )
         )
+    package_json_with_autofixes = _package_json_with_autofixes(diagnosis)
+    if package_json_with_autofixes is not None:
+        fixes.append(
+            DoctorAutoFix(
+                description=(
+                    "Update package.json MeshAgent SDK version and deploy script "
+                    "where needed"
+                ),
+                path=diagnosis.root / "package.json",
+                contents=package_json_with_autofixes,
+                overwrite=True,
+            )
+        )
     return tuple(fixes)
 
 
@@ -1205,7 +1428,7 @@ def _apply_auto_fixes(diagnosis: ProjectDiagnosis) -> tuple[DoctorAutoFix, ...]:
     fixes = _autofix_plan(diagnosis)
     applied: list[DoctorAutoFix] = []
     for fix in fixes:
-        if fix.path.exists():
+        if fix.path.exists() and not fix.overwrite:
             continue
         fix.path.parent.mkdir(parents=True, exist_ok=True)
         fix.path.write_text(fix.contents, encoding="utf-8")
@@ -1469,10 +1692,11 @@ def _deployment_checks(diagnosis: ProjectDiagnosis) -> list[str]:
             [
                 "RoomClient room check: pass `--room` or set `MESHAGENT_ROOM` "
                 "for the target room.",
-                "RoomClient deploy-token check: use `--meshagent-token agentDefault` "
-                "to inject a scoped service token.",
             ]
         )
+        deploy_token_finding = _javascript_roomclient_deploy_token_finding(diagnosis)
+        if deploy_token_finding is not None and deploy_token_finding[0] == "warning":
+            checks.append(deploy_token_finding[1])
     if diagnosis.sdk == "@meshagent/meshagent":
         checks.append(
             "Node RoomClient module check: if Node reports `ERR_MODULE_NOT_FOUND` "
@@ -1556,28 +1780,28 @@ def _has_deploy_spec(root: Path) -> bool:
 def _print_report(diagnosis: ProjectDiagnosis) -> None:
     auto_fixes = _autofix_plan(diagnosis)
 
-    click.echo("MeshAgent doctor")
-    click.echo(f"Project: {diagnosis.root}")
-    click.echo(f"Detected project: {diagnosis.language}")
+    typer.echo("MeshAgent doctor")
+    typer.echo(f"Project: {diagnosis.root}")
+    typer.echo(f"Detected project: {diagnosis.language}")
     if diagnosis.javascript_flavor is not None:
-        click.echo(f"JavaScript flavor: {diagnosis.javascript_flavor}")
+        typer.echo(f"JavaScript flavor: {diagnosis.javascript_flavor}")
     if diagnosis.sdk is None:
-        click.echo("Official RoomClient SDK: not detected")
+        typer.echo("Official RoomClient SDK: not detected")
     else:
-        click.echo(f"Official RoomClient SDK: detected ({diagnosis.sdk})")
-    click.echo("")
+        typer.echo(f"Official RoomClient SDK: detected ({diagnosis.sdk})")
+    typer.echo("")
 
     if diagnosis.language == "Unknown" and not diagnosis.has_deployment_artifact:
-        click.echo("Findings:")
+        typer.echo("Findings:")
         _echo_finding("error", "No identifiable deployable project was detected")
-        click.echo("")
-        click.echo("Recommended next steps:")
-        click.echo("1. Create a minimal deployable Python backend agent project:")
-        click.echo("   meshagent create")
-        click.echo("2. Re-run doctor and address remaining findings:")
-        click.echo("   meshagent doctor")
-        click.echo("3. Deployment checks:")
-        click.echo(
+        typer.echo("")
+        typer.echo("Recommended next steps:")
+        typer.echo("1. Create a minimal deployable Python backend agent project:")
+        typer.echo("   meshagent create")
+        typer.echo("2. Re-run doctor and address remaining findings:")
+        typer.echo("   meshagent doctor")
+        typer.echo("3. Deployment checks:")
+        typer.echo(
             "   - Project detection check: no recognizable application code or "
             "deployment metadata was found in this directory. Run `meshagent create` "
             "to create a minimal Python backend agent project, then deploy the "
@@ -1585,7 +1809,7 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
         )
         return
 
-    click.echo("Findings:")
+    typer.echo("Findings:")
     if diagnosis.has_deployment_artifact:
         _echo_finding(
             "ok",
@@ -1701,7 +1925,7 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
                 f"{PYTHON_REQUIRED_VERSION} before deploying",
             )
             for finding in diagnosis.python_runtime_findings:
-                click.echo(f"    - {finding}")
+                typer.echo(f"    - {finding}")
         else:
             _echo_finding(
                 "ok",
@@ -1724,7 +1948,7 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
                     "virtual environment detected",
                 )
             for path, version in diagnosis.python_virtualenv_versions:
-                click.echo(
+                typer.echo(
                     f"    - Local virtual environment `{path}` uses Python `{version}`"
                 )
         else:
@@ -1758,35 +1982,33 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
                 _echo_finding("ok", f"package.json build script: {scripts['build']}")
             else:
                 _echo_finding("warning", "Add a package.json build script")
-    if _needs_roomclient_runtime(diagnosis):
-        _echo_finding(
-            "warning",
-            "RoomClient deploy-token check: use --meshagent-token agentDefault "
-            "for a scoped service token",
-        )
-    click.echo("")
+    deploy_token_finding = _javascript_roomclient_deploy_token_finding(diagnosis)
+    if deploy_token_finding is not None:
+        level, message = deploy_token_finding
+        _echo_finding(level, message)
+    typer.echo("")
 
-    click.echo("Recommended next steps:")
+    typer.echo("Recommended next steps:")
     next_step_number = 1
     if auto_fixes:
-        click.echo(f"{next_step_number}. Auto-fix missing files:")
-        click.echo("   meshagent doctor --fix")
+        typer.echo(f"{next_step_number}. Auto-fix project files:")
+        typer.echo("   meshagent doctor --fix")
         for fix in auto_fixes:
-            click.echo(
+            typer.echo(
                 f"   - {fix.description}: {_display_path(diagnosis.root, fix.path)}"
             )
         next_step_number += 1
     if not diagnosis.has_deployment_artifact and diagnosis.dockerfile != "":
-        click.echo(f"{next_step_number}. Add a Dockerfile like:")
-        click.echo("")
-        click.echo(textwrap.indent(diagnosis.dockerfile, "   "))
-        click.echo("")
+        typer.echo(f"{next_step_number}. Add a Dockerfile like:")
+        typer.echo("")
+        typer.echo(textwrap.indent(diagnosis.dockerfile, "   "))
+        typer.echo("")
         next_step_number += 1
     sdk_checks = _sdk_checks(diagnosis)
     if sdk_checks:
-        click.echo(f"{next_step_number}. SDK checks:")
+        typer.echo(f"{next_step_number}. SDK checks:")
         for item in sdk_checks:
-            click.echo(f"   - {item}")
+            typer.echo(f"   - {item}")
         next_step_number += 1
     checks = _deployment_checks(diagnosis)
     if not _has_deploy_spec(diagnosis.root):
@@ -1796,52 +2018,60 @@ def _print_report(diagnosis: ProjectDiagnosis) -> None:
             "run `meshagent create` to see deploy spec examples."
         )
     if checks:
-        click.echo(f"{next_step_number}. Deployment checks:")
+        typer.echo(f"{next_step_number}. Deployment checks:")
         for item in checks:
-            click.echo(f"   - {item}")
+            typer.echo(f"   - {item}")
         next_step_number += 1
-    click.echo(f"{next_step_number}. Re-run doctor after changes:")
-    click.echo("   meshagent doctor")
-    click.echo("   Address remaining findings before deploying.")
+    typer.echo(f"{next_step_number}. Re-run doctor after changes:")
+    typer.echo("   meshagent doctor")
+    typer.echo("   Address remaining findings before deploying.")
     next_step_number += 1
-    click.echo(f"{next_step_number}. Deploy from this directory:")
-    click.echo(f"   {_deploy_command(diagnosis)}")
+    typer.echo(f"{next_step_number}. Deploy from this directory:")
+    typer.echo(f"   {_deploy_command(diagnosis)}")
 
 
 def _print_fix_report(*, diagnosis: ProjectDiagnosis) -> None:
-    click.echo("MeshAgent doctor --fix")
-    click.echo(f"Project: {diagnosis.root}")
-    click.echo("")
+    typer.echo("MeshAgent doctor --fix")
+    typer.echo(f"Project: {diagnosis.root}")
+    typer.echo("")
     fixes = _apply_auto_fixes(diagnosis)
     if not fixes:
-        click.echo("No auto-fixable missing files were found.")
-        click.echo("")
-        click.echo("Next step:")
-        click.echo("  Run `meshagent doctor` and address remaining findings.")
+        typer.echo("No auto-fixable missing files were found.")
+        typer.echo("")
+        typer.echo("Next step:")
+        typer.echo("  Run `meshagent doctor` and address remaining findings.")
         return
 
-    click.echo("Applied fixes:")
+    typer.echo("Applied fixes:")
     for fix in fixes:
-        click.echo(f"  - Wrote {_display_path(diagnosis.root, fix.path)}")
-    click.echo("")
-    click.echo("Next step:")
-    click.echo("  Run `meshagent doctor` and address remaining findings.")
+        typer.echo(f"  - {fix.description}: {_display_path(diagnosis.root, fix.path)}")
+    typer.echo("")
+    typer.echo("Next step:")
+    typer.echo("  Run `meshagent doctor` and address remaining findings.")
 
 
-@click.command(
+app = async_typer.AsyncTyper(add_completion=False)
+
+
+@app.command(
     "doctor", help="Inspect the current directory for MeshAgent deployment gaps."
 )
-@click.option(
-    "--fix",
-    is_flag=True,
-    help="Create obvious missing project files such as Dockerfile or pyproject.toml.",
-)
-@click.argument(
-    "path",
-    required=False,
-    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
-)
-def doctor_command(path: Path | None = None, fix: bool = False) -> None:
+def _doctor_command(
+    path: Annotated[
+        Path | None,
+        typer.Argument(exists=True, file_okay=False, dir_okay=True),
+    ] = None,
+    fix: Annotated[
+        bool,
+        typer.Option(
+            "--fix",
+            help=(
+                "Create obvious missing project files such as Dockerfile or "
+                "pyproject.toml."
+            ),
+        ),
+    ] = False,
+) -> None:
     """Inspect a project directory and print deploy readiness checks."""
 
     diagnosis = diagnose_project(path or Path.cwd())
@@ -1850,3 +2080,6 @@ def doctor_command(path: Path | None = None, fix: bool = False) -> None:
         return
 
     _print_report(diagnosis)
+
+
+doctor_command = async_typer.get_command(app)

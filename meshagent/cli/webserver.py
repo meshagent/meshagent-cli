@@ -15,13 +15,13 @@ import sys
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Callable, Literal, Optional, TypeVar, cast
 
-import click
 import typer
 import yaml
 from aiohttp import web
-from click.core import ParameterSource
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 from rich import print
+from typer._click.core import ParameterSource
+from typer._click.globals import get_current_context
 
 from meshagent.api import (
     ApiScope,
@@ -317,7 +317,7 @@ T = TypeVar("T")
 
 
 def _cli_override_or_none(*, value: T, option_name: str) -> T | None:
-    context = click.get_current_context(silent=True)
+    context = get_current_context(silent=True)
     if context is None:
         return value
     if context.get_parameter_source(option_name) == ParameterSource.DEFAULT:
