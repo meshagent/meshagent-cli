@@ -944,7 +944,10 @@ def test_doctor_warns_when_deploy_spec_exists_without_dockerfile(tmp_path) -> No
 
     assert result.exit_code == 0
     assert "[ok] Deployment artifact found: .meshagent/deploy.yaml" in result.output
-    assert "[warning] Dockerfile missing: add Dockerfile or meshagent.yaml" in result.output
+    assert (
+        "[warning] Dockerfile missing: add Dockerfile or meshagent.yaml"
+        in result.output
+    )
     assert "[ok] Deploy spec found: .meshagent/deploy.yaml" in result.output
 
 
