@@ -5307,6 +5307,45 @@ async def test_process_thread_sidebar_keeps_focused_selection_and_handles_clicks
 
 
 @pytest.mark.asyncio
+async def test_process_thread_sidebar_scrolls_visible_thread_window() -> None:
+    sidebar = process._ProcessThreadSidebar(
+        list_threads=lambda: asyncio.sleep(0, result=[]),
+        current_thread_path=lambda: None,
+        switch_thread=lambda path: asyncio.sleep(0),
+        delete_thread=lambda path: asyncio.sleep(0),
+        rename_thread=lambda path, name: asyncio.sleep(0),
+    )
+    sidebar._entries = [
+        ThreadListEntry(
+            name=f"Thread {index}",
+            path=f"dataset://agents/testcli/threads/{index}",
+            created_at="2026-05-13T08:55:00Z",
+            modified_at="2026-05-13T08:55:00Z",
+        )
+        for index in range(8)
+    ]
+
+    rendered = sidebar.render(focused=True, height=4)
+    assert "Thread 0" in rendered.plain
+    assert "Thread 2" in rendered.plain
+    assert "Thread 3" not in rendered.plain
+
+    await sidebar.handle_key("down", None)
+    await sidebar.handle_key("down", None)
+    await sidebar.handle_key("down", None)
+    rendered = sidebar.render(focused=True, height=4)
+    assert "Thread 0" not in rendered.plain
+    assert "Thread 1" in rendered.plain
+    assert "Thread 3" in rendered.plain
+
+    await sidebar.handle_key("scroll_down", None)
+    rendered = sidebar.render(focused=True, height=4)
+    assert "Thread 1" not in rendered.plain
+    assert "Thread 2" in rendered.plain
+    assert "Thread 4" in rendered.plain
+
+
+@pytest.mark.asyncio
 async def test_process_turn_toolkits_keep_computer_toolkit_top_level(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
