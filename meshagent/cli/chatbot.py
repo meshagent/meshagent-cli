@@ -6291,7 +6291,7 @@ async def run(
     ] = False,
     thread_path: Annotated[
         Optional[str],
-        typer.Option(..., help="log all requests to the llm"),
+        typer.Option("--thread-id", help="Thread id to open"),
     ] = None,
     message: Annotated[
         Optional[str],
@@ -6512,7 +6512,7 @@ async def use(
     ] = None,
     thread_path: Annotated[
         Optional[str],
-        typer.Option(..., help="log all requests to the llm"),
+        typer.Option("--thread-id", help="Thread id to open"),
     ] = None,
     message: Annotated[
         Optional[str],

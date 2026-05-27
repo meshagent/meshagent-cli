@@ -188,6 +188,7 @@ _ASK_SLASH_COMMANDS = (
     ("/new", "Start a new thread"),
     ("/model", "List or change the active model"),
     ("/output", "Change text or audio outputs"),
+    ("/threads on | off", "Show or hide the thread sidebar"),
 )
 
 
@@ -1836,7 +1837,7 @@ async def _run_ask_tui(
     model_label_provider: Callable[[], str | None] | None = None,
     output_label_provider: Callable[[], str | None] | None = None,
     command_options_provider: Callable[[str], Sequence[AskCommandOption]] | None = None,
-    side_panel_renderer: Callable[[bool], Any] | None = None,
+    side_panel_renderer: Callable[..., Any] | None = None,
     side_panel_key_handler: Callable[[str, str | None], Awaitable[bool] | bool]
     | None = None,
     side_panel_mouse_handler: Callable[[int, int], Awaitable[bool] | bool]
@@ -1904,20 +1905,38 @@ async def _run_ask_tui(
             if isinstance(app, _AskTextualApp):
                 app._submit_side_panel_click(x=event.x, y=event.y)
 
+        def on_mouse_scroll_up(self, event: Any) -> None:
+            event.prevent_default()
+            event.stop()
+            app = self.app
+            if isinstance(app, _AskTextualApp):
+                app._submit_side_panel_key("scroll_up", None)
+
+        def on_mouse_scroll_down(self, event: Any) -> None:
+            event.prevent_default()
+            event.stop()
+            app = self.app
+            if isinstance(app, _AskTextualApp):
+                app._submit_side_panel_key("scroll_down", None)
+
     class _AskTextualApp(App[None]):
         CSS = """
         Screen {
-            layout: grid;
-            grid-size: 1 7;
-            grid-rows: auto 1fr 3 auto auto auto auto;
+            layout: vertical;
             padding: 0;
             background: #101114;
             color: white;
         }
-        #header {
+        #app-row {
             width: 100%;
-            padding: 1 2 0 2;
-            color: #cfd3dc;
+            height: 100%;
+        }
+        #main-panel {
+            width: 4fr;
+            height: 100%;
+            layout: grid;
+            grid-size: 1 6;
+            grid-rows: 1fr 3 auto auto auto auto;
         }
         #feed-scroll {
             width: 4fr;
@@ -1932,7 +1951,7 @@ async def _run_ask_tui(
             display: none;
             width: 1fr;
             height: 100%;
-            padding: 1 1;
+            padding: 1 1 0 1;
             border-left: solid #2d3138;
             background: #101114;
             color: #cfd3dc;
@@ -2105,7 +2124,7 @@ async def _run_ask_tui(
             output_label_provider: Callable[[], str | None] | None,
             command_options_provider: Callable[[str], Sequence[AskCommandOption]]
             | None,
-            side_panel_renderer: Callable[[bool], Any] | None,
+            side_panel_renderer: Callable[..., Any] | None,
             side_panel_key_handler: Callable[[str, str | None], Awaitable[bool] | bool]
             | None,
             side_panel_mouse_handler: Callable[[int, int], Awaitable[bool] | bool]
@@ -2126,6 +2145,7 @@ async def _run_ask_tui(
             self._side_panel_renderer = side_panel_renderer
             self._side_panel_key_handler = side_panel_key_handler
             self._side_panel_mouse_handler = side_panel_mouse_handler
+            self._side_panel_enabled = False
             self._entries: list[_AskFeedEntry] = []
             self._feed_view: Vertical | None = None
             self._feed_scroll: VerticalScroll | None = None
@@ -2176,43 +2196,34 @@ async def _run_ask_tui(
             return self._session_provider()
 
         def compose(self) -> ComposeResult:
-            help_text = "Enter to send. Shift+Enter inserts a newline. Ctrl+C quits."
-            if self._side_panel_renderer is not None:
-                help_text = (
-                    "Enter to send. Tab switches focus. Shift+Enter inserts a newline. "
-                    "Ctrl+C quits."
-                )
-            yield Static(
-                Text(
-                    f"{self._title}\n{help_text}",
-                    style="bold",
-                ),
-                id="header",
-            )
-            with Horizontal(id="content-row"):
-                with VerticalScroll(id="feed-scroll"):
-                    yield Vertical(id="feed")
-                    yield Static("", id="active-assistant-event-break")
-                    with Vertical(id="active-assistant-entry", classes="feed-entry"):
-                        yield Static("", id="active-assistant-header")
-                        yield TextualMarkdown(
+            with Horizontal(id="app-row"):
+                with Vertical(id="main-panel"):
+                    with Horizontal(id="content-row"):
+                        with VerticalScroll(id="feed-scroll"):
+                            yield Vertical(id="feed")
+                            yield Static("", id="active-assistant-event-break")
+                            with Vertical(
+                                id="active-assistant-entry", classes="feed-entry"
+                            ):
+                                yield Static("", id="active-assistant-header")
+                                yield TextualMarkdown(
+                                    "",
+                                    id="active-assistant-body",
+                                    classes="feed-entry-body feed-entry-markdown",
+                                )
+                    yield Static("", id="status-line")
+                    yield Static("", id="turn-queue")
+                    yield Static("", id="command-menu")
+                    with Horizontal(id="input-row"):
+                        yield Static("›", id="input-prompt")
+                        yield TextArea(
                             "",
-                            id="active-assistant-body",
-                            classes="feed-entry-body feed-entry-markdown",
+                            id="ask-input",
+                            soft_wrap=True,
+                            show_line_numbers=False,
                         )
+                    yield Static("", id="session-meta")
                 yield _AskSidePanel("", id="side-panel")
-            yield Static("", id="status-line")
-            yield Static("", id="turn-queue")
-            yield Static("", id="command-menu")
-            with Horizontal(id="input-row"):
-                yield Static("›", id="input-prompt")
-                yield TextArea(
-                    "",
-                    id="ask-input",
-                    soft_wrap=True,
-                    show_line_numbers=False,
-                )
-            yield Static("", id="session-meta")
 
         async def on_mount(self) -> None:
             self._feed_view = self.query_one("#feed", Vertical)
@@ -2408,6 +2419,9 @@ async def _run_ask_tui(
                 self.exit()
                 return
 
+            if self._handle_builtin_command(prompt.strip()):
+                return
+
             resolved_command = self._resolve_command_submission(prompt.strip())
             if resolved_command is not None and self._command_handler is not None:
                 if self._pending:
@@ -2430,6 +2444,30 @@ async def _run_ask_tui(
                 return
 
             self._start_turn(prompt=prompt)
+
+        def _handle_builtin_command(self, command: str) -> bool:
+            if command == "/threads":
+                self._side_panel_enabled = (
+                    self._side_panel_renderer is not None
+                    and not self._side_panel_enabled
+                )
+                self._side_panel_focused = False
+                self._render_side_panel()
+                if self._input_view is not None:
+                    self._input_view.focus()
+                return True
+            if command == "/threads on":
+                self._side_panel_enabled = self._side_panel_renderer is not None
+                self._render_side_panel()
+                return True
+            if command == "/threads off":
+                self._side_panel_enabled = False
+                self._side_panel_focused = False
+                self._render_side_panel()
+                if self._input_view is not None:
+                    self._input_view.focus()
+                return True
+            return False
 
         def _start_turn(self, *, prompt: str) -> None:
             if isinstance(self._session, ChatThreadSession):
@@ -2828,7 +2866,7 @@ async def _run_ask_tui(
             matches = [
                 (command, description)
                 for command, description in _ASK_SLASH_COMMANDS
-                if command.startswith(prompt)
+                if command.startswith(prompt) or command.split(" ", 1)[0] == prompt
             ]
             if len(matches) == 0:
                 self._command_menu_view.styles.display = "none"
@@ -3651,16 +3689,25 @@ async def _run_ask_tui(
             if self._side_panel_view is None:
                 return
             renderer = self._side_panel_renderer
-            if renderer is None:
+            if renderer is None or not self._side_panel_enabled:
                 self._side_panel_view.styles.display = "none"
+                self._side_panel_view.remove_class("side-panel--visible")
+                self._side_panel_view.remove_class("side-panel--focused")
                 self._side_panel_view.update("")
                 return
+            self._side_panel_view.styles.display = "block"
             self._side_panel_view.add_class("side-panel--visible")
             if self._side_panel_focused:
                 self._side_panel_view.add_class("side-panel--focused")
             else:
                 self._side_panel_view.remove_class("side-panel--focused")
-            self._side_panel_view.update(renderer(self._side_panel_focused))
+            self._side_panel_view.update(
+                renderer(
+                    self._side_panel_focused,
+                    width=self._side_panel_view.size.width,
+                    height=self._side_panel_view.size.height,
+                )
+            )
 
         def _usage_footer_text(self) -> Text:
             usage_state = self._usage_state

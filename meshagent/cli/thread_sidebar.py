@@ -45,6 +45,8 @@ class ThreadSidebar:
         self._rename_path: str | None = None
         self._rename_value = ""
         self._refresh_task: asyncio.Task[None] | None = None
+        self._scroll_offset = 0
+        self._last_entry_capacity: int | None = None
 
     async def start(self) -> None:
         self._refresh_task = asyncio.create_task(self.refresh())
@@ -118,11 +120,14 @@ class ThreadSidebar:
         else:
             self._selected_index = min(self._selected_index, len(self._entries) - 1)
 
-    def render(self, focused: bool) -> Any:
+    def render(
+        self, focused: bool, *, width: int | None = None, height: int | None = None
+    ) -> Any:
         from rich.text import Text
 
         if not focused:
             self._sync_selection()
+        name_width = max((width or 32) - 1, 8)
         text = Text()
         title_style = "bold #7dd3fc" if focused else "bold #9aa5b8"
         text.append("Threads", style=title_style)
@@ -137,9 +142,6 @@ class ThreadSidebar:
         elif self._confirm_delete_path is not None:
             text.append("Backspace again to delete", style="bold #fca5a5")
             text.append("\n")
-        text.append("Tab focus  Enter open  r rename\n", style="#6f7b90")
-        text.append("Backspace delete\n\n", style="#6f7b90")
-
         if len(self._entries) == 0:
             if self._refresh_task is not None and not self._refresh_task.done():
                 text.append("Loading threads...", style="#9aa5b8")
@@ -148,17 +150,23 @@ class ThreadSidebar:
             return text
 
         current_path = self._current_thread_path()
-        for index, entry in enumerate(self._entries[:100]):
+        entry_capacity = self._entry_capacity(height=height)
+        self._last_entry_capacity = entry_capacity
+        self._sync_scroll_offset(entry_capacity=entry_capacity)
+        visible_entries = self._entries[
+            self._scroll_offset : self._scroll_offset + entry_capacity
+        ]
+        for visible_index, entry in enumerate(visible_entries):
+            index = self._scroll_offset + visible_index
             selected = focused and index == self._selected_index
             current = current_path == entry.path
-            prefix = "> " if selected else "  "
-            style = "bold #e5e7eb" if selected else "#cfd3dc"
+            style = "reverse bold #e5e7eb" if selected else "#cfd3dc"
             if current and not selected:
                 style = "#7dd3fc"
-            text.append(prefix, style="#7dd3fc" if selected else "#6f7b90")
             name = " ".join(entry.name.split()) or entry.path
-            if len(name) > 28:
-                name = f"{name[:25].rstrip()}..."
+            available_name_width = max(name_width - (2 if current else 0), 8)
+            if len(name) > available_name_width:
+                name = f"{name[: max(available_name_width - 3, 1)].rstrip()}..."
             text.append(name, style=style)
             if current:
                 text.append(" *", style="#7dd3fc")
@@ -174,6 +182,12 @@ class ThreadSidebar:
         if key == "down":
             self._move_selection(1)
             return True
+        if key == "scroll_up":
+            self._scroll_entries(-1)
+            return True
+        if key == "scroll_down":
+            self._scroll_entries(1)
+            return True
         if key == "enter":
             await self._open_selected_thread()
             return True
@@ -187,22 +201,55 @@ class ThreadSidebar:
 
     async def handle_click(self, x: int, y: int) -> bool:
         del x
-        visible_entries = self._entries[:100]
+        visible_entries = self._entries[
+            self._scroll_offset : self._scroll_offset
+            + (self._last_entry_capacity or len(self._entries))
+        ]
         entry_index = y - self._entry_line_offset()
         if entry_index < 0 or entry_index >= len(visible_entries):
             return False
-        self._selected_index = entry_index
+        self._selected_index = min(
+            self._scroll_offset + entry_index, len(self._entries) - 1
+        )
         self._confirm_delete_path = None
         await self._open_selected_thread()
         return True
 
     def _entry_line_offset(self) -> int:
-        offset = 4
+        offset = 1
         if self._message is not None:
             offset += 1
         if self._rename_path is not None or self._confirm_delete_path is not None:
             offset += 1
         return offset
+
+    def _entry_capacity(self, *, height: int | None) -> int:
+        if height is None:
+            return min(len(self._entries), 100)
+        return max(1, min(height - self._entry_line_offset(), 100))
+
+    def _sync_scroll_offset(self, *, entry_capacity: int | None = None) -> None:
+        if len(self._entries) == 0:
+            self._scroll_offset = 0
+            return
+        capacity = entry_capacity or self._last_entry_capacity or len(self._entries)
+        max_offset = max(0, len(self._entries) - capacity)
+        self._scroll_offset = max(0, min(self._scroll_offset, max_offset))
+        if self._selected_index < self._scroll_offset:
+            self._scroll_offset = self._selected_index
+        elif self._selected_index >= self._scroll_offset + capacity:
+            self._scroll_offset = min(max_offset, self._selected_index - capacity + 1)
+
+    def _scroll_entries(self, delta: int) -> None:
+        if len(self._entries) == 0:
+            return
+        capacity = self._last_entry_capacity or len(self._entries)
+        max_offset = max(0, len(self._entries) - capacity)
+        self._scroll_offset = max(0, min(max_offset, self._scroll_offset + delta))
+        if self._selected_index < self._scroll_offset:
+            self._selected_index = self._scroll_offset
+        elif self._selected_index >= self._scroll_offset + capacity:
+            self._selected_index = self._scroll_offset + capacity - 1
 
     def _move_selection(self, delta: int) -> None:
         if len(self._entries) == 0:
@@ -212,6 +259,7 @@ class ThreadSidebar:
             min(len(self._entries) - 1, self._selected_index + delta),
         )
         self._confirm_delete_path = None
+        self._sync_scroll_offset()
 
     def _selected_entry(self) -> ThreadListEntry | None:
         if len(self._entries) == 0:
