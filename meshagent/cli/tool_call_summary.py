@@ -159,12 +159,20 @@ def _friendly_builtin_summary(
             arguments=arguments,
             completed=completed,
         )
+    elif normalized_toolkit == "codex":
+        summary = _codex_summary(tool=normalized_tool, completed=completed)
 
     if summary is None:
         return None
     if failed:
         return f"Failed: {summary}"
     return summary
+
+
+def _codex_summary(*, tool: str, completed: bool) -> str | None:
+    if tool.startswith("diff"):
+        return "Updated diff" if completed else "Updating diff"
+    return None
 
 
 def _storage_summary(
