@@ -13,6 +13,7 @@ import pytest
 from meshagent.agents.context import AgentSessionContext
 from meshagent.agents.messages import (
     AGENT_EVENT_THREAD_STARTED,
+    AGENT_EVENT_THREAD_LOADED,
     AGENT_EVENT_THREAD_STATUS,
     AGENT_EVENT_TEXT_CONTENT_DELTA,
     AGENT_EVENT_TURN_ENDED,
@@ -36,6 +37,7 @@ from meshagent.agents.messages import (
     OpenThread,
     ModelsResponse,
     StartThread,
+    ThreadStarted,
     TurnEnded,
     TurnStart,
     TurnStartAccepted,
@@ -47,11 +49,12 @@ from meshagent.agents.thread_status_publisher import (
     AgentMessageThreadStatusPublisher,
 )
 from meshagent.agents.thread_storage import ThreadListEntry, ThreadListEvent
-from meshagent.api import RoomClient
+from meshagent.api import Participant, RoomClient
 from meshagent.api import ParticipantToken
 from meshagent.api.specs.service import ContainerSpec, ServiceMetadata, ServiceSpec
 from meshagent.cli.async_typer import get_command
 from meshagent.cli import chatbot
+from meshagent.cli import codex
 from meshagent.cli import cli as root_cli
 from meshagent.cli import mailbot
 from meshagent.cli import process
@@ -127,6 +130,722 @@ def _assert_builder_kwargs_match_signature(
 def test_root_cli_registers_process_group() -> None:
     command = get_command(root_cli.app)
     assert "process" in command.commands
+
+
+def test_root_cli_registers_codex_group() -> None:
+    command = get_command(root_cli.app)
+    assert "codex" in command.commands
+
+
+def test_codex_group_exposes_process_shaped_subcommands() -> None:
+    command = get_command(codex.app)
+    assert set(command.commands) == {
+        "join",
+        "service",
+        "spec",
+        "deploy",
+        "run",
+        "threads",
+        "use",
+    }
+
+
+def test_codex_join_help_omits_custom_tool_flags() -> None:
+    join_command = get_command(codex.app).commands["join"]
+    visible_options = {
+        option
+        for param in join_command.params
+        if isinstance(param, TyperOption) and not param.hidden
+        for option in param.opts
+    }
+
+    assert "--model" in visible_options
+    assert "--codex-config" in visible_options
+    assert "--codex-bin" in visible_options
+    assert "--channel" in visible_options
+    assert "--shell" not in visible_options
+    assert "--web-search" not in visible_options
+    assert "--require-toolkit" not in visible_options
+    assert "--mcp" not in visible_options
+    assert "--threading-mode" not in visible_options
+
+
+def test_codex_run_supports_model_short_option() -> None:
+    run_command = get_command(codex.app).commands["run"]
+    visible_options = {
+        option
+        for param in run_command.params
+        if isinstance(param, TyperOption) and not param.hidden
+        for option in param.opts
+    }
+
+    assert "--model" in visible_options
+    assert "-m" in visible_options
+    assert "--thread-id" in visible_options
+    assert "--threading-mode" not in visible_options
+
+
+def test_codex_cli_does_not_import_process_cli() -> None:
+    source = Path(codex.__file__).read_text()
+    assert "meshagent.cli.process" not in source
+
+
+@pytest.mark.asyncio
+async def test_codex_local_event_supervisor_forwards_thread_started() -> None:
+    supervisor = codex._LocalEventCodexSupervisor(
+        participant=Participant(id="codex", attributes={"name": "codex"}),
+        config=codex._codex_config(
+            codex_bin="/tmp/codex",
+            working_dir=None,
+            codex_config=[],
+        ),
+        default_model="gpt-5.5",
+    )
+    events = supervisor.subscribe_local_events()
+    participant = Participant(id="client", attributes={"name": "client"})
+
+    supervisor._emit_thread_started(
+        start_thread=StartThread(
+            type=AGENT_MESSAGE_THREAD_START,
+            message_id="message-1",
+            content=[AgentTextContent(type="text", text="hello")],
+        ),
+        sender=participant,
+        thread_id="thread-1",
+    )
+
+    event = await asyncio.wait_for(events.get(), timeout=1)
+    assert isinstance(event.data, ThreadStarted)
+    assert event.sender == participant
+    assert event.data.thread_id == "thread-1"
+
+
+@pytest.mark.asyncio
+async def test_codex_local_event_supervisor_forwards_thread_list_response() -> None:
+    class _FakeCodexClient:
+        async def start(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+        async def initialize(self):
+            return None
+
+        async def model_list(self, include_hidden: bool = False):
+            del include_hidden
+            return type("ModelListResponse", (), {"data": []})()
+
+        async def thread_list(self, params: dict | None = None):
+            del params
+            return type(
+                "ThreadListResponse",
+                (),
+                {
+                    "data": [
+                        type(
+                            "Thread",
+                            (),
+                            {
+                                "id": "codex-thread-1",
+                                "name": None,
+                                "preview": "Codex Thread Preview",
+                                "created_at": 1,
+                                "updated_at": 2,
+                            },
+                        )()
+                    ]
+                },
+            )()
+
+    supervisor = codex._LocalEventCodexSupervisor(
+        participant=Participant(id="codex", attributes={"name": "codex"}),
+        config=codex._codex_config(
+            codex_bin="/tmp/codex",
+            working_dir=None,
+            codex_config=[],
+        ),
+        client_factory=lambda _config: _FakeCodexClient(),
+        default_model="gpt-5.5",
+    )
+    events = supervisor.subscribe_local_events()
+    client = process.LocalChatClient(
+        thread_path=None,
+        send_message=supervisor.send,
+        events=events,
+        on_close=lambda: supervisor.unsubscribe_local_events(events),
+    )
+    try:
+        await supervisor.start()
+        await client.start()
+
+        response = await asyncio.wait_for(
+            client.thread_session.list_threads(limit=100, offset=0),
+            timeout=1,
+        )
+    finally:
+        await client.close()
+        await supervisor.stop()
+
+    assert [(thread.name, thread.path) for thread in response.threads] == [
+        ("Codex Thread Preview", "codex-thread-1")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_codex_local_event_supervisor_forwards_source_less_status() -> None:
+    supervisor = codex._LocalEventCodexSupervisor(
+        participant=Participant(id="codex", attributes={"name": "codex"}),
+        config=codex._codex_config(
+            codex_bin="/tmp/codex",
+            working_dir=None,
+            codex_config=[],
+        ),
+        default_model="gpt-5.5",
+    )
+    events = supervisor.subscribe_local_events()
+    status = AgentThreadStatus(
+        type=AGENT_EVENT_THREAD_STATUS,
+        thread_id="thread-1",
+        turn_id="turn-1",
+        status="Thinking",
+        mode="steerable",
+    )
+
+    supervisor._send_to_channels(Message(data=status))
+
+    event = await asyncio.wait_for(events.get(), timeout=1)
+    assert event.data == status
+
+
+@pytest.mark.asyncio
+async def test_codex_loaded_thread_accepts_followup_turn() -> None:
+    from meshagent.codex.vendor.openai_codex.generated.v2_all import (
+        AgentMessageDeltaNotification,
+        AgentMessageThreadItem,
+        TextUserInput,
+        ThreadItem,
+        Turn,
+        TurnCompletedNotification,
+        TurnStartResponse,
+        TurnStatus,
+        UserInput,
+        UserMessageThreadItem,
+    )
+    from meshagent.codex.vendor.openai_codex.models import Notification
+
+    class _FakeCodexClient:
+        def __init__(self) -> None:
+            self.notifications: asyncio.Queue[Notification] = asyncio.Queue()
+            self.turn_start_calls: list[tuple[str, object, object]] = []
+
+        async def start(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+        async def initialize(self):
+            return None
+
+        async def model_list(self, include_hidden: bool = False):
+            del include_hidden
+            return type("ModelListResponse", (), {"data": []})()
+
+        async def thread_read(self, thread_id: str, include_turns: bool = False):
+            del include_turns
+            return type(
+                "ThreadReadResponse",
+                (),
+                {
+                    "thread": type(
+                        "Thread",
+                        (),
+                        {
+                            "id": thread_id,
+                            "turns": [
+                                Turn(
+                                    id="loaded-turn-1",
+                                    items=[
+                                        ThreadItem(
+                                            root=UserMessageThreadItem(
+                                                id="loaded-user-1",
+                                                type="userMessage",
+                                                content=[
+                                                    UserInput(
+                                                        root=TextUserInput(
+                                                            type="text",
+                                                            text="loaded prompt",
+                                                        )
+                                                    )
+                                                ],
+                                            )
+                                        ),
+                                        ThreadItem(
+                                            root=AgentMessageThreadItem(
+                                                id="loaded-agent-1",
+                                                type="agentMessage",
+                                                text="loaded response",
+                                            )
+                                        ),
+                                    ],
+                                    status=TurnStatus.completed,
+                                )
+                            ],
+                        },
+                    )()
+                },
+            )()
+
+        async def turn_start(self, thread_id, input_items, params=None):
+            self.turn_start_calls.append((thread_id, input_items, params))
+            await self.notifications.put(
+                Notification(
+                    method="item/agentMessage/delta",
+                    payload=AgentMessageDeltaNotification(
+                        delta="followup response",
+                        itemId="followup-item-1",
+                        threadId=thread_id,
+                        turnId="followup-turn-1",
+                    ),
+                )
+            )
+            await self.notifications.put(
+                Notification(
+                    method="turn/completed",
+                    payload=TurnCompletedNotification(
+                        threadId=thread_id,
+                        turn=Turn(
+                            id="followup-turn-1",
+                            items=[],
+                            status=TurnStatus.completed,
+                        ),
+                    ),
+                )
+            )
+            return TurnStartResponse(
+                turn=Turn(
+                    id="followup-turn-1",
+                    items=[],
+                    status=TurnStatus.in_progress,
+                )
+            )
+
+        async def turn_steer(self, thread_id, expected_turn_id, input_items) -> None:
+            del thread_id
+            del expected_turn_id
+            del input_items
+
+        async def turn_interrupt(self, thread_id, turn_id) -> None:
+            del thread_id
+            del turn_id
+
+        async def next_turn_notification(self, turn_id: str) -> Notification:
+            del turn_id
+            return await self.notifications.get()
+
+        def unregister_turn_notifications(self, turn_id: str) -> None:
+            del turn_id
+
+    fake_client = _FakeCodexClient()
+    supervisor = codex._LocalEventCodexSupervisor(
+        participant=Participant(id="codex", attributes={"name": "codex"}),
+        config=codex._codex_config(
+            codex_bin="/tmp/codex",
+            working_dir=None,
+            codex_config=[],
+        ),
+        client_factory=lambda _config: fake_client,
+        default_model="gpt-5.5",
+    )
+    events = supervisor.subscribe_local_events()
+    client = process.LocalChatClient(
+        thread_path=None,
+        send_message=supervisor.send,
+        events=events,
+        on_close=lambda: supervisor.unsubscribe_local_events(events),
+        local_participant_name="you",
+    )
+    try:
+        await supervisor.start()
+        await client.start()
+        session = await client.open_thread(
+            "thread-1",
+            local_participant_name="you",
+            close_client_on_close=False,
+            load=True,
+        )
+        while True:
+            event = await asyncio.wait_for(session.receive(), timeout=1)
+            if event.get("type") == AGENT_EVENT_THREAD_LOADED:
+                break
+
+        await session.send_text(text="followup prompt")
+        while True:
+            event = await asyncio.wait_for(session.receive(), timeout=1)
+            if event.get("type") == AGENT_EVENT_TURN_ENDED:
+                break
+    finally:
+        await client.close()
+        await supervisor.stop()
+
+    assert fake_client.turn_start_calls == [
+        (
+            "thread-1",
+            [{"type": "text", "text": "followup prompt"}],
+            {"model": "gpt-5.5"},
+        )
+    ]
+    text = "".join(
+        message.text
+        for message in session.messages
+        if isinstance(message, AgentTextContentDelta)
+        and message.turn_id == "followup-turn-1"
+    )
+    assert text == "followup response"
+
+
+@pytest.mark.asyncio
+async def test_codex_run_message_waits_for_loaded_thread_before_turn() -> None:
+    from meshagent.codex.vendor.openai_codex.generated.v2_all import (
+        AgentMessageDeltaNotification,
+        Turn,
+        TurnCompletedNotification,
+        TurnStartResponse,
+        TurnStatus,
+    )
+    from meshagent.codex.vendor.openai_codex.models import Notification
+
+    class _FakeCodexClient:
+        def __init__(self) -> None:
+            self.notifications: asyncio.Queue[Notification] = asyncio.Queue()
+            self.thread_read_completed = False
+            self.turn_start_calls: list[tuple[str, object, object, bool]] = []
+
+        async def start(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+        async def initialize(self):
+            return None
+
+        async def model_list(self, include_hidden: bool = False):
+            del include_hidden
+            return type("ModelListResponse", (), {"data": []})()
+
+        async def thread_read(self, thread_id: str, include_turns: bool = False):
+            del include_turns
+            self.thread_read_completed = True
+            return type(
+                "ThreadReadResponse",
+                (),
+                {
+                    "thread": type(
+                        "Thread",
+                        (),
+                        {
+                            "id": thread_id,
+                            "name": "Existing thread",
+                            "preview": "loaded preview",
+                            "created_at": 1,
+                            "updated_at": 2,
+                            "turns": [],
+                        },
+                    )()
+                },
+            )()
+
+        async def turn_start(self, thread_id, input_items, params=None):
+            self.turn_start_calls.append(
+                (thread_id, input_items, params, self.thread_read_completed)
+            )
+            await self.notifications.put(
+                Notification(
+                    method="item/agentMessage/delta",
+                    payload=AgentMessageDeltaNotification(
+                        delta="followup response",
+                        itemId="followup-item-1",
+                        threadId=thread_id,
+                        turnId="followup-turn-1",
+                    ),
+                )
+            )
+            await self.notifications.put(
+                Notification(
+                    method="turn/completed",
+                    payload=TurnCompletedNotification(
+                        threadId=thread_id,
+                        turn=Turn(
+                            id="followup-turn-1",
+                            items=[],
+                            status=TurnStatus.completed,
+                        ),
+                    ),
+                )
+            )
+            return TurnStartResponse(
+                turn=Turn(
+                    id="followup-turn-1",
+                    items=[],
+                    status=TurnStatus.in_progress,
+                )
+            )
+
+        async def turn_steer(self, thread_id, expected_turn_id, input_items) -> None:
+            del thread_id
+            del expected_turn_id
+            del input_items
+
+        async def turn_interrupt(self, thread_id, turn_id) -> None:
+            del thread_id
+            del turn_id
+
+        async def next_turn_notification(self, turn_id: str) -> Notification:
+            del turn_id
+            return await self.notifications.get()
+
+        def unregister_turn_notifications(self, turn_id: str) -> None:
+            del turn_id
+
+    fake_client = _FakeCodexClient()
+    supervisor = codex._LocalEventCodexSupervisor(
+        participant=Participant(id="codex", attributes={"name": "codex"}),
+        config=codex._codex_config(
+            codex_bin="/tmp/codex",
+            working_dir=None,
+            codex_config=[],
+        ),
+        client_factory=lambda _config: fake_client,
+        default_model="gpt-5.5",
+    )
+    bot = type("CodexBot", (), {"_supervisor": supervisor})()
+    try:
+        await supervisor.start()
+        await asyncio.wait_for(
+            codex._run_codex_run_tui(
+                bot=bot,
+                model="gpt-5.5",
+                thread_path="thread-1",
+                agent_name="codex",
+                message="followup prompt",
+                working_dir=None,
+            ),
+            timeout=2,
+        )
+    finally:
+        await supervisor.stop()
+
+    assert fake_client.turn_start_calls == [
+        (
+            "thread-1",
+            [{"type": "text", "text": "followup prompt"}],
+            {"model": "gpt-5.5"},
+            True,
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_codex_run_tui_sidebar_loaded_thread_accepts_followup_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from meshagent.cli import ask as ask_module
+    from meshagent.codex.vendor.openai_codex.generated.v2_all import (
+        AgentMessageDeltaNotification,
+        Turn,
+        TurnCompletedNotification,
+        TurnStartResponse,
+        TurnStatus,
+    )
+    from meshagent.codex.vendor.openai_codex.models import Notification
+
+    class _FakeCodexClient:
+        def __init__(self) -> None:
+            self.notifications: asyncio.Queue[Notification] = asyncio.Queue()
+            self.thread_list_called = asyncio.Event()
+            self.thread_read_completed = False
+            self.turn_start_calls: list[tuple[str, object, object, bool]] = []
+
+        async def start(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+        async def initialize(self):
+            return None
+
+        async def model_list(self, include_hidden: bool = False):
+            del include_hidden
+            return type("ModelListResponse", (), {"data": []})()
+
+        async def thread_list(self, params: dict | None = None):
+            del params
+            self.thread_list_called.set()
+            return type(
+                "ThreadListResponse",
+                (),
+                {
+                    "data": [
+                        type(
+                            "Thread",
+                            (),
+                            {
+                                "id": "thread-1",
+                                "name": "Existing thread",
+                                "preview": "loaded preview",
+                                "created_at": 1,
+                                "updated_at": 2,
+                            },
+                        )()
+                    ]
+                },
+            )()
+
+        async def thread_read(self, thread_id: str, include_turns: bool = False):
+            del include_turns
+            self.thread_read_completed = True
+            return type(
+                "ThreadReadResponse",
+                (),
+                {
+                    "thread": type(
+                        "Thread",
+                        (),
+                        {
+                            "id": thread_id,
+                            "name": "Existing thread",
+                            "preview": "loaded preview",
+                            "created_at": 1,
+                            "updated_at": 2,
+                            "turns": [],
+                        },
+                    )()
+                },
+            )()
+
+        async def turn_start(self, thread_id, input_items, params=None):
+            self.turn_start_calls.append(
+                (thread_id, input_items, params, self.thread_read_completed)
+            )
+            await self.notifications.put(
+                Notification(
+                    method="item/agentMessage/delta",
+                    payload=AgentMessageDeltaNotification(
+                        delta="followup response",
+                        itemId="followup-item-1",
+                        threadId=thread_id,
+                        turnId="followup-turn-1",
+                    ),
+                )
+            )
+            await self.notifications.put(
+                Notification(
+                    method="turn/completed",
+                    payload=TurnCompletedNotification(
+                        threadId=thread_id,
+                        turn=Turn(
+                            id="followup-turn-1",
+                            items=[],
+                            status=TurnStatus.completed,
+                        ),
+                    ),
+                )
+            )
+            return TurnStartResponse(
+                turn=Turn(
+                    id="followup-turn-1",
+                    items=[],
+                    status=TurnStatus.in_progress,
+                )
+            )
+
+        async def turn_steer(self, thread_id, expected_turn_id, input_items) -> None:
+            del thread_id
+            del expected_turn_id
+            del input_items
+
+        async def turn_interrupt(self, thread_id, turn_id) -> None:
+            del thread_id
+            del turn_id
+
+        async def next_turn_notification(self, turn_id: str) -> Notification:
+            del turn_id
+            return await self.notifications.get()
+
+        def unregister_turn_notifications(self, turn_id: str) -> None:
+            del turn_id
+
+    async def fake_run_ask_tui(**kwargs):
+        await asyncio.wait_for(fake_client.thread_list_called.wait(), timeout=1)
+        handled = False
+        deadline = asyncio.get_running_loop().time() + 1
+        while not handled:
+            handled_result = kwargs["side_panel_mouse_handler"](0, 4)
+            if inspect.isawaitable(handled_result):
+                handled_result = await handled_result
+            handled = handled_result is True
+            if handled:
+                break
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AssertionError("thread sidebar did not open selected thread")
+            await asyncio.sleep(0.01)
+        session = kwargs["session_provider"]()
+        assert session.thread_path == "thread-1"
+        await session.send_text(text="followup prompt")
+        while True:
+            event = await asyncio.wait_for(session.receive(), timeout=1)
+            if event.get("type") == AGENT_EVENT_TURN_ENDED:
+                return
+
+    fake_client = _FakeCodexClient()
+    supervisor = codex._LocalEventCodexSupervisor(
+        participant=Participant(id="codex", attributes={"name": "codex"}),
+        config=codex._codex_config(
+            codex_bin="/tmp/codex",
+            working_dir=None,
+            codex_config=[],
+        ),
+        client_factory=lambda _config: fake_client,
+        default_model="gpt-5.5",
+    )
+    bot = type("CodexBot", (), {"_supervisor": supervisor})()
+    monkeypatch.setattr(ask_module, "_run_ask_tui", fake_run_ask_tui)
+    try:
+        await supervisor.start()
+        await asyncio.wait_for(
+            codex._run_codex_run_tui(
+                bot=bot,
+                model="gpt-5.5",
+                thread_path=None,
+                agent_name="codex",
+                message=None,
+                working_dir=None,
+            ),
+            timeout=2,
+        )
+    finally:
+        await supervisor.stop()
+
+    assert fake_client.turn_start_calls == [
+        (
+            "thread-1",
+            [{"type": "text", "text": "followup prompt"}],
+            {"model": "gpt-5.5"},
+            True,
+        )
+    ]
+
+
+def test_codex_channels_reject_process_tool_channels() -> None:
+    assert codex._resolved_codex_channels(channel=["chat", "websocket:8765"]) == [
+        "chat",
+        "websocket://0.0.0.0:8765",
+    ]
+    with pytest.raises(typer.BadParameter, match="only supports chat and websocket"):
+        codex._resolved_codex_channels(channel=["toolkit:tools"])
 
 
 async def test_chatbot_await_cleanup_cancels_hung_cleanup() -> None:
@@ -1894,7 +2613,7 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
         captured["image_dataset_client"] = kwargs["image_dataset_client"]
 
     bot = _DummyBot()
-    room = object()
+    room = type("Room", (), {"datasets": object()})()
     monkeypatch.setattr(ask_module, "_run_ask_tui", fake_run_ask_tui)
 
     await process._run_process_run_tui(
@@ -1915,7 +2634,7 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
     assert captured["command_handler"] is not None
     assert captured["model_label_provider"]() == "openai-realtime/gpt-realtime"
     assert isinstance(captured["image_dataset_client"], process.ImageDatasetClient)
-    assert captured["image_dataset_client"].client is room
+    assert captured["image_dataset_client"].client is room.datasets
     command_options = captured["command_options_provider"]("/model")
     assert [option.command for option in command_options] == [
         "/model openai-realtime/gpt-realtime",

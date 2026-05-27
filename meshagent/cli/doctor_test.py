@@ -53,7 +53,7 @@ def test_doctor_reports_python_roomclient_deploy_gaps(tmp_path) -> None:
         in result.output
     )
     assert f"meshagent client is {MESHAGENT_CLIENT_VERSION}" in result.output
-    assert "[error] Deployment artifact" in result.output
+    assert "[warning] Dockerfile missing" in result.output
     assert "--wait" in result.output
     assert "--tag testproj:latest" in result.output
     assert "--tag <repository>:<tag>" not in result.output
@@ -66,12 +66,8 @@ def test_doctor_reports_python_roomclient_deploy_gaps(tmp_path) -> None:
     assert "Deployment checks" in result.output
     assert "Auto-fix project files" in result.output
     assert "meshagent doctor --fix" in result.output
-    assert "Create Dockerfile" in result.output
     assert "Create pyproject.toml" in result.output
     assert "python-sdk-slim" in result.output
-    assert "FROM scratch" in result.output
-    assert "LABEL meshagent.runtime=python" in result.output
-    assert "EXPOSE 8000" in result.output
     assert "MeshAgent Python deployments must target Python 3.13" in result.output
     assert (
         "Python virtualenv check: no local Python virtual environment" in result.output
@@ -108,13 +104,12 @@ def test_doctor_reports_python_source_sdk_import_without_project_dependency(
     assert "Python RoomClient SDK dependency: add meshagent-api" in result.output
     assert "does not declare `meshagent-api`" in result.output
     assert "meshagent doctor --fix" in result.output
-    assert "Create Dockerfile" in result.output
     assert "Create pyproject.toml" in result.output
     assert "--meshagent-token agentDefault" in result.output
     assert "--meshagent-token full" not in result.output
 
 
-def test_doctor_fix_writes_missing_python_dockerfile_and_pyproject(tmp_path) -> None:
+def test_doctor_fix_writes_missing_python_pyproject_only(tmp_path) -> None:
     (tmp_path / "requirements.txt").write_text(
         "requests==2.32.3\nmeshagent-api==0.5.18\n",
         encoding="utf-8",
@@ -131,17 +126,14 @@ def test_doctor_fix_writes_missing_python_dockerfile_and_pyproject(tmp_path) -> 
 
     assert result.exit_code == 0
     assert "Applied fixes" in result.output
+    assert "Wrote pyproject.toml" in result.output
     assert "Create Dockerfile from MeshAgent doctor recommendation" in result.output
     assert "Create pyproject.toml with Python runtime metadata" in result.output
     assert "Run `meshagent doctor` and address remaining findings" in result.output
 
-    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     pyproject = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
 
-    assert "python-sdk-slim" in dockerfile
-    assert "FROM scratch" in dockerfile
-    assert "LABEL meshagent.runtime=python" in dockerfile
-    assert 'CMD ["-m", "server"]' in dockerfile
+    assert not (tmp_path / "Dockerfile").exists()
     assert 'requires-python = ">=3.13"' in pyproject
     assert '"requests==2.32.3"' in pyproject
     assert f'"meshagent-api=={MESHAGENT_CLIENT_VERSION}"' in pyproject
@@ -332,7 +324,6 @@ def test_doctor_allows_headless_python_backend_agent_without_ports(tmp_path) -> 
     )
     assert "RoomClient deploy-token check" not in result.output
     assert "[error] RoomClient deployment needs" not in result.output
-    assert "EXPOSE" not in diagnosis.dockerfile
     assert "--meshagent-token agentDefault" in result.output
     assert "--meshagent-token full" not in result.output
     deploy_commands = [
@@ -422,9 +413,7 @@ def test_doctor_reports_older_python_runtime_upgrade_guidance(tmp_path) -> None:
     assert "runtime.txt declares `python-3.11.9`" in result.output
     assert "`pyproject.toml` project.requires-python is `>=3.10,<3.13`" in result.output
     assert "MeshAgent Python deployments must target Python 3.13" in result.output
-    assert "python-sdk-slim" in result.output
-    assert "FROM scratch" in result.output
-    assert "LABEL meshagent.runtime=python" in result.output
+    assert "Dockerfile missing: add Dockerfile or meshagent.yaml" in result.output
 
 
 def test_doctor_detects_nested_python_313_virtualenv(tmp_path) -> None:
@@ -474,13 +463,6 @@ def test_doctor_reports_javascript_roomclient_deploy_gaps(tmp_path) -> None:
     assert diagnosis.sdk == "@meshagent/meshagent"
     assert diagnosis.sdk_versions == (("package.json", "0.38.4"),)
     assert diagnosis.has_deployment_artifact is False
-    assert "node-sdk" in diagnosis.dockerfile
-    assert "RUN npm install" in diagnosis.dockerfile
-    assert "RUN npm run build" in diagnosis.dockerfile
-    assert "COPY --from=build /app/dist/index.js /app/index.js" in diagnosis.dockerfile
-    assert "FROM scratch" in diagnosis.dockerfile
-    assert "LABEL meshagent.runtime=node" in diagnosis.dockerfile
-    assert "EXPOSE 3000" in diagnosis.dockerfile
     assert diagnosis.liveness_path == "/health"
 
 
@@ -737,10 +719,7 @@ def test_doctor_reports_typescript_node_build_guidance(tmp_path, monkeypatch) ->
         "@meshagent/meshagent version is behind meshagent client: "
         "package.json has 0.38.4"
     ) in result.output
-    assert "node-sdk" in result.output
-    assert "RUN npm run build" in result.output
-    assert "COPY --from=build /app/dist/index.js /app/index.js" in result.output
-    assert "LABEL meshagent.runtime=node" in result.output
+    assert "Dockerfile missing: add Dockerfile or meshagent.yaml" in result.output
     assert "Local build check: `npm install && npm run build`" in result.output
     assert '`compilerOptions.module` to `"CommonJS"`' in result.output
     assert '`moduleResolution` to `"Node"`' in result.output
@@ -778,12 +757,7 @@ def test_doctor_reports_react_vite_static_deploy_guidance(tmp_path) -> None:
     assert diagnosis.javascript_flavor == "React/Vite"
     assert diagnosis.liveness_path == "/health"
     assert "JavaScript flavor: React/Vite" in result.output
-    assert "nginx:1.27-alpine" in result.output
-    assert "COPY --from=build /app/dist /usr/share/nginx/html" in result.output
-    assert "server { listen 80;" in result.output
-    assert "EXPOSE 80" in result.output
-    assert "pid /data/nginx/nginx.pid" in result.output
-    assert "client_body_temp_path /data/nginx/client_temp" in result.output
+    assert "Dockerfile missing: add Dockerfile or meshagent.yaml" in result.output
     assert "--room-mount /:/data:rw" in result.output
     assert "nginx /health route returning 200" in result.output
     assert "serve the generated `dist` or `build` directory with nginx" in result.output
@@ -814,12 +788,7 @@ def test_doctor_reports_nextjs_liveness_root_guidance(tmp_path) -> None:
     assert diagnosis.javascript_flavor == "Next.js"
     assert diagnosis.liveness_path == "/"
     assert "JavaScript flavor: Next.js" in result.output
-    assert "ENV HOSTNAME=0.0.0.0" in result.output
-    assert "ENV PORT=3000" in result.output
-    assert "EXPOSE 3000" in result.output
-    assert (
-        'CMD ["sh", "-c", "npm start -- -H 0.0.0.0 -p ${PORT:-3000}"]' in result.output
-    )
+    assert "Dockerfile missing: add Dockerfile or meshagent.yaml" in result.output
     assert "--liveness /" in result.output
     assert "Next.js Docker context check: add a `.dockerignore`" in result.output
     assert "`node_modules`, `.next`, `dist`, `build`" in result.output
@@ -845,7 +814,7 @@ def test_doctor_reports_go_without_roomclient_token_guidance(
     assert "env -u" not in result.output
     assert "Deployment checks" in result.output
     assert "go build -o server server.go" in result.output
-    assert "EXPOSE 8001" in result.output
+    assert "Dockerfile missing: add Dockerfile or meshagent.yaml" in result.output
 
 
 def test_doctor_reports_dotnet_roomclient_namespace_guidance(
@@ -884,7 +853,7 @@ def test_doctor_reports_dotnet_roomclient_namespace_guidance(
     assert "dotnet publish -c Release" in result.output
     assert "--disable-build-servers" in result.output
     assert "/p:UseSharedCompilation=false" in result.output
-    assert "EXPOSE 5000" in result.output
+    assert "Dockerfile missing: add Dockerfile or meshagent.yaml" in result.output
 
 
 def test_doctor_warns_when_dart_sdk_version_is_behind(tmp_path) -> None:
@@ -961,6 +930,25 @@ def test_doctor_reports_existing_dockerfile(tmp_path) -> None:
     assert result.exit_code == 0
     assert "Detected project: Ruby" in result.output
     assert "[ok] Deployment artifact found: Dockerfile" in result.output
+
+
+def test_doctor_warns_when_deploy_spec_exists_without_dockerfile(tmp_path) -> None:
+    (tmp_path / ".meshagent").mkdir()
+    (tmp_path / ".meshagent" / "deploy.yaml").write_text("", encoding="utf-8")
+    (tmp_path / "server.py").write_text(
+        "print('python app')\nif '/health': pass\nPORT = 8000\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "[ok] Deployment artifact found: .meshagent/deploy.yaml" in result.output
+    assert (
+        "[warning] Dockerfile missing: add Dockerfile or meshagent.yaml"
+        in result.output
+    )
+    assert "[ok] Deploy spec found: .meshagent/deploy.yaml" in result.output
 
 
 def test_doctor_warns_for_non_optimized_python_dockerfile(tmp_path) -> None:

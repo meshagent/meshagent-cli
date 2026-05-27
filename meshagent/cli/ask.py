@@ -1862,7 +1862,7 @@ async def _run_ask_tui(
         role: str
         text: str = ""
         pending: bool = False
-        kind: Literal["text", "image"] = "text"
+        kind: Literal["text", "image", "diff"] = "text"
         message_id: str | None = None
 
     @dataclass(slots=True)
@@ -2268,7 +2268,7 @@ async def _run_ask_tui(
             if self._command_selector is not None:
                 self._close_command_selector()
                 return
-            if not self._pending:
+            if not (self._pending or self._external_thread_active):
                 return
             if self._session.interrupt():
                 self._set_status_text("Interrupting")
@@ -2325,8 +2325,11 @@ async def _run_ask_tui(
                 if inspect.isawaitable(handled):
                     handled = await handled
                 if handled:
+                    self._side_panel_focused = False
                     self._render_side_panel()
                     self._sync_external_thread_state()
+                    if self._input_view is not None:
+                        self._input_view.focus()
             except Exception as exc:
                 self._entries.append(_AskFeedEntry(role="error", text=str(exc)))
                 self._render_feed()
@@ -2343,6 +2346,10 @@ async def _run_ask_tui(
                 if inspect.isawaitable(handled):
                     handled = await handled
                 if handled:
+                    if key == "enter":
+                        self._side_panel_focused = False
+                        if self._input_view is not None:
+                            self._input_view.focus()
                     self._render_side_panel()
                     self._sync_external_thread_state()
             except Exception as exc:
@@ -2426,6 +2433,9 @@ async def _run_ask_tui(
 
         def _start_turn(self, *, prompt: str) -> None:
             if isinstance(self._session, ChatThreadSession):
+                self._pending = True
+                self._status_started_at = time.monotonic()
+                self._set_status_text("Working")
                 self._render_feed()
                 self._render_turn_queue()
                 self._scroll_to_end()
@@ -3039,13 +3049,17 @@ async def _run_ask_tui(
             if isinstance(message, AgentToolCallEnded):
                 await self._finalize_active_assistant()
                 state = self._tool_calls.pop(message.item_id, None)
-                self._append_event_entry(self._tool_call_entry_text(message, state))
+                entry = self._tool_call_entry(message, state)
+                if self._append_or_replace_feed_entry(entry):
+                    self._render_feed()
+                    self._scroll_to_end()
                 return
             if isinstance(message, AgentThreadEvent):
                 await self._finalize_active_assistant()
-                event_text = self._thread_event_entry_text(message.event)
-                if event_text != "":
-                    self._append_event_entry(event_text)
+                entry = self._thread_event_entry(message.event)
+                if entry is not None and self._append_or_replace_feed_entry(entry):
+                    self._render_feed()
+                    self._scroll_to_end()
                 return
             if isinstance(message, AgentContextCompacted):
                 await self._finalize_active_assistant()
@@ -3054,11 +3068,25 @@ async def _run_ask_tui(
             if isinstance(message, AgentUsageUpdated):
                 self._set_usage(message)
 
-        def _append_event_entry(self, text: str) -> None:
+        def _append_event_entry(
+            self,
+            text: str,
+            *,
+            kind: Literal["text", "image", "diff"] = "text",
+            message_id: str | None = None,
+        ) -> None:
             normalized = text.strip()
             if normalized == "":
                 return
-            self._entries.append(_AskFeedEntry(role="event", text=f"• {normalized}"))
+            prefix = "" if kind == "diff" else "• "
+            self._entries.append(
+                _AskFeedEntry(
+                    role="event",
+                    text=f"{prefix}{normalized}",
+                    kind=kind,
+                    message_id=message_id,
+                )
+            )
             self._render_feed()
             self._scroll_to_end()
 
@@ -3204,6 +3232,47 @@ async def _run_ask_tui(
                 error_message=error_message,
             )
 
+        def _tool_call_entry(
+            self,
+            message: AgentToolCallEnded,
+            state: _AskToolCallState | None,
+        ) -> _AskFeedEntry:
+            text = self._tool_call_entry_text(message, state)
+            if self._is_codex_diff_tool_call(message=message, state=state):
+                diff_text = self._tool_call_diff_text(state=state)
+                if diff_text != "":
+                    return _AskFeedEntry(
+                        role="event",
+                        text=f"{text}\n{diff_text}",
+                        kind="diff",
+                        message_id=f"tool:{message.item_id}",
+                    )
+            return _AskFeedEntry(role="event", text=f"• {text}")
+
+        @staticmethod
+        def _is_codex_diff_tool_call(
+            *, message: AgentToolCallEnded, state: _AskToolCallState | None
+        ) -> bool:
+            toolkit = ""
+            tool = ""
+            if state is not None:
+                toolkit = state.toolkit.strip().lower()
+                tool = state.tool.strip().lower()
+            if toolkit == "":
+                toolkit = message.toolkit.strip().lower() if message.toolkit else ""
+            if tool == "":
+                tool = message.tool.strip().lower() if message.tool else ""
+            return toolkit == "codex" and tool.startswith("diff")
+
+        @staticmethod
+        def _tool_call_diff_text(*, state: _AskToolCallState | None) -> str:
+            if state is None or state.arguments is None:
+                return ""
+            diff = state.arguments.get("diff")
+            if not isinstance(diff, str):
+                return ""
+            return diff.strip()
+
         def _thread_event_entry_text(self, event: dict[str, Any]) -> str:
             for key in (
                 "headline",
@@ -3216,6 +3285,47 @@ async def _run_ask_tui(
                 value = event.get(key)
                 if isinstance(value, str) and value.strip() != "":
                     return _friendly_ask_thread_event_text(value)
+            return ""
+
+        def _thread_event_entry(self, event: dict[str, Any]) -> _AskFeedEntry | None:
+            event_text = self._thread_event_entry_text(event)
+            if event_text == "":
+                return None
+
+            message_id = None
+            item_id = event.get("item_id")
+            if isinstance(item_id, str) and item_id.strip() != "":
+                message_id = f"event:{item_id.strip()}"
+
+            kind = event.get("kind")
+            if isinstance(kind, str) and kind.strip().lower() == "diff":
+                diff_text = self._thread_event_diff_text(event)
+                if diff_text != "":
+                    return _AskFeedEntry(
+                        role="event",
+                        text=f"{event_text}\n{diff_text}",
+                        kind="diff",
+                        message_id=message_id,
+                    )
+
+            return _AskFeedEntry(
+                role="event",
+                text=f"• {event_text}",
+                message_id=message_id,
+            )
+
+        @staticmethod
+        def _thread_event_diff_text(event: dict[str, Any]) -> str:
+            for key in ("preview", "data"):
+                value = event.get(key)
+                if isinstance(value, str) and value.strip() != "":
+                    return value.strip()
+            details = event.get("details")
+            if isinstance(details, str) and details.strip() != "":
+                return details.strip()
+            if isinstance(details, list):
+                lines = [item for item in details if isinstance(item, str)]
+                return "\n".join(lines).strip()
             return ""
 
         def _resize_input(self, input_view: TextArea) -> None:
@@ -3261,12 +3371,8 @@ async def _run_ask_tui(
                 self._status_text = _format_agent_thread_status_text(status)
             else:
                 self._status_text = _thread_status_text(status)
-            changed = self._set_thread_status_feed_entry(status)
             self._render_status_line()
             self._render_turn_queue()
-            if changed:
-                self._render_feed()
-                self._scroll_to_end()
 
         def _set_thread_status_feed_entry(self, status: object) -> bool:
             text = _ask_thread_status_feed_text(status)
@@ -3325,18 +3431,10 @@ async def _run_ask_tui(
                 if status is not None and status.strip() != "":
                     status_changed = status_changed or status != self._status_text
                     self._status_text = status
-                    if self._set_thread_status_feed_entry(thread_status or status):
-                        self._render_feed()
-                        self._scroll_to_end()
             else:
                 next_status = status if active else None
                 status_changed = status_changed or next_status != self._status_text
                 self._status_text = next_status
-                if self._set_thread_status_feed_entry(
-                    thread_status if active else next_status
-                ):
-                    self._render_feed()
-                    self._scroll_to_end()
 
             if status_changed:
                 self._render_status_line()
@@ -3736,12 +3834,43 @@ async def _run_ask_tui(
                 image_text.no_wrap = False
                 image_text.overflow = "fold"
                 return image_text
+            if entry.kind == "diff" and body_text.strip() != "":
+                return self._diff_feed_entry_renderable(body_text)
             return Text(
                 body_text,
                 style=body_style,
                 no_wrap=False,
                 overflow="fold",
             )
+
+        def _diff_feed_entry_renderable(self, body_text: str) -> Text:
+            output = Text(no_wrap=False, overflow="fold")
+            for index, line in enumerate(body_text.splitlines()):
+                if index > 0:
+                    output.append("\n")
+                output.append_text(self._render_diff_feed_line(line))
+            return output
+
+        @staticmethod
+        def _render_diff_feed_line(line: str) -> Text:
+            text = Text(line)
+            if line.startswith("@@"):
+                text.stylize("bold cyan")
+            elif (
+                line.startswith("diff ")
+                or line.startswith("index ")
+                or line.startswith("*** ")
+            ):
+                text.stylize("dim")
+            elif line.startswith("+++ ") or line.startswith("--- "):
+                text.stylize("bold yellow")
+            elif line.startswith("+"):
+                text.stylize("green")
+            elif line.startswith("-"):
+                text.stylize("red")
+            elif line.startswith(" "):
+                text.stylize("dim")
+            return text
 
         def _render_entry(
             self, entry: _AskFeedEntry, *, show_header: bool

@@ -8,6 +8,10 @@ from meshagent.cli.doctor import diagnose_project
 from meshagent.cli.create import create_command
 
 
+def _assert_no_dockerfile(project_path) -> None:
+    assert not (project_path / "Dockerfile").exists()
+
+
 def _assert_runtime_image_mount_deploy_yaml(
     project_path,
     *,
@@ -139,11 +143,11 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     agents_md = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
     claude_md = (tmp_path / "CLAUDE.md").read_text(encoding="utf-8")
     server_py = (tmp_path / "server.py").read_text(encoding="utf-8")
-    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")
     dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert not (tmp_path / "Makefile").exists()
+    _assert_no_dockerfile(tmp_path)
 
     assert "Python Agent Toolkit" in readme
     assert "./scripts/install.sh" in readme
@@ -173,13 +177,6 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     assert "_start_hosted_toolkit" in server_py
     assert "agent-proof.json" in server_py
     assert "ThreadingHTTPServer" not in server_py
-    assert "COPY . ." in dockerfile
-    assert "RUN python -m pip install --no-cache-dir --target /out ." in dockerfile
-    assert "python-sdk-slim" in dockerfile
-    assert "FROM scratch" in dockerfile
-    assert "LABEL meshagent.runtime=python" in dockerfile
-    assert 'CMD ["-m", "server"]' in dockerfile
-    assert "EXPOSE" not in dockerfile
     _assert_runtime_image_mount_deploy_yaml(
         tmp_path,
         runtime="python",
@@ -266,10 +263,8 @@ def test_init_renders_meshagent_image_prefix_from_environment(
         ],
     )
 
-    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
-
     assert result.exit_code == 0
-    assert "ARG MESHAGENT_IMAGE_PREFIX=registry.example.com/custom/" in dockerfile
+    _assert_no_dockerfile(tmp_path)
 
 
 def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
@@ -296,11 +291,11 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     claude_md = (tmp_path / "CLAUDE.md").read_text(encoding="utf-8")
     server_py = (tmp_path / "server.py").read_text(encoding="utf-8")
     dev_content = (tmp_path / "dev-content.json").read_text(encoding="utf-8")
-    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")
     dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert not (tmp_path / "Makefile").exists()
+    _assert_no_dockerfile(tmp_path)
 
     assert "Python Web App" in readme
     assert "./scripts/install.sh" in readme
@@ -332,10 +327,6 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     assert "room.agents.invoke_tool" in server_py
     assert "room.storage.upload" not in server_py
     assert "hello from meshagent create" in dev_content
-    assert "python-sdk-slim" in dockerfile
-    assert "FROM scratch" in dockerfile
-    assert "LABEL meshagent.runtime=python" in dockerfile
-    assert "EXPOSE 8000" in dockerfile
     _assert_runtime_image_mount_deploy_yaml(
         tmp_path,
         runtime="python",
@@ -404,11 +395,11 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     agents_md = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
     claude_md = (tmp_path / "CLAUDE.md").read_text(encoding="utf-8")
     server_py = (tmp_path / "server.py").read_text(encoding="utf-8")
-    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")
     dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     deploy_yaml = (tmp_path / ".meshagent" / "deploy.yaml").read_text(encoding="utf-8")
+    _assert_no_dockerfile(tmp_path)
 
     assert "Python Contact Form" in readme
     assert "meshagent rooms create <room> --if-not-exists" in readme
@@ -442,10 +433,6 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "webbrowser" not in server_py
     assert "contact@mail.meshagent.com" in server_py
     assert "you@example.com" in server_py
-    assert "python-sdk-slim" in dockerfile
-    assert "FROM scratch" in dockerfile
-    assert "LABEL meshagent.runtime=python" in dockerfile
-    assert "EXPOSE 8000" in dockerfile
     _assert_runtime_image_mount_deploy_yaml(
         tmp_path,
         runtime="python",
@@ -520,15 +507,13 @@ def test_init_creates_javascript_webserver_non_interactively(tmp_path) -> None:
     npmrc = tmp_path / ".npmrc"
     server_js = tmp_path / "server.js"
     dev_content_json = tmp_path / "dev-content.json"
-    dockerfile = tmp_path / "Dockerfile"
     assert package_json.is_file()
     assert npmrc.is_file()
     assert server_js.is_file()
     assert dev_content_json.is_file()
-    assert dockerfile.is_file()
+    _assert_no_dockerfile(tmp_path)
     package_text = package_json.read_text(encoding="utf-8")
     npmrc_text = npmrc.read_text(encoding="utf-8")
-    dockerfile_text = dockerfile.read_text(encoding="utf-8")
     dev_content = dev_content_json.read_text(encoding="utf-8")
     assert "cache=.npm-cache" in npmrc_text
     assert "audit=false" in npmrc_text
@@ -553,12 +538,6 @@ def test_init_creates_javascript_webserver_non_interactively(tmp_path) -> None:
     )
     assert "await readContent()" in server_text
     assert "hello from meshagent create" in dev_content
-    assert "node-sdk" in dockerfile_text
-    assert "RUN npm run build" in dockerfile_text
-    assert "COPY --from=build /app/dist/index.js /app/index.js" in dockerfile_text
-    assert "FROM scratch" in dockerfile_text
-    assert "LABEL meshagent.runtime=node" in dockerfile_text
-    assert "EXPOSE 3000" in dockerfile_text
     _assert_runtime_image_mount_deploy_yaml(
         tmp_path,
         runtime="node",
@@ -606,14 +585,7 @@ def test_init_creates_javascript_backend_agent_non_interactively(tmp_path) -> No
         proof_path="agent-proof.json",
     )
     assert "server.listen" not in server_js
-    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
-    assert "node-sdk" in dockerfile
-    assert "RUN npm install" in dockerfile
-    assert "RUN npm run build" in dockerfile
-    assert "COPY --from=build /app/dist/index.js /app/index.js" in dockerfile
-    assert "FROM scratch" in dockerfile
-    assert "LABEL meshagent.runtime=node" in dockerfile
-    assert "EXPOSE" not in dockerfile
+    _assert_no_dockerfile(tmp_path)
     _assert_runtime_image_mount_deploy_yaml(
         tmp_path,
         runtime="node",
@@ -645,10 +617,9 @@ def test_init_creates_typescript_webserver_non_interactively(tmp_path) -> None:
     assert (tmp_path / "tsconfig.json").is_file()
     assert (tmp_path / "src" / "server.ts").is_file()
     assert (tmp_path / "src" / "dev-content.json").is_file()
-    assert (tmp_path / "Dockerfile").is_file()
+    _assert_no_dockerfile(tmp_path)
     package_text = (tmp_path / "package.json").read_text(encoding="utf-8")
     npmrc_text = (tmp_path / ".npmrc").read_text(encoding="utf-8")
-    dockerfile_text = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     assert "cache=.npm-cache" in npmrc_text
     assert "audit=false" in npmrc_text
     assert '"build": "ncc build src/server.ts -o dist"' in package_text
@@ -675,12 +646,6 @@ def test_init_creates_typescript_webserver_non_interactively(tmp_path) -> None:
     assert "hello from meshagent create" in (
         tmp_path / "src" / "dev-content.json"
     ).read_text(encoding="utf-8")
-    assert "node-sdk" in dockerfile_text
-    assert "RUN npm run build" in dockerfile_text
-    assert "COPY --from=build /app/dist/index.js /app/index.js" in dockerfile_text
-    assert "FROM scratch" in dockerfile_text
-    assert "LABEL meshagent.runtime=node" in dockerfile_text
-    assert "EXPOSE 3000" in dockerfile_text
     _assert_runtime_image_mount_deploy_yaml(
         tmp_path,
         runtime="node",
@@ -731,13 +696,7 @@ def test_init_creates_typescript_backend_agent_non_interactively(tmp_path) -> No
         proof_path="src/agent-proof.json",
     )
     assert "server.listen" not in server_ts
-    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
-    assert "node-sdk" in dockerfile
-    assert "RUN npm run build" in dockerfile
-    assert "COPY --from=build /app/dist/index.js /app/index.js" in dockerfile
-    assert "FROM scratch" in dockerfile
-    assert "LABEL meshagent.runtime=node" in dockerfile
-    assert "EXPOSE" not in dockerfile
+    _assert_no_dockerfile(tmp_path)
     _assert_runtime_image_mount_deploy_yaml(
         tmp_path,
         runtime="node",
@@ -804,11 +763,7 @@ def test_init_creates_typescript_chatbot_non_interactively(tmp_path) -> None:
     assert "chatbot-proof.json" not in server_ts
     assert "chatbot-storage-proof.json" not in server_ts
     assert "server.listen" in server_ts
-    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
-    assert "node-sdk" in dockerfile
-    assert "FROM scratch" in dockerfile
-    assert "LABEL meshagent.runtime=node" in dockerfile
-    assert "EXPOSE 3000" in dockerfile
+    _assert_no_dockerfile(tmp_path)
     _assert_runtime_image_mount_deploy_yaml(
         tmp_path,
         runtime="node",
@@ -886,11 +841,7 @@ def test_init_creates_typescript_anthropic_chatbot_non_interactively(
     assert "chatbot-proof.json" not in server_ts
     assert "chatbot-storage-proof.json" not in server_ts
     assert "server.listen" in server_ts
-    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
-    assert "node-sdk" in dockerfile
-    assert "FROM scratch" in dockerfile
-    assert "LABEL meshagent.runtime=node" in dockerfile
-    assert "EXPOSE 3000" in dockerfile
+    _assert_no_dockerfile(tmp_path)
     _assert_runtime_image_mount_deploy_yaml(
         tmp_path,
         runtime="node",
@@ -969,9 +920,9 @@ def test_init_creates_react_webserver_non_interactively(tmp_path) -> None:
     assert (tmp_path / "scripts" / "dev-content-toolkit.js").is_file()
     assert (tmp_path / "src" / "dev-content.json").is_file()
     assert (tmp_path / "src" / "main.tsx").is_file()
+    _assert_no_dockerfile(tmp_path)
     package_json = (tmp_path / "package.json").read_text(encoding="utf-8")
     npmrc = (tmp_path / ".npmrc").read_text(encoding="utf-8")
-    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     main_tsx = (tmp_path / "src" / "main.tsx").read_text(encoding="utf-8")
     dev_content = (tmp_path / "src" / "dev-content.json").read_text(encoding="utf-8")
     assert "cache=.npm-cache" in npmrc
@@ -1007,11 +958,6 @@ def test_init_creates_react_webserver_non_interactively(tmp_path) -> None:
     assert 'import devContent from "./dev-content.json"' in main_tsx
     assert "content.items[content.activeId]" in main_tsx
     assert "hello from meshagent create" in dev_content
-    assert "nginx:1.27-alpine" in dockerfile
-    assert "listen 80" in dockerfile
-    assert "location = /status" in dockerfile
-    assert "location = /api/ping" in dockerfile
-    assert "EXPOSE 80" in dockerfile
     assert diagnosis.language == "TypeScript"
     assert diagnosis.javascript_flavor == "React/Vite"
     assert diagnosis.sdk == "@meshagent/meshagent"
@@ -1045,11 +991,10 @@ def test_init_creates_typescript_chatbot_ui_non_interactively(tmp_path) -> None:
     assert (tmp_path / "app" / "page.tsx").is_file()
     assert (tmp_path / "app" / "globals.css").is_file()
     assert (tmp_path / "app" / "health" / "route.ts").is_file()
-    assert (tmp_path / "Dockerfile").is_file()
+    _assert_no_dockerfile(tmp_path)
 
     package_json = (tmp_path / "package.json").read_text(encoding="utf-8")
     page_tsx = (tmp_path / "app" / "page.tsx").read_text(encoding="utf-8")
-    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     assert '"name": "meshagent-create-typescript-chatbot-ui"' in package_json
     assert '"@msgpack/msgpack"' in package_json
     assert '"next"' in package_json
@@ -1068,13 +1013,6 @@ def test_init_creates_typescript_chatbot_ui_non_interactively(tmp_path) -> None:
     assert "meshagent.agent.turn.ended" in page_tsx
     assert "/messages" in page_tsx
     assert "disabled={!canSend}" in page_tsx
-    assert "FROM scratch" in dockerfile
-    assert "LABEL meshagent.runtime=node" in dockerfile
-    assert "COPY --from=build /app/.next/standalone /app" in dockerfile
-    assert "COPY --from=build /app/.next/static /app/.next/static" in dockerfile
-    assert 'CMD ["server.js"]' in dockerfile
-    assert "ENV HOSTNAME=0.0.0.0" in dockerfile
-    assert "EXPOSE 3000" in dockerfile
     spec = _assert_runtime_image_mount_deploy_yaml(
         tmp_path,
         runtime="node",
@@ -1309,11 +1247,11 @@ def test_init_creates_dotnet_backend_agent_non_interactively(tmp_path) -> None:
     ).read_text(encoding="utf-8")
     csproj = (tmp_path / "MeshAgentHello.csproj").read_text(encoding="utf-8")
     program_cs = (tmp_path / "Program.cs").read_text(encoding="utf-8")
-    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")
     dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert not (tmp_path / "Makefile").exists()
+    _assert_no_dockerfile(tmp_path)
     assert '<Project Sdk="Microsoft.NET.Sdk">' in csproj
     assert "<OutputType>Exe</OutputType>" in csproj
     assert "RoomClient" in program_cs
@@ -1333,8 +1271,6 @@ def test_init_creates_dotnet_backend_agent_non_interactively(tmp_path) -> None:
     assert "MESHAGENT_CREATE_DEV_READY_PATH" not in program_cs
     assert "Storage.Upload" not in program_cs
     assert "MapGet" not in program_cs
-    assert "mcr.microsoft.com/dotnet/runtime:9.0" in dockerfile
-    assert "EXPOSE" not in dockerfile
     assert 'DOTNET_CLI_HOME="${DOTNET_CLI_HOME:-$ROOT/.dotnet-home}"' in install_sh
     assert 'NUGET_PACKAGES="${NUGET_PACKAGES:-$ROOT/.nuget/packages}"' in install_sh
     assert "command -v dotnet" in install_sh
@@ -1372,11 +1308,11 @@ def test_init_creates_dotnet_webserver_non_interactively(tmp_path) -> None:
     assert "--meshagent-token" not in result.output
     csproj = (tmp_path / "MeshAgentHello.csproj").read_text(encoding="utf-8")
     program_cs = (tmp_path / "Program.cs").read_text(encoding="utf-8")
-    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")
     dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert not (tmp_path / "Makefile").exists()
+    _assert_no_dockerfile(tmp_path)
     assert '<Project Sdk="Microsoft.NET.Sdk.Web">' in csproj
     assert 'PackageReference Include="Meshagent.Api"' in csproj
     assert 'MapGet("/health"' in program_cs
@@ -1385,8 +1321,6 @@ def test_init_creates_dotnet_webserver_non_interactively(tmp_path) -> None:
     assert "RoomClient" in program_cs
     assert "MESHAGENT_CREATE_DEV_READY_PATH" in program_cs
     assert "Storage.Upload" in program_cs
-    assert "mcr.microsoft.com/dotnet/aspnet:9.0" in dockerfile
-    assert "EXPOSE 5000" in dockerfile
     assert 'DOTNET_CLI_HOME="${DOTNET_CLI_HOME:-$ROOT/.dotnet-home}"' in install_sh
     assert 'NUGET_PACKAGES="${NUGET_PACKAGES:-$ROOT/.nuget/packages}"' in install_sh
     assert "command -v dotnet" in install_sh
@@ -1432,14 +1366,7 @@ def test_init_creates_flutter_webserver_non_interactively(tmp_path) -> None:
     install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")
     dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
-    assert "flutter build web --release" in (tmp_path / "Dockerfile").read_text(
-        encoding="utf-8"
-    )
-    flutter_dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
-    assert "listen 80" in flutter_dockerfile
-    assert "location = /status" in flutter_dockerfile
-    assert "location = /api/ping" in flutter_dockerfile
-    assert "EXPOSE 80" in flutter_dockerfile
+    _assert_no_dockerfile(tmp_path)
     assert 'PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"' in install_sh
     assert "command -v flutter" in install_sh
     assert "command -v docker" not in install_sh
@@ -1508,8 +1435,7 @@ def test_init_creates_dart_backend_agent_non_interactively(tmp_path) -> None:
     assert "wroteDevProof" not in server_dart
     assert "room.dispose()" in server_dart
     assert "HttpServer" not in server_dart
-    assert "FROM dart:stable" in (tmp_path / "Dockerfile").read_text(encoding="utf-8")
-    assert "EXPOSE" not in (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    _assert_no_dockerfile(tmp_path)
     install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")
     dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
@@ -1962,8 +1888,8 @@ def test_init_existing_code_interactive_creates_project_in_subfolder(
     assert f"  cd {project_root.resolve()}" in result.output
     assert (project_root / "package.json").is_file()
     assert (project_root / "src" / "server.ts").is_file()
-    assert (project_root / "Dockerfile").is_file()
-    assert not (tmp_path / "Dockerfile").exists()
+    _assert_no_dockerfile(project_root)
+    _assert_no_dockerfile(tmp_path)
     assert "@meshagent/meshagent" in (project_root / "package.json").read_text(
         encoding="utf-8"
     )

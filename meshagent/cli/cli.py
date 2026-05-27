@@ -282,6 +282,11 @@ app.add_lazy_command(
     help="Join a process-backed agent to a room",
 )
 app.add_lazy_command(
+    name="codex",
+    module="meshagent.cli.codex",
+    help="Join a Codex-backed agent to a room",
+)
+app.add_lazy_command(
     name="mailbot",
     module="meshagent.cli.mailbot",
     help="Join a mailbot to a room",
