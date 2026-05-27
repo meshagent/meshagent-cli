@@ -1,7 +1,7 @@
 from typing import Annotated
 
 import typer
-import click as typer_click
+from typer import _click as typer_click
 from rich import print
 
 from meshagent.cli import async_typer

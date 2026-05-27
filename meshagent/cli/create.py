@@ -10,7 +10,7 @@ import sys
 from typing import Annotated, Literal, Mapping, Sequence
 
 import typer
-import click as typer_click
+from typer import _click as typer_click
 
 from meshagent.cli import async_typer
 from meshagent.cli.meshagent_images import render_meshagent_image_prefix_template

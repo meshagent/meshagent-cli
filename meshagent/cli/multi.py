@@ -6,7 +6,7 @@ import os
 import importlib.util
 from pathlib import Path
 import shlex
-import click as typer_click
+from typer import _click as typer_click
 
 from rich import print
 

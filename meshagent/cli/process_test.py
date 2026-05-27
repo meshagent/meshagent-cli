@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 import typer
-import click
+from typer import _click as click
 from typer.core import TyperOption
 import aiohttp
 import pytest

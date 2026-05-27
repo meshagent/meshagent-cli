@@ -7,7 +7,7 @@ from typing import Sequence
 
 import jwt
 import typer
-import click as typer_click
+from typer import _click as typer_click
 from pydantic import ValidationError
 from rich import print
 
