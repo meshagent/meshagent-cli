@@ -1886,9 +1886,11 @@ async def list_threads_command(
                 project_id=project_id,
                 room=room,
             )
-            page = await DatasetThreadStorage.list_threads(
+            repository = DatasetThreadStorage(
                 room=user_client,
                 thread_dir=resolved_thread_dir,
+            )
+            page = await repository.list_threads(
                 limit=limit,
                 offset=offset,
             )

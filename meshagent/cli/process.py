@@ -163,12 +163,9 @@ from meshagent.agents.messages import (
     AgentRealtimeConnectionInfo,
     AgentTextContent,
     AgentTextContentDelta,
-    DeleteThread,
-    ListThreads,
     ModelsRequest,
     ModelsResponse,
     OpenThread,
-    RenameThread,
     StartThread,
     ThreadCreated,
     ThreadDeleted,
@@ -186,9 +183,9 @@ from meshagent.agents.chat_client import (
 from meshagent.agents.process import ContentScheme, Message
 from meshagent.agents.images_dataset import ImageDatasetClient, ImagesDataset
 from meshagent.agents.thread_storage import (
+    NoopThreadStorageRepository,
     ThreadListEntry,
     ThreadListEvent,
-    ThreadListPage,
 )
 
 from meshagent.api import RequiredToolkit, RequiredSchema
@@ -524,6 +521,18 @@ def _thread_storage_class_for_backend(thread_storage: "ThreadStorageBackend"):
 
         return MeshDocumentThreadStorage
     return None
+
+
+def _thread_storage_repository_for_backend(
+    *,
+    thread_storage: "ThreadStorageBackend",
+    room: RoomClient,
+    thread_dir: str,
+):
+    storage_class = _thread_storage_class_for_backend(thread_storage)
+    if storage_class is None:
+        return NoopThreadStorageRepository()
+    return storage_class(room=room, thread_dir=thread_dir)
 
 
 def _thread_storage_class_for_path(*, thread_path: str):
@@ -4949,7 +4958,20 @@ def build_process_agent(
                     for room_rules_file in room_rules_path:
                         await self._load_room_rules(path=room_rules_file)
 
-                supervisor = _ProcessSupervisor(agent=self)
+                normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
+                thread_storage_repository = (
+                    _thread_storage_repository_for_backend(
+                        thread_storage=thread_storage,
+                        room=room,
+                        thread_dir=normalized_thread_dir,
+                    )
+                    if normalized_thread_dir is not None
+                    else NoopThreadStorageRepository()
+                )
+                supervisor = _ProcessSupervisor(
+                    agent=self,
+                    thread_storage_repository=thread_storage_repository,
+                )
                 if self._chat_channel is not None:
                     supervisor.add_channel(self._chat_channel)
                 for mail_channel in self._mail_channels:
@@ -5420,19 +5442,23 @@ def build_process_agent(
             return combined_toolkits
 
     class _ProcessSupervisor(AgentSupervisor):
-        def __init__(self, *, agent: CustomProcessAgent) -> None:
-            super().__init__()
+        def __init__(
+            self,
+            *,
+            agent: CustomProcessAgent,
+            thread_storage_repository,
+        ) -> None:
+            super().__init__(thread_storage_repository=thread_storage_repository)
             self._agent = agent
             self._local_event_queues: list[asyncio.Queue[Message]] = []
             self._thread_delete_watch_task: asyncio.Task[None] | None = None
 
         async def on_start(self) -> None:
             await super().on_start()
-            storage_class = _thread_storage_class_for_backend(thread_storage)
-            if storage_class is None or thread_dir is None:
+            if self.thread_storage_repository.is_ephemeral:
                 return
             self._thread_delete_watch_task = asyncio.create_task(
-                self._watch_thread_deletes(storage_class=storage_class)
+                self._watch_thread_deletes()
             )
 
         async def on_stop(self) -> None:
@@ -5444,14 +5470,9 @@ def build_process_agent(
                     await watch_task
             await super().on_stop()
 
-        async def _watch_thread_deletes(self, *, storage_class) -> None:
-            if thread_dir is None:
-                return
+        async def _watch_thread_deletes(self) -> None:
             try:
-                async for event in storage_class.watch_threads(
-                    room=self._agent.room,
-                    thread_dir=thread_dir,
-                ):
+                async for event in self.thread_storage_repository.watch_threads():
                     if event.type != "deleted":
                         continue
                     async with self._route_lock:
@@ -5460,73 +5481,6 @@ def build_process_agent(
                 raise
             except Exception as ex:
                 logger.debug("thread delete watch stopped: %s", ex)
-
-        async def on_thread_deleted(
-            self,
-            *,
-            delete_thread: DeleteThread,
-            sender: Participant | None,
-        ) -> None:
-            del sender
-            storage_class = _thread_storage_class_for_backend(thread_storage)
-            normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
-            if storage_class is None or normalized_thread_dir is None:
-                return
-            await storage_class.delete_thread(
-                room=self._agent.room,
-                thread_dir=normalized_thread_dir,
-                path=delete_thread.thread_id,
-            )
-
-        async def on_thread_renamed(
-            self,
-            *,
-            rename_thread: RenameThread,
-            sender: Participant | None,
-        ) -> ThreadListEntry | None:
-            del sender
-            storage_class = _thread_storage_class_for_backend(thread_storage)
-            normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
-            if storage_class is None or normalized_thread_dir is None:
-                return
-            name = " ".join(rename_thread.name.split())
-            if name == "":
-                return
-            await storage_class.rename_thread(
-                room=self._agent.room,
-                thread_dir=normalized_thread_dir,
-                path=rename_thread.thread_id,
-                name=name,
-            )
-            return ThreadListEntry(
-                path=rename_thread.thread_id,
-                name=name,
-                created_at="",
-                modified_at=datetime.now(timezone.utc).isoformat(),
-            )
-
-        async def list_threads(
-            self,
-            *,
-            list_threads: ListThreads,
-            sender: Participant | None,
-        ) -> ThreadListPage:
-            del sender
-            storage_class = _thread_storage_class_for_backend(thread_storage)
-            normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
-            if storage_class is None or normalized_thread_dir is None:
-                return ThreadListPage(
-                    threads=[],
-                    total=0,
-                    offset=list_threads.offset,
-                    limit=list_threads.limit,
-                )
-            return await storage_class.list_threads(
-                room=self._agent.room,
-                thread_dir=normalized_thread_dir,
-                limit=list_threads.limit,
-                offset=list_threads.offset,
-            )
 
         def subscribe_local_events(self) -> asyncio.Queue[Message]:
             queue: asyncio.Queue[Message] = asyncio.Queue()
@@ -5541,10 +5495,18 @@ def build_process_agent(
             for queue in [*self._local_event_queues]:
                 queue.put_nowait(message)
 
-        def _send_to_channels(self, message: Message) -> None:
-            if isinstance(message.data, ThreadsListed):
-                self._send_to_local_event_queues(message)
-            super()._send_to_channels(message)
+        def _send_thread_list_response(
+            self,
+            *,
+            request: Message,
+            response: ThreadsListed,
+        ) -> None:
+            if request.source is None and len(self._local_event_queues) > 0:
+                self._send_to_local_event_queues(
+                    Message(data=response, sender=request.sender)
+                )
+                return
+            super()._send_thread_list_response(request=request, response=response)
 
         def send(self, message: Message) -> None:
             if message.source is not None:
@@ -5600,31 +5562,8 @@ def build_process_agent(
                 return _thread_url_for_path(scheme="tmp", path=generated_path)
             return f"/{generated_path}.thread"
 
-        async def on_thread_started(
-            self,
-            *,
-            thread_id: str,
-            start_thread: StartThread,
-            sender: Participant | None,
-        ) -> ThreadListEntry | None:
-            del sender
-            storage_class = _thread_storage_class_for_backend(thread_storage)
-            normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
-            if storage_class is None or normalized_thread_dir is None:
-                return
-            await storage_class.upsert_thread(
-                room=self._agent.room,
-                thread_dir=normalized_thread_dir,
-                path=thread_id,
-                name=_start_thread_list_name(start_thread),
-            )
-            now = datetime.now(timezone.utc).isoformat()
-            return ThreadListEntry(
-                path=thread_id,
-                name=_start_thread_list_name(start_thread),
-                created_at=now,
-                modified_at=now,
-            )
+        def thread_list_name_for_start_thread(self, start_thread: StartThread) -> str:
+            return _start_thread_list_name(start_thread)
 
         async def on_models_request(self, message: Message) -> None:
             if not isinstance(message.data, ModelsRequest):
@@ -10269,9 +10208,8 @@ async def list_threads_command(
             project_id=project_id,
             room=room,
         )
-        page = await storage_class.list_threads(
-            room=user_client,
-            thread_dir=resolved_thread_dir,
+        repository = storage_class(room=user_client, thread_dir=resolved_thread_dir)
+        page = await repository.list_threads(
             limit=limit,
             offset=offset,
         )

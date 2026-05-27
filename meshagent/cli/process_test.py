@@ -34,8 +34,11 @@ from meshagent.agents.messages import (
     AgentTextContentDelta,
     AgentThreadStatus,
     CloseThread,
+    DeleteThread,
+    ListThreads,
     OpenThread,
     ModelsResponse,
+    RenameThread,
     StartThread,
     ThreadStarted,
     TurnEnded,
@@ -48,7 +51,11 @@ from meshagent.agents.process import Message
 from meshagent.agents.thread_status_publisher import (
     AgentMessageThreadStatusPublisher,
 )
-from meshagent.agents.thread_storage import ThreadListEntry, ThreadListEvent
+from meshagent.agents.thread_storage import (
+    ThreadListEntry,
+    ThreadListEvent,
+    ThreadListPage,
+)
 from meshagent.api import Participant, RoomClient
 from meshagent.api import ParticipantToken
 from meshagent.api.specs.service import ContainerSpec, ServiceMetadata, ServiceSpec
@@ -4738,25 +4745,33 @@ class _FakeProcessThreadAdapter:
 class _FakeDatasetThreadStorage(_FakeProcessThreadAdapter):
     upsert_calls: list[dict[str, object]] = []
 
+    def __init__(
+        self,
+        *,
+        room,
+        path: str | None = None,
+        thread_dir: str | None = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(room=room, path=path or "", **kwargs)
+        self._repository_thread_dir = thread_dir
+
     @classmethod
     def reset_calls(cls) -> None:
         cls.upsert_calls = []
 
-    @classmethod
     async def upsert_thread(
-        cls,
+        self,
         *,
-        room,
-        thread_dir: str,
         path: str,
         name: str | None = None,
         created_at: str | None = None,
         modified_at: str | None = None,
     ) -> None:
-        cls.upsert_calls.append(
+        self.upsert_calls.append(
             {
-                "room": room,
-                "thread_dir": thread_dir,
+                "room": self._room,
+                "thread_dir": self._repository_thread_dir,
                 "path": path,
                 "name": name,
                 "created_at": created_at,
@@ -4764,10 +4779,7 @@ class _FakeDatasetThreadStorage(_FakeProcessThreadAdapter):
             }
         )
 
-    @classmethod
-    async def watch_threads(cls, *, room, thread_dir: str, poll_interval: float = 1.0):
-        del room
-        del thread_dir
+    async def watch_threads(self, *, poll_interval: float = 1.0):
         del poll_interval
         await asyncio.Event().wait()
         if False:
@@ -4942,30 +4954,33 @@ async def test_process_agent_thread_control_messages_mutate_thread_storage(
         list_calls: list[dict[str, object]] = []
         rename_calls: list[dict[str, object]] = []
 
-        @classmethod
-        async def watch_threads(cls, *, room, thread_dir: str):
-            del room
-            del thread_dir
+        def __init__(self, *, room, thread_dir: str) -> None:
+            self.room = room
+            self.thread_dir = thread_dir
+
+        @property
+        def is_ephemeral(self) -> bool:
+            return False
+
+        async def watch_threads(self):
             await asyncio.Future()
             yield
 
-        @classmethod
-        async def delete_thread(cls, *, room, thread_dir: str, path: str) -> None:
-            cls.delete_calls.append(
-                {"room": room, "thread_dir": thread_dir, "path": path}
+        async def delete_thread(self, *, path: str) -> None:
+            self.delete_calls.append(
+                {"room": self.room, "thread_dir": self.thread_dir, "path": path}
             )
 
-        @classmethod
-        async def list_threads(cls, *, room, thread_dir: str, limit: int, offset: int):
-            cls.list_calls.append(
+        async def list_threads(self, *, limit: int, offset: int):
+            self.list_calls.append(
                 {
-                    "room": room,
-                    "thread_dir": thread_dir,
+                    "room": self.room,
+                    "thread_dir": self.thread_dir,
                     "limit": limit,
                     "offset": offset,
                 }
             )
-            return process.ThreadListPage(
+            return ThreadListPage(
                 threads=[
                     ThreadListEntry(
                         name="First",
@@ -4979,12 +4994,14 @@ async def test_process_agent_thread_control_messages_mutate_thread_storage(
                 limit=limit,
             )
 
-        @classmethod
-        async def rename_thread(
-            cls, *, room, thread_dir: str, path: str, name: str
-        ) -> None:
-            cls.rename_calls.append(
-                {"room": room, "thread_dir": thread_dir, "path": path, "name": name}
+        async def rename_thread(self, *, path: str, name: str) -> None:
+            self.rename_calls.append(
+                {
+                    "room": self.room,
+                    "thread_dir": self.thread_dir,
+                    "path": path,
+                    "name": name,
+                }
             )
 
     monkeypatch.setattr(process, "OpenAIResponsesAdapter", _FakeAdapter)
@@ -5017,7 +5034,7 @@ async def test_process_agent_thread_control_messages_mutate_thread_storage(
     try:
         await agent._supervisor.route(
             Message(
-                data=process.DeleteThread(
+                data=DeleteThread(
                     type=AGENT_MESSAGE_THREAD_DELETE,
                     thread_id="dataset://agents/testcli/threads/first",
                 )
@@ -5025,7 +5042,7 @@ async def test_process_agent_thread_control_messages_mutate_thread_storage(
         )
         await agent._supervisor.route(
             Message(
-                data=process.RenameThread(
+                data=RenameThread(
                     type=AGENT_MESSAGE_THREAD_RENAME,
                     thread_id="dataset://agents/testcli/threads/first",
                     name="  First Renamed  ",
@@ -5033,7 +5050,7 @@ async def test_process_agent_thread_control_messages_mutate_thread_storage(
             )
         )
         page = await agent._supervisor.list_threads(
-            list_threads=process.ListThreads(
+            list_threads=ListThreads(
                 type="meshagent.agent.thread.list",
                 limit=100,
                 offset=0,
@@ -5073,6 +5090,8 @@ async def test_process_agent_thread_control_messages_mutate_thread_storage(
 async def test_process_run_direct_session_lists_threads_through_local_protocol(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from meshagent.agents.process import Channel
+
     class _FakeAdapter:
         def __init__(self, **kwargs) -> None:
             del kwargs
@@ -5084,27 +5103,46 @@ async def test_process_run_direct_session_lists_threads_through_local_protocol(
             del usage_callback
             return AgentSessionContext()
 
+    class _ParticipantResponseChannel(Channel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.direct_payloads: list[AgentMessage] = []
+
+        def send_agent_message_to_participant(
+            self,
+            *,
+            participant: Participant,
+            payload: AgentMessage,
+        ) -> bool:
+            del participant
+            self.direct_payloads.append(payload)
+            return True
+
     class _ThreadStorage:
         list_calls: list[dict[str, object]] = []
 
-        @classmethod
-        async def watch_threads(cls, *, room, thread_dir: str):
-            del room
-            del thread_dir
+        def __init__(self, *, room, thread_dir: str) -> None:
+            self.room = room
+            self.thread_dir = thread_dir
+
+        @property
+        def is_ephemeral(self) -> bool:
+            return False
+
+        async def watch_threads(self):
             await asyncio.Future()
             yield
 
-        @classmethod
-        async def list_threads(cls, *, room, thread_dir: str, limit: int, offset: int):
-            cls.list_calls.append(
+        async def list_threads(self, *, limit: int, offset: int):
+            self.list_calls.append(
                 {
-                    "room": room,
-                    "thread_dir": thread_dir,
+                    "room": self.room,
+                    "thread_dir": self.thread_dir,
                     "limit": limit,
                     "offset": offset,
                 }
             )
-            return process.ThreadListPage(
+            return ThreadListPage(
                 threads=[
                     ThreadListEntry(
                         name="First",
@@ -5145,6 +5183,8 @@ async def test_process_run_direct_session_lists_threads_through_local_protocol(
     monkeypatch.setattr(agent, "install_requirements", _skip_install_requirements)
 
     await agent.start(room=room)  # type: ignore[arg-type]
+    participant_channel = _ParticipantResponseChannel()
+    agent._supervisor.add_channel(participant_channel)
     events = agent._supervisor.subscribe_local_events()
     client = process.LocalChatClient(
         thread_path=None,
@@ -5177,6 +5217,7 @@ async def test_process_run_direct_session_lists_threads_through_local_protocol(
         }
     ]
     assert [entry.name for entry in entries] == ["First"]
+    assert participant_channel.direct_payloads == []
 
 
 @pytest.mark.asyncio
