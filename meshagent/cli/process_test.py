@@ -5251,8 +5251,42 @@ async def test_process_thread_sidebar_keeps_focused_selection_and_handles_clicks
     rendered = sidebar.render(focused=True)
     assert sidebar._selected_index == 1
     assert "focused" not in rendered.plain
+    assert "\nFirst" in rendered.plain
+    assert "\nSecond" in rendered.plain
 
-    await sidebar.handle_click(0, 4)
+    sidebar._entries = [
+        ThreadListEntry(
+            name="a long thread title that should use the sidebar width",
+            path="dataset://agents/testcli/threads/long",
+            created_at="2026-05-13T08:57:00Z",
+            modified_at="2026-05-13T08:57:00Z",
+        ),
+    ]
+    assert "a long thread title that sho..." in sidebar.render(focused=True).plain
+    assert (
+        "a long thread title that should use..."
+        in sidebar.render(focused=True, width=40).plain
+    )
+    assert (
+        "a long thread title that should use the sidebar width"
+        in sidebar.render(focused=True, width=60).plain
+    )
+    sidebar._entries = [
+        ThreadListEntry(
+            name="First",
+            path="dataset://agents/testcli/threads/first",
+            created_at="2026-05-13T08:55:00Z",
+            modified_at="2026-05-13T08:55:00Z",
+        ),
+        ThreadListEntry(
+            name="Second",
+            path="dataset://agents/testcli/threads/second",
+            created_at="2026-05-13T08:56:00Z",
+            modified_at="2026-05-13T08:56:00Z",
+        ),
+    ]
+
+    await sidebar.handle_click(0, 1)
     assert sidebar._selected_index == 0
     assert opened_paths == ["dataset://agents/testcli/threads/first"]
     assert sidebar._message is None

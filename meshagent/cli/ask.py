@@ -1836,7 +1836,7 @@ async def _run_ask_tui(
     model_label_provider: Callable[[], str | None] | None = None,
     output_label_provider: Callable[[], str | None] | None = None,
     command_options_provider: Callable[[str], Sequence[AskCommandOption]] | None = None,
-    side_panel_renderer: Callable[[bool], Any] | None = None,
+    side_panel_renderer: Callable[..., Any] | None = None,
     side_panel_key_handler: Callable[[str, str | None], Awaitable[bool] | bool]
     | None = None,
     side_panel_mouse_handler: Callable[[int, int], Awaitable[bool] | bool]
@@ -1907,17 +1907,21 @@ async def _run_ask_tui(
     class _AskTextualApp(App[None]):
         CSS = """
         Screen {
-            layout: grid;
-            grid-size: 1 7;
-            grid-rows: auto 1fr 3 auto auto auto auto;
+            layout: vertical;
             padding: 0;
             background: #101114;
             color: white;
         }
-        #header {
+        #app-row {
             width: 100%;
-            padding: 1 2 0 2;
-            color: #cfd3dc;
+            height: 100%;
+        }
+        #main-panel {
+            width: 4fr;
+            height: 100%;
+            layout: grid;
+            grid-size: 1 6;
+            grid-rows: 1fr 3 auto auto auto auto;
         }
         #feed-scroll {
             width: 4fr;
@@ -2105,7 +2109,7 @@ async def _run_ask_tui(
             output_label_provider: Callable[[], str | None] | None,
             command_options_provider: Callable[[str], Sequence[AskCommandOption]]
             | None,
-            side_panel_renderer: Callable[[bool], Any] | None,
+            side_panel_renderer: Callable[..., Any] | None,
             side_panel_key_handler: Callable[[str, str | None], Awaitable[bool] | bool]
             | None,
             side_panel_mouse_handler: Callable[[int, int], Awaitable[bool] | bool]
@@ -2176,43 +2180,34 @@ async def _run_ask_tui(
             return self._session_provider()
 
         def compose(self) -> ComposeResult:
-            help_text = "Enter to send. Shift+Enter inserts a newline. Ctrl+C quits."
-            if self._side_panel_renderer is not None:
-                help_text = (
-                    "Enter to send. Tab switches focus. Shift+Enter inserts a newline. "
-                    "Ctrl+C quits."
-                )
-            yield Static(
-                Text(
-                    f"{self._title}\n{help_text}",
-                    style="bold",
-                ),
-                id="header",
-            )
-            with Horizontal(id="content-row"):
-                with VerticalScroll(id="feed-scroll"):
-                    yield Vertical(id="feed")
-                    yield Static("", id="active-assistant-event-break")
-                    with Vertical(id="active-assistant-entry", classes="feed-entry"):
-                        yield Static("", id="active-assistant-header")
-                        yield TextualMarkdown(
+            with Horizontal(id="app-row"):
+                with Vertical(id="main-panel"):
+                    with Horizontal(id="content-row"):
+                        with VerticalScroll(id="feed-scroll"):
+                            yield Vertical(id="feed")
+                            yield Static("", id="active-assistant-event-break")
+                            with Vertical(
+                                id="active-assistant-entry", classes="feed-entry"
+                            ):
+                                yield Static("", id="active-assistant-header")
+                                yield TextualMarkdown(
+                                    "",
+                                    id="active-assistant-body",
+                                    classes="feed-entry-body feed-entry-markdown",
+                                )
+                    yield Static("", id="status-line")
+                    yield Static("", id="turn-queue")
+                    yield Static("", id="command-menu")
+                    with Horizontal(id="input-row"):
+                        yield Static("›", id="input-prompt")
+                        yield TextArea(
                             "",
-                            id="active-assistant-body",
-                            classes="feed-entry-body feed-entry-markdown",
+                            id="ask-input",
+                            soft_wrap=True,
+                            show_line_numbers=False,
                         )
+                    yield Static("", id="session-meta")
                 yield _AskSidePanel("", id="side-panel")
-            yield Static("", id="status-line")
-            yield Static("", id="turn-queue")
-            yield Static("", id="command-menu")
-            with Horizontal(id="input-row"):
-                yield Static("›", id="input-prompt")
-                yield TextArea(
-                    "",
-                    id="ask-input",
-                    soft_wrap=True,
-                    show_line_numbers=False,
-                )
-            yield Static("", id="session-meta")
 
         async def on_mount(self) -> None:
             self._feed_view = self.query_one("#feed", Vertical)
@@ -3660,7 +3655,11 @@ async def _run_ask_tui(
                 self._side_panel_view.add_class("side-panel--focused")
             else:
                 self._side_panel_view.remove_class("side-panel--focused")
-            self._side_panel_view.update(renderer(self._side_panel_focused))
+            self._side_panel_view.update(
+                renderer(
+                    self._side_panel_focused, width=self._side_panel_view.size.width
+                )
+            )
 
         def _usage_footer_text(self) -> Text:
             usage_state = self._usage_state
