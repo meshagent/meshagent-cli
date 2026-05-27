@@ -3691,8 +3691,11 @@ async def _run_ask_tui(
             renderer = self._side_panel_renderer
             if renderer is None or not self._side_panel_enabled:
                 self._side_panel_view.styles.display = "none"
+                self._side_panel_view.remove_class("side-panel--visible")
+                self._side_panel_view.remove_class("side-panel--focused")
                 self._side_panel_view.update("")
                 return
+            self._side_panel_view.styles.display = "block"
             self._side_panel_view.add_class("side-panel--visible")
             if self._side_panel_focused:
                 self._side_panel_view.add_class("side-panel--focused")

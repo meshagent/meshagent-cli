@@ -670,7 +670,7 @@ async def agent_use_command(
     name: Annotated[Optional[str], typer.Option("--name", help="Agent name")] = None,
     thread_path: Annotated[
         Optional[str],
-        typer.Option("--thread-path", help="Thread path to open"),
+        typer.Option("--thread-id", help="Thread id to open"),
     ] = None,
     load: Annotated[
         bool,
