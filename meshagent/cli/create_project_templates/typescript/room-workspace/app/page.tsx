@@ -1,9 +1,10 @@
 "use client";
 
 import { type ReactNode, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, FileIcon, FolderIcon, MessageSquare, RefreshCw, UsersRound } from "lucide-react";
+import { ArrowLeft, FileIcon, FolderIcon, MessageSquare, RefreshCw, SquareTerminal, UsersRound } from "lucide-react";
 import { RoomClient, type RemoteParticipant, type StorageEntry } from "@meshagent/meshagent";
 import { useRoomParticipants } from "@meshagent/meshagent-react";
+import { DeveloperConsole } from "@meshagent/meshagent-react-dev";
 import {
   ChatBotView,
   FilePreview,
@@ -13,11 +14,15 @@ import {
   participantSupportsChat,
 } from "@meshagent/meshagent-tailwind";
 
-type ActiveTab = "chat" | "meeting" | "files";
+type ActiveTab = "chat" | "meeting" | "files" | "console";
 type ConnectionState = "connecting" | "connected" | "disconnected";
 
 const defaultChatPath = ".threads/main.thread";
 const rootFolder = "";
+
+function getDefaultShellImage(): string {
+  return "meshagent/python:default";
+}
 
 function joinPaths(...parts: string[]): string {
   return parts
@@ -246,6 +251,9 @@ function MeetingWorkspace({ room }: { room: RoomClient }) {
             <TabButton active={activeTab === "files"} onClick={() => setActiveTab("files")}>
               <FileIcon size={17} /> Files
             </TabButton>
+            <TabButton active={activeTab === "console"} onClick={() => setActiveTab("console")}>
+              <SquareTerminal size={17} /> Console
+            </TabButton>
           </nav>
         </header>
 
@@ -264,6 +272,8 @@ function MeetingWorkspace({ room }: { room: RoomClient }) {
               <div className="meeting-pane">
                 <MeetingView onCancel={() => setActiveTab("chat")} />
               </div>
+            ) : activeTab === "console" ? (
+              <DeveloperConsole room={room} shellImage={getDefaultShellImage()} />
             ) : (
               <FileBrowser room={room} />
             )}
