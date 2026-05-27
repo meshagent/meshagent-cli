@@ -188,6 +188,7 @@ _ASK_SLASH_COMMANDS = (
     ("/new", "Start a new thread"),
     ("/model", "List or change the active model"),
     ("/output", "Change text or audio outputs"),
+    ("/threads on | off", "Show or hide the thread sidebar"),
 )
 
 
@@ -1904,6 +1905,20 @@ async def _run_ask_tui(
             if isinstance(app, _AskTextualApp):
                 app._submit_side_panel_click(x=event.x, y=event.y)
 
+        def on_mouse_scroll_up(self, event: Any) -> None:
+            event.prevent_default()
+            event.stop()
+            app = self.app
+            if isinstance(app, _AskTextualApp):
+                app._submit_side_panel_key("scroll_up", None)
+
+        def on_mouse_scroll_down(self, event: Any) -> None:
+            event.prevent_default()
+            event.stop()
+            app = self.app
+            if isinstance(app, _AskTextualApp):
+                app._submit_side_panel_key("scroll_down", None)
+
     class _AskTextualApp(App[None]):
         CSS = """
         Screen {
@@ -1936,7 +1951,7 @@ async def _run_ask_tui(
             display: none;
             width: 1fr;
             height: 100%;
-            padding: 1 1;
+            padding: 1 1 0 1;
             border-left: solid #2d3138;
             background: #101114;
             color: #cfd3dc;
@@ -2130,6 +2145,7 @@ async def _run_ask_tui(
             self._side_panel_renderer = side_panel_renderer
             self._side_panel_key_handler = side_panel_key_handler
             self._side_panel_mouse_handler = side_panel_mouse_handler
+            self._side_panel_enabled = False
             self._entries: list[_AskFeedEntry] = []
             self._feed_view: Vertical | None = None
             self._feed_scroll: VerticalScroll | None = None
@@ -2403,6 +2419,9 @@ async def _run_ask_tui(
                 self.exit()
                 return
 
+            if self._handle_builtin_command(prompt.strip()):
+                return
+
             resolved_command = self._resolve_command_submission(prompt.strip())
             if resolved_command is not None and self._command_handler is not None:
                 if self._pending:
@@ -2425,6 +2444,30 @@ async def _run_ask_tui(
                 return
 
             self._start_turn(prompt=prompt)
+
+        def _handle_builtin_command(self, command: str) -> bool:
+            if command == "/threads":
+                self._side_panel_enabled = (
+                    self._side_panel_renderer is not None
+                    and not self._side_panel_enabled
+                )
+                self._side_panel_focused = False
+                self._render_side_panel()
+                if self._input_view is not None:
+                    self._input_view.focus()
+                return True
+            if command == "/threads on":
+                self._side_panel_enabled = self._side_panel_renderer is not None
+                self._render_side_panel()
+                return True
+            if command == "/threads off":
+                self._side_panel_enabled = False
+                self._side_panel_focused = False
+                self._render_side_panel()
+                if self._input_view is not None:
+                    self._input_view.focus()
+                return True
+            return False
 
         def _start_turn(self, *, prompt: str) -> None:
             if isinstance(self._session, ChatThreadSession):
@@ -2823,7 +2866,7 @@ async def _run_ask_tui(
             matches = [
                 (command, description)
                 for command, description in _ASK_SLASH_COMMANDS
-                if command.startswith(prompt)
+                if command.startswith(prompt) or command.split(" ", 1)[0] == prompt
             ]
             if len(matches) == 0:
                 self._command_menu_view.styles.display = "none"
@@ -3646,7 +3689,7 @@ async def _run_ask_tui(
             if self._side_panel_view is None:
                 return
             renderer = self._side_panel_renderer
-            if renderer is None:
+            if renderer is None or not self._side_panel_enabled:
                 self._side_panel_view.styles.display = "none"
                 self._side_panel_view.update("")
                 return
@@ -3657,7 +3700,9 @@ async def _run_ask_tui(
                 self._side_panel_view.remove_class("side-panel--focused")
             self._side_panel_view.update(
                 renderer(
-                    self._side_panel_focused, width=self._side_panel_view.size.width
+                    self._side_panel_focused,
+                    width=self._side_panel_view.size.width,
+                    height=self._side_panel_view.size.height,
                 )
             )
 
