@@ -27,7 +27,12 @@ async def webhook_create(
         ),
     ],
     description: Annotated[
-        str, typer.Option(default="", help="Optional description")
+        str,
+        typer.Option(
+            "--description",
+            "-d",
+            help="Optional description",
+        ),
     ] = "",
     action: Annotated[
         Optional[str],
