@@ -21,6 +21,7 @@ from meshagent.agents import (
     SingleRoomAgent,
     WebSocketChatChannel,
 )
+from meshagent.agents.dataset_thread_storage import DatasetThreadStorage
 from meshagent.agents.messages import (
     AGENT_EVENT_MODEL_CHANGED,
     AGENT_EVENT_THREAD_LOADED,
@@ -85,6 +86,13 @@ from meshagent.cli.thread_sidebar import (
     thread_list_entry_from_agent_entry,
     thread_list_event_from_agent_payload,
 )
+from meshagent.cli.thread_inspect import (
+    ThreadInspectOutput,
+    grep_thread_messages,
+    load_thread_agent_messages,
+    print_thread_list,
+    print_thread_messages,
+)
 from meshagent.codex import AppServerConfig, CodexAgentSupervisor, DEFAULT_CODEX_MODEL
 
 logger = logging.getLogger("codex_cli")
@@ -134,7 +142,15 @@ ThreadDirOption = Annotated[
     Optional[str],
     typer.Option(
         "--thread-dir",
-        help="Thread directory annotation for chat and websocket channels.",
+        help="Thread directory for dataset thread storage namespaces.",
+    ),
+]
+CodexThreadStorage = Literal["none", "codex", "dataset"]
+ThreadStorageOption = Annotated[
+    CodexThreadStorage,
+    typer.Option(
+        "--thread-storage",
+        help="Thread storage backend: none, codex, or dataset.",
     ),
 ]
 WebSocketAuthMode = Literal["jwt", "iap", "none"]
@@ -350,6 +366,87 @@ def _require_codex_channels(*, channels: list[str]) -> None:
         return
     print("[bold red]at least one channel is required for codex agents[/bold red]")
     raise typer.Exit(1)
+
+
+def _default_agent_thread_dir(*, agent_name: str | None) -> str:
+    normalized_agent_name = agent_name.strip() if isinstance(agent_name, str) else ""
+    if normalized_agent_name == "":
+        raise typer.BadParameter(
+            "--agent-name is required when --thread-storage=dataset "
+            "and --thread-dir is not set"
+        )
+    return f"/agents/{normalized_agent_name}/threads"
+
+
+def _thread_url_for_storage(*, thread_storage: CodexThreadStorage, path: str) -> str:
+    normalized = path.strip().rstrip("/")
+    if normalized == "":
+        raise typer.BadParameter("--thread-dir cannot be empty")
+    if thread_storage == "dataset":
+        if normalized.startswith("dataset://"):
+            return normalized
+        return f"dataset://{normalized.strip('/')}"
+    if thread_storage == "none":
+        if normalized.startswith("tmp://"):
+            return normalized
+        return f"tmp://{normalized.strip('/')}"
+    return normalized
+
+
+def _resolve_codex_thread_dir(
+    *,
+    agent_name: str | None,
+    thread_dir: str | None,
+    thread_storage: CodexThreadStorage,
+) -> str | None:
+    raw_thread_dir = thread_dir.strip() if isinstance(thread_dir, str) else ""
+    if thread_storage == "dataset":
+        if raw_thread_dir == "":
+            raw_thread_dir = _default_agent_thread_dir(agent_name=agent_name)
+        return _thread_url_for_storage(
+            thread_storage=thread_storage,
+            path=raw_thread_dir,
+        )
+    if thread_storage == "none":
+        if raw_thread_dir == "":
+            raw_thread_dir = (
+                f"/agents/{agent_name.strip()}/threads"
+                if isinstance(agent_name, str) and agent_name.strip() != ""
+                else "/tmp/codex/threads"
+            )
+        return _thread_url_for_storage(
+            thread_storage=thread_storage,
+            path=raw_thread_dir,
+        )
+    return raw_thread_dir if raw_thread_dir != "" else None
+
+
+def _channel_thread_dir_for_storage(
+    *,
+    thread_storage: CodexThreadStorage,
+    thread_dir: str | None,
+) -> str | None:
+    if thread_dir is None:
+        return None
+    normalized = thread_dir.strip().rstrip("/")
+    if normalized == "":
+        return None
+    if thread_storage == "dataset" and normalized.startswith("dataset://"):
+        return normalized[len("dataset://") :].lstrip("/")
+    if thread_storage == "none" and normalized.startswith("tmp://"):
+        return normalized[len("tmp://") :].lstrip("/")
+    return normalized
+
+
+def _channel_thread_url_kwargs(
+    *,
+    thread_storage: CodexThreadStorage,
+) -> dict[str, str]:
+    if thread_storage == "dataset":
+        return {"thread_url_scheme": "dataset", "thread_path_extension": ""}
+    if thread_storage == "none":
+        return {"thread_url_scheme": "tmp", "thread_path_extension": ""}
+    return {}
 
 
 def _require_resolved_room(room: str | None) -> str:
@@ -588,6 +685,7 @@ def _build_codex_agent(
     channels: list[str],
     websocket_auth: WebSocketAuthMode = "jwt",
     thread_dir: str | None = None,
+    thread_storage: CodexThreadStorage = "codex",
 ):
     class CodexRoomAgent(SingleRoomAgent):
         def __init__(self) -> None:
@@ -604,13 +702,21 @@ def _build_codex_agent(
             self._room = room
             started_servers = []
             supervisor: _LocalEventCodexSupervisor | None = None
+            channel_thread_url_kwargs = _channel_thread_url_kwargs(
+                thread_storage=thread_storage
+            )
+            channel_thread_dir = _channel_thread_dir_for_storage(
+                thread_storage=thread_storage,
+                thread_dir=thread_dir,
+            )
             try:
                 await self.install_requirements()
                 if _has_chat_channel(channels=channels):
                     self._chat_channel = MessagingChatChannel(
                         room=room,
                         threading_mode="default-new",
-                        thread_dir=thread_dir,
+                        thread_dir=channel_thread_dir,
+                        **channel_thread_url_kwargs,
                     )
                 self._websocket_channels = []
                 for channel_spec in channels:
@@ -627,7 +733,8 @@ def _build_codex_agent(
                                 )
                             ),
                             threading_mode="default-new",
-                            thread_dir=thread_dir,
+                            thread_dir=channel_thread_dir,
+                            **channel_thread_url_kwargs,
                         )
                     )
 
@@ -639,6 +746,9 @@ def _build_codex_agent(
                         codex_config=codex_config,
                     ),
                     default_model=model,
+                    thread_storage=thread_storage,
+                    thread_dir=thread_dir,
+                    room=room,
                 )
                 if self._chat_channel is not None:
                     supervisor.add_channel(self._chat_channel)
@@ -694,6 +804,7 @@ def _codex_agent_annotations(
     *,
     thread_dir: str | None,
     channels: list[str],
+    thread_storage: CodexThreadStorage,
 ) -> dict[str, str]:
     annotations = {ANNOTATION_AGENT_TYPE: "Codex"}
     if _has_chat_channel(channels=channels):
@@ -701,9 +812,16 @@ def _codex_agent_annotations(
         if thread_dir is not None and thread_dir.strip() != "":
             normalized_thread_dir = thread_dir.strip().rstrip("/")
             annotations["meshagent.chatbot.thread-dir"] = normalized_thread_dir
-            annotations["meshagent.chatbot.thread-list"] = (
-                f"{normalized_thread_dir}/index.threadl"
-            )
+            if thread_storage == "dataset":
+                annotations["meshagent.chatbot.thread-list"] = (
+                    DatasetThreadStorage.thread_list_path_for_dir(
+                        thread_dir=normalized_thread_dir
+                    )
+                )
+            elif thread_storage == "codex":
+                annotations["meshagent.chatbot.thread-list"] = (
+                    f"{normalized_thread_dir}/index.threadl"
+                )
     return annotations
 
 
@@ -954,6 +1072,27 @@ async def _close_codex_room_client(client: RoomClient | None) -> None:
         return
     with contextlib.suppress(Exception):
         await client.__aexit__(None, None, None)
+
+
+async def _open_codex_room_client(
+    *,
+    account_client: Any,
+    project_id: str,
+    room: str,
+) -> RoomClient:
+    connection = await account_client.connect_room(project_id=project_id, room=room)
+    client = RoomClient(
+        protocol_factory=WebSocketClientProtocol(
+            url=websocket_room_url(room_name=room),
+            token=connection.jwt,
+        ).create_factory(),
+    )
+    try:
+        await client.__aenter__()
+        return client
+    except Exception:
+        await _close_codex_room_client(client)
+        raise
 
 
 async def _open_codex_thread_and_wait(
@@ -1231,6 +1370,7 @@ async def join(
         typer.Option("--key", help="an api key to sign the token with"),
     ] = None,
     thread_dir: ThreadDirOption = None,
+    thread_storage: ThreadStorageOption = "codex",
     channel: CodexChannelOption = [],
     websocket_auth: Annotated[
         WebSocketAuthMode,
@@ -1242,6 +1382,11 @@ async def join(
 ) -> None:
     resolved_channels = _resolved_codex_channels(channel=channel)
     _require_codex_channels(channels=resolved_channels)
+    resolved_thread_dir = _resolve_codex_thread_dir(
+        agent_name=agent_name,
+        thread_dir=thread_dir,
+        thread_storage=thread_storage,
+    )
     room = _require_resolved_room(resolve_room(room))
     account_client, resolved_project_id, jwt = await _connect_agent_room(
         project_id=project_id,
@@ -1266,7 +1411,8 @@ async def join(
             working_dir=working_dir,
             channels=resolved_channels,
             websocket_auth=websocket_auth,
-            thread_dir=thread_dir,
+            thread_dir=resolved_thread_dir,
+            thread_storage=thread_storage,
         )()
 
         if get_deferred():
@@ -1315,6 +1461,7 @@ async def service(
         Optional[str], typer.Option(help="HTTP path to mount the service at")
     ] = None,
     thread_dir: ThreadDirOption = None,
+    thread_storage: ThreadStorageOption = "codex",
     channel: CodexChannelOption = [],
     websocket_auth: Annotated[
         WebSocketAuthMode,
@@ -1326,6 +1473,11 @@ async def service(
 ) -> None:
     resolved_channels = _resolved_codex_channels(channel=channel)
     _require_codex_channels(channels=resolved_channels)
+    resolved_thread_dir = _resolve_codex_thread_dir(
+        agent_name=agent_name,
+        thread_dir=thread_dir,
+        thread_storage=thread_storage,
+    )
     service_host = get_service(host=host, port=port)
     if path is None:
         path = "/agent"
@@ -1338,8 +1490,9 @@ async def service(
         AgentSpec(
             name=agent_name,
             annotations=_codex_agent_annotations(
-                thread_dir=thread_dir,
+                thread_dir=resolved_thread_dir,
                 channels=resolved_channels,
+                thread_storage=thread_storage,
             ),
         )
     )
@@ -1353,7 +1506,8 @@ async def service(
             working_dir=working_dir,
             channels=resolved_channels,
             websocket_auth=websocket_auth,
-            thread_dir=thread_dir,
+            thread_dir=resolved_thread_dir,
+            thread_storage=thread_storage,
         ),
     )
 
@@ -1367,6 +1521,7 @@ def _build_service_spec(
     service_name: str | None,
     service_description: str | None,
     thread_dir: str | None,
+    thread_storage: CodexThreadStorage,
     channels: list[str],
 ) -> Any:
     resolved_service_name = service_name if service_name is not None else agent_name
@@ -1393,6 +1548,7 @@ def _build_service_spec(
             annotations=_codex_agent_annotations(
                 thread_dir=thread_dir,
                 channels=channels,
+                thread_storage=thread_storage,
             ),
         )
     ]
@@ -1420,17 +1576,24 @@ async def spec(
     codex_config: CodexConfigOption = [],
     working_dir: WorkingDirOption = None,
     thread_dir: ThreadDirOption = None,
+    thread_storage: ThreadStorageOption = "codex",
     channel: CodexChannelOption = [],
 ) -> None:
     del service_title, model, codex_bin, codex_config, working_dir
     resolved_channels = _resolved_codex_channels(channel=channel)
     _require_codex_channels(channels=resolved_channels)
+    resolved_thread_dir = _resolve_codex_thread_dir(
+        agent_name=agent_name,
+        thread_dir=thread_dir,
+        thread_storage=thread_storage,
+    )
     get_service(host=None, port=None)
     service_spec = _build_service_spec(
         agent_name=agent_name,
         service_name=service_name,
         service_description=service_description,
-        thread_dir=thread_dir,
+        thread_dir=resolved_thread_dir,
+        thread_storage=thread_storage,
         channels=resolved_channels,
     )
     print(
@@ -1467,17 +1630,24 @@ async def deploy(
     codex_config: CodexConfigOption = [],
     working_dir: WorkingDirOption = None,
     thread_dir: ThreadDirOption = None,
+    thread_storage: ThreadStorageOption = "codex",
     channel: CodexChannelOption = [],
 ) -> None:
     del service_title, model, codex_bin, codex_config, working_dir
     project_id = await resolve_project_id(project_id=project_id)
     resolved_channels = _resolved_codex_channels(channel=channel)
     _require_codex_channels(channels=resolved_channels)
+    resolved_thread_dir = _resolve_codex_thread_dir(
+        agent_name=agent_name,
+        thread_dir=thread_dir,
+        thread_storage=thread_storage,
+    )
     service_spec = _build_service_spec(
         agent_name=agent_name,
         service_name=service_name,
         service_description=service_description,
-        thread_dir=thread_dir,
+        thread_dir=resolved_thread_dir,
+        thread_storage=thread_storage,
         channels=resolved_channels,
     )
 
@@ -1552,7 +1722,8 @@ async def run(
         Optional[str],
         typer.Option("--key", help="an api key to sign the token with"),
     ] = None,
-    thread_dir: ThreadDirOption = ".codex/threads",
+    thread_dir: ThreadDirOption = None,
+    thread_storage: ThreadStorageOption = "codex",
     channel: CodexChannelOption = [],
     websocket_auth: Annotated[
         WebSocketAuthMode,
@@ -1577,7 +1748,7 @@ async def run(
     ] = "you",
     thread_path: Annotated[
         Optional[str],
-        typer.Option("--thread-path", "--thread-id", help="Codex thread id to open"),
+        typer.Option("--thread-id", help="Codex thread id to open"),
     ] = None,
     message: Annotated[
         Optional[str],
@@ -1585,6 +1756,11 @@ async def run(
     ] = None,
 ) -> None:
     resolved_channels = _resolved_codex_channels(channel=channel)
+    resolved_thread_dir = _resolve_codex_thread_dir(
+        agent_name=agent_name,
+        thread_dir=thread_dir,
+        thread_storage=thread_storage,
+    )
     websocket_run_channel = _codex_run_websocket_channel(channels=resolved_channels)
     if not _has_chat_channel(channels=resolved_channels):
         if websocket_run_channel is None:
@@ -1616,7 +1792,8 @@ async def run(
             working_dir=working_dir,
             channels=resolved_channels,
             websocket_auth=websocket_auth,
-            thread_dir=thread_dir,
+            thread_dir=resolved_thread_dir,
+            thread_storage=thread_storage,
         )()
 
         async def run_interactive_session(room_client: RoomClient) -> None:
@@ -1668,13 +1845,68 @@ async def run(
 @app.async_command("threads", help="List threads from the local Codex app-server.")
 async def list_threads_command(
     *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    agent_name: Annotated[
+        Optional[str],
+        typer.Option("--agent-name", help="Name of the agent to list threads for"),
+    ] = None,
     codex_bin: CodexBinOption = None,
     codex_config: CodexConfigOption = [],
     working_dir: WorkingDirOption = None,
+    thread_dir: ThreadDirOption = None,
+    thread_storage: ThreadStorageOption = "codex",
     limit: Annotated[int, typer.Option("--limit", help="Maximum threads to show")] = 20,
     offset: Annotated[int, typer.Option("--offset", help="Thread list offset")] = 0,
+    output: Annotated[
+        ThreadInspectOutput,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Output format: json, table, or text.",
+        ),
+    ] = "text",
 ) -> None:
-    from rich.table import Table
+    resolved_thread_dir = _resolve_codex_thread_dir(
+        agent_name=agent_name,
+        thread_dir=thread_dir,
+        thread_storage=thread_storage,
+    )
+    if thread_storage == "dataset":
+        if resolved_thread_dir is None:
+            print("[bold red]unable to resolve a thread directory[/bold red]")
+            raise typer.Exit(1)
+        room = _require_resolved_room(resolve_room(room))
+        account_client = await get_client()
+        user_client: RoomClient | None = None
+        try:
+            project_id = await resolve_project_id(project_id=project_id)
+            user_client = await _open_codex_room_client(
+                account_client=account_client,
+                project_id=project_id,
+                room=room,
+            )
+            page = await DatasetThreadStorage.list_threads(
+                room=user_client,
+                thread_dir=resolved_thread_dir,
+                limit=limit,
+                offset=offset,
+            )
+            print_thread_list(
+                page=page,
+                title=f"{(agent_name or 'codex').strip()} threads",
+                output=output,
+            )
+        finally:
+            await _close_codex_room_client(user_client)
+            await account_client.close()
+        return
+
+    if thread_storage == "none":
+        print(
+            "[bold red]thread listing is not available for --thread-storage=none[/bold red]"
+        )
+        raise typer.Exit(1)
 
     participant = Participant(id="codex-cli", attributes={"name": "codex"})
     supervisor = _LocalEventCodexSupervisor(
@@ -1698,15 +1930,156 @@ async def list_threads_command(
         if page.total == 0:
             print("No threads found.")
             return
-        table = Table(title="Codex threads")
-        table.add_column("Name")
-        table.add_column("Path")
-        table.add_column("Modified")
-        for entry in page.threads:
-            table.add_row(entry.name, entry.path, entry.modified_at)
-        print(table)
+        print_thread_list(page=page, title="Codex threads", output=output)
     finally:
         await supervisor.stop()
+
+
+async def _load_codex_thread_messages(
+    *,
+    thread_storage: CodexThreadStorage,
+    room: RoomClient | None,
+    thread_id: str,
+    codex_bin: str | None,
+    codex_config: list[str],
+    working_dir: str | None,
+) -> list[AgentMessage]:
+    if thread_storage == "dataset":
+        if room is None:
+            raise typer.BadParameter("--room is required for --thread-storage=dataset")
+        return await load_thread_agent_messages(room=room, thread_id=thread_id)
+    if thread_storage == "none":
+        return []
+
+    from meshagent.codex.process import CodexAgentProcess
+
+    participant = Participant(id="codex-cli", attributes={"name": "codex"})
+    supervisor = _LocalEventCodexSupervisor(
+        participant=participant,
+        config=_codex_config(
+            codex_bin=codex_bin,
+            working_dir=working_dir,
+            codex_config=codex_config,
+        ),
+    )
+    await supervisor.start()
+    try:
+        response = await supervisor.client.thread_resume(
+            thread_id,
+            params={"model": supervisor.default_model},
+        )
+        process = CodexAgentProcess(
+            thread_id=thread_id,
+            participant=participant,
+            client=supervisor.client,
+            provider_name=supervisor.provider_name,
+            default_model=supervisor.default_model,
+            provider_info_builder=supervisor.provider_info,
+        )
+        return process._messages_from_thread_read(response=response, since_turn=None)
+    finally:
+        await supervisor.stop()
+
+
+@app.async_command("messages", help="List messages in a Codex-backed agent thread.")
+async def list_messages_command(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    codex_bin: CodexBinOption = None,
+    codex_config: CodexConfigOption = [],
+    working_dir: WorkingDirOption = None,
+    thread_storage: ThreadStorageOption = "codex",
+    thread_id: Annotated[
+        str,
+        typer.Option("--thread-id", help="Thread id to inspect"),
+    ],
+    output: Annotated[
+        ThreadInspectOutput,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Output format: json, table, or text.",
+        ),
+    ] = "text",
+) -> None:
+    user_client: RoomClient | None = None
+    account_client = None
+    if thread_storage == "dataset":
+        room = _require_resolved_room(resolve_room(room))
+        account_client = await get_client()
+        project_id = await resolve_project_id(project_id=project_id)
+        user_client = await _open_codex_room_client(
+            account_client=account_client,
+            project_id=project_id,
+            room=room,
+        )
+    try:
+        messages = await _load_codex_thread_messages(
+            thread_storage=thread_storage,
+            room=user_client,
+            thread_id=thread_id,
+            codex_bin=codex_bin,
+            codex_config=codex_config,
+            working_dir=working_dir,
+        )
+        print_thread_messages(messages=messages, output=output)
+    finally:
+        await _close_codex_room_client(user_client)
+        if account_client is not None:
+            await account_client.close()
+
+
+@app.async_command(
+    "grep", help="Search coalesced messages in a Codex-backed agent thread."
+)
+async def grep_messages_command(
+    pattern: Annotated[str, typer.Argument(help="Regex pattern to search for")],
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    codex_bin: CodexBinOption = None,
+    codex_config: CodexConfigOption = [],
+    working_dir: WorkingDirOption = None,
+    thread_storage: ThreadStorageOption = "codex",
+    thread_id: Annotated[
+        str,
+        typer.Option("--thread-id", help="Thread id to inspect"),
+    ],
+    output: Annotated[
+        ThreadInspectOutput,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Output format: json, table, or text.",
+        ),
+    ] = "text",
+) -> None:
+    user_client: RoomClient | None = None
+    account_client = None
+    if thread_storage == "dataset":
+        room = _require_resolved_room(resolve_room(room))
+        account_client = await get_client()
+        project_id = await resolve_project_id(project_id=project_id)
+        user_client = await _open_codex_room_client(
+            account_client=account_client,
+            project_id=project_id,
+            room=room,
+        )
+    try:
+        messages = await _load_codex_thread_messages(
+            thread_storage=thread_storage,
+            room=user_client,
+            thread_id=thread_id,
+            codex_bin=codex_bin,
+            codex_config=codex_config,
+            working_dir=working_dir,
+        )
+        grep_thread_messages(messages=messages, pattern=pattern, output=output)
+    finally:
+        await _close_codex_room_client(user_client)
+        if account_client is not None:
+            await account_client.close()
 
 
 @app.async_command(
@@ -1722,7 +2095,7 @@ async def use(
     ] = None,
     thread_path: Annotated[
         Optional[str],
-        typer.Option("--thread-path", help="Codex thread id to open"),
+        typer.Option("--thread-id", help="Codex thread id to open"),
     ] = None,
     message: Annotated[
         Optional[str],

@@ -94,6 +94,13 @@ from meshagent.cli.thread_sidebar import (
     thread_list_entry_from_agent_entry as _thread_list_entry_from_agent_entry,
     thread_list_event_from_agent_payload as _thread_list_event_from_agent_payload,
 )
+from meshagent.cli.thread_inspect import (
+    ThreadInspectOutput,
+    grep_thread_messages,
+    load_thread_agent_messages,
+    print_thread_list,
+    print_thread_messages,
+)
 
 from meshagent.openai import (
     DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL,
@@ -9910,7 +9917,7 @@ async def run(
     ] = "you",
     thread_path: Annotated[
         Optional[str],
-        typer.Option(..., help="log all requests to the llm"),
+        typer.Option("--thread-id", help="Thread id to open"),
     ] = None,
     message: Annotated[
         Optional[str],
@@ -10217,6 +10224,14 @@ async def list_threads_command(
     thread_storage: ThreadStorageOption = "meshdocument",
     limit: Annotated[int, typer.Option("--limit", help="Maximum threads to show")] = 20,
     offset: Annotated[int, typer.Option("--offset", help="Thread list offset")] = 0,
+    output: Annotated[
+        ThreadInspectOutput,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Output format: json, table, or text.",
+        ),
+    ] = "text",
 ):
     runtime = _current_command_runtime()
     if runtime != "process":
@@ -10260,24 +10275,99 @@ async def list_threads_command(
             limit=limit,
             offset=offset,
         )
-        if page.total == 0:
-            print("No threads found.")
-            return
-
-        from rich.table import Table
-
-        table = Table(title=f"{agent_name.strip()} threads")
-        table.add_column("Name")
-        table.add_column("Path")
-        table.add_column("Modified")
-        for entry in page.threads:
-            table.add_row(entry.name, entry.path, entry.modified_at)
-        print(table)
+        print_thread_list(
+            page=page,
+            title=f"{agent_name.strip()} threads",
+            output=output,
+        )
         if page.offset + len(page.threads) < page.total:
             print(
                 f"Showing {page.offset + 1}-{page.offset + len(page.threads)} "
                 f"of {page.total} threads."
             )
+    finally:
+        await _close_process_use_room_client(user_client)
+        await account_client.close()
+
+
+@app.async_command(
+    "messages",
+    help="List messages in a process-backed agent thread.",
+)
+async def list_messages_command(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    thread_id: Annotated[
+        str,
+        typer.Option("--thread-id", help="Thread id to inspect"),
+    ],
+    output: Annotated[
+        ThreadInspectOutput,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Output format: json, table, or text.",
+        ),
+    ] = "text",
+):
+    room = _require_resolved_room(resolve_room(room))
+    account_client = await get_client()
+    user_client: RoomClient | None = None
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        user_client = await _open_process_room_client(
+            account_client=account_client,
+            project_id=project_id,
+            room=room,
+        )
+        messages = await load_thread_agent_messages(
+            room=user_client,
+            thread_id=thread_id,
+        )
+        print_thread_messages(messages=messages, output=output)
+    finally:
+        await _close_process_use_room_client(user_client)
+        await account_client.close()
+
+
+@app.async_command(
+    "grep",
+    help="Search coalesced messages in a process-backed agent thread.",
+)
+async def grep_messages_command(
+    pattern: Annotated[str, typer.Argument(help="Regex pattern to search for")],
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    thread_id: Annotated[
+        str,
+        typer.Option("--thread-id", help="Thread id to inspect"),
+    ],
+    output: Annotated[
+        ThreadInspectOutput,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Output format: json, table, or text.",
+        ),
+    ] = "text",
+):
+    room = _require_resolved_room(resolve_room(room))
+    account_client = await get_client()
+    user_client: RoomClient | None = None
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        user_client = await _open_process_room_client(
+            account_client=account_client,
+            project_id=project_id,
+            room=room,
+        )
+        messages = await load_thread_agent_messages(
+            room=user_client,
+            thread_id=thread_id,
+        )
+        grep_thread_messages(messages=messages, pattern=pattern, output=output)
     finally:
         await _close_process_use_room_client(user_client)
         await account_client.close()
@@ -10296,7 +10386,7 @@ async def use(
     ] = None,
     thread_path: Annotated[
         Optional[str],
-        typer.Option(..., help="log all requests to the llm"),
+        typer.Option("--thread-id", help="Thread id to open"),
     ] = None,
     message: Annotated[
         Optional[str],
