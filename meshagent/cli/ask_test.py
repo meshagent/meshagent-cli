@@ -4,7 +4,7 @@ import io
 
 import pytest
 import typer
-from click.testing import CliRunner
+from typer._click.testing import CliRunner
 from PIL import Image
 
 from meshagent.agents import AgentSessionContext

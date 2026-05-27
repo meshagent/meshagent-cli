@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from click.testing import CliRunner
+from typer._click.testing import CliRunner
 
 from meshagent.cli import doctor as doctor_module
 from meshagent.cli.doctor import (

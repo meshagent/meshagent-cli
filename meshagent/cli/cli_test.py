@@ -3,7 +3,7 @@ import sys
 import types
 
 import pytest
-from click.testing import CliRunner
+from typer._click.testing import CliRunner
 
 from meshagent.api import RoomException
 from meshagent.cli import async_typer
