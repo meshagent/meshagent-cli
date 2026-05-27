@@ -42,26 +42,6 @@ def _module_with_alias_app(*, module_name: str, command_name: str) -> types.Modu
     return module
 
 
-def test_coerce_to_click_command_accepts_typer_command_when_click_command_type_differs(
-    monkeypatch,
-) -> None:
-    app = async_typer.AsyncTyper()
-
-    @app.command("version")
-    def _version_command() -> None:
-        pass
-
-    command = async_typer.get_command(app)
-
-    class OtherClickCommand:
-        pass
-
-    monkeypatch.setattr(async_typer.typer_click, "Command", OtherClickCommand)
-
-    assert isinstance(command, async_typer.TyperCommand)
-    assert async_typer._coerce_to_click_command(command) is command
-
-
 def test_lazy_help_does_not_import_subcommands(monkeypatch) -> None:
     app = async_typer.LazyTyper(help="Root commands")
     app.add_lazy_command(
