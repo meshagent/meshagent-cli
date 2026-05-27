@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from typer._click.testing import CliRunner
+from click.testing import CliRunner
 import pytest
 from rich.panel import Panel
 from textual.widgets import TextArea

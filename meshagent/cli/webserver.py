@@ -20,8 +20,8 @@ import yaml
 from aiohttp import web
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 from rich import print
-from typer._click.core import ParameterSource
-from typer._click.globals import get_current_context
+from click.core import ParameterSource
+from click.globals import get_current_context
 
 from meshagent.api import (
     ApiScope,

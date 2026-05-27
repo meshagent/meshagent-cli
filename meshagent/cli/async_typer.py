@@ -11,7 +11,7 @@ from typing import Any, Callable, Sequence, TypeVar
 
 import typer
 from meshagent.api import RoomException
-from typer import _click as typer_click
+import click as typer_click
 from typer import Typer
 from typer.core import TyperArgument, TyperCommand, TyperGroup, TyperOption
 from typer.main import DeveloperExceptionConfig

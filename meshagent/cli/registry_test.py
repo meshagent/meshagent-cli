@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 import typer
-from typer._click.testing import CliRunner
+from click.testing import CliRunner
 
 from meshagent.api.client import NotFoundError, ProjectRepository
 from meshagent.cli import async_typer, cli, registry

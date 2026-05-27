@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typer._click.testing import CliRunner
+from click.testing import CliRunner
 
 from meshagent.api.specs.service import ServiceTemplateSpec
 from meshagent.cli import create as create_module
@@ -1167,6 +1167,64 @@ def test_init_creates_typescript_room_chat_non_interactively(tmp_path) -> None:
     assert env["PORT"] == "3000"
 
 
+def test_init_creates_typescript_meeting_app_non_interactively(tmp_path) -> None:
+    result = CliRunner().invoke(
+        create_command,
+        [
+            "--language",
+            "typescript",
+            "--focus",
+            "meeting-app",
+            "--no-interactive",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Created a minimal deployable TypeScript Meeting App" in result.output
+    assert "npm run dev" in result.output
+    assert "npm run deploy" in result.output
+    assert (tmp_path / "package.json").is_file()
+    assert (tmp_path / "app" / "page.tsx").is_file()
+    assert (tmp_path / "app" / "globals.css").is_file()
+    assert (tmp_path / "dev-server.mjs").is_file()
+    assert (tmp_path / "Dockerfile").is_file()
+
+    package_json = (tmp_path / "package.json").read_text(encoding="utf-8")
+    page_tsx = (tmp_path / "app" / "page.tsx").read_text(encoding="utf-8")
+    readme = (tmp_path / "README.md").read_text(encoding="utf-8")
+    assert '"name": "meshagent-create-typescript-meeting-app"' in package_json
+    assert '"@meshagent/meshagent": "^' in package_json
+    assert '"@meshagent/meshagent-react": "^' in package_json
+    assert '"@meshagent/meshagent-tailwind": "^' in package_json
+    assert '"@meshagent/meshagent-livekit": "^' in package_json
+    assert '"dev": "meshagent room connect -- node dev-server.mjs"' in package_json
+    assert (
+        '"deploy": "meshagent deploy . --tag meshagent-create-typescript-meeting-app:dev --private --validation-mode=cookie --liveness /health --wait"'
+        in package_json
+    )
+    assert 'from "@meshagent/meshagent"' in page_tsx
+    assert "RoomClient.withIAP()" in page_tsx
+    assert "nextRoom.messaging.enable()" in page_tsx
+    assert "ChatBotView" in page_tsx
+    assert "MeetingScope" in page_tsx
+    assert "MeetingView" in page_tsx
+    assert "FilePreview" in page_tsx
+    assert "project" not in page_tsx.lower()
+    assert "room switch" not in page_tsx.lower()
+    assert "does not include project or room switching UI" in readme
+    spec = _assert_runtime_image_mount_deploy_yaml(
+        tmp_path,
+        runtime="node",
+        command="node server.js",
+    )
+    assert spec.container is not None
+    assert spec.container.environment is not None
+    env = {entry.name: entry.value for entry in spec.container.environment}
+    assert env["HOSTNAME"] == "0.0.0.0"
+    assert env["PORT"] == "3000"
+
+
 def test_init_rejects_react_backend_agent(tmp_path) -> None:
     result = CliRunner().invoke(
         create_command,
@@ -1509,6 +1567,7 @@ def test_init_rejects_unknown_focus(tmp_path) -> None:
         "chatbot-anthropic",
         "chatbot-ui",
         "room-chat",
+        "meeting-app",
         "contact-form",
     ):
         assert expected_focus in result.output
@@ -1548,6 +1607,7 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
         "chatbot-anthropic",
         "chatbot-ui",
         "room-chat",
+        "meeting-app",
         "contact-form",
     ]
     focus_labels = {choice[0]: choice[1] for choice in captured_focuses}
@@ -1557,6 +1617,7 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
     assert focus_labels["chatbot-anthropic"] == "Anthropic Chatbot"
     assert focus_labels["chatbot-ui"] == "Agent UI"
     assert focus_labels["room-chat"] == "Room Chat"
+    assert focus_labels["meeting-app"] == "Meeting App"
     assert focus_labels["contact-form"] == "Contact Form"
     focus_descriptions = {choice[0]: choice[2] for choice in captured_focuses}
     assert focus_descriptions["webserver"] == (
@@ -1580,6 +1641,9 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
     assert focus_descriptions["room-chat"] == (
         "Browser multi-user chat backed by the room messaging API."
     )
+    assert focus_descriptions["meeting-app"] == (
+        "Browser room app with chat, meetings, and files."
+    )
     assert focus_descriptions["contact-form"] == (
         "Public HTML contact form that sends email through a room mailbox."
     )
@@ -1598,6 +1662,7 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
         "chatbot-anthropic",
         "chatbot-ui",
         "room-chat",
+        "meeting-app",
     )
     assert (tmp_path / "server.js").is_file()
     assert "@meshagent/meshagent" in (tmp_path / "package.json").read_text(

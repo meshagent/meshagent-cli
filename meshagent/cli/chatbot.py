@@ -1,5 +1,5 @@
 import typer
-from typer._click.globals import get_current_context
+from click.globals import get_current_context
 from rich import print
 from typing import Annotated, Any, Optional, List, Literal, Awaitable, Callable
 import inspect

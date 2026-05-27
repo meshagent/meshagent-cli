@@ -2,7 +2,7 @@ import importlib
 import types
 
 import typer
-from typer._click.testing import CliRunner
+from click.testing import CliRunner
 
 from meshagent.cli import async_typer
 

@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 import typer
-from typer._click.testing import CliRunner
+from click.testing import CliRunner
 
 from meshagent.api import ApiScope, ParticipantToken
 from meshagent.api.client import NotFoundError

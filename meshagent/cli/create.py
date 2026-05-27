@@ -10,7 +10,7 @@ import sys
 from typing import Annotated, Literal, Mapping, Sequence
 
 import typer
-from typer import _click as typer_click
+import click as typer_click
 
 from meshagent.cli import async_typer
 from meshagent.cli.meshagent_images import render_meshagent_image_prefix_template
@@ -63,6 +63,7 @@ CHATBOT_FOCUS = "chatbot"
 ANTHROPIC_CHATBOT_FOCUS = "chatbot-anthropic"
 CHATBOT_UI_FOCUS = "chatbot-ui"
 ROOM_CHAT_FOCUS = "room-chat"
+MEETING_APP_FOCUS = "meeting-app"
 CONTACT_FORM_FOCUS = "contact-form"
 DEFAULT_LANGUAGE = "python"
 DEFAULT_FOCUS = AGENT_FOCUS
@@ -245,6 +246,11 @@ FOCUSES: Mapping[str, CreateFocus] = {
         label="Room Chat",
         description="Browser multi-user chat backed by the room messaging API.",
     ),
+    MEETING_APP_FOCUS: CreateFocus(
+        id=MEETING_APP_FOCUS,
+        label="Meeting App",
+        description="Browser room app with chat, meetings, and files.",
+    ),
     CONTACT_FORM_FOCUS: CreateFocus(
         id=CONTACT_FORM_FOCUS,
         label="Contact Form",
@@ -354,6 +360,14 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         template_dir=_template_dir("typescript", ROOM_CHAT_FOCUS),
         next_steps=NPM_CHATBOT_UI_NEXT_STEPS,
     ),
+    ("typescript", MEETING_APP_FOCUS): CreateTemplate(
+        language_id="typescript",
+        focus_id=MEETING_APP_FOCUS,
+        label="TypeScript Meeting App",
+        description="Browser room app with chat, meetings, and files.",
+        template_dir="typescript/meeting_app",
+        next_steps=NPM_CHATBOT_UI_NEXT_STEPS,
+    ),
     ("dotnet", WEB_FOCUS): CreateTemplate(
         language_id="dotnet",
         focus_id=WEB_FOCUS,
@@ -443,6 +457,12 @@ FOCUS_ALIASES = {
     "room_chat": ROOM_CHAT_FOCUS,
     "room-ui": ROOM_CHAT_FOCUS,
     "room_ui": ROOM_CHAT_FOCUS,
+    "meeting": MEETING_APP_FOCUS,
+    "meeting-app": MEETING_APP_FOCUS,
+    "meeting_app": MEETING_APP_FOCUS,
+    "meetings": MEETING_APP_FOCUS,
+    "powerboards": MEETING_APP_FOCUS,
+    "powerboards-react": MEETING_APP_FOCUS,
     "contact": CONTACT_FORM_FOCUS,
     "contact-form": CONTACT_FORM_FOCUS,
     "contact_form": CONTACT_FORM_FOCUS,
@@ -867,7 +887,8 @@ def _create_command(
                 "Project focus for non-interactive use. Use stable IDs: webserver "
                 "(Web App), backend-agent (Agent Toolkit), chatbot (OpenAI Chatbot), "
                 "chatbot-anthropic (Anthropic Chatbot), chatbot-ui (Agent UI), "
-                "room-chat (Room Chat), or contact-form (Contact Form)."
+                "room-chat (Room Chat), meeting-app (Meeting App), or "
+                "contact-form (Contact Form)."
             ),
         ),
     ] = None,
