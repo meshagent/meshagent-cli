@@ -404,6 +404,12 @@ async def test_codex_loaded_thread_accepts_followup_turn() -> None:
                 },
             )()
 
+        async def thread_resume(self, thread_id: str, params: dict | None = None):
+            del params
+            response = await self.thread_read(thread_id=thread_id, include_turns=True)
+            response.model = "gpt-5.5"
+            return response
+
         async def turn_start(self, thread_id, input_items, params=None):
             self.turn_start_calls.append((thread_id, input_items, params))
             await self.notifications.put(
@@ -563,6 +569,12 @@ async def test_codex_run_message_waits_for_loaded_thread_before_turn() -> None:
                     )()
                 },
             )()
+
+        async def thread_resume(self, thread_id: str, params: dict | None = None):
+            del params
+            response = await self.thread_read(thread_id=thread_id, include_turns=True)
+            response.model = "gpt-5.5"
+            return response
 
         async def turn_start(self, thread_id, input_items, params=None):
             self.turn_start_calls.append(
@@ -733,6 +745,12 @@ async def test_codex_run_tui_sidebar_loaded_thread_accepts_followup_turn(
                 },
             )()
 
+        async def thread_resume(self, thread_id: str, params: dict | None = None):
+            del params
+            response = await self.thread_read(thread_id=thread_id, include_turns=True)
+            response.model = "gpt-5.5"
+            return response
+
         async def turn_start(self, thread_id, input_items, params=None):
             self.turn_start_calls.append(
                 (thread_id, input_items, params, self.thread_read_completed)
@@ -790,7 +808,8 @@ async def test_codex_run_tui_sidebar_loaded_thread_accepts_followup_turn(
         handled = False
         deadline = asyncio.get_running_loop().time() + 1
         while not handled:
-            handled_result = kwargs["side_panel_mouse_handler"](0, 4)
+            kwargs["side_panel_renderer"](True, width=32, height=10)
+            handled_result = kwargs["side_panel_mouse_handler"](0, 1)
             if inspect.isawaitable(handled_result):
                 handled_result = await handled_result
             handled = handled_result is True
@@ -1706,6 +1725,174 @@ def test_configured_realtime_models_use_output_modality_filter() -> None:
 
     assert response.providers[0].models[0].modalities == ["audio"]
     assert current_model.output_modalities == ["audio"]
+
+
+def test_configured_process_models_include_backend_in_provider_identity() -> None:
+    selected = process._agent_model_changed_for_model(
+        model="openai/gpt-5.5",
+        thread_id="/threads/test.thread",
+    )
+    assert selected.backend == "llm"
+    assert selected.provider == "openai"
+    assert selected.model == "gpt-5.5"
+
+    response = process._configured_models_response(
+        models=["gpt-5.5", "openai/gpt-5.6", "codex/gpt-5.5"],
+        current_model=None,
+    )
+
+    provider_keys = [
+        (provider.backend, provider.name) for provider in response.providers
+    ]
+    assert provider_keys == [
+        ("llm", "openai"),
+        ("codex", "openai"),
+    ]
+    assert [model.name for model in response.providers[0].models] == [
+        "gpt-5.5",
+        "gpt-5.6",
+    ]
+    assert [model.name for model in response.providers[1].models] == ["gpt-5.5"]
+    assert "llm/openai/gpt-5.5" in process._format_model_list(
+        providers=response.providers,
+        current_model=None,
+    )
+    assert "codex/openai/gpt-5.5" in process._format_model_list(
+        providers=response.providers,
+        current_model=None,
+    )
+
+
+def test_models_response_is_filtered_to_configured_process_models() -> None:
+    response = ModelsResponse(
+        type=process.AGENT_MESSAGE_MODELS_RESPONSE,
+        source_message_id="models-request",
+        providers=[
+            AgentProviderInfo(
+                name="openai",
+                friendly_name="OpenAI",
+                backend="llm",
+                default_model="gpt-5.4",
+                models=[
+                    AgentModelInfo(name="gpt-5.4"),
+                    AgentModelInfo(name="gpt-5.5", active=True),
+                    AgentModelInfo(name="gpt-5.6"),
+                ],
+            ),
+            AgentProviderInfo(
+                name="openai",
+                friendly_name="OpenAI Codex",
+                backend="codex",
+                default_model="gpt-5.4",
+                models=[
+                    AgentModelInfo(name="gpt-5.4"),
+                    AgentModelInfo(name="gpt-5.5"),
+                ],
+            ),
+        ],
+    )
+
+    filtered = process._filter_models_response_to_configured_models(
+        response,
+        model_specs=process._normalize_process_model_specs(
+            ["openai/gpt-5.5", "codex/gpt-5.5"]
+        ),
+    )
+
+    assert [
+        (provider.backend, provider.name, [model.name for model in provider.models])
+        for provider in filtered.providers
+    ] == [
+        ("llm", "openai", ["gpt-5.5"]),
+        ("codex", "openai", ["gpt-5.5"]),
+    ]
+    assert filtered.providers[0].models[0].active is True
+
+
+def test_models_response_filter_keeps_configured_models_not_advertised() -> None:
+    response = ModelsResponse(
+        type=process.AGENT_MESSAGE_MODELS_RESPONSE,
+        source_message_id="models-request",
+        providers=[
+            AgentProviderInfo(
+                name="openai",
+                friendly_name="OpenAI",
+                backend="llm",
+                default_model="gpt-5.4",
+                models=[AgentModelInfo(name="gpt-5.4")],
+            )
+        ],
+    )
+
+    filtered = process._filter_models_response_to_configured_models(
+        response,
+        model_specs=process._normalize_process_model_specs(["openai/gpt-5.5"]),
+    )
+
+    assert len(filtered.providers) == 1
+    assert filtered.providers[0].default_model == "gpt-5.5"
+    assert [model.name for model in filtered.providers[0].models] == ["gpt-5.5"]
+
+
+def test_selecting_model_can_disambiguate_backend_provider_model() -> None:
+    response = process._configured_models_response(
+        models=["gpt-5.5", "codex/gpt-5.5"],
+        current_model=None,
+    )
+
+    changed = process._selected_model_from_models_response(
+        response=response,
+        thread_id="/threads/test.thread",
+        backend="codex",
+        provider="openai",
+        model="gpt-5.5",
+    )
+
+    assert changed is not None
+    assert changed.backend == "codex"
+    assert changed.provider == "openai"
+    assert changed.model == "gpt-5.5"
+
+
+def test_build_process_agent_rejects_incompatible_codex_thread_storage() -> None:
+    with pytest.raises(typer.Exit):
+        process.build_process_agent(
+            model=["gpt-5.5", "codex/gpt-5.5"],
+            rule=[],
+            toolkit=[],
+            schema=[],
+            require_table_read=[],
+            require_table_write=[],
+            channels=[],
+            thread_storage="codex",
+        )
+
+    with pytest.raises(typer.Exit):
+        process.build_process_agent(
+            model="codex/gpt-5.5",
+            rule=[],
+            toolkit=[],
+            schema=[],
+            require_table_read=[],
+            require_table_write=[],
+            channels=[],
+            thread_storage="meshagent",
+        )
+
+
+def test_build_process_agent_accepts_codex_storage_for_codex_backend() -> None:
+    agent_cls = process.build_process_agent(
+        model="codex/gpt-5.5",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+        thread_storage="codex",
+    )
+
+    assert agent_cls is not None
 
 
 def test_build_process_agent_passes_custom_realtime_transcription_model(
@@ -2636,16 +2823,21 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
         working_dir="/tmp",
     )
 
-    assert captured["model"] == "openai-realtime/gpt-realtime"
+    assert captured["model"] == "llm/openai-realtime/gpt-realtime"
     assert captured["title"] == "meshagent process run"
     assert captured["command_handler"] is not None
-    assert captured["model_label_provider"]() == "openai-realtime/gpt-realtime"
+    assert captured["model_label_provider"]() == "llm/openai-realtime/gpt-realtime"
     assert isinstance(captured["image_dataset_client"], process.ImageDatasetClient)
     assert captured["image_dataset_client"].client is room.datasets
     command_options = captured["command_options_provider"]("/model")
     assert [option.command for option in command_options] == [
-        "/model openai-realtime/gpt-realtime",
-        "/model openai/gpt-5.4",
+        "/model llm/openai-realtime/gpt-realtime",
+        "/model llm/openai/gpt-5.4",
+    ]
+    loaded_command_options = await captured["command_options_loader"]("/model")
+    assert [option.command for option in loaded_command_options] == [
+        "/model llm/openai-realtime/gpt-realtime",
+        "/model llm/openai/gpt-5.4",
     ]
     modality_options = captured["command_options_provider"]("/output")
     assert [option.command for option in modality_options] == [
@@ -2656,6 +2848,63 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
     assert isinstance(captured["session"], process.ChatThreadSession)
     assert captured["current_working_directory"] == "/tmp"
     assert bot._supervisor.unsubscribed_queue is bot._supervisor.subscribed_queue
+
+
+@pytest.mark.asyncio
+async def test_process_run_tui_sends_selected_backend_for_mixed_backends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from meshagent.cli import ask as ask_module
+
+    class _DummySupervisor:
+        def __init__(self) -> None:
+            self.sent_messages: list[Message] = []
+            self.processes: list[object] = []
+
+        def subscribe_local_events(self):
+            return asyncio.Queue()
+
+        def unsubscribe_local_events(self, queue) -> None:
+            del queue
+
+        def send(self, message: Message) -> None:
+            self.sent_messages.append(message)
+
+        async def route(self, message: Message) -> None:
+            self.sent_messages.append(message)
+
+    class _DummyBot:
+        def __init__(self) -> None:
+            self._supervisor = _DummySupervisor()
+
+    async def fake_run_ask_tui(**kwargs):
+        assert kwargs["model"] == "llm/openai/gpt-5.5"
+        await kwargs["session"].send_text(text="hi")
+
+    bot = _DummyBot()
+    monkeypatch.setattr(ask_module, "_run_ask_tui", fake_run_ask_tui)
+
+    await process._run_process_run_tui(
+        bot=bot,
+        room=None,
+        model=["openai/gpt-5.5", "codex/gpt-5.5"],
+        thread_path="/threads/process-run.thread",
+        thread_storage="dataset",
+        agent_name="helper",
+        thread_dir=None,
+        threading_mode="none",
+        message=None,
+        working_dir="/tmp",
+    )
+
+    turn_start = next(
+        message.data
+        for message in bot._supervisor.sent_messages
+        if isinstance(message.data, TurnStart)
+    )
+    assert turn_start.backend == "llm"
+    assert turn_start.provider == "openai"
+    assert turn_start.model == "gpt-5.5"
 
 
 @pytest.mark.asyncio
@@ -2718,6 +2967,7 @@ async def test_process_model_command_lists_and_changes_models() -> None:
             self.current_model = AgentModelChanged(
                 type=process.AGENT_EVENT_MODEL_CHANGED,
                 thread_id="/threads/process-run.thread",
+                backend="llm",
                 provider="openai-realtime",
                 model="gpt-realtime",
             )
@@ -2738,6 +2988,7 @@ async def test_process_model_command_lists_and_changes_models() -> None:
                     AgentProviderInfo(
                         name="openai-realtime",
                         friendly_name="OpenAI Realtime",
+                        backend="llm",
                         default_model="gpt-realtime",
                         models=[
                             AgentModelInfo(
@@ -2750,6 +3001,7 @@ async def test_process_model_command_lists_and_changes_models() -> None:
                     AgentProviderInfo(
                         name="openai",
                         friendly_name="OpenAI",
+                        backend="llm",
                         default_model="gpt-5.4",
                         models=[
                             AgentModelInfo(name="gpt-5.4"),
@@ -2780,13 +3032,16 @@ async def test_process_model_command_lists_and_changes_models() -> None:
         async def change_model(
             self,
             *,
+            backend: str | None,
             provider: str | None,
             model: str | None,
         ) -> AgentModelChanged:
+            del backend
             self.changes.append((provider, model))
             return AgentModelChanged(
                 type=process.AGENT_EVENT_MODEL_CHANGED,
                 thread_id="/threads/process-run.thread",
+                backend="llm",
                 provider=provider or "openai",
                 model=model or "gpt-5.4",
             )
@@ -2795,22 +3050,22 @@ async def test_process_model_command_lists_and_changes_models() -> None:
 
     model_list = await process._handle_process_model_command("/model", session=session)
     assert model_list is not None
-    assert "* openai-realtime/gpt-realtime" in model_list
-    assert "  openai/gpt-5.4" in model_list
+    assert "* llm/openai-realtime/gpt-realtime" in model_list
+    assert "  llm/openai/gpt-5.4" in model_list
 
     provider_list = await process._handle_process_model_command(
         "/provider",
         session=session,
     )
     assert provider_list is not None
-    assert "* openai-realtime" in provider_list
-    assert "  openai" in provider_list
+    assert "* llm/openai-realtime" in provider_list
+    assert "  llm/openai" in provider_list
 
     changed = await process._handle_process_model_command(
-        "/model openai/gpt-5.4",
+        "/model llm/openai/gpt-5.4",
         session=session,
     )
-    assert changed == "Using openai/gpt-5.4"
+    assert changed == "Using llm/openai/gpt-5.4"
     assert session.current_model.provider == "openai"
     assert session.current_model.model == "gpt-5.4"
     assert session.changes == []
@@ -2819,7 +3074,7 @@ async def test_process_model_command_lists_and_changes_models() -> None:
         "/provider openai-realtime",
         session=session,
     )
-    assert changed == "Using openai-realtime/gpt-realtime"
+    assert changed == "Using llm/openai-realtime/gpt-realtime"
     assert session.current_model.provider == "openai-realtime"
     assert session.current_model.model == "gpt-realtime"
     assert session.changes == []
@@ -2842,12 +3097,12 @@ async def test_process_model_command_lists_and_changes_models() -> None:
         "/model openai/gpt-5.4",
         session=session,
     )
-    assert changed == "Using openai/gpt-5.4"
+    assert changed == "Using llm/openai/gpt-5.4"
     changed = await process._handle_process_model_command(
         "/output audio",
         session=session,
     )
-    assert changed == "openai/gpt-5.4 does not support audio responses"
+    assert changed == "llm/openai/gpt-5.4 does not support audio responses"
 
     changed = await process._handle_process_model_command("/new", session=session)
     assert changed == "New thread"

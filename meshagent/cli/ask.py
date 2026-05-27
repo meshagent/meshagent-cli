@@ -555,6 +555,20 @@ def _ask_thread_status_feed_text(status: object) -> str | None:
     return f"• {text}"
 
 
+def _sync_status_timer_started_at(
+    *,
+    started_at: float | None,
+    active: bool,
+    pending: bool,
+    now: float,
+) -> float | None:
+    if active and started_at is None:
+        return now
+    if not active and not pending:
+        return None
+    return started_at
+
+
 def _agent_message_content_text(
     content: list[AgentTextContent | AgentFileContent],
 ) -> str:
@@ -666,6 +680,15 @@ def _dataset_image_attachment_uri(text: str) -> str | None:
     return uri
 
 
+def _dataset_image_attachment_text(uri: str | None) -> str | None:
+    if not isinstance(uri, str):
+        return None
+    normalized_uri = uri.strip()
+    if ImageDatasetClient.dataset_uri_reference(normalized_uri) is None:
+        return None
+    return f"[attachment] {normalized_uri}"
+
+
 async def _ascii_image_from_uri_async(
     uri: str | None,
     *,
@@ -741,6 +764,14 @@ def _ask_conversation_message_from_agent_message(
             ),
             text=text,
         )
+    if isinstance(message, TurnEnded):
+        if message.error is None:
+            return None
+        return _AskConversationMessage(
+            message_id=message.message_id,
+            role="error",
+            text=message.error.message,
+        )
     if isinstance(message, AgentTextContentDelta):
         return _AskConversationMessage(
             message_id=message.item_id,
@@ -778,27 +809,32 @@ def _ask_conversation_message_from_agent_message(
         if message.image is None:
             return None
         image_ascii = _ascii_image_from_uri(message.image.uri)
-        if image_ascii is None:
+        attachment_text = _dataset_image_attachment_text(message.image.uri)
+        if image_ascii is None and attachment_text is None:
             return None
         return _AskConversationMessage(
             message_id=message.item_id,
             role="assistant",
-            text=image_ascii,
-            kind="image",
+            text=image_ascii or attachment_text or "",
+            kind="image" if image_ascii is not None else "text",
         )
     if isinstance(message, AgentImageGenerationCompleted):
-        images = [
-            image_ascii
-            for image in message.images
-            if (image_ascii := _ascii_image_from_uri(image.uri)) is not None
-        ]
+        images: list[tuple[str, Literal["image", "text"]]] = []
+        for image in message.images:
+            image_ascii = _ascii_image_from_uri(image.uri)
+            if image_ascii is not None:
+                images.append((image_ascii, "image"))
+                continue
+            attachment_text = _dataset_image_attachment_text(image.uri)
+            if attachment_text is not None:
+                images.append((attachment_text, "text"))
         if len(images) == 0:
             return None
         return _AskConversationMessage(
             message_id=message.item_id,
             role="assistant",
-            text="\n\n".join(images),
-            kind="image",
+            text="\n\n".join(text for text, _kind in images),
+            kind="image" if all(kind == "image" for _text, kind in images) else "text",
         )
     return None
 
@@ -1095,6 +1131,7 @@ class _AgentMessageSession:
         current_model = (
             self._model_provider() if self._model_provider is not None else None
         )
+        backend_name = current_model.backend if current_model is not None else None
         provider_name = current_model.provider if current_model is not None else None
         model_name = current_model.model if current_model is not None else self._model
         output_modalities = self._output_modalities
@@ -1104,6 +1141,8 @@ class _AgentMessageSession:
                 "thread_id": self._client.thread_path,
                 "content": content,
             }
+            if backend_name is not None:
+                turn_start_args["backend"] = backend_name
             if provider_name is not None:
                 turn_start_args["provider"] = provider_name
             if model_name is not None:
@@ -1116,6 +1155,8 @@ class _AgentMessageSession:
                 "type": AGENT_MESSAGE_THREAD_START,
                 "content": content,
             }
+            if backend_name is not None:
+                start_thread_args["backend"] = backend_name
             if provider_name is not None:
                 start_thread_args["provider"] = provider_name
             if model_name is not None:
@@ -1837,6 +1878,10 @@ async def _run_ask_tui(
     model_label_provider: Callable[[], str | None] | None = None,
     output_label_provider: Callable[[], str | None] | None = None,
     command_options_provider: Callable[[str], Sequence[AskCommandOption]] | None = None,
+    command_options_loader: Callable[
+        [str], Awaitable[Sequence[AskCommandOption]] | Sequence[AskCommandOption]
+    ]
+    | None = None,
     side_panel_renderer: Callable[..., Any] | None = None,
     side_panel_key_handler: Callable[[str, str | None], Awaitable[bool] | bool]
     | None = None,
@@ -2124,6 +2169,11 @@ async def _run_ask_tui(
             output_label_provider: Callable[[], str | None] | None,
             command_options_provider: Callable[[str], Sequence[AskCommandOption]]
             | None,
+            command_options_loader: Callable[
+                [str],
+                Awaitable[Sequence[AskCommandOption]] | Sequence[AskCommandOption],
+            ]
+            | None,
             side_panel_renderer: Callable[..., Any] | None,
             side_panel_key_handler: Callable[[str, str | None], Awaitable[bool] | bool]
             | None,
@@ -2142,6 +2192,7 @@ async def _run_ask_tui(
             self._model_label_provider = model_label_provider
             self._output_label_provider = output_label_provider
             self._command_options_provider = command_options_provider
+            self._command_options_loader = command_options_loader
             self._side_panel_renderer = side_panel_renderer
             self._side_panel_key_handler = side_panel_key_handler
             self._side_panel_mouse_handler = side_panel_mouse_handler
@@ -2404,8 +2455,7 @@ async def _run_ask_tui(
                 return
 
             prompt = self._input_view.text.rstrip()
-            if self._should_open_command_selector(prompt.strip()):
-                self._open_command_selector(prompt=prompt.strip())
+            if await self._open_command_selector_if_available(prompt.strip()):
                 return
 
             self._input_view.load_text("")
@@ -2529,26 +2579,55 @@ async def _run_ask_tui(
                 if self._input_view is not None:
                     self._input_view.focus()
 
-        def _should_open_command_selector(self, prompt: str) -> bool:
-            return (
-                prompt in {"/model", "/output"}
-                and self._command_handler is not None
-                and len(self._command_options(prompt)) > 0
-            )
+        async def _open_command_selector_if_available(self, prompt: str) -> bool:
+            if prompt not in {"/model", "/output"} or self._command_handler is None:
+                return False
+            options = self._command_options(prompt)
+            if len(options) == 0 and not self._pending:
+                loader = self._command_options_loader
+                if loader is not None:
+                    self._set_status_text("Loading options")
+                    self._render_status_line()
+                    try:
+                        loaded = loader(prompt)
+                        if inspect.isawaitable(loaded):
+                            loaded = await loaded
+                        options = list(loaded)
+                    except Exception as exc:
+                        self._entries.append(_AskFeedEntry(role="error", text=str(exc)))
+                        self._status_text = None
+                        self._render_status_line()
+                        self._render_feed()
+                        self._scroll_to_end()
+                        return True
+                    finally:
+                        self._status_text = None
+                        self._render_status_line()
+            if len(options) == 0:
+                return False
+            self._open_command_selector(prompt=prompt, options=options)
+            return True
 
-        def _open_command_selector(self, *, prompt: str) -> None:
+        def _open_command_selector(
+            self,
+            *,
+            prompt: str,
+            options: Sequence[AskCommandOption] | None = None,
+        ) -> None:
             if self._input_view is None:
                 return
-            options = self._command_options(prompt)
-            if len(options) == 0:
+            if options is None:
+                options = self._command_options(prompt)
+            options_list = list(options)
+            if len(options_list) == 0:
                 return
             selected_index = next(
-                (index for index, option in enumerate(options) if option.active),
+                (index for index, option in enumerate(options_list) if option.active),
                 0,
             )
             self._command_selector = _CommandSelectorState(
                 prompt=prompt,
-                options=options,
+                options=options_list,
                 selected_index=selected_index,
             )
             self._input_view.load_text("")
@@ -3464,6 +3543,16 @@ async def _run_ask_tui(
             queue_changed = labels != self._external_queued_messages
             self._external_thread_active = active
             self._external_queued_messages = labels
+            next_status_started_at = _sync_status_timer_started_at(
+                started_at=self._status_started_at,
+                active=active,
+                pending=self._pending,
+                now=time.monotonic(),
+            )
+            status_changed = (
+                status_changed or next_status_started_at != self._status_started_at
+            )
+            self._status_started_at = next_status_started_at
 
             if self._pending:
                 if status is not None and status.strip() != "":
@@ -4022,6 +4111,7 @@ async def _run_ask_tui(
             model_label_provider=model_label_provider,
             output_label_provider=output_label_provider,
             command_options_provider=command_options_provider,
+            command_options_loader=command_options_loader,
             side_panel_renderer=side_panel_renderer,
             side_panel_key_handler=side_panel_key_handler,
             side_panel_mouse_handler=side_panel_mouse_handler,

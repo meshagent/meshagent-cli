@@ -153,7 +153,6 @@ from meshagent.agents.messages import (
     AGENT_MESSAGE_TURN_START,
     AgentFileContent,
     AgentFileContentDelta,
-    AgentError,
     AgentAudioFormat,
     AgentMessage,
     AgentThreadStatus,
@@ -163,7 +162,6 @@ from meshagent.agents.messages import (
     AgentRealtimeConnectionInfo,
     AgentTextContent,
     AgentTextContentDelta,
-    ModelsRequest,
     ModelsResponse,
     OpenThread,
     StartThread,
@@ -216,8 +214,16 @@ from meshagent.api.client import ConflictError
 
 OutputModality = Literal["text", "audio"]
 WebSocketAuthMode = Literal["iap", "jwt", "none"]
+ProcessBackendName = Literal["llm", "codex"]
 
 logger = logging.getLogger("process")
+
+
+@dataclass(frozen=True, slots=True)
+class _ProcessModelSpec:
+    backend: ProcessBackendName
+    provider: str
+    model: str
 
 
 def _thread_status_text(status: object) -> str | None:
@@ -333,6 +339,7 @@ def _process_run_thread_id(
     thread_dir: str | None,
     threading_mode: "ThreadingMode" = "none",
 ) -> str:
+    thread_storage = _normalize_thread_storage_backend(thread_storage)
     if isinstance(thread_path, str) and thread_path.strip() != "":
         normalized = thread_path.strip()
         if thread_storage == "dataset" and not normalized.startswith("dataset://"):
@@ -512,6 +519,7 @@ async def _thread_agent_messages_from_storage(
 
 
 def _thread_storage_class_for_backend(thread_storage: "ThreadStorageBackend"):
+    thread_storage = _normalize_thread_storage_backend(thread_storage)
     if thread_storage == "dataset":
         from meshagent.agents.dataset_thread_storage import DatasetThreadStorage
 
@@ -529,6 +537,7 @@ def _thread_storage_repository_for_backend(
     room: RoomClient,
     thread_dir: str,
 ):
+    thread_storage = _normalize_thread_storage_backend(thread_storage)
     storage_class = _thread_storage_class_for_backend(thread_storage)
     if storage_class is None:
         return NoopThreadStorageRepository()
@@ -586,17 +595,19 @@ async def _handle_process_model_command(
                 current_model=session.current_model,
             )
         if len(parts) == 2:
+            backend_name, provider_name = _parse_provider_selection(parts[1])
             changed = _selected_default_model_for_provider(
                 response=response,
                 thread_id=session.thread_id,
-                provider_name=parts[1],
+                backend=backend_name,
+                provider_name=provider_name,
             )
             if changed is None:
                 return f"Unknown provider: {parts[1]}"
             session.select_model(changed)
             return (
                 "Using "
-                f"{_provider_model_display_name(provider=changed.provider, model=changed.model)}"
+                f"{_provider_model_display_name(backend=changed.backend, provider=changed.provider, model=changed.model)}"
             )
         return "Usage: /provider [provider]"
     if command_name == "/model":
@@ -609,14 +620,13 @@ async def _handle_process_model_command(
                 current_model=session.current_model,
             )
         if len(parts) != 2:
-            return "Usage: /model [model|provider/model]"
+            return "Usage: /model [model|provider/model|backend/provider/model]"
 
         requested = parts[1]
-        provider_name: str | None = None
-        model_name = requested
-        if "/" in requested:
-            provider_name, model_name = requested.split("/", 1)
-        else:
+        backend_name, provider_name, model_name = _parse_provider_model_selection(
+            requested
+        )
+        if backend_name is None and provider_name is None:
             matching_providers = [
                 provider
                 for provider in response.providers
@@ -625,6 +635,7 @@ async def _handle_process_model_command(
             if len(matching_providers) > 1:
                 names = ", ".join(
                     _provider_model_display_name(
+                        backend=provider.backend,
                         provider=provider.name,
                         model=requested,
                     )
@@ -632,11 +643,13 @@ async def _handle_process_model_command(
                 )
                 return f"Model name is ambiguous. Use one of: {names}"
             if len(matching_providers) == 1:
+                backend_name = matching_providers[0].backend
                 provider_name = matching_providers[0].name
 
         changed = _selected_model_from_models_response(
             response=response,
             thread_id=session.thread_id,
+            backend=backend_name,
             provider=provider_name,
             model=model_name,
         )
@@ -645,7 +658,7 @@ async def _handle_process_model_command(
         session.select_model(changed)
         return (
             "Using "
-            f"{_provider_model_display_name(provider=changed.provider, model=changed.model)}"
+            f"{_provider_model_display_name(backend=changed.backend, provider=changed.provider, model=changed.model)}"
         )
     if command_name == "/output":
         if len(parts) == 1:
@@ -715,6 +728,7 @@ async def _handle_process_model_command(
         changed = await session.change_model(
             provider=current_model.provider,
             model=current_model.model,
+            backend=current_model.backend,
             voice=requested_voice,
         )
         return f"Using voice {changed.voice or requested_voice}"
@@ -953,19 +967,21 @@ async def _run_process_run_tui(
                     current_model=current.current_model,
                 )
             if len(parts) == 2:
+                backend_name, provider_name = _parse_provider_selection(parts[1])
                 changed = _selected_default_model_for_provider(
                     response=response,
                     thread_id=current_path,
-                    provider_name=parts[1],
+                    backend=backend_name,
+                    provider_name=provider_name,
                 )
                 if changed is None:
                     return f"Unknown provider: {parts[1]}"
                 _select_model(changed)
                 return (
                     "Using "
-                    f"{_provider_model_display_name(provider=changed.provider, model=changed.model)}"
+                    f"{_provider_model_display_name(backend=changed.backend, provider=changed.provider, model=changed.model)}"
                 )
-            return "Usage: /provider [provider]"
+            return "Usage: /provider [provider|backend/provider]"
         if command_name == "/model":
             response = current.models_response or await _request_models()
             if len(parts) == 1:
@@ -974,13 +990,12 @@ async def _run_process_run_tui(
                     current_model=current.current_model,
                 )
             if len(parts) != 2:
-                return "Usage: /model [model|provider/model]"
+                return "Usage: /model [model|provider/model|backend/provider/model]"
             requested = parts[1]
-            provider_name: str | None = None
-            model_name = requested
-            if "/" in requested:
-                provider_name, model_name = requested.split("/", 1)
-            else:
+            backend_name, provider_name, model_name = _parse_provider_model_selection(
+                requested
+            )
+            if backend_name is None and provider_name is None:
                 matching_providers = [
                     provider
                     for provider in response.providers
@@ -991,6 +1006,7 @@ async def _run_process_run_tui(
                 if len(matching_providers) > 1:
                     names = ", ".join(
                         _provider_model_display_name(
+                            backend=provider.backend,
                             provider=provider.name,
                             model=requested,
                         )
@@ -998,10 +1014,12 @@ async def _run_process_run_tui(
                     )
                     return f"Model name is ambiguous. Use one of: {names}"
                 if len(matching_providers) == 1:
+                    backend_name = matching_providers[0].backend
                     provider_name = matching_providers[0].name
             changed = _selected_model_from_models_response(
                 response=response,
                 thread_id=current_path,
+                backend=backend_name,
                 provider=provider_name,
                 model=model_name,
             )
@@ -1010,7 +1028,7 @@ async def _run_process_run_tui(
             _select_model(changed)
             return (
                 "Using "
-                f"{_provider_model_display_name(provider=changed.provider, model=changed.model)}"
+                f"{_provider_model_display_name(backend=changed.backend, provider=changed.provider, model=changed.model)}"
             )
         if command_name == "/output":
             if len(parts) == 1:
@@ -1079,11 +1097,24 @@ async def _run_process_run_tui(
             changed = await current.change_model(
                 provider=current_model.provider,
                 model=current_model.model,
+                backend=current_model.backend,
                 voice=requested_voice,
             )
             _select_model(changed)
             return f"Using voice {changed.voice or requested_voice}"
         return None
+
+    async def _load_command_options(prompt: str) -> tuple[AskCommandOption, ...]:
+        current = _current_session()
+        response = current.models_response
+        if response is None:
+            response = await _request_models()
+        return _process_command_options(
+            prompt,
+            response=response,
+            current_model=current.current_model,
+            current_output_modalities=selected_output_modalities,
+        )
 
     async def _switch_thread(path: str) -> None:
         nonlocal chat_client, thread_generation
@@ -1219,6 +1250,7 @@ async def _run_process_run_tui(
                 current_model=_current_session().current_model,
                 current_output_modalities=selected_output_modalities,
             ),
+            command_options_loader=_load_command_options,
             output_label_provider=lambda: "+".join(selected_output_modalities),
             side_panel_renderer=(
                 thread_sidebar.render if thread_sidebar is not None else None
@@ -1654,19 +1686,21 @@ async def _run_process_use_tui(
                     current_model=current.current_model,
                 )
             if len(parts) == 2:
+                backend_name, provider_name = _parse_provider_selection(parts[1])
                 changed = _selected_default_model_for_provider(
                     response=response,
                     thread_id=current.thread_path,
-                    provider_name=parts[1],
+                    backend=backend_name,
+                    provider_name=provider_name,
                 )
                 if changed is None:
                     return f"Unknown provider: {parts[1]}"
                 _select_model(changed)
                 return (
                     "Using "
-                    f"{_provider_model_display_name(provider=changed.provider, model=changed.model)}"
+                    f"{_provider_model_display_name(backend=changed.backend, provider=changed.provider, model=changed.model)}"
                 )
-            return "Usage: /provider [provider]"
+            return "Usage: /provider [provider|backend/provider]"
         if command_name == "/model":
             response = current.models_response or await _request_models()
             if len(parts) == 1:
@@ -1675,13 +1709,12 @@ async def _run_process_use_tui(
                     current_model=current.current_model,
                 )
             if len(parts) != 2:
-                return "Usage: /model [model|provider/model]"
+                return "Usage: /model [model|provider/model|backend/provider/model]"
             requested = parts[1]
-            provider_name: str | None = None
-            model_name = requested
-            if "/" in requested:
-                provider_name, model_name = requested.split("/", 1)
-            else:
+            backend_name, provider_name, model_name = _parse_provider_model_selection(
+                requested
+            )
+            if backend_name is None and provider_name is None:
                 matching_providers = [
                     provider
                     for provider in response.providers
@@ -1690,6 +1723,7 @@ async def _run_process_use_tui(
                 if len(matching_providers) > 1:
                     names = ", ".join(
                         _provider_model_display_name(
+                            backend=provider.backend,
                             provider=provider.name,
                             model=requested,
                         )
@@ -1697,10 +1731,12 @@ async def _run_process_use_tui(
                     )
                     return f"Model name is ambiguous. Use one of: {names}"
                 if len(matching_providers) == 1:
+                    backend_name = matching_providers[0].backend
                     provider_name = matching_providers[0].name
             changed = _selected_model_from_models_response(
                 response=response,
                 thread_id=current.thread_path,
+                backend=backend_name,
                 provider=provider_name,
                 model=model_name,
             )
@@ -1709,7 +1745,7 @@ async def _run_process_use_tui(
             _select_model(changed)
             return (
                 "Using "
-                f"{_provider_model_display_name(provider=changed.provider, model=changed.model)}"
+                f"{_provider_model_display_name(backend=changed.backend, provider=changed.provider, model=changed.model)}"
             )
         if command_name == "/output":
             if len(parts) == 1:
@@ -1779,11 +1815,24 @@ async def _run_process_use_tui(
             changed = await current.change_model(
                 provider=current_model.provider,
                 model=current_model.model,
+                backend=current_model.backend,
                 voice=requested_voice,
             )
             _select_model(changed)
             return f"Using voice {changed.voice or requested_voice}"
         return None
+
+    async def _load_command_options(prompt: str) -> tuple[AskCommandOption, ...]:
+        current = _current_session()
+        response = current.models_response
+        if response is None:
+            response = await _request_models()
+        return _process_command_options(
+            prompt,
+            response=response,
+            current_model=current.current_model,
+            current_output_modalities=selected_output_modalities,
+        )
 
     async def _switch_thread(thread_path: str) -> None:
         nonlocal chat_client, thread_generation
@@ -1907,6 +1956,7 @@ async def _run_process_use_tui(
                 current_model=_current_session().current_model,
                 current_output_modalities=selected_output_modalities,
             ),
+            command_options_loader=_load_command_options,
             output_label_provider=lambda: "+".join(selected_output_modalities),
             side_panel_renderer=(
                 thread_sidebar.render if thread_sidebar is not None else None
@@ -1931,7 +1981,8 @@ app.add_deprecated_option_aliases(
 )
 
 ThreadingMode = Literal["none", "default-new"]
-ThreadStorageBackend = Literal["meshdocument", "dataset", "none"]
+ThreadStorageBackend = Literal["meshdocument", "meshagent", "dataset", "none", "codex"]
+NormalizedThreadStorageBackend = Literal["meshdocument", "dataset", "none", "codex"]
 ContextManagementMode = Literal["auto", "standalone", "none"]
 
 ShellCopyEnvOption = Annotated[
@@ -2234,6 +2285,7 @@ def _resolve_process_threading_options(
     thread_dir: str | None,
     thread_storage: ThreadStorageBackend = "meshdocument",
 ) -> tuple[ThreadingMode, str | None]:
+    thread_storage = _normalize_thread_storage_backend(thread_storage)
     if thread_dir is not None:
         return threading_mode, thread_dir
 
@@ -2908,8 +2960,96 @@ def _provider_name_for_model(model: str) -> str:
     return "openai"
 
 
-def _provider_model_display_name(*, provider: str, model: str) -> str:
-    return f"{provider}/{model}"
+def _normalize_thread_storage_backend(
+    thread_storage: ThreadStorageBackend,
+) -> NormalizedThreadStorageBackend:
+    if thread_storage == "meshagent":
+        return "meshdocument"
+    return thread_storage
+
+
+def _parse_process_model_spec(model: str) -> _ProcessModelSpec:
+    normalized = model.strip()
+    if normalized == "":
+        raise ValueError("model cannot be empty")
+
+    parts = [part.strip() for part in normalized.split("/")]
+    if len(parts) == 1:
+        return _ProcessModelSpec(
+            backend="llm",
+            provider=_provider_name_for_model(normalized),
+            model=normalized,
+        )
+
+    if len(parts) >= 3:
+        backend_name = parts[0]
+        provider_name = parts[1]
+        model_name = "/".join(parts[2:]).strip()
+        if backend_name not in ("llm", "codex"):
+            raise ValueError(f"unknown model backend {backend_name!r}")
+        if provider_name == "" or model_name == "":
+            raise ValueError(f"invalid model spec {model!r}")
+        return _ProcessModelSpec(
+            backend=backend_name,
+            provider=provider_name,
+            model=model_name,
+        )
+
+    prefix = parts[0]
+    model_name = parts[1]
+    if prefix == "" or model_name == "":
+        raise ValueError(f"invalid model spec {model!r}")
+
+    if prefix == "codex":
+        return _ProcessModelSpec(
+            backend="codex",
+            provider="openai",
+            model=model_name,
+        )
+    if prefix == "llm":
+        return _ProcessModelSpec(
+            backend="llm",
+            provider=_provider_name_for_model(model_name),
+            model=model_name,
+        )
+    return _ProcessModelSpec(
+        backend="llm",
+        provider=prefix,
+        model=model_name,
+    )
+
+
+def _normalize_process_model_specs(model: str | list[str]) -> list[_ProcessModelSpec]:
+    return [_parse_process_model_spec(item) for item in _normalize_model_options(model)]
+
+
+def _provider_model_display_name(
+    *,
+    backend: str | None = None,
+    provider: str,
+    model: str,
+) -> str:
+    if backend is None or backend.strip() == "":
+        return f"{provider}/{model}"
+    return f"{backend}/{provider}/{model}"
+
+
+def _parse_provider_model_selection(
+    value: str,
+) -> tuple[str | None, str | None, str]:
+    parts = [part.strip() for part in value.strip().split("/")]
+    if len(parts) >= 3:
+        return parts[0] or None, parts[1] or None, "/".join(parts[2:]).strip()
+    if len(parts) == 2:
+        return None, parts[0] or None, parts[1]
+    return None, None, value.strip()
+
+
+def _parse_provider_selection(value: str) -> tuple[str | None, str]:
+    parts = [part.strip() for part in value.strip().split("/")]
+    if len(parts) >= 2:
+        return parts[0] or None, "/".join(parts[1:]).strip()
+    return None, value.strip()
 
 
 def _active_model_from_models_response(
@@ -2926,6 +3066,7 @@ def _active_model_from_models_response(
                 thread_id=thread_id,
                 source_message_id=response.source_message_id,
                 provider=provider.name,
+                backend=provider.backend,
                 model=model.name,
                 voice=model.default_output_voice,
                 input_format=model.input_format,
@@ -2947,10 +3088,13 @@ def _selected_model_from_models_response(
     *,
     response: ModelsResponse,
     thread_id: str,
+    backend: str | None,
     provider: str | None,
     model: str,
 ) -> AgentModelChanged | None:
     for provider_info in response.providers:
+        if backend is not None and provider_info.backend != backend:
+            continue
         if provider is not None and provider_info.name != provider:
             continue
         selected_model = next(
@@ -2967,6 +3111,7 @@ def _selected_model_from_models_response(
             type=AGENT_EVENT_MODEL_CHANGED,
             thread_id=thread_id,
             provider=provider_info.name,
+            backend=provider_info.backend,
             model=model,
             voice=selected_model.default_output_voice,
             input_format=selected_model.input_format,
@@ -2982,9 +3127,12 @@ def _selected_default_model_for_provider(
     *,
     response: ModelsResponse,
     thread_id: str,
+    backend: str | None,
     provider_name: str,
 ) -> AgentModelChanged | None:
     for provider in response.providers:
+        if backend is not None and provider.backend != backend:
+            continue
         if provider.name != provider_name:
             continue
         model_name = provider.default_model
@@ -3006,6 +3154,7 @@ def _selected_default_model_for_provider(
             type=AGENT_EVENT_MODEL_CHANGED,
             thread_id=thread_id,
             provider=provider.name,
+            backend=provider.backend,
             model=model_name,
             voice=selected_model.default_output_voice,
             input_format=selected_model.input_format,
@@ -3025,6 +3174,7 @@ def _current_model_label(
     if current_model is None:
         return fallback
     return _provider_model_display_name(
+        backend=current_model.backend,
         provider=current_model.provider,
         model=current_model.model,
     )
@@ -3038,6 +3188,8 @@ def _model_info_for_current_selection(
     if response is None or current_model is None:
         return None
     for provider in response.providers:
+        if provider.backend != current_model.backend:
+            continue
         if provider.name != current_model.provider:
             continue
         for model in provider.models:
@@ -3065,7 +3217,8 @@ def _agent_model_changed_for_model(
     ] = DEFAULT_OPENAI_REALTIME_PROTOCOLS,
     output_modalities: Iterable[str] | None = None,
 ) -> AgentModelChanged:
-    provider = _provider_name_for_model(model)
+    model_spec = _parse_process_model_spec(model)
+    provider = model_spec.provider
     input_format, output_format = _configured_realtime_audio_formats(
         provider_name=provider,
         input_audio_format=input_audio_format,
@@ -3086,7 +3239,8 @@ def _agent_model_changed_for_model(
         type=AGENT_EVENT_MODEL_CHANGED,
         thread_id=thread_id,
         provider=provider,
-        model=model,
+        backend=model_spec.backend,
+        model=model_spec.model,
         output_modalities=selected_output_modalities,
         voice=selected_voice,
         input_format=input_format,
@@ -3150,18 +3304,18 @@ def _configured_models_response(
     output_modalities: Iterable[str] | None = None,
 ) -> ModelsResponse:
     selected_output_modalities = _normalize_output_modalities(output_modalities)
-    grouped: dict[str, list[str]] = {}
-    for model in models:
-        grouped.setdefault(_provider_name_for_model(model), []).append(model)
+    grouped = _configured_models_by_provider(_normalize_process_model_specs(models))
     providers: list[AgentProviderInfo] = []
-    for provider_name, provider_models in grouped.items():
+    for (backend_name, provider_name), provider_models in grouped.items():
         providers.append(
             AgentProviderInfo(
                 name=provider_name,
                 friendly_name=provider_name,
+                backend=backend_name,
                 default_model=provider_models[0],
                 models=[
                     _agent_model_info_for_configured_model(
+                        backend_name=backend_name,
                         provider_name=provider_name,
                         model=model,
                         current_model=current_model,
@@ -3187,8 +3341,82 @@ def _configured_models_response(
     )
 
 
+def _configured_models_by_provider(
+    model_specs: Iterable[_ProcessModelSpec],
+) -> dict[tuple[ProcessBackendName, str], list[str]]:
+    grouped: dict[tuple[ProcessBackendName, str], list[str]] = {}
+    for spec in model_specs:
+        models = grouped.setdefault((spec.backend, spec.provider), [])
+        if spec.model not in models:
+            models.append(spec.model)
+    return grouped
+
+
+def _models_response_backend_name(backend: str | None) -> ProcessBackendName | None:
+    if backend is None or backend.strip() == "" or backend == "llm":
+        return "llm"
+    if backend == "codex":
+        return "codex"
+    return None
+
+
+def _filter_models_response_to_configured_models(
+    response: ModelsResponse,
+    *,
+    model_specs: Iterable[_ProcessModelSpec],
+) -> ModelsResponse:
+    grouped = _configured_models_by_provider(model_specs)
+    if len(grouped) == 0:
+        return response
+
+    response_providers: dict[tuple[ProcessBackendName, str], AgentProviderInfo] = {}
+    for provider in response.providers:
+        backend_name = _models_response_backend_name(provider.backend)
+        if backend_name is None:
+            continue
+        response_providers[(backend_name, provider.name)] = provider
+
+    providers: list[AgentProviderInfo] = []
+    for (backend_name, provider_name), configured_models in grouped.items():
+        provider = response_providers.get((backend_name, provider_name))
+        live_models_by_name = (
+            {model.name: model for model in provider.models}
+            if provider is not None
+            else {}
+        )
+        models = [
+            live_models_by_name.get(model)
+            or _agent_model_info_for_configured_model(
+                backend_name=backend_name,
+                provider_name=provider_name,
+                model=model,
+                current_model=None,
+            )
+            for model in configured_models
+        ]
+        providers.append(
+            AgentProviderInfo(
+                name=provider_name,
+                friendly_name=(
+                    provider.friendly_name if provider is not None else provider_name
+                ),
+                description=provider.description if provider is not None else None,
+                backend=backend_name,
+                default_model=configured_models[0],
+                models=models,
+            )
+        )
+
+    return ModelsResponse(
+        type=response.type,
+        source_message_id=response.source_message_id,
+        providers=providers,
+    )
+
+
 def _agent_model_info_for_configured_model(
     *,
+    backend_name: str = "llm",
     provider_name: str,
     model: str,
     current_model: AgentModelChanged | None,
@@ -3227,6 +3455,7 @@ def _agent_model_info_for_configured_model(
         ),
         active=(
             current_model is not None
+            and current_model.backend == backend_name
             and current_model.provider == provider_name
             and current_model.model == model
         ),
@@ -3259,10 +3488,12 @@ def _model_command_options(
         for model in provider.models:
             is_active = (
                 current_model is not None
+                and current_model.backend == provider.backend
                 and current_model.provider == provider.name
                 and current_model.model == model.name
             ) or (current_model is None and model.active)
             command_value = _provider_model_display_name(
+                backend=provider.backend,
                 provider=provider.name,
                 model=model.name,
             )
@@ -3374,18 +3605,31 @@ def _format_provider_list(
 ) -> str:
     lines = ["Providers:"]
     current_provider = current_model.provider if current_model is not None else None
+    current_backend = current_model.backend if current_model is not None else None
     if current_provider is None:
-        current_provider = next(
+        active_provider = next(
             (
-                provider.name
+                provider
                 for provider in providers
                 if any(model.active for model in provider.models)
             ),
             None,
         )
+        if active_provider is not None:
+            current_backend = active_provider.backend
+            current_provider = active_provider.name
     for provider in providers:
-        marker = "*" if provider.name == current_provider else " "
-        lines.append(f"{marker} {provider.name} - {provider.friendly_name}")
+        provider_label = (
+            f"{provider.backend}/{provider.name}"
+            if provider.backend is not None
+            else provider.name
+        )
+        marker = (
+            "*"
+            if provider.backend == current_backend and provider.name == current_provider
+            else " "
+        )
+        lines.append(f"{marker} {provider_label} - {provider.friendly_name}")
     return "\n".join(lines)
 
 
@@ -3396,20 +3640,22 @@ def _format_model_list(
 ) -> str:
     lines = ["Models:"]
     current_provider = current_model.provider if current_model is not None else None
+    current_backend = current_model.backend if current_model is not None else None
     current_model_name = current_model.model if current_model is not None else None
     for provider in providers:
         for model in provider.models:
             marker = (
                 "*"
                 if (
-                    provider.name == current_provider
+                    provider.backend == current_backend
+                    and provider.name == current_provider
                     and model.name == current_model_name
                 )
                 or (current_model is None and model.active)
                 else " "
             )
             lines.append(
-                f"{marker} {_provider_model_display_name(provider=provider.name, model=model.name)}"
+                f"{marker} {_provider_model_display_name(backend=provider.backend, provider=provider.name, model=model.name)}"
             )
     return "\n".join(lines)
 
@@ -3423,11 +3669,13 @@ def _supports_anthropic_builtin_tools(*, model: str) -> bool:
 
 
 def _has_openai_responses_provider(
-    *, models: list[str], llm_participant: str | None
+    *, model_specs: list[_ProcessModelSpec], llm_participant: str | None
 ) -> bool:
     if llm_participant is not None:
         return False
-    return any(_provider_name_for_model(model) == "openai" for model in models)
+    return any(
+        spec.backend == "llm" and spec.provider == "openai" for spec in model_specs
+    )
 
 
 def _build_decision_llm_adapter(
@@ -4530,16 +4778,24 @@ def build_process_agent(
     )
     from meshagent.agents.messages import TurnStart, TurnSteer
     from meshagent.agents.process import (
+        AgentBackend,
         AgentSupervisor,
+        LLMBackend,
         LLMAgentProcess,
         Message,
-        agent_provider_info,
     )
+    from meshagent.codex import (
+        AppServerConfig as CodexAppServerConfig,
+        AsyncAppServerClient as CodexAsyncAppServerClient,
+        CodexThreadStorageRepository,
+    )
+    from meshagent.codex.supervisor import CodexBackend
     from meshagent.tools import RoomToolContext, Toolkit
     from meshagent.tools.hosting import _RemoteToolkitWrapper, _start_hosted_toolkit
 
     requirements = []
     toolkits = []
+    thread_storage = _normalize_thread_storage_backend(thread_storage)
 
     if storage_tool_local_paths is None:
         storage_tool_local_paths = []
@@ -4604,7 +4860,19 @@ def build_process_agent(
             except FileNotFoundError:
                 print(f"[yellow]rules file not found at {rules_path}[/yellow]")
 
-    selected_models = _normalize_model_options(model)
+    selected_model_specs = _normalize_process_model_specs(model)
+    llm_model_specs = [spec for spec in selected_model_specs if spec.backend == "llm"]
+    codex_model_specs = [
+        spec for spec in selected_model_specs if spec.backend == "codex"
+    ]
+    has_llm_backend = len(llm_model_specs) > 0
+    has_codex_backend = len(codex_model_specs) > 0
+    if thread_storage == "codex" and has_llm_backend:
+        print("[red]--thread-storage=codex only supports Codex backends[/red]")
+        raise typer.Exit(1)
+    if thread_storage == "meshdocument" and has_codex_backend:
+        print("[red]--thread-storage=meshagent does not support Codex backends[/red]")
+        raise typer.Exit(1)
     realtime_input_format = _audio_format_option(
         audio_format=input_audio_format,
         sample_rate=input_audio_sample_rate,
@@ -4620,7 +4888,7 @@ def build_process_agent(
         selected_output_modalities
     )
     supports_openai_responses_tools = _has_openai_responses_provider(
-        models=selected_models,
+        model_specs=selected_model_specs,
         llm_participant=llm_participant,
     )
     if reasoning_effort is not None and not supports_openai_responses_tools:
@@ -4662,7 +4930,7 @@ def build_process_agent(
     )
 
     llm_providers: list[LLMProvider] = []
-    if llm_participant:
+    if llm_participant and has_llm_backend:
         llm_providers.append(
             LLMProvider(
                 name="remote",
@@ -4676,8 +4944,9 @@ def build_process_agent(
         realtime_models: list[str] = []
         anthropic_models: list[str] = []
         provider_order: list[str] = []
-        for selected_model in selected_models:
-            provider_name = _provider_name_for_model(selected_model)
+        for selected_spec in llm_model_specs:
+            selected_model = selected_spec.model
+            provider_name = selected_spec.provider
             if provider_name not in provider_order:
                 provider_order.append(provider_name)
             if provider_name == "openai-realtime":
@@ -4690,88 +4959,68 @@ def build_process_agent(
             elif selected_model not in openai_models:
                 openai_models.append(selected_model)
 
-        if computer_use or require_computer_use:
-            if not openai_models:
-                print(
-                    "[red]computer use tool is currently only supported by OpenAI Responses models[/red]"
-                )
-                raise typer.Exit(1)
-            default_openai_model = openai_models[0]
-            llm_providers.append(
-                LLMProvider(
-                    name="openai",
-                    adapter=OpenAIResponsesAdapter(
-                        model=default_openai_model,
-                        api_key=api_key,
-                        response_options={
-                            "reasoning": {"summary": "concise"},
-                        },
-                        log_requests=log_llm_requests,
-                        context_management=context_management,
-                        compaction_threshold=compaction_threshold,
-                        max_output_tokens=max_output_tokens,
-                        reasoning_effort=reasoning_effort,
-                        allowed_models=openai_models,
-                    ),
-                )
+        providers_by_name: dict[str, LLMProvider] = {}
+        if openai_models:
+            openai_adapter_kwargs: dict[str, Any] = {}
+            if computer_use or require_computer_use:
+                openai_adapter_kwargs["response_options"] = {
+                    "reasoning": {"summary": "concise"}
+                }
+            providers_by_name["openai"] = LLMProvider(
+                name="openai",
+                adapter=OpenAIResponsesAdapter(
+                    model=openai_models[0],
+                    api_key=api_key,
+                    log_requests=log_llm_requests,
+                    context_management=context_management,
+                    compaction_threshold=compaction_threshold,
+                    max_output_tokens=max_output_tokens,
+                    reasoning_effort=reasoning_effort,
+                    allowed_models=openai_models,
+                    **openai_adapter_kwargs,
+                ),
             )
-        else:
-            providers_by_name: dict[str, LLMProvider] = {}
-            if openai_models:
-                providers_by_name["openai"] = LLMProvider(
-                    name="openai",
-                    adapter=OpenAIResponsesAdapter(
-                        model=openai_models[0],
-                        api_key=api_key,
-                        log_requests=log_llm_requests,
-                        context_management=context_management,
-                        compaction_threshold=compaction_threshold,
-                        max_output_tokens=max_output_tokens,
-                        reasoning_effort=reasoning_effort,
-                        allowed_models=openai_models,
+        if realtime_models:
+            providers_by_name["openai-realtime"] = LLMProvider(
+                name="openai-realtime",
+                adapter=OpenAIRealtimeAdapter(
+                    model=realtime_models[0],
+                    api_key=api_key,
+                    log_requests=log_llm_requests,
+                    session_options=_openai_realtime_session_options(
+                        output_modalities=default_realtime_output_modalities
                     ),
-                )
-            if realtime_models:
-                providers_by_name["openai-realtime"] = LLMProvider(
-                    name="openai-realtime",
-                    adapter=OpenAIRealtimeAdapter(
-                        model=realtime_models[0],
-                        api_key=api_key,
-                        log_requests=log_llm_requests,
-                        session_options=_openai_realtime_session_options(
-                            output_modalities=default_realtime_output_modalities
-                        ),
-                        response_options=_openai_realtime_response_options(
-                            output_modalities=default_realtime_output_modalities
-                        ),
-                        supported_output_modalities=selected_output_modalities,
-                        allowed_models=realtime_models,
-                        transcription_model=transcription_model,
-                        turn_detection=turn_detection,
-                        realtime_protocols=realtime_protocols,
-                        **_realtime_adapter_audio_kwargs(
-                            voice=voice,
-                            input_format=realtime_input_format,
-                            output_format=realtime_output_format,
-                        ),
+                    response_options=_openai_realtime_response_options(
+                        output_modalities=default_realtime_output_modalities
                     ),
-                )
-            if anthropic_models:
-                providers_by_name["anthropic"] = LLMProvider(
-                    name="anthropic",
-                    adapter=AnthropicOpenAIResponsesStreamAdapter(
-                        model=anthropic_models[0],
-                        api_key=api_key,
-                        log_requests=log_llm_requests,
-                        allowed_models=anthropic_models,
+                    supported_output_modalities=selected_output_modalities,
+                    allowed_models=realtime_models,
+                    transcription_model=transcription_model,
+                    turn_detection=turn_detection,
+                    realtime_protocols=realtime_protocols,
+                    **_realtime_adapter_audio_kwargs(
+                        voice=voice,
+                        input_format=realtime_input_format,
+                        output_format=realtime_output_format,
                     ),
-                )
-            for provider_name in provider_order:
-                provider = providers_by_name.get(provider_name)
-                if provider is not None:
-                    llm_providers.append(provider)
+                ),
+            )
+        if anthropic_models:
+            providers_by_name["anthropic"] = LLMProvider(
+                name="anthropic",
+                adapter=AnthropicOpenAIResponsesStreamAdapter(
+                    model=anthropic_models[0],
+                    api_key=api_key,
+                    log_requests=log_llm_requests,
+                    allowed_models=anthropic_models,
+                ),
+            )
+        for provider_name in provider_order:
+            provider = providers_by_name.get(provider_name)
+            if provider is not None:
+                llm_providers.append(provider)
 
-    default_provider = llm_providers[0]
+    default_provider = llm_providers[0] if len(llm_providers) > 0 else None
 
     resolved_channels = _resolved_channels(
         runtime="process",
@@ -4968,9 +5217,137 @@ def build_process_agent(
                     if normalized_thread_dir is not None
                     else NoopThreadStorageRepository()
                 )
+
+                async def create_thread_id(
+                    start_thread: StartThread,
+                    sender: Participant | None,
+                ) -> str:
+                    del start_thread
+                    del sender
+                    if normalized_thread_dir is not None:
+                        return _new_process_thread_path_for_dir(
+                            thread_dir=normalized_thread_dir,
+                            thread_storage=thread_storage,
+                        )
+                    generated_path = f"process-run/{uuid.uuid4()}"
+                    if thread_storage == "dataset":
+                        return _dataset_thread_url_for_path(path=generated_path)
+                    if thread_storage == "none":
+                        return _thread_url_for_path(scheme="tmp", path=generated_path)
+                    return f"/{generated_path}.thread"
+
+                async def create_realtime_connection(
+                    thread_id: str,
+                    start_thread: StartThread,
+                    sender: Participant | None,
+                ) -> AgentRealtimeConnectionInfo | None:
+                    del thread_id
+                    del sender
+                    protocol = start_thread.realtime_protocol
+                    if protocol is None:
+                        return None
+                    if default_provider is None:
+                        raise RoomException("no LLM backend supports realtime")
+                    provider = default_provider
+                    if (
+                        start_thread.provider is not None
+                        and start_thread.provider.strip() != ""
+                    ):
+                        provider = next(
+                            (
+                                candidate
+                                for candidate in llm_providers
+                                if candidate.name == start_thread.provider
+                            ),
+                            None,
+                        )
+                        if provider is None:
+                            raise RoomException(
+                                f"unknown provider {start_thread.provider!r}"
+                            )
+                    model = start_thread.model
+                    resolved_model = (
+                        provider.adapter.default_model()
+                        if model is None or model.strip() == ""
+                        else model
+                    )
+                    connection = await provider.adapter.create_realtime_connection(
+                        protocol=protocol,
+                        model=resolved_model,
+                    )
+                    return AgentRealtimeConnectionInfo(
+                        protocol=connection.protocol,
+                        url=connection.url,
+                        headers=connection.headers,
+                        web_only_protocol=connection.web_only_protocol,
+                    )
+
+                codex_backend: CodexBackend | None = None
+                if has_codex_backend:
+                    codex_thread_storage = (
+                        "codex"
+                        if thread_storage == "codex"
+                        else "dataset"
+                        if thread_storage == "dataset"
+                        else "none"
+                    )
+                    codex_backend = CodexBackend(
+                        participant=room.local_participant,
+                        config=CodexAppServerConfig(
+                            cwd=working_dir,
+                            client_name="meshagent_process_codex",
+                            client_title="MeshAgent Process Codex",
+                        ),
+                        client_factory=CodexAsyncAppServerClient,
+                        default_model=codex_model_specs[0].model,
+                        provider_name=codex_model_specs[0].provider,
+                        provider_friendly_name="OpenAI Codex",
+                        thread_storage=codex_thread_storage,
+                        thread_dir=normalized_thread_dir,
+                        room=room,
+                    )
+
+                agent_backends: list[AgentBackend] = []
+                llm_backend: LLMBackend | None = None
+                if default_provider is not None:
+                    llm_backend = LLMBackend(
+                        providers=llm_providers,
+                        default_provider=default_provider,
+                        process_factory=lambda thread_id, backend_name: (
+                            supervisor.create_llm_thread_process(
+                                thread_id=thread_id,
+                                backend_name=backend_name,
+                            )
+                        ),
+                        thread_id_factory=create_thread_id,
+                        realtime_connection_factory=create_realtime_connection,
+                    )
+
+                for spec in selected_model_specs:
+                    if spec.backend == "llm" and llm_backend is not None:
+                        if llm_backend not in agent_backends:
+                            agent_backends.append(llm_backend)
+                    elif spec.backend == "codex" and codex_backend is not None:
+                        if codex_backend not in agent_backends:
+                            agent_backends.append(codex_backend)
+
+                if len(agent_backends) == 0:
+                    raise RoomException("no process backends are configured")
+
+                if thread_storage == "codex":
+                    if codex_backend is None:
+                        raise RoomException(
+                            "--thread-storage=codex requires a Codex backend"
+                        )
+                    thread_storage_repository = CodexThreadStorageRepository(
+                        client_provider=lambda: codex_backend.client,
+                        default_model=lambda: codex_backend.default_model,
+                    )
+
                 supervisor = _ProcessSupervisor(
                     agent=self,
                     thread_storage_repository=thread_storage_repository,
+                    agent_backends=agent_backends,
                 )
                 if self._chat_channel is not None:
                     supervisor.add_channel(self._chat_channel)
@@ -5191,36 +5568,30 @@ def build_process_agent(
                     add_tool(toolkit_name="script", tool=script_tool)
 
             if require_image_generation:
-                if not _supports_openai_responses_builtin_tools(model=model):
-                    raise ValueError(
-                        "image generation tool is only supported by OpenAI Responses models"
+                if _supports_openai_responses_builtin_tools(model=model):
+                    add_tool(
+                        toolkit_name="image_generation",
+                        tool=ImageGenerationTool(
+                            model=require_image_generation,
+                            partial_images=3,
+                        ),
                     )
-                add_tool(
-                    toolkit_name="image_generation",
-                    tool=ImageGenerationTool(
-                        model=require_image_generation,
-                        partial_images=3,
-                    ),
-                )
 
             if require_apply_patch:
-                if not _supports_openai_responses_builtin_tools(model=model):
-                    raise ValueError(
-                        "apply patch tool is only supported by OpenAI Responses models"
-                    )
-                add_tool(
-                    toolkit_name="apply_patch",
-                    tool=ApplyPatchTool(
-                        storage=StorageToolkit(
-                            mounts=_require_storage_tool_mounts(
-                                room=client or self.room,
-                                local_paths=storage_tool_local_paths,
-                                room_paths=storage_tool_room_paths,
-                                default_room_mount=True,
+                if _supports_openai_responses_builtin_tools(model=model):
+                    add_tool(
+                        toolkit_name="apply_patch",
+                        tool=ApplyPatchTool(
+                            storage=StorageToolkit(
+                                mounts=_require_storage_tool_mounts(
+                                    room=client or self.room,
+                                    local_paths=storage_tool_local_paths,
+                                    room_paths=storage_tool_room_paths,
+                                    default_room_mount=True,
+                                )
                             )
-                        )
-                    ),
-                )
+                        ),
+                    )
 
             if require_shell:
                 add_tool(
@@ -5235,10 +5606,6 @@ def build_process_agent(
                     add_toolkit(AnthropicMessagesMCPToolkit())
                 elif _supports_openai_responses_builtin_tools(model=model):
                     add_toolkit(OpenAIResponsesMCPToolkit())
-                else:
-                    raise ValueError(
-                        "MCP tools are only supported by OpenAI Responses and Anthropic models"
-                    )
 
             if require_web_search:
                 if _supports_anthropic_builtin_tools(model=model):
@@ -5251,10 +5618,6 @@ def build_process_agent(
                         toolkit_name="web_search",
                         tool=WebSearchTool(),
                     )
-                else:
-                    raise ValueError(
-                        "web search is only supported by OpenAI Responses and Anthropic models"
-                    )
 
             if require_web_fetch:
                 if _supports_anthropic_builtin_tools(model=model):
@@ -5264,10 +5627,6 @@ def build_process_agent(
                     )
                 elif _supports_openai_responses_builtin_tools(model=model):
                     add_tool(toolkit_name="web_fetch", tool=WebFetchTool())
-                else:
-                    raise ValueError(
-                        "web fetch is only supported by OpenAI Responses and Anthropic models"
-                    )
 
             if require_storage:
                 add_toolkit(
@@ -5346,7 +5705,9 @@ def build_process_agent(
 
                 add_toolkit(DiscoveryToolkit(room=self.room))
 
-            if require_computer_use:
+            if require_computer_use and _supports_openai_responses_builtin_tools(
+                model=model
+            ):
                 from meshagent.agents.images_dataset import ImagesDataset
                 from meshagent.agents.messages import (
                     AGENT_EVENT_THREAD_EVENT,
@@ -5447,8 +5808,12 @@ def build_process_agent(
             *,
             agent: CustomProcessAgent,
             thread_storage_repository,
+            agent_backends: list[AgentBackend],
         ) -> None:
-            super().__init__(thread_storage_repository=thread_storage_repository)
+            super().__init__(
+                thread_storage_repository=thread_storage_repository,
+                agent_backends=agent_backends,
+            )
             self._agent = agent
             self._local_event_queues: list[asyncio.Queue[Message]] = []
             self._thread_delete_watch_task: asyncio.Task[None] | None = None
@@ -5508,6 +5873,20 @@ def build_process_agent(
                 return
             super()._send_thread_list_response(request=request, response=response)
 
+        def _send_models_response(self, message: Message) -> None:
+            if isinstance(message.data, ModelsResponse):
+                message = Message(
+                    data=_filter_models_response_to_configured_models(
+                        message.data,
+                        model_specs=selected_model_specs,
+                    ),
+                    sender=message.sender,
+                    source=message.source,
+                    to_participant_id=message.to_participant_id,
+                )
+            self._send_to_local_event_queues(message)
+            super()._send_models_response(message)
+
         def send(self, message: Message) -> None:
             if message.source is not None:
                 self._send_to_local_event_queues(message)
@@ -5541,157 +5920,18 @@ def build_process_agent(
             )
             self._send_to_channels(Message(data=thread_started, sender=sender))
 
-        async def create_thread_id(
-            self,
-            *,
-            start_thread: StartThread,
-            sender: Participant | None,
-        ) -> str:
-            del start_thread
-            del sender
-            normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
-            if normalized_thread_dir is not None:
-                return _new_process_thread_path_for_dir(
-                    thread_dir=normalized_thread_dir,
-                    thread_storage=thread_storage,
-                )
-            generated_path = f"process-run/{uuid.uuid4()}"
-            if thread_storage == "dataset":
-                return _dataset_thread_url_for_path(path=generated_path)
-            if thread_storage == "none":
-                return _thread_url_for_path(scheme="tmp", path=generated_path)
-            return f"/{generated_path}.thread"
-
         def thread_list_name_for_start_thread(self, start_thread: StartThread) -> str:
             return _start_thread_list_name(start_thread)
 
-        async def on_models_request(self, message: Message) -> None:
-            if not isinstance(message.data, ModelsRequest):
-                return
-            default_model = default_provider.adapter.default_model()
-            response_message = Message(
-                data=ModelsResponse(
-                    type=AGENT_MESSAGE_MODELS_RESPONSE,
-                    source_message_id=message.data.message_id,
-                    providers=[
-                        agent_provider_info(
-                            provider=provider,
-                            current_provider=default_provider.name,
-                            current_model=default_model,
-                        )
-                        for provider in llm_providers
-                    ],
-                ),
-                sender=message.sender,
-            )
-            self._send_to_local_event_queues(response_message)
-            self._send_to_channels(response_message)
-
-        async def validate_turn_start(self, turn_start: TurnStart) -> AgentError | None:
-            provider = default_provider
-            if turn_start.provider is not None and turn_start.provider.strip() != "":
-                provider = next(
-                    (
-                        candidate
-                        for candidate in llm_providers
-                        if candidate.name == turn_start.provider
-                    ),
-                    None,
-                )
-                if provider is None:
-                    return AgentError(
-                        message=f"unknown provider {turn_start.provider!r}",
-                        code="unknown_provider",
-                    )
-
-            model = turn_start.model
-            if model is None or model.strip() == "":
-                resolved_model = provider.adapter.default_model()
-            else:
-                resolved_model = model
-
-            model_info = next(
-                (
-                    candidate
-                    for candidate in provider.adapter.list_models()
-                    if candidate.name == resolved_model
-                ),
-                None,
-            )
-            if model_info is None:
-                names = ", ".join(
-                    model_info.name for model_info in provider.adapter.list_models()
-                )
-                return AgentError(
-                    message=(
-                        f"unknown model {resolved_model!r} for provider {provider.name!r}; "
-                        f"available models: {names}"
-                    ),
-                    code="unknown_model",
-                )
-            unsupported_output_modalities = [
-                output
-                for output in (turn_start.output_modalities or [])
-                if output not in model_info.modalities
-            ]
-            if len(unsupported_output_modalities) > 0:
-                unsupported = ", ".join(
-                    repr(item) for item in unsupported_output_modalities
-                )
-                return AgentError(
-                    message=(
-                        f"model {model_info.name!r} does not support "
-                        f"{unsupported} output modalities"
-                    ),
-                    code="unsupported_modality",
-                )
-            return None
-
-        async def create_realtime_connection(
+        def create_llm_thread_process(
             self,
             *,
             thread_id: str,
-            start_thread: StartThread,
-            sender: Participant | None,
-        ) -> AgentRealtimeConnectionInfo | None:
-            del thread_id
-            del sender
-            protocol = start_thread.realtime_protocol
-            if protocol is None:
-                return None
-            provider = default_provider
-            if (
-                start_thread.provider is not None
-                and start_thread.provider.strip() != ""
-            ):
-                provider = next(
-                    (
-                        candidate
-                        for candidate in llm_providers
-                        if candidate.name == start_thread.provider
-                    ),
-                    None,
-                )
-                if provider is None:
-                    raise RoomException(f"unknown provider {start_thread.provider!r}")
-            model = start_thread.model
-            resolved_model = (
-                provider.adapter.default_model()
-                if model is None or model.strip() == ""
-                else model
-            )
-            connection = await provider.adapter.create_realtime_connection(
-                protocol=protocol,
-                model=resolved_model,
-            )
-            return AgentRealtimeConnectionInfo(
-                protocol=connection.protocol,
-                url=connection.url,
-                headers=connection.headers,
-                web_only_protocol=connection.web_only_protocol,
-            )
+            backend_name: str,
+        ) -> LLMAgentProcess:
+            if default_provider is None:
+                raise RuntimeError("LLM backend is not configured")
 
-        def create_thread_process(self, thread_id: str) -> LLMAgentProcess:
             async def _turn_instructions_provider(
                 participant: Participant | None,
             ) -> str | None:
@@ -5709,6 +5949,7 @@ def build_process_agent(
                 participant=self._agent.room.local_participant,
                 llm_providers=llm_providers,
                 default_provider=default_provider,
+                backend_name=backend_name,
                 toolkits=[*toolkits],
                 thread_storage=create_thread_storage(
                     room=self._agent.room,

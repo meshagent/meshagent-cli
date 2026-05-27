@@ -897,7 +897,8 @@ def _codex_model_changed(
     return AgentModelChanged(
         type=AGENT_EVENT_MODEL_CHANGED,
         thread_id=thread_id,
-        provider="codex",
+        provider="openai",
+        backend="codex",
         model=model,
         source_message_id=None,
         output_modalities=["text"],
@@ -910,8 +911,9 @@ def _codex_models_response(*, model: str) -> ModelsResponse:
         source_message_id="configured-codex-models",
         providers=[
             AgentProviderInfo(
-                name="codex",
-                friendly_name="Codex",
+                name="openai",
+                friendly_name="OpenAI Codex",
+                backend="codex",
                 default_model=model,
                 models=[
                     AgentModelInfo(

@@ -724,6 +724,28 @@ def test_ask_conversation_messages_render_new_thread_start_message() -> None:
     assert rendered[0].text == "hello"
 
 
+def test_ask_conversation_messages_render_failed_turn_error() -> None:
+    message = TurnEnded(
+        type=AGENT_EVENT_TURN_ENDED,
+        thread_id="thread-1",
+        turn_id="turn-1",
+        error=AgentError(
+            code="RoomException",
+            message="Error from OpenAI websocket: unknown parameter",
+        ),
+    )
+
+    rendered = ask_module._ask_conversation_messages_from_agent_messages(
+        [message],
+        local_participant_name=None,
+    )
+
+    assert len(rendered) == 1
+    assert rendered[0].message_id == message.message_id
+    assert rendered[0].role == "error"
+    assert rendered[0].text == "Error from OpenAI websocket: unknown parameter"
+
+
 @pytest.mark.asyncio
 async def test_agent_message_session_emits_intermediate_agent_events() -> None:
     def _send(payload, events: asyncio.Queue[ask_module.Message]) -> None:
@@ -918,6 +940,42 @@ def test_ask_thread_status_feed_text_formats_active_status() -> None:
     assert ask_module._ask_thread_status_feed_text(None) is None
 
 
+def test_sync_status_timer_started_at_starts_for_external_active_status() -> None:
+    assert (
+        ask_module._sync_status_timer_started_at(
+            started_at=None,
+            active=True,
+            pending=False,
+            now=42.0,
+        )
+        == 42.0
+    )
+
+
+def test_sync_status_timer_started_at_preserves_running_timer() -> None:
+    assert (
+        ask_module._sync_status_timer_started_at(
+            started_at=12.0,
+            active=True,
+            pending=False,
+            now=42.0,
+        )
+        == 12.0
+    )
+
+
+def test_sync_status_timer_started_at_clears_inactive_external_status() -> None:
+    assert (
+        ask_module._sync_status_timer_started_at(
+            started_at=12.0,
+            active=False,
+            pending=False,
+            now=42.0,
+        )
+        is None
+    )
+
+
 def test_format_agent_thread_status_text_includes_change_counts() -> None:
     assert (
         ask_module._format_agent_thread_status_text(
@@ -1000,6 +1058,72 @@ def test_agent_message_session_renders_image_generation_data_uri_as_ascii() -> N
     assert session.messages[0].kind == "image"
     assert session.messages[0].text.strip() != ""
     assert "\x1b[" in session.messages[0].text
+
+
+def test_agent_message_session_preserves_image_generation_dataset_uri() -> None:
+    client = ask_module.LocalChatClient(
+        thread_path="/threads/test.thread",
+        send_message=lambda message: None,
+        events=asyncio.Queue(),
+    )
+    session = ask_module._AgentMessageSession(
+        client=client.thread_session,
+        model=None,
+    )
+
+    session.add_agent_message(
+        ask_module.AgentImageGenerationCompleted(
+            type=ask_module.AGENT_EVENT_IMAGE_GENERATION_COMPLETED,
+            thread_id="/threads/test.thread",
+            turn_id="turn-1",
+            item_id="image-1",
+            images=[
+                AgentGeneratedImage(
+                    uri="dataset://agents/demo/images?id=image-1",
+                    mime_type="image/png",
+                )
+            ],
+        )
+    )
+
+    assert len(session.messages) == 1
+    assert session.messages[0].role == "assistant"
+    assert session.messages[0].kind == "text"
+    assert session.messages[0].text == (
+        "[attachment] dataset://agents/demo/images?id=image-1"
+    )
+
+
+def test_agent_message_session_preserves_partial_image_generation_dataset_uri() -> None:
+    client = ask_module.LocalChatClient(
+        thread_path="/threads/test.thread",
+        send_message=lambda message: None,
+        events=asyncio.Queue(),
+    )
+    session = ask_module._AgentMessageSession(
+        client=client.thread_session,
+        model=None,
+    )
+
+    session.add_agent_message(
+        ask_module.AgentImageGenerationPartial(
+            type=ask_module.AGENT_EVENT_IMAGE_GENERATION_PARTIAL,
+            thread_id="/threads/test.thread",
+            turn_id="turn-1",
+            item_id="image-1",
+            image=AgentGeneratedImage(
+                uri="dataset://agents/demo/images?id=image-1",
+                mime_type="image/png",
+            ),
+        )
+    )
+
+    assert len(session.messages) == 1
+    assert session.messages[0].role == "assistant"
+    assert session.messages[0].kind == "text"
+    assert session.messages[0].text == (
+        "[attachment] dataset://agents/demo/images?id=image-1"
+    )
 
 
 def test_agent_message_session_keeps_latest_image_generation_preview_or_final() -> None:
