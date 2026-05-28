@@ -1,6 +1,9 @@
 import { createServer } from "node:http";
 import { attachRoomWebSocketProxy } from "@meshagent/meshagent-node";
-import next from "next";
+
+process.env.NEXT_TELEMETRY_DISABLED ??= "1";
+
+const { default: next } = await import("next");
 
 const hostname = process.env.HOSTNAME || "0.0.0.0";
 const port = Number.parseInt(process.env.PORT || "3000", 10);

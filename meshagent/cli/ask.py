@@ -435,7 +435,17 @@ class _AskConversationMessage:
     role: str
     text: str
     kind: Literal["text", "image"] = "text"
-    attachment_uris: tuple[str, ...] = ()
+    attachment_references: tuple["_AskAttachmentReference", ...] = ()
+
+    @property
+    def attachment_uris(self) -> tuple[str, ...]:
+        return tuple(reference.uri for reference in self.attachment_references)
+
+
+@dataclass(frozen=True, slots=True)
+class _AskAttachmentReference:
+    uri: str
+    name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -914,7 +924,16 @@ def _agent_message_content_attachment_uris(
     content: list[AgentTextContent | AgentFileContent],
 ) -> tuple[str, ...]:
     return tuple(
-        item.url.strip()
+        attachment.uri
+        for attachment in _agent_message_content_attachment_references(content)
+    )
+
+
+def _agent_message_content_attachment_references(
+    content: list[AgentTextContent | AgentFileContent],
+) -> tuple[_AskAttachmentReference, ...]:
+    return tuple(
+        _AskAttachmentReference(uri=item.url.strip(), name=item.name)
         for item in content
         if isinstance(item, AgentFileContent) and item.url.strip() != ""
     )
@@ -1356,8 +1375,10 @@ def _ask_conversation_message_from_agent_message(
 ) -> _AskConversationMessage | None:
     if isinstance(message, (StartThread, TurnStart, TurnSteer)):
         text = _agent_message_content_text(message.content)
-        attachment_uris = _agent_message_content_attachment_uris(message.content)
-        if text == "" and len(attachment_uris) == 0:
+        attachment_references = _agent_message_content_attachment_references(
+            message.content
+        )
+        if text == "" and len(attachment_references) == 0:
             return None
         return _AskConversationMessage(
             message_id=message.message_id,
@@ -1367,12 +1388,14 @@ def _ask_conversation_message_from_agent_message(
                 default="you",
             ),
             text=text,
-            attachment_uris=attachment_uris,
+            attachment_references=attachment_references,
         )
     if isinstance(message, (TurnStartAccepted, TurnSteerAccepted)):
         text = _agent_message_content_text(message.content)
-        attachment_uris = _agent_message_content_attachment_uris(message.content)
-        if text == "" and len(attachment_uris) == 0:
+        attachment_references = _agent_message_content_attachment_references(
+            message.content
+        )
+        if text == "" and len(attachment_references) == 0:
             return None
         return _AskConversationMessage(
             message_id=message.source_message_id,
@@ -1382,7 +1405,7 @@ def _ask_conversation_message_from_agent_message(
                 default="user",
             ),
             text=text,
-            attachment_uris=attachment_uris,
+            attachment_references=attachment_references,
         )
     if isinstance(message, TurnEnded):
         if message.error is None:
@@ -1424,7 +1447,9 @@ def _ask_conversation_message_from_agent_message(
             ),
             text="" if can_render_inline else _attachment_display_text(message.url),
             kind="image" if can_render_inline else "text",
-            attachment_uris=(message.url,) if can_render_inline else (),
+            attachment_references=(
+                (_AskAttachmentReference(uri=message.url),) if can_render_inline else ()
+            ),
         )
     if isinstance(message, AgentImageGenerationPartial):
         if message.image is None:
@@ -1436,7 +1461,7 @@ def _ask_conversation_message_from_agent_message(
             role="assistant",
             text="",
             kind="image",
-            attachment_uris=(message.image.uri,),
+            attachment_references=(_AskAttachmentReference(uri=message.image.uri),),
         )
     if isinstance(message, AgentImageGenerationCompleted):
         image_uris: list[str] = []
@@ -1450,7 +1475,9 @@ def _ask_conversation_message_from_agent_message(
             role="assistant",
             text="",
             kind="image",
-            attachment_uris=tuple(image_uris),
+            attachment_references=tuple(
+                _AskAttachmentReference(uri=uri) for uri in image_uris
+            ),
         )
     return None
 
@@ -4476,12 +4503,19 @@ async def _run_ask_tui(
             self,
             *,
             role: str,
-            uri: str | Sequence[str] | None,
+            uri: str
+            | _AskAttachmentReference
+            | Sequence[str | _AskAttachmentReference]
+            | None,
             text: str = "",
             fallback_mime_type: str | None = None,
             message_id: str | None = None,
         ) -> None:
-            uris = [uri] if isinstance(uri, str) or uri is None else list(uri)
+            attachment_references = (
+                [uri]
+                if isinstance(uri, (str, _AskAttachmentReference)) or uri is None
+                else list(uri)
+            )
             inline_renderables: list[Any] = []
             attachment_parts: list[str] = []
             image_dataset_client = (
@@ -4493,7 +4527,13 @@ async def _run_ask_tui(
                     else None
                 )
             )
-            for item_uri in uris:
+            for attachment_reference in attachment_references:
+                if isinstance(attachment_reference, _AskAttachmentReference):
+                    item_uri = attachment_reference.uri
+                    item_name = attachment_reference.name
+                else:
+                    item_uri = attachment_reference
+                    item_name = None
                 attachment_record = await _attachment_record_from_uri(
                     item_uri,
                     image_dataset_client=image_dataset_client,
@@ -4518,14 +4558,16 @@ async def _run_ask_tui(
                     pdf_preview = await asyncio.to_thread(
                         _pdf_preview_from_record,
                         attachment_record,
-                        name=_attachment_display_name(item_uri),
+                        name=_attachment_display_name(item_uri, name=item_name),
                         max_rows=max(1, self.size.height // 2),
                     )
                     if pdf_preview is not None:
                         inline_renderables.append(pdf_preview)
                         continue
                 if isinstance(item_uri, str) and item_uri.strip() != "":
-                    attachment_parts.append(_attachment_display_text(item_uri))
+                    attachment_parts.append(
+                        _attachment_display_text(item_uri, name=item_name)
+                    )
             if len(inline_renderables) > 0:
                 inline_renderables.extend(attachment_parts)
                 entry = _AskFeedEntry(
@@ -4570,7 +4612,9 @@ async def _run_ask_tui(
             self,
             *,
             message: _AskConversationMessage,
-            uri: str | Sequence[str],
+            uri: str
+            | _AskAttachmentReference
+            | Sequence[str | _AskAttachmentReference],
         ) -> None:
             try:
                 await self._append_image_or_attachment_entry(
@@ -4924,17 +4968,19 @@ async def _run_ask_tui(
                     kind=message.kind,
                     message_id=message.message_id,
                 )
-                renderable_attachment_uris = tuple(
-                    uri
-                    for uri in message.attachment_uris
-                    if _attachment_uri_may_render_inline(uri)
+                renderable_attachment_references = tuple(
+                    attachment_reference
+                    for attachment_reference in message.attachment_references
+                    if _attachment_uri_may_render_inline(attachment_reference.uri)
                 )
                 dataset_image_uri = _dataset_image_attachment_uri(message.text)
                 if (
-                    len(renderable_attachment_uris) == 0
+                    len(renderable_attachment_references) == 0
                     and dataset_image_uri is not None
                 ):
-                    renderable_attachment_uris = (dataset_image_uri,)
+                    renderable_attachment_references = (
+                        _AskAttachmentReference(uri=dataset_image_uri),
+                    )
                 existing_entry = next(
                     (
                         existing
@@ -4946,13 +4992,13 @@ async def _run_ask_tui(
                 already_rendered_attachment = (
                     existing_entry is not None
                     and existing_entry.kind == "image"
-                    and len(renderable_attachment_uris) > 0
+                    and len(renderable_attachment_references) > 0
                 )
                 if already_rendered_attachment:
                     self._rendered_session_message_ids.add(message.message_id)
                     continue
                 if (
-                    len(renderable_attachment_uris) > 0
+                    len(renderable_attachment_references) > 0
                     and message.message_id
                     not in self._pending_session_image_message_ids
                 ):
@@ -4960,9 +5006,9 @@ async def _run_ask_tui(
                     task = asyncio.create_task(
                         self._hydrate_session_image_entry(
                             message=message,
-                            uri=renderable_attachment_uris
-                            if len(renderable_attachment_uris) > 1
-                            else renderable_attachment_uris[0],
+                            uri=renderable_attachment_references
+                            if len(renderable_attachment_references) > 1
+                            else renderable_attachment_references[0],
                         )
                     )
                     task.add_done_callback(_consume_task_exception)

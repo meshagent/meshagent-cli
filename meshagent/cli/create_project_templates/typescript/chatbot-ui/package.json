@@ -4,10 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "next build",
-    "dev": "next dev -H 0.0.0.0",
+    "build": "NEXT_TELEMETRY_DISABLED=1 next build",
+    "dev": "NEXT_TELEMETRY_DISABLED=1 next dev -H 0.0.0.0",
     "deploy": "meshagent deploy . --tag meshagent-create-typescript-chatbot-ui:dev --private --validation-mode=cookie --extra-port=assistant:/messages --liveness /health --wait",
-    "start": "node .next/standalone/server.js"
+    "start": "NEXT_TELEMETRY_DISABLED=1 node .next/standalone/server.js"
   },
   "dependencies": {
     "@msgpack/msgpack": "^3.1.1",

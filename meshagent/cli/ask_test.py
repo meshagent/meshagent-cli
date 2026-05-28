@@ -1481,6 +1481,26 @@ def test_agent_message_content_text_renders_non_image_attachment_as_filename() -
     assert ask_module._agent_message_content_text(content) == "[report.pdf]"
 
 
+def test_conversation_message_preserves_pdf_attachment_name_for_preview() -> None:
+    pdf_uri = _pdf_data_uri()
+    message = StartThread(
+        type=AGENT_MESSAGE_THREAD_START,
+        content=[
+            AgentFileContent(type="file", url=pdf_uri, name="optimus.pdf"),
+        ],
+    )
+
+    rendered = ask_module._ask_conversation_message_from_agent_message(
+        message,
+        local_participant_name=None,
+    )
+
+    assert rendered is not None
+    assert rendered.text == "[optimus.pdf]"
+    assert rendered.attachment_uris == (pdf_uri,)
+    assert rendered.attachment_references[0].name == "optimus.pdf"
+
+
 def test_agent_message_content_text_omits_image_attachment_ascii() -> None:
     content = [
         AgentFileContent(

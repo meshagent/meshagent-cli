@@ -4,10 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "next build",
-    "dev": "meshagent room connect -- node dev-server.mjs",
+    "build": "NEXT_TELEMETRY_DISABLED=1 next build",
+    "dev": "NEXT_TELEMETRY_DISABLED=1 meshagent room connect -- node dev-server.mjs",
     "deploy": "meshagent deploy . --tag meshagent-create-typescript-room-chat:dev --private --validation-mode=cookie --liveness /health --wait",
-    "start": "node .next/standalone/server.js"
+    "start": "NEXT_TELEMETRY_DISABLED=1 node .next/standalone/server.js"
   },
   "dependencies": {
     "@meshagent/meshagent": "^__MESHAGENT_CLIENT_VERSION__",
