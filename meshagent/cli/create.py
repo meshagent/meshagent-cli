@@ -63,7 +63,7 @@ CHATBOT_FOCUS = "chatbot"
 ANTHROPIC_CHATBOT_FOCUS = "chatbot-anthropic"
 CHATBOT_UI_FOCUS = "chatbot-ui"
 ROOM_CHAT_FOCUS = "room-chat"
-MEETING_APP_FOCUS = "meeting-app"
+ROOM_WORKSPACE_FOCUS = "room-workspace"
 CONTACT_FORM_FOCUS = "contact-form"
 DEFAULT_LANGUAGE = "python"
 DEFAULT_FOCUS = AGENT_FOCUS
@@ -246,9 +246,9 @@ FOCUSES: Mapping[str, CreateFocus] = {
         label="Room Chat",
         description="Browser multi-user chat backed by the room messaging API.",
     ),
-    MEETING_APP_FOCUS: CreateFocus(
-        id=MEETING_APP_FOCUS,
-        label="Meeting App",
+    ROOM_WORKSPACE_FOCUS: CreateFocus(
+        id=ROOM_WORKSPACE_FOCUS,
+        label="Room Workspace",
         description="Browser room app with chat, meetings, and files.",
     ),
     CONTACT_FORM_FOCUS: CreateFocus(
@@ -360,12 +360,12 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         template_dir=_template_dir("typescript", ROOM_CHAT_FOCUS),
         next_steps=NPM_CHATBOT_UI_NEXT_STEPS,
     ),
-    ("typescript", MEETING_APP_FOCUS): CreateTemplate(
+    ("typescript", ROOM_WORKSPACE_FOCUS): CreateTemplate(
         language_id="typescript",
-        focus_id=MEETING_APP_FOCUS,
-        label="TypeScript Meeting App",
+        focus_id=ROOM_WORKSPACE_FOCUS,
+        label="TypeScript Room Workspace",
         description="Browser room app with chat, meetings, and files.",
-        template_dir="typescript/meeting_app",
+        template_dir="typescript/room-workspace",
         next_steps=NPM_CHATBOT_UI_NEXT_STEPS,
     ),
     ("dotnet", WEB_FOCUS): CreateTemplate(
@@ -457,12 +457,10 @@ FOCUS_ALIASES = {
     "room_chat": ROOM_CHAT_FOCUS,
     "room-ui": ROOM_CHAT_FOCUS,
     "room_ui": ROOM_CHAT_FOCUS,
-    "meeting": MEETING_APP_FOCUS,
-    "meeting-app": MEETING_APP_FOCUS,
-    "meeting_app": MEETING_APP_FOCUS,
-    "meetings": MEETING_APP_FOCUS,
-    "powerboards": MEETING_APP_FOCUS,
-    "powerboards-react": MEETING_APP_FOCUS,
+    "room_workspace": ROOM_WORKSPACE_FOCUS,
+    "room-workspace": ROOM_WORKSPACE_FOCUS,
+    "powerboards": ROOM_WORKSPACE_FOCUS,
+    "powerboards-react": ROOM_WORKSPACE_FOCUS,
     "contact": CONTACT_FORM_FOCUS,
     "contact-form": CONTACT_FORM_FOCUS,
     "contact_form": CONTACT_FORM_FOCUS,

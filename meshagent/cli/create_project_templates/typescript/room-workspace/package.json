@@ -1,10 +1,11 @@
 {
-  "name": "meshagent-create-typescript-meeting-app",
+  "name": "meshagent-create-typescript-room-workspace",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "next build",
+    "codex": "meshagent room connect -- meshagent codex join --agent-name codex --channel chat --thread-storage codex",
     "dev": "meshagent room connect -- node dev-server.mjs",
     "deploy": "meshagent deploy . --tag meshagent-create-typescript-meeting-app:dev --private --validation-mode=cookie --liveness /health --wait",
     "start": "node .next/standalone/server.js"
@@ -14,6 +15,7 @@
     "@meshagent/meshagent-livekit": "^__MESHAGENT_CLIENT_VERSION__",
     "@meshagent/meshagent-node-ts": "^__MESHAGENT_CLIENT_VERSION__",
     "@meshagent/meshagent-react": "^__MESHAGENT_CLIENT_VERSION__",
+    "@meshagent/meshagent-react-dev": "^__MESHAGENT_CLIENT_VERSION__",
     "@meshagent/meshagent-tailwind": "^__MESHAGENT_CLIENT_VERSION__",
     "lucide-react": "^0.545.0",
     "next": "^16.2.6",

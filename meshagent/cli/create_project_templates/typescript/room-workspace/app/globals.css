@@ -41,6 +41,12 @@ button { cursor: pointer; }
 .panel { height: 100%; min-height: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
 .chat-layout { height: 100%; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 38%); }
 .chat-pane, .file-pane, .meeting-pane { min-height: 0; height: 100%; overflow: hidden; }
+.chat-pane { display: grid; grid-template-rows: auto 1fr; }
+.chat-toolbar { min-height: 52px; padding: 8px 12px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); background: #fff; }
+.chat-content { min-height: 0; overflow: hidden; }
+.agent-select-label { display: inline-flex; align-items: center; gap: 7px; color: var(--muted-foreground); font-size: 13px; font-weight: 700; }
+.agent-select { min-width: 180px; height: 34px; padding: 0 34px 0 10px; border: 1px solid var(--border); border-radius: 6px; background: #fff; color: var(--foreground); font-weight: 650; }
+.agent-select:disabled { color: var(--muted-foreground); background: #f9fafb; cursor: not-allowed; }
 .file-pane { border-left: 1px solid var(--border); }
 .file-browser { height: 100%; min-height: 0; display: grid; grid-template-rows: auto 1fr; }
 .file-toolbar { min-height: 56px; padding: 10px 12px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); }
@@ -55,4 +61,4 @@ button { cursor: pointer; }
 .file-preview { height: 100%; min-height: 0; display: grid; grid-template-rows: auto 1fr; }
 .preview-content { min-height: 0; overflow: auto; padding: 16px; }
 .center-message { height: 100%; display: grid; place-items: center; padding: 24px; color: var(--muted-foreground); text-align: center; }
-@media (max-width: 860px) { .topbar { align-items: stretch; flex-direction: column; } .tabs { width: 100%; } .tab { flex: 1; min-width: 0; } .chat-layout { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(240px, 40%); } .file-pane { border-left: 0; border-top: 1px solid var(--border); } }
+@media (max-width: 860px) { .topbar { align-items: stretch; flex-direction: column; } .tabs { width: 100%; } .tab { flex: 1; min-width: 0; } .chat-layout { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(240px, 40%); } .chat-toolbar { align-items: stretch; flex-direction: column; } .agent-select { width: 100%; } .file-pane { border-left: 0; border-top: 1px solid var(--border); } }

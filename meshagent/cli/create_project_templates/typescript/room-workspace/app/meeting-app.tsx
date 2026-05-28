@@ -1,23 +1,32 @@
 "use client";
 
 import { type ReactNode, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, FileIcon, FolderIcon, MessageSquare, RefreshCw, UsersRound } from "lucide-react";
+import { ArrowLeft, Bot, FileIcon, FolderIcon, MessageSquare, RefreshCw, SquareTerminal, UsersRound } from "lucide-react";
 import { RoomClient, type RemoteParticipant, type StorageEntry } from "@meshagent/meshagent";
 import { useRoomParticipants } from "@meshagent/meshagent-react";
+import { DeveloperConsole } from "@meshagent/meshagent-react-dev";
 import {
   ChatBotView,
+  ChatThreadDisplayMode,
   FilePreview,
   MeetingScope,
   MeetingView,
+  chatThreadDisplayModeFromAnnotation,
   participantDisplayName,
   participantSupportsChat,
+  participantThreadDir,
+  participantThreadListPath,
 } from "@meshagent/meshagent-tailwind";
 
-type ActiveTab = "chat" | "meeting" | "files";
+type ActiveTab = "chat" | "meeting" | "files" | "console";
 type ConnectionState = "connecting" | "connected" | "disconnected";
 
 const defaultChatPath = ".threads/main.thread";
 const rootFolder = "";
+
+function getDefaultShellImage(): string {
+  return "meshagent/python:default";
+}
 
 function joinPaths(...parts: string[]): string {
   return parts
@@ -62,11 +71,26 @@ function formatModified(date: Date | null): string {
   }).format(date);
 }
 
-function chatAgentName(participants: RemoteParticipant[]): string | undefined {
-  const participant = participants.find(
-    (candidate) => candidate.role === "agent" && participantSupportsChat(candidate),
-  );
-  return participant === undefined ? undefined : participantDisplayName(participant) ?? undefined;
+function chatAgents(participants: RemoteParticipant[]): RemoteParticipant[] {
+  return participants
+    .filter((candidate) => candidate.role === "agent" && participantSupportsChat(candidate))
+    .sort((left, right) => {
+      const leftName = participantDisplayName(left) ?? "";
+      const rightName = participantDisplayName(right) ?? "";
+      if (leftName === "codex") {
+        return -1;
+      }
+      if (rightName === "codex") {
+        return 1;
+      }
+      return leftName.localeCompare(rightName);
+    });
+}
+
+function defaultChatAgentName(agents: RemoteParticipant[]): string | null {
+  const codex = agents.find((candidate) => participantDisplayName(candidate) === "codex");
+  const selected = codex ?? agents[0];
+  return selected === undefined ? null : participantDisplayName(selected);
 }
 
 function connectionLabel(state: ConnectionState, error: string | null): string {
@@ -225,8 +249,39 @@ function FileBrowser({ room }: { room: RoomClient }) {
 
 function MeetingWorkspace({ room }: { room: RoomClient }) {
   const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
+  const [selectedAgentName, setSelectedAgentName] = useState<string | null>(null);
   const participants = useRoomParticipants(room);
-  const agentName = useMemo(() => chatAgentName(participants), [participants]);
+  const agents = useMemo(() => chatAgents(participants), [participants]);
+
+  useEffect(() => {
+    if (agents.length === 0) {
+      setSelectedAgentName(null);
+      return;
+    }
+    if (
+      selectedAgentName !== null &&
+      agents.some((candidate) => participantDisplayName(candidate) === selectedAgentName)
+    ) {
+      return;
+    }
+    setSelectedAgentName(defaultChatAgentName(agents));
+  }, [agents, selectedAgentName]);
+
+  const agent = useMemo(
+    () => agents.find((candidate) => participantDisplayName(candidate) === selectedAgentName),
+    [agents, selectedAgentName],
+  );
+  const agentName = agent === undefined ? undefined : participantDisplayName(agent) ?? undefined;
+  const threadDisplayMode = agent === undefined
+    ? ChatThreadDisplayMode.SingleThread
+    : chatThreadDisplayModeFromAnnotation(agent.getAttribute("meshagent.chatbot.threading"));
+  const threadDir = agent === undefined ? undefined : participantThreadDir(agent) ?? undefined;
+  const annotatedThreadListPath = agent === undefined ? undefined : participantThreadListPath(agent) ?? undefined;
+  const threadListPath = annotatedThreadListPath ?? (
+    agentName === "codex" && threadDisplayMode === ChatThreadDisplayMode.MultiThreadComposer
+      ? "agent://codex/threads"
+      : undefined
+  );
 
   return (
     <MeetingScope client={room}>
@@ -246,6 +301,9 @@ function MeetingWorkspace({ room }: { room: RoomClient }) {
             <TabButton active={activeTab === "files"} onClick={() => setActiveTab("files")}>
               <FileIcon size={17} /> Files
             </TabButton>
+            <TabButton active={activeTab === "console"} onClick={() => setActiveTab("console")}>
+              <SquareTerminal size={17} /> Console
+            </TabButton>
           </nav>
         </header>
 
@@ -254,7 +312,42 @@ function MeetingWorkspace({ room }: { room: RoomClient }) {
             {activeTab === "chat" ? (
               <div className="chat-layout">
                 <div className="chat-pane">
-                  <ChatBotView room={room} path={agentName === undefined ? defaultChatPath : undefined} participants={participants} agentName={agentName} />
+                  <div className="chat-toolbar">
+                    <label className="agent-select-label" htmlFor="chat-agent-select">
+                      <Bot size={16} />
+                      <span>Chatbot</span>
+                    </label>
+                    <select
+                      id="chat-agent-select"
+                      className="agent-select"
+                      disabled={agents.length === 0}
+                      value={selectedAgentName ?? ""}
+                      onChange={(event) => setSelectedAgentName(event.currentTarget.value || null)}
+                    >
+                      {agents.length === 0 ? (
+                        <option value="">No chatbots</option>
+                      ) : (
+                        agents.map((candidate) => {
+                          const name = participantDisplayName(candidate);
+                          if (name === null) {
+                            return null;
+                          }
+                          return <option key={name} value={name}>{name}</option>;
+                        })
+                      )}
+                    </select>
+                  </div>
+                  <div className="chat-content">
+                    <ChatBotView
+                    room={room}
+                    path={agentName === undefined ? defaultChatPath : undefined}
+                    participants={participants}
+                    agentName={agentName}
+                    threadDisplayMode={threadDisplayMode}
+                      threadDir={threadDir}
+                      threadListPath={threadListPath}
+                    />
+                  </div>
                 </div>
                 <div className="file-pane">
                   <FileBrowser room={room} />
@@ -264,6 +357,8 @@ function MeetingWorkspace({ room }: { room: RoomClient }) {
               <div className="meeting-pane">
                 <MeetingView onCancel={() => setActiveTab("chat")} />
               </div>
+            ) : activeTab === "console" ? (
+              <DeveloperConsole room={room} shellImage={getDefaultShellImage()} />
             ) : (
               <FileBrowser room={room} />
             )}
