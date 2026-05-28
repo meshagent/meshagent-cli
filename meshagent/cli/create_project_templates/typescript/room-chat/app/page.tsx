@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { RoomClient, type RemoteParticipant, type RoomMessageEvent } from "@meshagent/meshagent";
 
 const CHAT_MESSAGE_TYPE = "meshagent.room-chat.message";
@@ -199,7 +199,7 @@ export default function Home() {
     }
   }
 
-  function submitMessage(event: FormEvent<HTMLFormElement>) {
+  function submitMessage(event: ChangeEvent<HTMLFormElement>) {
     event.preventDefault();
     void sendInputMessage();
   }
