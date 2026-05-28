@@ -64,7 +64,7 @@ from meshagent.api import (
     RemoteParticipant,
 )
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
-from meshagent.cli import async_typer
+from meshagent.cli import async_typer, auth_async
 from meshagent.cli.ask import AskCommandOption
 from meshagent.cli.helper import (
     NormalizedRequiredToolOptions,
@@ -147,13 +147,13 @@ from meshagent.agents.messages import (
     AGENT_EVENT_FILE_CONTENT_DELTA,
     AGENT_EVENT_MODEL_CHANGED,
     AGENT_EVENT_TEXT_CONTENT_DELTA,
+    AGENT_EVENT_THREAD_LOADED,
     AGENT_EVENT_THREAD_STARTED,
     AGENT_MESSAGE_MODELS_RESPONSE,
     AGENT_MESSAGE_THREAD_OPEN,
     AGENT_MESSAGE_TURN_START,
     AgentFileContent,
     AgentFileContentDelta,
-    AgentError,
     AgentAudioFormat,
     AgentMessage,
     AgentThreadStatus,
@@ -163,12 +163,8 @@ from meshagent.agents.messages import (
     AgentRealtimeConnectionInfo,
     AgentTextContent,
     AgentTextContentDelta,
-    DeleteThread,
-    ListThreads,
-    ModelsRequest,
     ModelsResponse,
     OpenThread,
-    RenameThread,
     StartThread,
     ThreadCreated,
     ThreadDeleted,
@@ -186,9 +182,9 @@ from meshagent.agents.chat_client import (
 from meshagent.agents.process import ContentScheme, Message
 from meshagent.agents.images_dataset import ImageDatasetClient, ImagesDataset
 from meshagent.agents.thread_storage import (
+    NoopThreadStorageRepository,
     ThreadListEntry,
     ThreadListEvent,
-    ThreadListPage,
 )
 
 from meshagent.api import RequiredToolkit, RequiredSchema
@@ -219,8 +215,17 @@ from meshagent.api.client import ConflictError
 
 OutputModality = Literal["text", "audio"]
 WebSocketAuthMode = Literal["iap", "jwt", "none"]
+ProcessBackendName = Literal["llm", "codex"]
 
 logger = logging.getLogger("process")
+_MESHAGENT_PROJECT_ID_HEADER = "Meshagent-Project-Id"
+
+
+@dataclass(frozen=True, slots=True)
+class _ProcessModelSpec:
+    backend: ProcessBackendName
+    provider: str
+    model: str
 
 
 def _thread_status_text(status: object) -> str | None:
@@ -336,6 +341,7 @@ def _process_run_thread_id(
     thread_dir: str | None,
     threading_mode: "ThreadingMode" = "none",
 ) -> str:
+    thread_storage = _normalize_thread_storage_backend(thread_storage)
     if isinstance(thread_path, str) and thread_path.strip() != "":
         normalized = thread_path.strip()
         if thread_storage == "dataset" and not normalized.startswith("dataset://"):
@@ -515,6 +521,7 @@ async def _thread_agent_messages_from_storage(
 
 
 def _thread_storage_class_for_backend(thread_storage: "ThreadStorageBackend"):
+    thread_storage = _normalize_thread_storage_backend(thread_storage)
     if thread_storage == "dataset":
         from meshagent.agents.dataset_thread_storage import DatasetThreadStorage
 
@@ -524,6 +531,19 @@ def _thread_storage_class_for_backend(thread_storage: "ThreadStorageBackend"):
 
         return MeshDocumentThreadStorage
     return None
+
+
+def _thread_storage_repository_for_backend(
+    *,
+    thread_storage: "ThreadStorageBackend",
+    room: RoomClient,
+    thread_dir: str,
+):
+    thread_storage = _normalize_thread_storage_backend(thread_storage)
+    storage_class = _thread_storage_class_for_backend(thread_storage)
+    if storage_class is None:
+        return NoopThreadStorageRepository()
+    return storage_class(room=room, thread_dir=thread_dir)
 
 
 def _thread_storage_class_for_path(*, thread_path: str):
@@ -577,17 +597,19 @@ async def _handle_process_model_command(
                 current_model=session.current_model,
             )
         if len(parts) == 2:
+            backend_name, provider_name = _parse_provider_selection(parts[1])
             changed = _selected_default_model_for_provider(
                 response=response,
                 thread_id=session.thread_id,
-                provider_name=parts[1],
+                backend=backend_name,
+                provider_name=provider_name,
             )
             if changed is None:
                 return f"Unknown provider: {parts[1]}"
             session.select_model(changed)
             return (
                 "Using "
-                f"{_provider_model_display_name(provider=changed.provider, model=changed.model)}"
+                f"{_provider_model_display_name(backend=changed.backend, provider=changed.provider, model=changed.model)}"
             )
         return "Usage: /provider [provider]"
     if command_name == "/model":
@@ -600,14 +622,13 @@ async def _handle_process_model_command(
                 current_model=session.current_model,
             )
         if len(parts) != 2:
-            return "Usage: /model [model|provider/model]"
+            return "Usage: /model [model|provider/model|backend/provider/model]"
 
         requested = parts[1]
-        provider_name: str | None = None
-        model_name = requested
-        if "/" in requested:
-            provider_name, model_name = requested.split("/", 1)
-        else:
+        backend_name, provider_name, model_name = _parse_provider_model_selection(
+            requested
+        )
+        if backend_name is None and provider_name is None:
             matching_providers = [
                 provider
                 for provider in response.providers
@@ -616,6 +637,7 @@ async def _handle_process_model_command(
             if len(matching_providers) > 1:
                 names = ", ".join(
                     _provider_model_display_name(
+                        backend=provider.backend,
                         provider=provider.name,
                         model=requested,
                     )
@@ -623,11 +645,13 @@ async def _handle_process_model_command(
                 )
                 return f"Model name is ambiguous. Use one of: {names}"
             if len(matching_providers) == 1:
+                backend_name = matching_providers[0].backend
                 provider_name = matching_providers[0].name
 
         changed = _selected_model_from_models_response(
             response=response,
             thread_id=session.thread_id,
+            backend=backend_name,
             provider=provider_name,
             model=model_name,
         )
@@ -636,7 +660,7 @@ async def _handle_process_model_command(
         session.select_model(changed)
         return (
             "Using "
-            f"{_provider_model_display_name(provider=changed.provider, model=changed.model)}"
+            f"{_provider_model_display_name(backend=changed.backend, provider=changed.provider, model=changed.model)}"
         )
     if command_name == "/output":
         if len(parts) == 1:
@@ -706,6 +730,7 @@ async def _handle_process_model_command(
         changed = await session.change_model(
             provider=current_model.provider,
             model=current_model.model,
+            backend=current_model.backend,
             voice=requested_voice,
         )
         return f"Using voice {changed.voice or requested_voice}"
@@ -840,6 +865,20 @@ async def _run_process_run_tui(
         current = _current_session()
         if not current.has_thread_path:
             return
+        if thread_storage == "codex":
+            open_thread = OpenThread(
+                type=AGENT_MESSAGE_THREAD_OPEN,
+                thread_id=current.thread_path,
+                load=True,
+            )
+            await current.send(open_thread)
+            while True:
+                event = await current.receive()
+                if event.get("type") != AGENT_EVENT_THREAD_LOADED:
+                    continue
+                if event.get("source_message_id") != open_thread.message_id:
+                    continue
+                return
         supervisor = bot._supervisor
         await supervisor.route(
             Message(
@@ -944,19 +983,21 @@ async def _run_process_run_tui(
                     current_model=current.current_model,
                 )
             if len(parts) == 2:
+                backend_name, provider_name = _parse_provider_selection(parts[1])
                 changed = _selected_default_model_for_provider(
                     response=response,
                     thread_id=current_path,
-                    provider_name=parts[1],
+                    backend=backend_name,
+                    provider_name=provider_name,
                 )
                 if changed is None:
                     return f"Unknown provider: {parts[1]}"
                 _select_model(changed)
                 return (
                     "Using "
-                    f"{_provider_model_display_name(provider=changed.provider, model=changed.model)}"
+                    f"{_provider_model_display_name(backend=changed.backend, provider=changed.provider, model=changed.model)}"
                 )
-            return "Usage: /provider [provider]"
+            return "Usage: /provider [provider|backend/provider]"
         if command_name == "/model":
             response = current.models_response or await _request_models()
             if len(parts) == 1:
@@ -965,13 +1006,12 @@ async def _run_process_run_tui(
                     current_model=current.current_model,
                 )
             if len(parts) != 2:
-                return "Usage: /model [model|provider/model]"
+                return "Usage: /model [model|provider/model|backend/provider/model]"
             requested = parts[1]
-            provider_name: str | None = None
-            model_name = requested
-            if "/" in requested:
-                provider_name, model_name = requested.split("/", 1)
-            else:
+            backend_name, provider_name, model_name = _parse_provider_model_selection(
+                requested
+            )
+            if backend_name is None and provider_name is None:
                 matching_providers = [
                     provider
                     for provider in response.providers
@@ -982,6 +1022,7 @@ async def _run_process_run_tui(
                 if len(matching_providers) > 1:
                     names = ", ".join(
                         _provider_model_display_name(
+                            backend=provider.backend,
                             provider=provider.name,
                             model=requested,
                         )
@@ -989,10 +1030,12 @@ async def _run_process_run_tui(
                     )
                     return f"Model name is ambiguous. Use one of: {names}"
                 if len(matching_providers) == 1:
+                    backend_name = matching_providers[0].backend
                     provider_name = matching_providers[0].name
             changed = _selected_model_from_models_response(
                 response=response,
                 thread_id=current_path,
+                backend=backend_name,
                 provider=provider_name,
                 model=model_name,
             )
@@ -1001,7 +1044,7 @@ async def _run_process_run_tui(
             _select_model(changed)
             return (
                 "Using "
-                f"{_provider_model_display_name(provider=changed.provider, model=changed.model)}"
+                f"{_provider_model_display_name(backend=changed.backend, provider=changed.provider, model=changed.model)}"
             )
         if command_name == "/output":
             if len(parts) == 1:
@@ -1070,11 +1113,24 @@ async def _run_process_run_tui(
             changed = await current.change_model(
                 provider=current_model.provider,
                 model=current_model.model,
+                backend=current_model.backend,
                 voice=requested_voice,
             )
             _select_model(changed)
             return f"Using voice {changed.voice or requested_voice}"
         return None
+
+    async def _load_command_options(prompt: str) -> tuple[AskCommandOption, ...]:
+        current = _current_session()
+        response = current.models_response
+        if response is None:
+            response = await _request_models()
+        return _process_command_options(
+            prompt,
+            response=response,
+            current_model=current.current_model,
+            current_output_modalities=selected_output_modalities,
+        )
 
     async def _switch_thread(path: str) -> None:
         nonlocal chat_client, thread_generation
@@ -1210,6 +1266,7 @@ async def _run_process_run_tui(
                 current_model=_current_session().current_model,
                 current_output_modalities=selected_output_modalities,
             ),
+            command_options_loader=_load_command_options,
             output_label_provider=lambda: "+".join(selected_output_modalities),
             side_panel_renderer=(
                 thread_sidebar.render if thread_sidebar is not None else None
@@ -1645,19 +1702,21 @@ async def _run_process_use_tui(
                     current_model=current.current_model,
                 )
             if len(parts) == 2:
+                backend_name, provider_name = _parse_provider_selection(parts[1])
                 changed = _selected_default_model_for_provider(
                     response=response,
                     thread_id=current.thread_path,
-                    provider_name=parts[1],
+                    backend=backend_name,
+                    provider_name=provider_name,
                 )
                 if changed is None:
                     return f"Unknown provider: {parts[1]}"
                 _select_model(changed)
                 return (
                     "Using "
-                    f"{_provider_model_display_name(provider=changed.provider, model=changed.model)}"
+                    f"{_provider_model_display_name(backend=changed.backend, provider=changed.provider, model=changed.model)}"
                 )
-            return "Usage: /provider [provider]"
+            return "Usage: /provider [provider|backend/provider]"
         if command_name == "/model":
             response = current.models_response or await _request_models()
             if len(parts) == 1:
@@ -1666,13 +1725,12 @@ async def _run_process_use_tui(
                     current_model=current.current_model,
                 )
             if len(parts) != 2:
-                return "Usage: /model [model|provider/model]"
+                return "Usage: /model [model|provider/model|backend/provider/model]"
             requested = parts[1]
-            provider_name: str | None = None
-            model_name = requested
-            if "/" in requested:
-                provider_name, model_name = requested.split("/", 1)
-            else:
+            backend_name, provider_name, model_name = _parse_provider_model_selection(
+                requested
+            )
+            if backend_name is None and provider_name is None:
                 matching_providers = [
                     provider
                     for provider in response.providers
@@ -1681,6 +1739,7 @@ async def _run_process_use_tui(
                 if len(matching_providers) > 1:
                     names = ", ".join(
                         _provider_model_display_name(
+                            backend=provider.backend,
                             provider=provider.name,
                             model=requested,
                         )
@@ -1688,10 +1747,12 @@ async def _run_process_use_tui(
                     )
                     return f"Model name is ambiguous. Use one of: {names}"
                 if len(matching_providers) == 1:
+                    backend_name = matching_providers[0].backend
                     provider_name = matching_providers[0].name
             changed = _selected_model_from_models_response(
                 response=response,
                 thread_id=current.thread_path,
+                backend=backend_name,
                 provider=provider_name,
                 model=model_name,
             )
@@ -1700,7 +1761,7 @@ async def _run_process_use_tui(
             _select_model(changed)
             return (
                 "Using "
-                f"{_provider_model_display_name(provider=changed.provider, model=changed.model)}"
+                f"{_provider_model_display_name(backend=changed.backend, provider=changed.provider, model=changed.model)}"
             )
         if command_name == "/output":
             if len(parts) == 1:
@@ -1770,11 +1831,24 @@ async def _run_process_use_tui(
             changed = await current.change_model(
                 provider=current_model.provider,
                 model=current_model.model,
+                backend=current_model.backend,
                 voice=requested_voice,
             )
             _select_model(changed)
             return f"Using voice {changed.voice or requested_voice}"
         return None
+
+    async def _load_command_options(prompt: str) -> tuple[AskCommandOption, ...]:
+        current = _current_session()
+        response = current.models_response
+        if response is None:
+            response = await _request_models()
+        return _process_command_options(
+            prompt,
+            response=response,
+            current_model=current.current_model,
+            current_output_modalities=selected_output_modalities,
+        )
 
     async def _switch_thread(thread_path: str) -> None:
         nonlocal chat_client, thread_generation
@@ -1898,6 +1972,7 @@ async def _run_process_use_tui(
                 current_model=_current_session().current_model,
                 current_output_modalities=selected_output_modalities,
             ),
+            command_options_loader=_load_command_options,
             output_label_provider=lambda: "+".join(selected_output_modalities),
             side_panel_renderer=(
                 thread_sidebar.render if thread_sidebar is not None else None
@@ -1916,13 +1991,14 @@ async def _run_process_use_tui(
         await _close_process_use_room_client(user_client)
 
 
-app = async_typer.AsyncTyper(help="Join a process-backed agent to a room")
+app = async_typer.AsyncTyper(help="Run process-backed agents")
 app.add_deprecated_option_aliases(
     {**DEPRECATED_REQUIRE_OPTION_ALIASES, "--database-namespace": "--dataset-namespace"}
 )
 
 ThreadingMode = Literal["none", "default-new"]
-ThreadStorageBackend = Literal["meshdocument", "dataset", "none"]
+ThreadStorageBackend = Literal["meshdocument", "meshagent", "dataset", "none", "codex"]
+NormalizedThreadStorageBackend = Literal["meshdocument", "dataset", "none", "codex"]
 ContextManagementMode = Literal["auto", "standalone", "none"]
 
 ShellCopyEnvOption = Annotated[
@@ -2021,6 +2097,16 @@ ThreadStorageOption = Annotated[
     typer.Option(
         "--thread-storage",
         help="Thread storage backend for process agents.",
+    ),
+]
+ProcessRunThreadStorageOption = Annotated[
+    ThreadStorageBackend | None,
+    typer.Option(
+        "--thread-storage",
+        help=(
+            "Thread storage backend for process agents. Defaults to meshdocument "
+            "with a room, or none with --no-room."
+        ),
     ),
 ]
 
@@ -2153,7 +2239,7 @@ ChannelOption = Annotated[
         help=(
             "Attach a channel to the agent process. "
             "Can be repeated. Currently supported: chat, mail:EMAIL_ADDRESS, "
-            "queue:QUEUE_NAME, toolkit:NAME, websocket:PORT, "
+            "memory, queue:QUEUE_NAME, toolkit:NAME, websocket:PORT, "
             "websocket://HOST:PORT."
         ),
     ),
@@ -2225,6 +2311,7 @@ def _resolve_process_threading_options(
     thread_dir: str | None,
     thread_storage: ThreadStorageBackend = "meshdocument",
 ) -> tuple[ThreadingMode, str | None]:
+    thread_storage = _normalize_thread_storage_backend(thread_storage)
     if thread_dir is not None:
         return threading_mode, thread_dir
 
@@ -2262,6 +2349,11 @@ def _resolved_channels(
             if "chat" not in seen_channels:
                 seen_channels.add("chat")
                 normalized_channels.append("chat")
+            continue
+        if normalized.casefold() == "memory":
+            if "memory" not in seen_channels:
+                seen_channels.add("memory")
+                normalized_channels.append("memory")
             continue
 
         if normalized[:5].casefold() == "mail:":
@@ -2608,11 +2700,168 @@ def _has_chat_channel(*, channels: list[str]) -> bool:
     return "chat" in channels
 
 
+def _has_memory_channel(*, channels: list[str]) -> bool:
+    return "memory" in channels
+
+
 def _require_resolved_room(room: str | None) -> str:
     if room is None or room.strip() == "":
         print("[bold red]--room is required (or set MESHAGENT_ROOM)[/bold red]")
         raise typer.Exit(1)
     return room.strip()
+
+
+async def _resolve_process_access_token() -> str | None:
+    env_token = os.environ.get("MESHAGENT_TOKEN")
+    if env_token is not None:
+        normalized_env_token = env_token.strip()
+        if normalized_env_token != "":
+            return normalized_env_token
+
+    access_token = await auth_async.get_access_token()
+    if access_token is None:
+        return None
+
+    normalized_access_token = access_token.strip()
+    return normalized_access_token or None
+
+
+def _process_run_room_requirements(
+    *,
+    runtime: Literal["chatbot", "process"],
+    channels: list[str],
+    thread_storage: "ThreadStorageBackend",
+    normalized_tool_options: NormalizedRequiredToolOptions,
+    require_read_only_storage: Optional[str],
+    require_table_read: list[str] | None,
+    require_table_write: list[str] | None,
+    use_memory: Optional[str],
+    room_rules: list[str],
+    discover_script_tools: Optional[bool],
+    storage_tool_room_path: list[str],
+    shell_room_mount: list[str],
+    shell_tool_room_path: list[str],
+    require_document_authoring: Optional[str],
+    require_discovery: Optional[str],
+    require_advanced_shell: Optional[bool],
+    llm_participant: Optional[str],
+    delegate_shell_token: Optional[bool],
+    verbose_dataset: bool,
+    save_audio_input: bool,
+) -> list[str]:
+    requirements: list[str] = []
+    if runtime != "process":
+        requirements.append("chatbot runtime")
+
+    normalized_thread_storage = _normalize_thread_storage_backend(thread_storage)
+    if normalized_thread_storage in ("dataset", "meshdocument"):
+        requirements.append(f"--thread-storage={thread_storage}")
+
+    for channel in channels:
+        if not (
+            _has_chat_channel(channels=[channel])
+            or _has_memory_channel(channels=[channel])
+        ):
+            requirements.append(f"--channel={channel}")
+
+    if len(normalized_tool_options["toolkit"]) > 0:
+        requirements.append("--require-toolkit")
+    if len(normalized_tool_options["schema"]) > 0:
+        requirements.append("--require-schema")
+    if discover_script_tools:
+        requirements.append("--discover-script-tools")
+    if len(room_rules) > 0:
+        requirements.append("--room-rules")
+    if len(storage_tool_room_path) > 0:
+        requirements.append("--storage-tool-room-path")
+    if len(shell_room_mount) > 0 or len(shell_tool_room_path) > 0:
+        requirements.append("--shell-room-mount")
+    if normalized_tool_options["require_storage"]:
+        requirements.append("--storage")
+    if require_read_only_storage:
+        requirements.append("--read-only-storage")
+    if len(require_table_read or []) > 0:
+        requirements.append("--table-read")
+    if len(require_table_write or []) > 0:
+        requirements.append("--table-write")
+    if use_memory:
+        requirements.append("--memory")
+    if require_document_authoring:
+        requirements.append("--document-authoring")
+    if require_discovery:
+        requirements.append("--discovery")
+    if normalized_tool_options["require_computer_use"]:
+        requirements.append("--computer-use")
+    if normalized_tool_options["require_shell"]:
+        requirements.append("--shell")
+    if require_advanced_shell:
+        requirements.append("--advanced-shell")
+    if normalized_tool_options["require_apply_patch"]:
+        requirements.append("--apply-patch")
+    if llm_participant:
+        requirements.append("--llm-participant")
+    if delegate_shell_token:
+        requirements.append("--delegate-shell-token")
+    if verbose_dataset:
+        requirements.append("--verbose-dataset")
+    if save_audio_input:
+        requirements.append("--save-audio-input")
+    return requirements
+
+
+def _require_process_run_can_skip_room(
+    *,
+    runtime: Literal["chatbot", "process"],
+    channels: list[str],
+    thread_storage: "ThreadStorageBackend",
+    normalized_tool_options: NormalizedRequiredToolOptions,
+    require_read_only_storage: Optional[str],
+    require_table_read: list[str] | None,
+    require_table_write: list[str] | None,
+    use_memory: Optional[str],
+    room_rules: list[str],
+    discover_script_tools: Optional[bool],
+    storage_tool_room_path: list[str],
+    shell_room_mount: list[str],
+    shell_tool_room_path: list[str],
+    require_document_authoring: Optional[str],
+    require_discovery: Optional[str],
+    require_advanced_shell: Optional[bool],
+    llm_participant: Optional[str],
+    delegate_shell_token: Optional[bool],
+    verbose_dataset: bool,
+    save_audio_input: bool,
+) -> None:
+    requirements = _process_run_room_requirements(
+        runtime=runtime,
+        channels=channels,
+        thread_storage=thread_storage,
+        normalized_tool_options=normalized_tool_options,
+        require_read_only_storage=require_read_only_storage,
+        require_table_read=require_table_read,
+        require_table_write=require_table_write,
+        use_memory=use_memory,
+        room_rules=room_rules,
+        discover_script_tools=discover_script_tools,
+        storage_tool_room_path=storage_tool_room_path,
+        shell_room_mount=shell_room_mount,
+        shell_tool_room_path=shell_tool_room_path,
+        require_document_authoring=require_document_authoring,
+        require_discovery=require_discovery,
+        require_advanced_shell=require_advanced_shell,
+        llm_participant=llm_participant,
+        delegate_shell_token=delegate_shell_token,
+        verbose_dataset=verbose_dataset,
+        save_audio_input=save_audio_input,
+    )
+    if len(requirements) == 0:
+        return
+
+    print(
+        "[bold red]--no-room cannot be used because these options require a room: "
+        f"{', '.join(requirements)}[/bold red]"
+    )
+    raise typer.Exit(1)
 
 
 def _normalized_thread_dir(*, thread_dir: Optional[str]) -> Optional[str]:
@@ -2899,8 +3148,96 @@ def _provider_name_for_model(model: str) -> str:
     return "openai"
 
 
-def _provider_model_display_name(*, provider: str, model: str) -> str:
-    return f"{provider}/{model}"
+def _normalize_thread_storage_backend(
+    thread_storage: ThreadStorageBackend,
+) -> NormalizedThreadStorageBackend:
+    if thread_storage == "meshagent":
+        return "meshdocument"
+    return thread_storage
+
+
+def _parse_process_model_spec(model: str) -> _ProcessModelSpec:
+    normalized = model.strip()
+    if normalized == "":
+        raise ValueError("model cannot be empty")
+
+    parts = [part.strip() for part in normalized.split("/")]
+    if len(parts) == 1:
+        return _ProcessModelSpec(
+            backend="llm",
+            provider=_provider_name_for_model(normalized),
+            model=normalized,
+        )
+
+    if len(parts) >= 3:
+        backend_name = parts[0]
+        provider_name = parts[1]
+        model_name = "/".join(parts[2:]).strip()
+        if backend_name not in ("llm", "codex"):
+            raise ValueError(f"unknown model backend {backend_name!r}")
+        if provider_name == "" or model_name == "":
+            raise ValueError(f"invalid model spec {model!r}")
+        return _ProcessModelSpec(
+            backend=backend_name,
+            provider=provider_name,
+            model=model_name,
+        )
+
+    prefix = parts[0]
+    model_name = parts[1]
+    if prefix == "" or model_name == "":
+        raise ValueError(f"invalid model spec {model!r}")
+
+    if prefix == "codex":
+        return _ProcessModelSpec(
+            backend="codex",
+            provider="openai",
+            model=model_name,
+        )
+    if prefix == "llm":
+        return _ProcessModelSpec(
+            backend="llm",
+            provider=_provider_name_for_model(model_name),
+            model=model_name,
+        )
+    return _ProcessModelSpec(
+        backend="llm",
+        provider=prefix,
+        model=model_name,
+    )
+
+
+def _normalize_process_model_specs(model: str | list[str]) -> list[_ProcessModelSpec]:
+    return [_parse_process_model_spec(item) for item in _normalize_model_options(model)]
+
+
+def _provider_model_display_name(
+    *,
+    backend: str | None = None,
+    provider: str,
+    model: str,
+) -> str:
+    if backend is None or backend.strip() == "":
+        return f"{provider}/{model}"
+    return f"{backend}/{provider}/{model}"
+
+
+def _parse_provider_model_selection(
+    value: str,
+) -> tuple[str | None, str | None, str]:
+    parts = [part.strip() for part in value.strip().split("/")]
+    if len(parts) >= 3:
+        return parts[0] or None, parts[1] or None, "/".join(parts[2:]).strip()
+    if len(parts) == 2:
+        return None, parts[0] or None, parts[1]
+    return None, None, value.strip()
+
+
+def _parse_provider_selection(value: str) -> tuple[str | None, str]:
+    parts = [part.strip() for part in value.strip().split("/")]
+    if len(parts) >= 2:
+        return parts[0] or None, "/".join(parts[1:]).strip()
+    return None, value.strip()
 
 
 def _active_model_from_models_response(
@@ -2917,6 +3254,7 @@ def _active_model_from_models_response(
                 thread_id=thread_id,
                 source_message_id=response.source_message_id,
                 provider=provider.name,
+                backend=provider.backend,
                 model=model.name,
                 voice=model.default_output_voice,
                 input_format=model.input_format,
@@ -2938,10 +3276,13 @@ def _selected_model_from_models_response(
     *,
     response: ModelsResponse,
     thread_id: str,
+    backend: str | None,
     provider: str | None,
     model: str,
 ) -> AgentModelChanged | None:
     for provider_info in response.providers:
+        if backend is not None and provider_info.backend != backend:
+            continue
         if provider is not None and provider_info.name != provider:
             continue
         selected_model = next(
@@ -2958,6 +3299,7 @@ def _selected_model_from_models_response(
             type=AGENT_EVENT_MODEL_CHANGED,
             thread_id=thread_id,
             provider=provider_info.name,
+            backend=provider_info.backend,
             model=model,
             voice=selected_model.default_output_voice,
             input_format=selected_model.input_format,
@@ -2973,9 +3315,12 @@ def _selected_default_model_for_provider(
     *,
     response: ModelsResponse,
     thread_id: str,
+    backend: str | None,
     provider_name: str,
 ) -> AgentModelChanged | None:
     for provider in response.providers:
+        if backend is not None and provider.backend != backend:
+            continue
         if provider.name != provider_name:
             continue
         model_name = provider.default_model
@@ -2997,6 +3342,7 @@ def _selected_default_model_for_provider(
             type=AGENT_EVENT_MODEL_CHANGED,
             thread_id=thread_id,
             provider=provider.name,
+            backend=provider.backend,
             model=model_name,
             voice=selected_model.default_output_voice,
             input_format=selected_model.input_format,
@@ -3016,6 +3362,7 @@ def _current_model_label(
     if current_model is None:
         return fallback
     return _provider_model_display_name(
+        backend=current_model.backend,
         provider=current_model.provider,
         model=current_model.model,
     )
@@ -3029,6 +3376,8 @@ def _model_info_for_current_selection(
     if response is None or current_model is None:
         return None
     for provider in response.providers:
+        if provider.backend != current_model.backend:
+            continue
         if provider.name != current_model.provider:
             continue
         for model in provider.models:
@@ -3056,7 +3405,8 @@ def _agent_model_changed_for_model(
     ] = DEFAULT_OPENAI_REALTIME_PROTOCOLS,
     output_modalities: Iterable[str] | None = None,
 ) -> AgentModelChanged:
-    provider = _provider_name_for_model(model)
+    model_spec = _parse_process_model_spec(model)
+    provider = model_spec.provider
     input_format, output_format = _configured_realtime_audio_formats(
         provider_name=provider,
         input_audio_format=input_audio_format,
@@ -3077,7 +3427,8 @@ def _agent_model_changed_for_model(
         type=AGENT_EVENT_MODEL_CHANGED,
         thread_id=thread_id,
         provider=provider,
-        model=model,
+        backend=model_spec.backend,
+        model=model_spec.model,
         output_modalities=selected_output_modalities,
         voice=selected_voice,
         input_format=input_format,
@@ -3141,18 +3492,18 @@ def _configured_models_response(
     output_modalities: Iterable[str] | None = None,
 ) -> ModelsResponse:
     selected_output_modalities = _normalize_output_modalities(output_modalities)
-    grouped: dict[str, list[str]] = {}
-    for model in models:
-        grouped.setdefault(_provider_name_for_model(model), []).append(model)
+    grouped = _configured_models_by_provider(_normalize_process_model_specs(models))
     providers: list[AgentProviderInfo] = []
-    for provider_name, provider_models in grouped.items():
+    for (backend_name, provider_name), provider_models in grouped.items():
         providers.append(
             AgentProviderInfo(
                 name=provider_name,
                 friendly_name=provider_name,
+                backend=backend_name,
                 default_model=provider_models[0],
                 models=[
                     _agent_model_info_for_configured_model(
+                        backend_name=backend_name,
                         provider_name=provider_name,
                         model=model,
                         current_model=current_model,
@@ -3178,8 +3529,82 @@ def _configured_models_response(
     )
 
 
+def _configured_models_by_provider(
+    model_specs: Iterable[_ProcessModelSpec],
+) -> dict[tuple[ProcessBackendName, str], list[str]]:
+    grouped: dict[tuple[ProcessBackendName, str], list[str]] = {}
+    for spec in model_specs:
+        models = grouped.setdefault((spec.backend, spec.provider), [])
+        if spec.model not in models:
+            models.append(spec.model)
+    return grouped
+
+
+def _models_response_backend_name(backend: str | None) -> ProcessBackendName | None:
+    if backend is None or backend.strip() == "" or backend == "llm":
+        return "llm"
+    if backend == "codex":
+        return "codex"
+    return None
+
+
+def _filter_models_response_to_configured_models(
+    response: ModelsResponse,
+    *,
+    model_specs: Iterable[_ProcessModelSpec],
+) -> ModelsResponse:
+    grouped = _configured_models_by_provider(model_specs)
+    if len(grouped) == 0:
+        return response
+
+    response_providers: dict[tuple[ProcessBackendName, str], AgentProviderInfo] = {}
+    for provider in response.providers:
+        backend_name = _models_response_backend_name(provider.backend)
+        if backend_name is None:
+            continue
+        response_providers[(backend_name, provider.name)] = provider
+
+    providers: list[AgentProviderInfo] = []
+    for (backend_name, provider_name), configured_models in grouped.items():
+        provider = response_providers.get((backend_name, provider_name))
+        live_models_by_name = (
+            {model.name: model for model in provider.models}
+            if provider is not None
+            else {}
+        )
+        models = [
+            live_models_by_name.get(model)
+            or _agent_model_info_for_configured_model(
+                backend_name=backend_name,
+                provider_name=provider_name,
+                model=model,
+                current_model=None,
+            )
+            for model in configured_models
+        ]
+        providers.append(
+            AgentProviderInfo(
+                name=provider_name,
+                friendly_name=(
+                    provider.friendly_name if provider is not None else provider_name
+                ),
+                description=provider.description if provider is not None else None,
+                backend=backend_name,
+                default_model=configured_models[0],
+                models=models,
+            )
+        )
+
+    return ModelsResponse(
+        type=response.type,
+        source_message_id=response.source_message_id,
+        providers=providers,
+    )
+
+
 def _agent_model_info_for_configured_model(
     *,
+    backend_name: str = "llm",
     provider_name: str,
     model: str,
     current_model: AgentModelChanged | None,
@@ -3218,6 +3643,7 @@ def _agent_model_info_for_configured_model(
         ),
         active=(
             current_model is not None
+            and current_model.backend == backend_name
             and current_model.provider == provider_name
             and current_model.model == model
         ),
@@ -3250,10 +3676,12 @@ def _model_command_options(
         for model in provider.models:
             is_active = (
                 current_model is not None
+                and current_model.backend == provider.backend
                 and current_model.provider == provider.name
                 and current_model.model == model.name
             ) or (current_model is None and model.active)
             command_value = _provider_model_display_name(
+                backend=provider.backend,
                 provider=provider.name,
                 model=model.name,
             )
@@ -3365,18 +3793,31 @@ def _format_provider_list(
 ) -> str:
     lines = ["Providers:"]
     current_provider = current_model.provider if current_model is not None else None
+    current_backend = current_model.backend if current_model is not None else None
     if current_provider is None:
-        current_provider = next(
+        active_provider = next(
             (
-                provider.name
+                provider
                 for provider in providers
                 if any(model.active for model in provider.models)
             ),
             None,
         )
+        if active_provider is not None:
+            current_backend = active_provider.backend
+            current_provider = active_provider.name
     for provider in providers:
-        marker = "*" if provider.name == current_provider else " "
-        lines.append(f"{marker} {provider.name} - {provider.friendly_name}")
+        provider_label = (
+            f"{provider.backend}/{provider.name}"
+            if provider.backend is not None
+            else provider.name
+        )
+        marker = (
+            "*"
+            if provider.backend == current_backend and provider.name == current_provider
+            else " "
+        )
+        lines.append(f"{marker} {provider_label} - {provider.friendly_name}")
     return "\n".join(lines)
 
 
@@ -3387,20 +3828,22 @@ def _format_model_list(
 ) -> str:
     lines = ["Models:"]
     current_provider = current_model.provider if current_model is not None else None
+    current_backend = current_model.backend if current_model is not None else None
     current_model_name = current_model.model if current_model is not None else None
     for provider in providers:
         for model in provider.models:
             marker = (
                 "*"
                 if (
-                    provider.name == current_provider
+                    provider.backend == current_backend
+                    and provider.name == current_provider
                     and model.name == current_model_name
                 )
                 or (current_model is None and model.active)
                 else " "
             )
             lines.append(
-                f"{marker} {_provider_model_display_name(provider=provider.name, model=model.name)}"
+                f"{marker} {_provider_model_display_name(backend=provider.backend, provider=provider.name, model=model.name)}"
             )
     return "\n".join(lines)
 
@@ -3414,17 +3857,20 @@ def _supports_anthropic_builtin_tools(*, model: str) -> bool:
 
 
 def _has_openai_responses_provider(
-    *, models: list[str], llm_participant: str | None
+    *, model_specs: list[_ProcessModelSpec], llm_participant: str | None
 ) -> bool:
     if llm_participant is not None:
         return False
-    return any(_provider_name_for_model(model) == "openai" for model in models)
+    return any(
+        spec.backend == "llm" and spec.provider == "openai" for spec in model_specs
+    )
 
 
 def _build_decision_llm_adapter(
     *,
     decision_model: str,
     api_key: str | None = None,
+    meshagent_project_id: str | None = None,
     log_llm_requests: Optional[bool],
 ) -> LLMAdapter:
     if decision_model.startswith("claude-"):
@@ -3434,10 +3880,32 @@ def _build_decision_llm_adapter(
             log_requests=log_llm_requests,
         )
 
+    client = _openai_proxy_client(
+        api_key=api_key,
+        meshagent_project_id=meshagent_project_id,
+    )
     return OpenAIResponsesAdapter(
         model=decision_model,
         api_key=api_key,
+        client=client,
         log_requests=log_llm_requests,
+    )
+
+
+def _openai_proxy_client(
+    *,
+    api_key: str | None,
+    meshagent_project_id: str | None,
+):
+    if meshagent_project_id is None or meshagent_project_id.strip() == "":
+        return None
+    from meshagent.openai.proxy import resolve_base_url
+    from openai import AsyncOpenAI
+
+    return AsyncOpenAI(
+        base_url=resolve_base_url(None),
+        api_key=api_key,
+        default_headers={_MESHAGENT_PROJECT_ID_HEADER: meshagent_project_id},
     )
 
 
@@ -3686,6 +4154,7 @@ def _build_runtime_agent(
     *,
     client: RoomClient | None,
     api_key: str | None = None,
+    meshagent_project_id: str | None = None,
     runtime: Literal["chatbot", "process"],
     normalized_tool_options: NormalizedRequiredToolOptions,
     model: str | list[str],
@@ -3820,6 +4289,7 @@ def _build_runtime_agent(
         "output_audio_bitrate": output_audio_bitrate,
     }
     if runtime == "process":
+        builder_kwargs["meshagent_project_id"] = meshagent_project_id
         builder_kwargs["thread_storage"] = thread_storage
         builder_kwargs["context_management"] = context_management
         builder_kwargs["compaction_threshold"] = compaction_threshold
@@ -4436,6 +4906,7 @@ def build_process_agent(
     *,
     client: RoomClient | None = None,
     api_key: str | None = None,
+    meshagent_project_id: str | None = None,
     model: str | list[str],
     rule: List[str],
     toolkit: List[str],
@@ -4521,16 +4992,24 @@ def build_process_agent(
     )
     from meshagent.agents.messages import TurnStart, TurnSteer
     from meshagent.agents.process import (
+        AgentBackend,
         AgentSupervisor,
+        LLMBackend,
         LLMAgentProcess,
         Message,
-        agent_provider_info,
     )
+    from meshagent.codex import (
+        AppServerConfig as CodexAppServerConfig,
+        AsyncAppServerClient as CodexAsyncAppServerClient,
+        CodexThreadStorageRepository,
+    )
+    from meshagent.codex.supervisor import CodexBackend
     from meshagent.tools import RoomToolContext, Toolkit
     from meshagent.tools.hosting import _RemoteToolkitWrapper, _start_hosted_toolkit
 
     requirements = []
     toolkits = []
+    thread_storage = _normalize_thread_storage_backend(thread_storage)
 
     if storage_tool_local_paths is None:
         storage_tool_local_paths = []
@@ -4595,7 +5074,19 @@ def build_process_agent(
             except FileNotFoundError:
                 print(f"[yellow]rules file not found at {rules_path}[/yellow]")
 
-    selected_models = _normalize_model_options(model)
+    selected_model_specs = _normalize_process_model_specs(model)
+    llm_model_specs = [spec for spec in selected_model_specs if spec.backend == "llm"]
+    codex_model_specs = [
+        spec for spec in selected_model_specs if spec.backend == "codex"
+    ]
+    has_llm_backend = len(llm_model_specs) > 0
+    has_codex_backend = len(codex_model_specs) > 0
+    if thread_storage == "codex" and has_llm_backend:
+        print("[red]--thread-storage=codex only supports Codex backends[/red]")
+        raise typer.Exit(1)
+    if thread_storage == "meshdocument" and has_codex_backend:
+        print("[red]--thread-storage=meshagent does not support Codex backends[/red]")
+        raise typer.Exit(1)
     realtime_input_format = _audio_format_option(
         audio_format=input_audio_format,
         sample_rate=input_audio_sample_rate,
@@ -4611,7 +5102,7 @@ def build_process_agent(
         selected_output_modalities
     )
     supports_openai_responses_tools = _has_openai_responses_provider(
-        models=selected_models,
+        model_specs=selected_model_specs,
         llm_participant=llm_participant,
     )
     if reasoning_effort is not None and not supports_openai_responses_tools:
@@ -4649,11 +5140,12 @@ def build_process_agent(
     channel_llm_adapter = _build_decision_llm_adapter(
         decision_model=resolved_channel_decision_model,
         api_key=api_key,
+        meshagent_project_id=meshagent_project_id,
         log_llm_requests=log_llm_requests,
     )
 
     llm_providers: list[LLMProvider] = []
-    if llm_participant:
+    if llm_participant and has_llm_backend:
         llm_providers.append(
             LLMProvider(
                 name="remote",
@@ -4667,8 +5159,9 @@ def build_process_agent(
         realtime_models: list[str] = []
         anthropic_models: list[str] = []
         provider_order: list[str] = []
-        for selected_model in selected_models:
-            provider_name = _provider_name_for_model(selected_model)
+        for selected_spec in llm_model_specs:
+            selected_model = selected_spec.model
+            provider_name = selected_spec.provider
             if provider_name not in provider_order:
                 provider_order.append(provider_name)
             if provider_name == "openai-realtime":
@@ -4681,88 +5174,74 @@ def build_process_agent(
             elif selected_model not in openai_models:
                 openai_models.append(selected_model)
 
-        if computer_use or require_computer_use:
-            if not openai_models:
-                print(
-                    "[red]computer use tool is currently only supported by OpenAI Responses models[/red]"
-                )
-                raise typer.Exit(1)
-            default_openai_model = openai_models[0]
-            llm_providers.append(
-                LLMProvider(
-                    name="openai",
-                    adapter=OpenAIResponsesAdapter(
-                        model=default_openai_model,
-                        api_key=api_key,
-                        response_options={
-                            "reasoning": {"summary": "concise"},
-                        },
-                        log_requests=log_llm_requests,
-                        context_management=context_management,
-                        compaction_threshold=compaction_threshold,
-                        max_output_tokens=max_output_tokens,
-                        reasoning_effort=reasoning_effort,
-                        allowed_models=openai_models,
-                    ),
-                )
+        providers_by_name: dict[str, LLMProvider] = {}
+        if openai_models:
+            openai_adapter_kwargs: dict[str, Any] = {}
+            openai_client = _openai_proxy_client(
+                api_key=api_key,
+                meshagent_project_id=meshagent_project_id,
             )
-        else:
-            providers_by_name: dict[str, LLMProvider] = {}
-            if openai_models:
-                providers_by_name["openai"] = LLMProvider(
-                    name="openai",
-                    adapter=OpenAIResponsesAdapter(
-                        model=openai_models[0],
-                        api_key=api_key,
-                        log_requests=log_llm_requests,
-                        context_management=context_management,
-                        compaction_threshold=compaction_threshold,
-                        max_output_tokens=max_output_tokens,
-                        reasoning_effort=reasoning_effort,
-                        allowed_models=openai_models,
+            if openai_client is not None:
+                openai_adapter_kwargs["client"] = openai_client
+            if computer_use or require_computer_use:
+                openai_adapter_kwargs["response_options"] = {
+                    "reasoning": {"summary": "concise"}
+                }
+            providers_by_name["openai"] = LLMProvider(
+                name="openai",
+                adapter=OpenAIResponsesAdapter(
+                    model=openai_models[0],
+                    api_key=api_key,
+                    log_requests=log_llm_requests,
+                    context_management=context_management,
+                    compaction_threshold=compaction_threshold,
+                    max_output_tokens=max_output_tokens,
+                    reasoning_effort=reasoning_effort,
+                    allowed_models=openai_models,
+                    **openai_adapter_kwargs,
+                ),
+            )
+        if realtime_models:
+            providers_by_name["openai-realtime"] = LLMProvider(
+                name="openai-realtime",
+                adapter=OpenAIRealtimeAdapter(
+                    model=realtime_models[0],
+                    api_key=api_key,
+                    log_requests=log_llm_requests,
+                    session_options=_openai_realtime_session_options(
+                        output_modalities=default_realtime_output_modalities
                     ),
-                )
-            if realtime_models:
-                providers_by_name["openai-realtime"] = LLMProvider(
-                    name="openai-realtime",
-                    adapter=OpenAIRealtimeAdapter(
-                        model=realtime_models[0],
-                        api_key=api_key,
-                        log_requests=log_llm_requests,
-                        session_options=_openai_realtime_session_options(
-                            output_modalities=default_realtime_output_modalities
-                        ),
-                        response_options=_openai_realtime_response_options(
-                            output_modalities=default_realtime_output_modalities
-                        ),
-                        supported_output_modalities=selected_output_modalities,
-                        allowed_models=realtime_models,
-                        transcription_model=transcription_model,
-                        turn_detection=turn_detection,
-                        realtime_protocols=realtime_protocols,
-                        **_realtime_adapter_audio_kwargs(
-                            voice=voice,
-                            input_format=realtime_input_format,
-                            output_format=realtime_output_format,
-                        ),
+                    response_options=_openai_realtime_response_options(
+                        output_modalities=default_realtime_output_modalities
                     ),
-                )
-            if anthropic_models:
-                providers_by_name["anthropic"] = LLMProvider(
-                    name="anthropic",
-                    adapter=AnthropicOpenAIResponsesStreamAdapter(
-                        model=anthropic_models[0],
-                        api_key=api_key,
-                        log_requests=log_llm_requests,
-                        allowed_models=anthropic_models,
+                    supported_output_modalities=selected_output_modalities,
+                    allowed_models=realtime_models,
+                    transcription_model=transcription_model,
+                    turn_detection=turn_detection,
+                    realtime_protocols=realtime_protocols,
+                    **_realtime_adapter_audio_kwargs(
+                        voice=voice,
+                        input_format=realtime_input_format,
+                        output_format=realtime_output_format,
                     ),
-                )
-            for provider_name in provider_order:
-                provider = providers_by_name.get(provider_name)
-                if provider is not None:
-                    llm_providers.append(provider)
+                ),
+            )
+        if anthropic_models:
+            providers_by_name["anthropic"] = LLMProvider(
+                name="anthropic",
+                adapter=AnthropicOpenAIResponsesStreamAdapter(
+                    model=anthropic_models[0],
+                    api_key=api_key,
+                    log_requests=log_llm_requests,
+                    allowed_models=anthropic_models,
+                ),
+            )
+        for provider_name in provider_order:
+            provider = providers_by_name.get(provider_name)
+            if provider is not None:
+                llm_providers.append(provider)
 
-    default_provider = llm_providers[0]
+    default_provider = llm_providers[0] if len(llm_providers) > 0 else None
 
     resolved_channels = _resolved_channels(
         runtime="process",
@@ -4786,8 +5265,20 @@ def build_process_agent(
             self._advanced_shell_toolkit: ContainerToolkit | None = None
             self._required_shell_tools: dict[str, BaseTool] = {}
             self._resolved_threading_mode: str | None = None
+            self._started = False
+            self._local_participant = Participant(
+                id="assistant",
+                attributes={"name": "assistant"},
+            )
             if threading_mode != "none":
                 self._resolved_threading_mode = threading_mode
+
+        @property
+        def process_participant(self) -> Participant:
+            room = self._room
+            if room is not None:
+                return room.local_participant
+            return self._local_participant
 
         def _get_required_shell_tool(self, *, model: str) -> BaseTool:
             shell_tool = self._required_shell_tools.get(model)
@@ -4838,20 +5329,21 @@ def build_process_agent(
                 exposed_toolkits.extend(channel.get_exposed_toolkits())
             return exposed_toolkits
 
-        async def start(self, *, room: RoomClient) -> None:
-            if self._room is not None:
+        async def start(self, *, room: RoomClient | None) -> None:
+            if self._started:
                 raise RoomException("agent is already started")
 
+            self._started = True
             self._room = room
-            if require_image_generation:
+            if room is not None and require_image_generation:
                 for provider in llm_providers:
                     if isinstance(provider.adapter, OpenAIResponsesAdapter):
                         provider.adapter.set_images_dataset(
                             ImagesDataset(room.datasets)
                         )
-            if require_mcp:
+            if room is not None and require_mcp:
                 await room.local_participant.set_attribute("supports_mcp", True)
-            if _has_chat_channel(channels=resolved_channels):
+            if room is not None and _has_chat_channel(channels=resolved_channels):
                 self._chat_channel = MessagingChatChannel(
                     room=room,
                     threading_mode=self._resolved_threading_mode,
@@ -4861,6 +5353,8 @@ def build_process_agent(
                 )
             self._mail_channels = []
             for channel_spec in resolved_channels:
+                if room is None:
+                    continue
                 if channel_spec[:5].casefold() != "mail:":
                     continue
                 mail_config = _parse_mail_channel(channel=channel_spec)
@@ -4877,6 +5371,8 @@ def build_process_agent(
                 )
             self._queue_channels = []
             for channel_spec in resolved_channels:
+                if room is None:
+                    continue
                 if channel_spec[:6].casefold() != "queue:":
                     continue
                 queue_config = _parse_queue_channel(channel=channel_spec)
@@ -4892,6 +5388,8 @@ def build_process_agent(
                 )
             self._toolkit_channels = []
             for channel_spec in resolved_channels:
+                if room is None:
+                    continue
                 if channel_spec[:8].casefold() != "toolkit:":
                     continue
                 toolkit_config = _parse_toolkit_channel(channel=channel_spec)
@@ -4904,6 +5402,8 @@ def build_process_agent(
                 )
             self._websocket_channels = []
             for channel_spec in resolved_channels:
+                if room is None:
+                    continue
                 if not _is_websocket_channel(channel_spec):
                     continue
                 self._websocket_channels.append(
@@ -4925,7 +5425,8 @@ def build_process_agent(
             supervisor: AgentSupervisor | None = None
 
             try:
-                await self.install_requirements()
+                if room is not None:
+                    await self.install_requirements()
 
                 env = _build_shell_tool_env(
                     base_env=base_shell_env,
@@ -4934,9 +5435,13 @@ def build_process_agent(
                 )
 
                 if require_shell:
+                    if room is None:
+                        raise RoomException("shell tools require a room")
                     self._shell_env = env
 
                 if require_advanced_shell:
+                    if room is None:
+                        raise RoomException("advanced shell tools require a room")
                     self._advanced_shell_toolkit = ContainerToolkit(
                         room=room,
                         working_dir=working_dir,
@@ -4945,11 +5450,152 @@ def build_process_agent(
                         env=env or None,
                     )
 
-                if room_rules_path is not None:
+                if room is not None and room_rules_path is not None:
                     for room_rules_file in room_rules_path:
                         await self._load_room_rules(path=room_rules_file)
 
-                supervisor = _ProcessSupervisor(agent=self)
+                normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
+                thread_storage_repository = (
+                    _thread_storage_repository_for_backend(
+                        thread_storage=thread_storage,
+                        room=room,
+                        thread_dir=normalized_thread_dir,
+                    )
+                    if normalized_thread_dir is not None
+                    else NoopThreadStorageRepository()
+                )
+
+                async def create_thread_id(
+                    start_thread: StartThread,
+                    sender: Participant | None,
+                ) -> str:
+                    del start_thread
+                    del sender
+                    if normalized_thread_dir is not None:
+                        return _new_process_thread_path_for_dir(
+                            thread_dir=normalized_thread_dir,
+                            thread_storage=thread_storage,
+                        )
+                    generated_path = f"process-run/{uuid.uuid4()}"
+                    if thread_storage == "dataset":
+                        return _dataset_thread_url_for_path(path=generated_path)
+                    if thread_storage == "none":
+                        return _thread_url_for_path(scheme="tmp", path=generated_path)
+                    return f"/{generated_path}.thread"
+
+                async def create_realtime_connection(
+                    thread_id: str,
+                    start_thread: StartThread,
+                    sender: Participant | None,
+                ) -> AgentRealtimeConnectionInfo | None:
+                    del thread_id
+                    del sender
+                    protocol = start_thread.realtime_protocol
+                    if protocol is None:
+                        return None
+                    if default_provider is None:
+                        raise RoomException("no LLM backend supports realtime")
+                    provider = default_provider
+                    if (
+                        start_thread.provider is not None
+                        and start_thread.provider.strip() != ""
+                    ):
+                        provider = next(
+                            (
+                                candidate
+                                for candidate in llm_providers
+                                if candidate.name == start_thread.provider
+                            ),
+                            None,
+                        )
+                        if provider is None:
+                            raise RoomException(
+                                f"unknown provider {start_thread.provider!r}"
+                            )
+                    model = start_thread.model
+                    resolved_model = (
+                        provider.adapter.default_model()
+                        if model is None or model.strip() == ""
+                        else model
+                    )
+                    connection = await provider.adapter.create_realtime_connection(
+                        protocol=protocol,
+                        model=resolved_model,
+                    )
+                    return AgentRealtimeConnectionInfo(
+                        protocol=connection.protocol,
+                        url=connection.url,
+                        headers=connection.headers,
+                        web_only_protocol=connection.web_only_protocol,
+                    )
+
+                codex_backend: CodexBackend | None = None
+                if has_codex_backend:
+                    codex_thread_storage = (
+                        "codex"
+                        if thread_storage == "codex"
+                        else "dataset"
+                        if thread_storage == "dataset"
+                        else "none"
+                    )
+                    codex_backend = CodexBackend(
+                        participant=self.process_participant,
+                        config=CodexAppServerConfig(
+                            cwd=working_dir,
+                            client_name="meshagent_process_codex",
+                            client_title="MeshAgent Process Codex",
+                        ),
+                        client_factory=CodexAsyncAppServerClient,
+                        default_model=codex_model_specs[0].model,
+                        provider_name=codex_model_specs[0].provider,
+                        provider_friendly_name="OpenAI Codex",
+                        thread_storage=codex_thread_storage,
+                        thread_dir=normalized_thread_dir,
+                        room=room,
+                    )
+
+                agent_backends: list[AgentBackend] = []
+                llm_backend: LLMBackend | None = None
+                if default_provider is not None:
+                    llm_backend = LLMBackend(
+                        providers=llm_providers,
+                        default_provider=default_provider,
+                        process_factory=lambda thread_id, backend_name: (
+                            supervisor.create_llm_thread_process(
+                                thread_id=thread_id,
+                                backend_name=backend_name,
+                            )
+                        ),
+                        thread_id_factory=create_thread_id,
+                        realtime_connection_factory=create_realtime_connection,
+                    )
+
+                for spec in selected_model_specs:
+                    if spec.backend == "llm" and llm_backend is not None:
+                        if llm_backend not in agent_backends:
+                            agent_backends.append(llm_backend)
+                    elif spec.backend == "codex" and codex_backend is not None:
+                        if codex_backend not in agent_backends:
+                            agent_backends.append(codex_backend)
+
+                if len(agent_backends) == 0:
+                    raise RoomException("no process backends are configured")
+
+                if thread_storage == "codex":
+                    if codex_backend is None:
+                        raise RoomException(
+                            "--thread-storage=codex requires a Codex backend"
+                        )
+                    thread_storage_repository = CodexThreadStorageRepository(
+                        client_provider=lambda: codex_backend.client,
+                        default_model=lambda: codex_backend.default_model,
+                    )
+
+                supervisor = _ProcessSupervisor(
+                    agent=self,
+                    thread_storage_repository=thread_storage_repository,
+                    agent_backends=agent_backends,
+                )
                 if self._chat_channel is not None:
                     supervisor.add_channel(self._chat_channel)
                 for mail_channel in self._mail_channels:
@@ -4986,6 +5632,8 @@ def build_process_agent(
 
                 self._exposed_toolkits = await self.get_exposed_toolkits()
                 for toolkit in self._exposed_toolkits:
+                    if room is None:
+                        continue
                     hosted_toolkit = await _start_hosted_toolkit(
                         room=room,
                         toolkit=toolkit,
@@ -5010,6 +5658,7 @@ def build_process_agent(
                 self._websocket_channels = []
                 self._advanced_shell_toolkit = None
                 self._room = None
+                self._started = False
                 raise
 
         async def stop(self) -> None:
@@ -5036,6 +5685,7 @@ def build_process_agent(
                 self._advanced_shell_toolkit = None
                 self._shell_env = dict(base_shell_env)
                 await super().stop()
+                self._started = False
 
         async def init_session(self) -> AgentSessionContext:
             from meshagent.cli.helper import init_context_from_spec
@@ -5169,36 +5819,30 @@ def build_process_agent(
                     add_tool(toolkit_name="script", tool=script_tool)
 
             if require_image_generation:
-                if not _supports_openai_responses_builtin_tools(model=model):
-                    raise ValueError(
-                        "image generation tool is only supported by OpenAI Responses models"
+                if _supports_openai_responses_builtin_tools(model=model):
+                    add_tool(
+                        toolkit_name="image_generation",
+                        tool=ImageGenerationTool(
+                            model=require_image_generation,
+                            partial_images=3,
+                        ),
                     )
-                add_tool(
-                    toolkit_name="image_generation",
-                    tool=ImageGenerationTool(
-                        model=require_image_generation,
-                        partial_images=3,
-                    ),
-                )
 
             if require_apply_patch:
-                if not _supports_openai_responses_builtin_tools(model=model):
-                    raise ValueError(
-                        "apply patch tool is only supported by OpenAI Responses models"
-                    )
-                add_tool(
-                    toolkit_name="apply_patch",
-                    tool=ApplyPatchTool(
-                        storage=StorageToolkit(
-                            mounts=_require_storage_tool_mounts(
-                                room=client or self.room,
-                                local_paths=storage_tool_local_paths,
-                                room_paths=storage_tool_room_paths,
-                                default_room_mount=True,
+                if _supports_openai_responses_builtin_tools(model=model):
+                    add_tool(
+                        toolkit_name="apply_patch",
+                        tool=ApplyPatchTool(
+                            storage=StorageToolkit(
+                                mounts=_require_storage_tool_mounts(
+                                    room=client or self.room,
+                                    local_paths=storage_tool_local_paths,
+                                    room_paths=storage_tool_room_paths,
+                                    default_room_mount=True,
+                                )
                             )
-                        )
-                    ),
-                )
+                        ),
+                    )
 
             if require_shell:
                 add_tool(
@@ -5213,10 +5857,6 @@ def build_process_agent(
                     add_toolkit(AnthropicMessagesMCPToolkit())
                 elif _supports_openai_responses_builtin_tools(model=model):
                     add_toolkit(OpenAIResponsesMCPToolkit())
-                else:
-                    raise ValueError(
-                        "MCP tools are only supported by OpenAI Responses and Anthropic models"
-                    )
 
             if require_web_search:
                 if _supports_anthropic_builtin_tools(model=model):
@@ -5229,10 +5869,6 @@ def build_process_agent(
                         toolkit_name="web_search",
                         tool=WebSearchTool(),
                     )
-                else:
-                    raise ValueError(
-                        "web search is only supported by OpenAI Responses and Anthropic models"
-                    )
 
             if require_web_fetch:
                 if _supports_anthropic_builtin_tools(model=model):
@@ -5242,10 +5878,6 @@ def build_process_agent(
                     )
                 elif _supports_openai_responses_builtin_tools(model=model):
                     add_tool(toolkit_name="web_fetch", tool=WebFetchTool())
-                else:
-                    raise ValueError(
-                        "web fetch is only supported by OpenAI Responses and Anthropic models"
-                    )
 
             if require_storage:
                 add_toolkit(
@@ -5324,7 +5956,9 @@ def build_process_agent(
 
                 add_toolkit(DiscoveryToolkit(room=self.room))
 
-            if require_computer_use:
+            if require_computer_use and _supports_openai_responses_builtin_tools(
+                model=model
+            ):
                 from meshagent.agents.images_dataset import ImagesDataset
                 from meshagent.agents.messages import (
                     AGENT_EVENT_THREAD_EVENT,
@@ -5402,14 +6036,17 @@ def build_process_agent(
                         )
                     )
 
-            required_toolkits = await self.get_required_toolkits(
-                context=RoomToolContext(
-                    room=self.room,
-                    caller=self.room.local_participant,
-                    on_behalf_of=sender,
-                    event_handler=handle_tool_event,
+            required_toolkits: list[Toolkit] = []
+            room = self._room
+            if room is not None:
+                required_toolkits = await self.get_required_toolkits(
+                    context=RoomToolContext(
+                        room=room,
+                        caller=room.local_participant,
+                        on_behalf_of=sender,
+                        event_handler=handle_tool_event,
+                    )
                 )
-            )
 
             combined_toolkits: list[Toolkit] = [*toolkits]
             combined_toolkits.extend(built_required_toolkits)
@@ -5420,19 +6057,27 @@ def build_process_agent(
             return combined_toolkits
 
     class _ProcessSupervisor(AgentSupervisor):
-        def __init__(self, *, agent: CustomProcessAgent) -> None:
-            super().__init__()
+        def __init__(
+            self,
+            *,
+            agent: CustomProcessAgent,
+            thread_storage_repository,
+            agent_backends: list[AgentBackend],
+        ) -> None:
+            super().__init__(
+                thread_storage_repository=thread_storage_repository,
+                agent_backends=agent_backends,
+            )
             self._agent = agent
             self._local_event_queues: list[asyncio.Queue[Message]] = []
             self._thread_delete_watch_task: asyncio.Task[None] | None = None
 
         async def on_start(self) -> None:
             await super().on_start()
-            storage_class = _thread_storage_class_for_backend(thread_storage)
-            if storage_class is None or thread_dir is None:
+            if self.thread_storage_repository.is_ephemeral:
                 return
             self._thread_delete_watch_task = asyncio.create_task(
-                self._watch_thread_deletes(storage_class=storage_class)
+                self._watch_thread_deletes()
             )
 
         async def on_stop(self) -> None:
@@ -5444,14 +6089,9 @@ def build_process_agent(
                     await watch_task
             await super().on_stop()
 
-        async def _watch_thread_deletes(self, *, storage_class) -> None:
-            if thread_dir is None:
-                return
+        async def _watch_thread_deletes(self) -> None:
             try:
-                async for event in storage_class.watch_threads(
-                    room=self._agent.room,
-                    thread_dir=thread_dir,
-                ):
+                async for event in self.thread_storage_repository.watch_threads():
                     if event.type != "deleted":
                         continue
                     async with self._route_lock:
@@ -5460,73 +6100,6 @@ def build_process_agent(
                 raise
             except Exception as ex:
                 logger.debug("thread delete watch stopped: %s", ex)
-
-        async def on_thread_deleted(
-            self,
-            *,
-            delete_thread: DeleteThread,
-            sender: Participant | None,
-        ) -> None:
-            del sender
-            storage_class = _thread_storage_class_for_backend(thread_storage)
-            normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
-            if storage_class is None or normalized_thread_dir is None:
-                return
-            await storage_class.delete_thread(
-                room=self._agent.room,
-                thread_dir=normalized_thread_dir,
-                path=delete_thread.thread_id,
-            )
-
-        async def on_thread_renamed(
-            self,
-            *,
-            rename_thread: RenameThread,
-            sender: Participant | None,
-        ) -> ThreadListEntry | None:
-            del sender
-            storage_class = _thread_storage_class_for_backend(thread_storage)
-            normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
-            if storage_class is None or normalized_thread_dir is None:
-                return
-            name = " ".join(rename_thread.name.split())
-            if name == "":
-                return
-            await storage_class.rename_thread(
-                room=self._agent.room,
-                thread_dir=normalized_thread_dir,
-                path=rename_thread.thread_id,
-                name=name,
-            )
-            return ThreadListEntry(
-                path=rename_thread.thread_id,
-                name=name,
-                created_at="",
-                modified_at=datetime.now(timezone.utc).isoformat(),
-            )
-
-        async def list_threads(
-            self,
-            *,
-            list_threads: ListThreads,
-            sender: Participant | None,
-        ) -> ThreadListPage:
-            del sender
-            storage_class = _thread_storage_class_for_backend(thread_storage)
-            normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
-            if storage_class is None or normalized_thread_dir is None:
-                return ThreadListPage(
-                    threads=[],
-                    total=0,
-                    offset=list_threads.offset,
-                    limit=list_threads.limit,
-                )
-            return await storage_class.list_threads(
-                room=self._agent.room,
-                thread_dir=normalized_thread_dir,
-                limit=list_threads.limit,
-                offset=list_threads.offset,
-            )
 
         def subscribe_local_events(self) -> asyncio.Queue[Message]:
             queue: asyncio.Queue[Message] = asyncio.Queue()
@@ -5541,10 +6114,32 @@ def build_process_agent(
             for queue in [*self._local_event_queues]:
                 queue.put_nowait(message)
 
-        def _send_to_channels(self, message: Message) -> None:
-            if isinstance(message.data, ThreadsListed):
-                self._send_to_local_event_queues(message)
-            super()._send_to_channels(message)
+        def _send_thread_list_response(
+            self,
+            *,
+            request: Message,
+            response: ThreadsListed,
+        ) -> None:
+            if request.source is None and len(self._local_event_queues) > 0:
+                self._send_to_local_event_queues(
+                    Message(data=response, sender=request.sender)
+                )
+                return
+            super()._send_thread_list_response(request=request, response=response)
+
+        def _send_models_response(self, message: Message) -> None:
+            if isinstance(message.data, ModelsResponse):
+                message = Message(
+                    data=_filter_models_response_to_configured_models(
+                        message.data,
+                        model_specs=selected_model_specs,
+                    ),
+                    sender=message.sender,
+                    source=message.source,
+                    to_participant_id=message.to_participant_id,
+                )
+            self._send_to_local_event_queues(message)
+            super()._send_models_response(message)
 
         def send(self, message: Message) -> None:
             if message.source is not None:
@@ -5579,180 +6174,18 @@ def build_process_agent(
             )
             self._send_to_channels(Message(data=thread_started, sender=sender))
 
-        async def create_thread_id(
-            self,
-            *,
-            start_thread: StartThread,
-            sender: Participant | None,
-        ) -> str:
-            del start_thread
-            del sender
-            normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
-            if normalized_thread_dir is not None:
-                return _new_process_thread_path_for_dir(
-                    thread_dir=normalized_thread_dir,
-                    thread_storage=thread_storage,
-                )
-            generated_path = f"process-run/{uuid.uuid4()}"
-            if thread_storage == "dataset":
-                return _dataset_thread_url_for_path(path=generated_path)
-            if thread_storage == "none":
-                return _thread_url_for_path(scheme="tmp", path=generated_path)
-            return f"/{generated_path}.thread"
+        def thread_list_name_for_start_thread(self, start_thread: StartThread) -> str:
+            return _start_thread_list_name(start_thread)
 
-        async def on_thread_started(
+        def create_llm_thread_process(
             self,
             *,
             thread_id: str,
-            start_thread: StartThread,
-            sender: Participant | None,
-        ) -> ThreadListEntry | None:
-            del sender
-            storage_class = _thread_storage_class_for_backend(thread_storage)
-            normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
-            if storage_class is None or normalized_thread_dir is None:
-                return
-            await storage_class.upsert_thread(
-                room=self._agent.room,
-                thread_dir=normalized_thread_dir,
-                path=thread_id,
-                name=_start_thread_list_name(start_thread),
-            )
-            now = datetime.now(timezone.utc).isoformat()
-            return ThreadListEntry(
-                path=thread_id,
-                name=_start_thread_list_name(start_thread),
-                created_at=now,
-                modified_at=now,
-            )
+            backend_name: str,
+        ) -> LLMAgentProcess:
+            if default_provider is None:
+                raise RuntimeError("LLM backend is not configured")
 
-        async def on_models_request(self, message: Message) -> None:
-            if not isinstance(message.data, ModelsRequest):
-                return
-            default_model = default_provider.adapter.default_model()
-            response_message = Message(
-                data=ModelsResponse(
-                    type=AGENT_MESSAGE_MODELS_RESPONSE,
-                    source_message_id=message.data.message_id,
-                    providers=[
-                        agent_provider_info(
-                            provider=provider,
-                            current_provider=default_provider.name,
-                            current_model=default_model,
-                        )
-                        for provider in llm_providers
-                    ],
-                ),
-                sender=message.sender,
-            )
-            self._send_to_local_event_queues(response_message)
-            self._send_to_channels(response_message)
-
-        async def validate_turn_start(self, turn_start: TurnStart) -> AgentError | None:
-            provider = default_provider
-            if turn_start.provider is not None and turn_start.provider.strip() != "":
-                provider = next(
-                    (
-                        candidate
-                        for candidate in llm_providers
-                        if candidate.name == turn_start.provider
-                    ),
-                    None,
-                )
-                if provider is None:
-                    return AgentError(
-                        message=f"unknown provider {turn_start.provider!r}",
-                        code="unknown_provider",
-                    )
-
-            model = turn_start.model
-            if model is None or model.strip() == "":
-                resolved_model = provider.adapter.default_model()
-            else:
-                resolved_model = model
-
-            model_info = next(
-                (
-                    candidate
-                    for candidate in provider.adapter.list_models()
-                    if candidate.name == resolved_model
-                ),
-                None,
-            )
-            if model_info is None:
-                names = ", ".join(
-                    model_info.name for model_info in provider.adapter.list_models()
-                )
-                return AgentError(
-                    message=(
-                        f"unknown model {resolved_model!r} for provider {provider.name!r}; "
-                        f"available models: {names}"
-                    ),
-                    code="unknown_model",
-                )
-            unsupported_output_modalities = [
-                output
-                for output in (turn_start.output_modalities or [])
-                if output not in model_info.modalities
-            ]
-            if len(unsupported_output_modalities) > 0:
-                unsupported = ", ".join(
-                    repr(item) for item in unsupported_output_modalities
-                )
-                return AgentError(
-                    message=(
-                        f"model {model_info.name!r} does not support "
-                        f"{unsupported} output modalities"
-                    ),
-                    code="unsupported_modality",
-                )
-            return None
-
-        async def create_realtime_connection(
-            self,
-            *,
-            thread_id: str,
-            start_thread: StartThread,
-            sender: Participant | None,
-        ) -> AgentRealtimeConnectionInfo | None:
-            del thread_id
-            del sender
-            protocol = start_thread.realtime_protocol
-            if protocol is None:
-                return None
-            provider = default_provider
-            if (
-                start_thread.provider is not None
-                and start_thread.provider.strip() != ""
-            ):
-                provider = next(
-                    (
-                        candidate
-                        for candidate in llm_providers
-                        if candidate.name == start_thread.provider
-                    ),
-                    None,
-                )
-                if provider is None:
-                    raise RoomException(f"unknown provider {start_thread.provider!r}")
-            model = start_thread.model
-            resolved_model = (
-                provider.adapter.default_model()
-                if model is None or model.strip() == ""
-                else model
-            )
-            connection = await provider.adapter.create_realtime_connection(
-                protocol=protocol,
-                model=resolved_model,
-            )
-            return AgentRealtimeConnectionInfo(
-                protocol=connection.protocol,
-                url=connection.url,
-                headers=connection.headers,
-                web_only_protocol=connection.web_only_protocol,
-            )
-
-        def create_thread_process(self, thread_id: str) -> LLMAgentProcess:
             async def _turn_instructions_provider(
                 participant: Participant | None,
             ) -> str | None:
@@ -5765,16 +6198,21 @@ def build_process_agent(
             def publish_thread_status(message) -> None:
                 self.send(Message(data=message, source=process))
 
+            room = self._agent.room
+            thread_storage_instance = None
+            if room is not None:
+                thread_storage_instance = create_thread_storage(
+                    room=room,
+                    thread_id=thread_id,
+                )
             process = LLMAgentProcess(
                 thread_id=thread_id,
-                participant=self._agent.room.local_participant,
+                participant=self._agent.process_participant,
                 llm_providers=llm_providers,
                 default_provider=default_provider,
+                backend_name=backend_name,
                 toolkits=[*toolkits],
-                thread_storage=create_thread_storage(
-                    room=self._agent.room,
-                    thread_id=thread_id,
-                ),
+                thread_storage=thread_storage_instance,
                 thread_status_publisher=AgentMessageThreadStatusPublisher(
                     thread_id=thread_id,
                     publish=publish_thread_status,
@@ -5790,7 +6228,8 @@ def build_process_agent(
                     )
                 ),
             )
-            process.register_content_scheme(_room_content_scheme(room=self._agent.room))
+            if room is not None:
+                process.register_content_scheme(_room_content_scheme(room=room))
             return process
 
     return CustomProcessAgent
@@ -9626,9 +10065,7 @@ async def chat_with(
             await account_client.close()
 
 
-@app.async_command(
-    "run", help="Join a room, run a process-backed agent, and wait for messages."
-)
+@app.async_command("run", help="Run a process-backed agent and wait for messages.")
 async def run(
     *,
     project_id: ProjectIdOption,
@@ -9856,7 +10293,7 @@ async def run(
     ] = None,
     threading_mode: ThreadingModeOption = "default-new",
     thread_dir: ThreadDirOption = None,
-    thread_storage: ThreadStorageOption = "meshdocument",
+    thread_storage: ProcessRunThreadStorageOption = None,
     context_management: ContextManagementOption = "auto",
     compaction_threshold: CompactionThresholdOption = None,
     max_output_tokens: MaxOutputTokensOption = 32000,
@@ -9901,6 +10338,16 @@ async def run(
             help="Persist realtime audio input chunks to dataset thread storage as binary attachments.",
         ),
     ] = False,
+    no_room: Annotated[
+        bool,
+        typer.Option(
+            "--no-room",
+            help=(
+                "Run locally without connecting to a room. Fails if room-backed "
+                "storage, channels, or tools are configured."
+            ),
+        ),
+    ] = False,
     websocket_auth: Annotated[
         WebSocketAuthMode,
         typer.Option(
@@ -9941,11 +10388,17 @@ async def run(
         runtime=runtime,
         channel=channel,
     )
+    if runtime == "process" and len(resolved_channels) == 0:
+        resolved_channels = ["memory"]
     websocket_run_channel = _process_run_websocket_channel(channels=resolved_channels)
-    if runtime == "process" and not _has_chat_channel(channels=resolved_channels):
+    if (
+        runtime == "process"
+        and not _has_chat_channel(channels=resolved_channels)
+        and not _has_memory_channel(channels=resolved_channels)
+    ):
         if websocket_run_channel is None:
             raise typer.BadParameter(
-                "--channel=chat or --channel=websocket:PORT is required"
+                "--channel=chat, --channel=memory, or --channel=websocket:PORT is required"
             )
     working_dir = _resolve_working_dir_option(
         working_dir=working_dir,
@@ -9959,11 +10412,18 @@ async def run(
         runtime=runtime,
         dataset_namespace=dataset_namespace,
     )
+    resolved_thread_storage: ThreadStorageBackend = (
+        thread_storage
+        if thread_storage is not None
+        else "none"
+        if no_room
+        else "meshdocument"
+    )
     resolved_threading_mode, resolved_thread_dir = _resolve_process_threading_options(
         agent_name=agent_name,
         threading_mode=threading_mode,
         thread_dir=thread_dir,
-        thread_storage=thread_storage,
+        thread_storage=resolved_thread_storage,
     )
     normalized_tool_options = normalize_required_tool_options(
         toolkit=toolkit,
@@ -9988,31 +10448,79 @@ async def run(
         storage=storage,
         require_storage=require_storage,
     )
-    room = _require_resolved_room(resolve_room(room))
+    if no_room and room is not None and room.strip() != "":
+        raise typer.BadParameter("--room cannot be used with --no-room")
+    if no_room:
+        _require_process_run_can_skip_room(
+            runtime=runtime,
+            channels=resolved_channels,
+            thread_storage=resolved_thread_storage,
+            normalized_tool_options=normalized_tool_options,
+            require_read_only_storage=require_read_only_storage,
+            require_table_read=require_table_read,
+            require_table_write=require_table_write,
+            use_memory=use_memory,
+            room_rules=room_rules,
+            discover_script_tools=discover_script_tools,
+            storage_tool_room_path=storage_tool_room_path,
+            shell_room_mount=shell_room_mount,
+            shell_tool_room_path=shell_tool_room_path,
+            require_document_authoring=require_document_authoring,
+            require_discovery=require_discovery,
+            require_advanced_shell=require_advanced_shell,
+            llm_participant=llm_participant,
+            delegate_shell_token=delegate_shell_token,
+            verbose_dataset=verbose_dataset,
+            save_audio_input=save_audio_input,
+        )
+        room_name: str | None = None
+    else:
+        room_name = _require_resolved_room(resolve_room(room))
 
-    key = await resolve_key(project_id=project_id, key=key)
-    account_client = await get_client()
+    selected_model_specs = _normalize_process_model_specs(model)
+    has_llm_backend = any(spec.backend == "llm" for spec in selected_model_specs)
+
+    key = None if no_room else await resolve_key(project_id=project_id, key=key)
+    account_client = None if no_room else await get_client()
     try:
-        project_id = await resolve_project_id(project_id=project_id)
-
-        jwt = os.getenv("MESHAGENT_TOKEN")
-        if jwt is None:
-            if agent_name is None:
+        meshagent_project_id = (
+            await resolve_project_id(project_id=project_id)
+            if no_room and has_llm_backend
+            else None
+        )
+        if no_room and has_llm_backend:
+            jwt = await _resolve_process_access_token()
+            if jwt is None:
                 print(
-                    "[bold red]--agent-name must be specified when the MESHAGENT_TOKEN environment variable is not set[/bold red]"
+                    "[bold red]No MeshAgent token or OAuth access token available. "
+                    "Set MESHAGENT_TOKEN or run `meshagent auth login` first.[/bold red]"
                 )
                 raise typer.Exit(1)
+        elif no_room:
+            jwt = await _resolve_process_access_token()
+        else:
+            project_id = await resolve_project_id(project_id=project_id)
 
-            token = ParticipantToken(
-                name=agent_name,
-            )
+            jwt = os.getenv("MESHAGENT_TOKEN")
+            if jwt is None:
+                if agent_name is None:
+                    print(
+                        "[bold red]--agent-name must be specified when the MESHAGENT_TOKEN environment variable is not set[/bold red]"
+                    )
+                    raise typer.Exit(1)
 
-            token.add_api_grant(ApiScope.agent_default(tunnels=require_computer_use))
+                token = ParticipantToken(
+                    name=agent_name,
+                )
 
-            token.add_role_grant(role=role)
-            token.add_room_grant(room)
+                token.add_api_grant(
+                    ApiScope.agent_default(tunnels=require_computer_use)
+                )
 
-            jwt = token.to_jwt(api_key=key)
+                token.add_role_grant(role=role)
+                token.add_room_grant(room_name)
+
+                jwt = token.to_jwt(api_key=key)
 
         default_room_storage_mount = bool(
             normalized_tool_options["require_storage"] or require_read_only_storage
@@ -10033,15 +10541,18 @@ async def run(
             config_paths=shell_tool_config_mount,
         )
 
-        client = RoomClient(
-            protocol_factory=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room),
-                token=jwt,
-            ).create_factory()
-        )
+        client = None
+        if room_name is not None:
+            client = RoomClient(
+                protocol_factory=WebSocketClientProtocol(
+                    url=websocket_room_url(room_name=room_name),
+                    token=jwt,
+                ).create_factory()
+            )
         CustomChatbot = _build_runtime_agent(
             client=client,
             api_key=jwt,
+            meshagent_project_id=meshagent_project_id,
             runtime=runtime,
             normalized_tool_options=normalized_tool_options,
             model=model,
@@ -10079,7 +10590,7 @@ async def run(
             always_reply=always_reply,
             threading_mode=resolved_threading_mode,
             thread_dir=resolved_thread_dir,
-            thread_storage=thread_storage,
+            thread_storage=resolved_thread_storage,
             context_management=context_management,
             compaction_threshold=compaction_threshold,
             max_output_tokens=max_output_tokens,
@@ -10104,14 +10615,14 @@ async def run(
 
         bot = CustomChatbot()
 
-        async def run_interactive_session(client: RoomClient) -> None:
+        async def run_interactive_session(client: "RoomClient | None") -> None:
             if runtime == "process":
                 process_tui_kwargs: dict[str, Any] = {
                     "bot": bot,
                     "room": client,
                     "model": model,
                     "thread_path": thread_path,
-                    "thread_storage": thread_storage,
+                    "thread_storage": resolved_thread_storage,
                     "agent_name": agent_name,
                     "thread_dir": resolved_thread_dir,
                     "threading_mode": resolved_threading_mode,
@@ -10151,6 +10662,8 @@ async def run(
                     )
                     process_tui_kwargs["output_audio_bitrate"] = output_audio_bitrate
                 if websocket_run_channel is not None:
+                    if client is None:
+                        raise RoomException("websocket channel requires a room")
                     process_tui_kwargs[
                         "chat_client"
                     ] = await _open_process_run_websocket_chat_session(
@@ -10160,7 +10673,7 @@ async def run(
                         websocket_auth=websocket_auth,
                         iap_token=jwt,
                         thread_path=thread_path,
-                        thread_storage=thread_storage,
+                        thread_storage=resolved_thread_storage,
                         agent_name=agent_name,
                         thread_dir=resolved_thread_dir,
                         threading_mode=resolved_threading_mode,
@@ -10169,15 +10682,21 @@ async def run(
                     _run_process_run_tui(**process_tui_kwargs)
                 )
             else:
+                if client is None or room_name is None:
+                    raise RoomException("chatbot runtime requires a room")
                 interaction_task = asyncio.create_task(
                     chat_with(
                         participant_name=client.local_participant.get_attribute("name"),
-                        room=room,
+                        room=room_name,
                         project_id=project_id,
                         thread_path=thread_path,
                         message=message,
                     )
                 )
+
+            if client is None:
+                await interaction_task
+                return
 
             done, pending = await asyncio.wait(
                 [
@@ -10194,11 +10713,18 @@ async def run(
                 task.result()
 
         try:
-            await _run_agent_room_session(
-                client=client,
-                bot=bot,
-                runner=run_interactive_session,
-            )
+            if client is None:
+                await bot.start(room=None)
+                try:
+                    await run_interactive_session(None)
+                finally:
+                    await _await_cleanup(bot.stop(), label="agent stop")
+            else:
+                await _run_agent_room_session(
+                    client=client,
+                    bot=bot,
+                    runner=run_interactive_session,
+                )
         except KeyboardInterrupt:
             return
 
@@ -10206,7 +10732,8 @@ async def run(
         return
 
     finally:
-        await account_client.close()
+        if account_client is not None:
+            await account_client.close()
 
 
 @app.async_command(
@@ -10269,9 +10796,8 @@ async def list_threads_command(
             project_id=project_id,
             room=room,
         )
-        page = await storage_class.list_threads(
-            room=user_client,
-            thread_dir=resolved_thread_dir,
+        repository = storage_class(room=user_client, thread_dir=resolved_thread_dir)
+        page = await repository.list_threads(
             limit=limit,
             offset=offset,
         )
