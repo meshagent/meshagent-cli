@@ -1,6 +1,8 @@
 import asyncio
 import base64
 import io
+import subprocess
+from pathlib import Path
 
 import pytest
 import typer
@@ -23,6 +25,7 @@ from meshagent.agents.messages import (
     AGENT_EVENT_TURN_STARTED,
     AGENT_MESSAGE_THREAD_START,
     AgentError,
+    AgentFileContent,
     AgentGeneratedImage,
     AgentThreadEvent,
     AgentThreadStatus,
@@ -50,7 +53,8 @@ class _PromptSendSession:
         self.sent_text: str | None = None
         self.turn_finished = asyncio.Event()
 
-    async def send_text(self, *, text: str) -> str:
+    async def send_text(self, *, text: str, attachments=None) -> str:
+        del attachments
         self.sent_text = text
         return "message-1"
 
@@ -1031,7 +1035,12 @@ def _png_data_uri(color: str) -> str:
     return f"data:image/png;base64,{base64.b64encode(image_data).decode('ascii')}"
 
 
-def test_agent_message_session_renders_image_generation_data_uri_as_ascii() -> None:
+def _pdf_data_uri() -> str:
+    pdf_data = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n"
+    return f"data:application/pdf;base64,{base64.b64encode(pdf_data).decode('ascii')}"
+
+
+def test_agent_message_session_preserves_image_generation_data_uri() -> None:
     image_uri = _png_data_uri("red")
     client = ask_module.LocalChatClient(
         thread_path="/threads/test.thread",
@@ -1056,8 +1065,8 @@ def test_agent_message_session_renders_image_generation_data_uri_as_ascii() -> N
     assert len(session.messages) == 1
     assert session.messages[0].role == "assistant"
     assert session.messages[0].kind == "image"
-    assert session.messages[0].text.strip() != ""
-    assert "\x1b[" in session.messages[0].text
+    assert session.messages[0].text == ""
+    assert session.messages[0].attachment_uris == (image_uri,)
 
 
 def test_agent_message_session_preserves_image_generation_dataset_uri() -> None:
@@ -1088,9 +1097,10 @@ def test_agent_message_session_preserves_image_generation_dataset_uri() -> None:
 
     assert len(session.messages) == 1
     assert session.messages[0].role == "assistant"
-    assert session.messages[0].kind == "text"
-    assert session.messages[0].text == (
-        "[attachment] dataset://agents/demo/images?id=image-1"
+    assert session.messages[0].kind == "image"
+    assert session.messages[0].text == ""
+    assert session.messages[0].attachment_uris == (
+        "dataset://agents/demo/images?id=image-1",
     )
 
 
@@ -1120,9 +1130,10 @@ def test_agent_message_session_preserves_partial_image_generation_dataset_uri() 
 
     assert len(session.messages) == 1
     assert session.messages[0].role == "assistant"
-    assert session.messages[0].kind == "text"
-    assert session.messages[0].text == (
-        "[attachment] dataset://agents/demo/images?id=image-1"
+    assert session.messages[0].kind == "image"
+    assert session.messages[0].text == ""
+    assert session.messages[0].attachment_uris == (
+        "dataset://agents/demo/images?id=image-1",
     )
 
 
@@ -1149,7 +1160,7 @@ def test_agent_message_session_keeps_latest_image_generation_preview_or_final() 
             image=AgentGeneratedImage(uri=first_uri, mime_type="image/png"),
         )
     )
-    first_preview = session.messages[0].text
+    first_preview = session.messages[0].attachment_uris
     session.add_agent_message(
         ask_module.AgentImageGenerationPartial(
             type=ask_module.AGENT_EVENT_IMAGE_GENERATION_PARTIAL,
@@ -1159,7 +1170,7 @@ def test_agent_message_session_keeps_latest_image_generation_preview_or_final() 
             image=AgentGeneratedImage(uri=latest_uri, mime_type="image/png"),
         )
     )
-    latest_preview = session.messages[0].text
+    latest_preview = session.messages[0].attachment_uris
     session.add_agent_message(
         ask_module.AgentImageGenerationCompleted(
             type=ask_module.AGENT_EVENT_IMAGE_GENERATION_COMPLETED,
@@ -1173,7 +1184,7 @@ def test_agent_message_session_keeps_latest_image_generation_preview_or_final() 
     assert len(session.messages) == 1
     assert session.messages[0].kind == "image"
     assert first_preview != latest_preview
-    assert session.messages[0].text not in {first_preview, latest_preview}
+    assert session.messages[0].attachment_uris not in {first_preview, latest_preview}
 
 
 class _FakeImageDatasetRows:
@@ -1217,6 +1228,260 @@ async def test_ascii_image_renderer_loads_dataset_uri_from_image_dataset_client(
     assert image_ascii is not None
     assert image_ascii.strip() != ""
     assert "\x1b[" in image_ascii
+
+
+def test_image_preview_from_record_normalizes_to_png() -> None:
+    record = ask_module.ImageDatasetRecord(
+        data=_png_bytes("blue"),
+        mime_type="image/png",
+    )
+
+    image = ask_module._image_preview_from_record(record, columns=12)
+
+    assert image is not None
+    assert image.data.startswith(b"\x89PNG")
+    assert image.columns == 12
+    assert image.rows >= 1
+    assert image.width_px >= 1
+    assert image.height_px >= 1
+
+
+def test_image_preview_caps_rows() -> None:
+    with Image.new("RGB", (10, 100), "blue") as image:
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+    record = ask_module.ImageDatasetRecord(
+        data=buffer.getvalue(),
+        mime_type="image/png",
+    )
+
+    rendered = ask_module._image_preview_from_record(record, columns=72, max_rows=6)
+
+    assert rendered is not None
+    assert rendered.rows == 6
+
+
+def test_attachment_uri_may_render_as_pdf() -> None:
+    assert ask_module._attachment_uri_may_render_as_pdf(_pdf_data_uri())
+    assert ask_module._attachment_uri_may_render_as_pdf("/tmp/report.pdf")
+    assert not ask_module._attachment_uri_may_render_as_pdf(_png_data_uri("blue"))
+
+
+def test_pdf_preview_from_record_uses_poppler_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pdf_data = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n"
+
+    def fake_which(command: str) -> str | None:
+        return f"/usr/bin/{command}" if command in {"pdftoppm", "pdftotext"} else None
+
+    def fake_run(args, **kwargs):
+        del kwargs
+        executable = Path(args[0]).name
+        if executable == "pdftoppm":
+            output_prefix = Path(args[-1])
+            output_prefix.with_name(output_prefix.name + "-1.png").write_bytes(
+                _png_bytes("green")
+            )
+            return subprocess.CompletedProcess(args, 0, stdout=b"", stderr=b"")
+        if executable == "pdftotext":
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                stdout=b"First page text\n",
+                stderr=b"",
+            )
+        raise AssertionError(f"unexpected command {args}")
+
+    monkeypatch.setattr(ask_module.shutil, "which", fake_which)
+    monkeypatch.setattr(ask_module.subprocess, "run", fake_run)
+
+    preview = ask_module._pdf_preview_from_record(
+        ask_module.ImageDatasetRecord(data=pdf_data, mime_type="application/pdf"),
+        name="report.pdf",
+        columns=12,
+        max_rows=4,
+    )
+
+    assert preview is not None
+    assert preview.name == "report.pdf"
+    assert preview.text == "First page text"
+    assert len(preview.pages) == 1
+    assert preview.pages[0].columns <= 12
+
+
+def test_ask_input_attachment_helpers_remove_deleted_placeholders() -> None:
+    attachment_1 = ask_module._AskInputAttachment(
+        placeholder="[Image #1]",
+        uri="dataset://images?id=one",
+        path="/tmp/one.png",
+    )
+    attachment_2 = ask_module._AskInputAttachment(
+        placeholder="[Image #2]",
+        uri="dataset://images?id=two",
+        path="/tmp/two.png",
+    )
+
+    prompt = "compare [Image #2] please"
+
+    assert ask_module._ask_present_input_attachments(
+        prompt,
+        [attachment_1, attachment_2],
+    ) == [attachment_2]
+    assert (
+        ask_module._ask_prompt_without_attachment_placeholders(
+            prompt,
+            [attachment_2],
+        )
+        == "compare please"
+    )
+
+
+def test_input_attachment_file_paths_from_text_accepts_images_and_pdfs(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "cat image.png"
+    image_path.write_bytes(_png_bytes("blue"))
+    pdf_path = tmp_path / "report.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+    text_path = tmp_path / "notes.txt"
+    text_path.write_text("not an image")
+
+    assert ask_module._input_attachment_file_paths_from_text(
+        f"file://{image_path}",
+        current_working_directory=str(tmp_path),
+    ) == [image_path]
+    assert ask_module._input_attachment_file_paths_from_text(
+        shlex_path := str(image_path).replace(" ", "\\ "),
+        current_working_directory=str(tmp_path),
+    ) == [image_path]
+    assert "\\ " in shlex_path
+    assert ask_module._input_attachment_file_paths_from_text(
+        f"'{image_path}'",
+        current_working_directory=str(tmp_path),
+    ) == [image_path]
+    assert ask_module._input_attachment_file_paths_from_text(
+        str(image_path),
+        current_working_directory=str(tmp_path),
+    ) == [image_path]
+    assert ask_module._input_attachment_file_paths_from_text(
+        f"file://localhost{image_path}",
+        current_working_directory=str(tmp_path),
+    ) == [image_path]
+    assert ask_module._input_attachment_file_paths_from_text(
+        str(pdf_path),
+        current_working_directory=str(tmp_path),
+    ) == [pdf_path]
+    assert ask_module._input_attachment_file_paths_from_text(
+        str(tmp_path),
+        current_working_directory=str(tmp_path),
+    ) == [image_path, pdf_path]
+    assert (
+        ask_module._input_attachment_file_paths_from_text(
+            str(text_path),
+            current_working_directory=str(tmp_path),
+        )
+        == []
+    )
+
+
+@pytest.mark.asyncio
+async def test_save_ask_input_image_attachment_uses_data_uri(tmp_path: Path) -> None:
+    image_path = tmp_path / "cat.png"
+    image_path.write_bytes(_png_bytes("blue"))
+
+    attachment = await ask_module._save_ask_input_image_attachment(
+        image_path=image_path,
+        placeholder="[Image #1]",
+    )
+
+    assert attachment.placeholder == "[Image #1]"
+    assert attachment.path == str(image_path)
+    assert attachment.uri.startswith("data:image/png;base64,")
+
+
+@pytest.mark.asyncio
+async def test_save_ask_input_file_attachment_supports_pdf_data_uri(
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "report.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n")
+
+    attachment = await ask_module._save_ask_input_file_attachment(
+        path=pdf_path,
+        placeholder="[report.pdf]",
+    )
+
+    assert attachment.placeholder == "[report.pdf]"
+    assert attachment.name == "report.pdf"
+    assert attachment.uri.startswith("data:application/pdf;base64,")
+
+
+def test_agent_message_content_text_renders_non_image_attachment_as_filename() -> None:
+    content = [
+        AgentFileContent(
+            type="file",
+            url="data:application/pdf;base64,JVBERi0xLjQK",
+            name="report.pdf",
+        )
+    ]
+
+    assert ask_module._agent_message_content_text(content) == "[report.pdf]"
+
+
+def test_agent_message_content_text_omits_image_attachment_ascii() -> None:
+    content = [
+        AgentFileContent(
+            type="file",
+            url=_png_data_uri("blue"),
+            name="screenshot.png",
+        )
+    ]
+
+    assert ask_module._agent_message_content_text(content) == ""
+    assert ask_module._agent_message_content_attachment_uris(content) == (
+        content[0].url,
+    )
+
+
+def test_agent_file_content_delta_preserves_image_uri_for_tui_hydration() -> None:
+    image_uri = _png_data_uri("blue")
+
+    message = ask_module._ask_conversation_message_from_agent_message(
+        ask_module.AgentFileContentDelta(
+            type=ask_module.AGENT_EVENT_FILE_CONTENT_DELTA,
+            thread_id="/threads/test.thread",
+            turn_id="turn-1",
+            item_id="image-1",
+            url=image_uri,
+        ),
+        local_participant_name=None,
+    )
+
+    assert message is not None
+    assert message.kind == "image"
+    assert message.text == ""
+    assert message.attachment_uris == (image_uri,)
+
+
+def test_agent_file_content_delta_preserves_pdf_uri_for_tui_hydration() -> None:
+    pdf_uri = _pdf_data_uri()
+
+    message = ask_module._ask_conversation_message_from_agent_message(
+        ask_module.AgentFileContentDelta(
+            type=ask_module.AGENT_EVENT_FILE_CONTENT_DELTA,
+            thread_id="/threads/test.thread",
+            turn_id="turn-1",
+            item_id="pdf-1",
+            url=pdf_uri,
+        ),
+        local_participant_name=None,
+    )
+
+    assert message is not None
+    assert message.kind == "image"
+    assert message.text == ""
+    assert message.attachment_uris == (pdf_uri,)
 
 
 @pytest.mark.asyncio
@@ -1484,7 +1749,8 @@ async def test_send_chat_thread_prompt_starts_thread_without_waiting_for_turn_en
         def __init__(self) -> None:
             self.started_text: str | None = None
 
-        async def start_thread(self, *, text: str) -> str:
+        async def start_thread(self, *, text: str, attachments=None) -> str:
+            del attachments
             self.started_text = text
             return "message-1"
 
@@ -1512,7 +1778,8 @@ async def test_send_chat_thread_prompt_does_not_wait_for_turn_completion() -> No
             self.active_turn_id = "turn-1"
             self.thread_status_text = "Writing"
 
-        async def send_text(self, *, text: str) -> str:
+        async def send_text(self, *, text: str, attachments=None) -> str:
+            del attachments
             self.sent_text = text
             return "message-1"
 

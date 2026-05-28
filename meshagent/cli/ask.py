@@ -7,14 +7,19 @@ import contextlib
 import io
 import inspect
 import logging
+import mimetypes
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from importlib import resources
+from pathlib import Path
 from typing import Annotated, Any, Literal, Protocol, runtime_checkable
 
 import typer
@@ -120,7 +125,10 @@ from meshagent.agents.chat_client import (
     LocalChatClient,
     MessagingChatClient,
 )
-from meshagent.agents.images_dataset import ImageDatasetClient, ImageDatasetRecord
+from meshagent.agents.images_dataset import (
+    ImageDatasetClient,
+    ImageDatasetRecord,
+)
 from meshagent.agents.tool_call_accumulator import tool_arguments_from_delta_text
 from meshagent.agents.process import (
     AgentSupervisor,
@@ -130,6 +138,9 @@ from meshagent.agents.process import (
 )
 from meshagent.api import Participant, RoomException
 from meshagent.cli import async_typer, auth_async
+from meshagent.cli._filedrop import (
+    dropped_file_paths_from_text,
+)
 from meshagent.cli.common_options import ProjectIdOption
 from meshagent.cli.create import CREATE_TEMPLATE_PACKAGE
 from meshagent.cli.helper import resolve_project_id
@@ -153,6 +164,7 @@ _ASK_TERMINAL_STATUS_STATES = {
 }
 _ASK_TOOL_LOG_RENDER_LIMIT = 4
 _ASK_IMAGE_RENDER_COLUMNS = 72
+_ASK_PASTE_DEBUG_ENV = "MESHAGENT_ASK_PASTE_DEBUG"
 _ASK_PASS_THROUGH_AGENT_EVENT_TYPES = {
     AGENT_EVENT_AUDIO_GENERATION_COMPLETED,
     AGENT_EVENT_AUDIO_GENERATION_DELTA,
@@ -184,6 +196,24 @@ _ASK_PASS_THROUGH_AGENT_EVENT_TYPES = {
     AGENT_EVENT_TOOL_CALL_PENDING,
     AGENT_EVENT_TOOL_CALL_STARTED,
 }
+
+
+@dataclass(frozen=True, slots=True)
+class _AskImagePreview:
+    data: bytes
+    width_px: int
+    height_px: int
+    columns: int
+    rows: int
+
+
+@dataclass(frozen=True, slots=True)
+class _AskPdfPreview:
+    name: str
+    pages: tuple[_AskImagePreview, ...] = ()
+    text: str | None = None
+
+
 _ASK_SLASH_COMMANDS = (
     ("/new", "Start a new thread"),
     ("/model", "List or change the active model"),
@@ -405,6 +435,34 @@ class _AskConversationMessage:
     role: str
     text: str
     kind: Literal["text", "image"] = "text"
+    attachment_uris: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _AskInputAttachment:
+    placeholder: str
+    uri: str
+    path: str
+    name_override: str | None = None
+
+    @property
+    def name(self) -> str:
+        if self.name_override is not None and self.name_override.strip() != "":
+            return self.name_override.strip()
+        return Path(self.path).name or self.placeholder
+
+
+@dataclass(frozen=True, slots=True)
+class _ClipboardAttachmentData:
+    name: str
+    mime_type: str
+    data: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _ClipboardAttachments:
+    files: tuple[Path, ...] = ()
+    data: tuple[_ClipboardAttachmentData, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -459,11 +517,16 @@ async def _send_chat_thread_prompt(
     *,
     session: ChatThreadSession,
     prompt: str,
+    attachments: Sequence[_AskInputAttachment] = (),
 ) -> None:
+    file_attachments = [
+        AgentFileContent(type="file", url=attachment.uri, name=attachment.name)
+        for attachment in attachments
+    ]
     if session.has_thread_path:
-        await session.send_text(text=prompt)
+        await session.send_text(text=prompt, attachments=file_attachments)
         return
-    await session.start_thread(text=prompt)
+    await session.start_thread(text=prompt, attachments=file_attachments)
 
 
 class _AgentMessageChannelClient(Protocol):
@@ -543,6 +606,258 @@ def _format_agent_thread_status_text(message: AgentThreadStatus) -> str | None:
     return text
 
 
+_ASK_INPUT_ATTACHMENT_PLACEHOLDER_RE = re.compile(
+    r"\[(?:Image #\d+|[^\]\n]+\.[^\]\n]+)\]"
+)
+_ASK_MACOS_CLIPBOARD_SWIFT = r"""
+import AppKit
+import Foundation
+
+let pb = NSPasteboard.general
+let pdfType = NSPasteboard.PasteboardType("public.pdf")
+
+if let data = pb.data(forType: .png) {
+    print("data\tclipboard.png\timage/png\t" + data.base64EncodedString())
+} else if let data = pb.data(forType: pdfType) {
+    print("data\tclipboard.pdf\tapplication/pdf\t" + data.base64EncodedString())
+} else if let data = pb.data(forType: .tiff),
+          let image = NSImage(data: data),
+          let tiff = image.tiffRepresentation,
+          let rep = NSBitmapImageRep(data: tiff),
+          let png = rep.representation(using: .png, properties: [:]) {
+    print("data\tclipboard.png\timage/png\t" + png.base64EncodedString())
+} else if let urls = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
+          !urls.isEmpty {
+    for url in urls {
+        print("file\t" + url.path)
+    }
+} else {
+    print("none")
+}
+"""
+
+
+def _ask_present_input_attachments(
+    prompt: str,
+    attachments: Sequence[_AskInputAttachment],
+) -> list[_AskInputAttachment]:
+    return [
+        attachment for attachment in attachments if attachment.placeholder in prompt
+    ]
+
+
+def _ask_prompt_without_attachment_placeholders(
+    prompt: str,
+    attachments: Sequence[_AskInputAttachment],
+) -> str:
+    normalized_prompt = prompt
+    for attachment in attachments:
+        normalized_prompt = normalized_prompt.replace(attachment.placeholder, " ")
+    return re.sub(r"[ \t]+", " ", normalized_prompt).strip()
+
+
+def _input_attachment_file_paths_from_text(
+    text: str,
+    *,
+    current_working_directory: str,
+) -> list[Path]:
+    return [
+        path
+        for path in dropped_file_paths_from_text(
+            text,
+            current_working_directory=current_working_directory,
+        )
+        if _is_supported_input_attachment_path(path)
+    ]
+
+
+def _image_file_paths_from_text(
+    text: str,
+    *,
+    current_working_directory: str,
+) -> list[Path]:
+    return [
+        path
+        for path in _input_attachment_file_paths_from_text(
+            text,
+            current_working_directory=current_working_directory,
+        )
+        if _mime_type_for_path(path).startswith("image/")
+    ]
+
+
+def _mime_type_for_path(path: Path) -> str:
+    return mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+
+
+def _is_supported_input_attachment_mime_type(mime_type: str) -> bool:
+    return mime_type.startswith("image/") or mime_type == "application/pdf"
+
+
+def _is_supported_input_attachment_path(path: Path) -> bool:
+    return _is_supported_input_attachment_mime_type(_mime_type_for_path(path))
+
+
+def _input_attachment_placeholder_for_file(path: Path, *, image_number: int) -> str:
+    if _mime_type_for_path(path).startswith("image/"):
+        return f"[Image #{image_number}]"
+    return f"[{path.name or 'attachment'}]"
+
+
+def _input_attachment_placeholder_for_data(
+    attachment: _ClipboardAttachmentData, *, image_number: int
+) -> str:
+    if attachment.mime_type.startswith("image/"):
+        return f"[Image #{image_number}]"
+    return f"[{attachment.name or 'attachment'}]"
+
+
+def _macos_clipboard_attachments() -> _ClipboardAttachments:
+    if sys.platform != "darwin":
+        return _ClipboardAttachments()
+    try:
+        completed = subprocess.run(
+            ["swift", "-e", _ASK_MACOS_CLIPBOARD_SWIFT],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return _ClipboardAttachments()
+    if completed.returncode != 0:
+        return _ClipboardAttachments()
+    files: list[Path] = []
+    data_attachments: list[_ClipboardAttachmentData] = []
+    for line in completed.stdout.splitlines():
+        parts = line.split("\t", 3)
+        if len(parts) == 2 and parts[0] == "file":
+            path = Path(parts[1]).expanduser()
+            if path.is_file() and _is_supported_input_attachment_path(path):
+                files.append(path)
+            continue
+        if len(parts) == 4 and parts[0] == "data":
+            name = parts[1].strip() or "attachment"
+            mime_type = parts[2].strip()
+            if not _is_supported_input_attachment_mime_type(mime_type):
+                continue
+            try:
+                data = base64.b64decode(parts[3], validate=True)
+            except (binascii.Error, ValueError):
+                continue
+            data_attachments.append(
+                _ClipboardAttachmentData(
+                    name=name,
+                    mime_type=mime_type,
+                    data=data,
+                )
+            )
+    return _ClipboardAttachments(files=tuple(files), data=tuple(data_attachments))
+
+
+def _debug_ask_paste_event(
+    *,
+    source: str,
+    text: str,
+    current_working_directory: str,
+    file_paths: Sequence[Path],
+    image_paths: Sequence[Path],
+    attachment_paths: Sequence[Path] = (),
+) -> None:
+    debug_path = os.environ.get(_ASK_PASTE_DEBUG_ENV, "").strip()
+    if debug_path == "":
+        return
+    target = Path(debug_path)
+    if target.is_dir():
+        target = target / "meshagent-ask-paste.log"
+    try:
+        with target.expanduser().open("a", encoding="utf-8") as handle:
+            handle.write(f"source={source}\n")
+            handle.write(f"cwd={current_working_directory}\n")
+            handle.write(f"text={text!r}\n")
+            handle.write(f"file_paths={[str(path) for path in file_paths]!r}\n")
+            handle.write(f"image_paths={[str(path) for path in image_paths]!r}\n")
+            if len(attachment_paths) > 0:
+                handle.write(
+                    f"attachment_paths={[str(path) for path in attachment_paths]!r}\n"
+                )
+            handle.write("\n")
+    except OSError:
+        pass
+
+
+def _debug_ask_attachment_event(
+    *,
+    event: str,
+    placeholder: str,
+    image_path: Path,
+    input_text: str | None = None,
+    error: BaseException | None = None,
+) -> None:
+    debug_path = os.environ.get(_ASK_PASTE_DEBUG_ENV, "").strip()
+    if debug_path == "":
+        return
+    target = Path(debug_path)
+    if target.is_dir():
+        target = target / "meshagent-ask-paste.log"
+    try:
+        with target.expanduser().open("a", encoding="utf-8") as handle:
+            handle.write(f"event={event}\n")
+            handle.write(f"placeholder={placeholder}\n")
+            handle.write(f"image_path={image_path}\n")
+            if input_text is not None:
+                handle.write(f"input_text={input_text!r}\n")
+            if error is not None:
+                handle.write(f"error={type(error).__name__}: {error}\n")
+            handle.write("\n")
+    except OSError:
+        pass
+
+
+async def _save_ask_input_image_attachment(
+    *,
+    image_path: Path,
+    placeholder: str,
+) -> _AskInputAttachment:
+    return await _save_ask_input_file_attachment(
+        path=image_path,
+        placeholder=placeholder,
+    )
+
+
+async def _save_ask_input_file_attachment(
+    *,
+    path: Path,
+    placeholder: str,
+) -> _AskInputAttachment:
+    data = path.read_bytes()
+    mime_type = _mime_type_for_path(path)
+    return _ask_input_attachment_from_bytes(
+        data=data,
+        mime_type=mime_type,
+        name=path.name,
+        placeholder=placeholder,
+        path=str(path),
+    )
+
+
+def _ask_input_attachment_from_bytes(
+    *,
+    data: bytes,
+    mime_type: str,
+    name: str,
+    placeholder: str,
+    path: str | None = None,
+) -> _AskInputAttachment:
+    encoded = base64.b64encode(data).decode("ascii")
+    return _AskInputAttachment(
+        placeholder=placeholder,
+        uri=f"data:{mime_type};base64,{encoded}",
+        path=path or name,
+        name_override=name,
+    )
+
+
 def _ask_thread_status_feed_text(status: object) -> str | None:
     if isinstance(status, AgentThreadStatus):
         text = _format_agent_thread_status_text(status)
@@ -578,12 +893,90 @@ def _agent_message_content_text(
             text_parts.append(item.text)
             continue
         if isinstance(item, AgentFileContent) and item.url.strip() != "":
-            image_ascii = _ascii_image_from_uri(item.url)
-            if image_ascii is not None:
-                text_parts.append(image_ascii)
-            else:
-                text_parts.append(f"[attachment] {item.url}")
+            if not _attachment_uri_may_render_as_image(item.url):
+                text_parts.append(_attachment_display_text(item.url, name=item.name))
     return "\n\n".join(text_parts).strip()
+
+
+def _agent_message_content_attachment_uris(
+    content: list[AgentTextContent | AgentFileContent],
+) -> tuple[str, ...]:
+    return tuple(
+        item.url.strip()
+        for item in content
+        if isinstance(item, AgentFileContent) and item.url.strip() != ""
+    )
+
+
+def _attachment_display_text(uri: str | None, *, name: str | None = None) -> str:
+    display_name = _attachment_display_name(uri, name=name)
+    return f"[{display_name}]"
+
+
+def _attachment_uri_may_render_as_image(uri: str | None) -> bool:
+    if not isinstance(uri, str):
+        return False
+    normalized_uri = uri.strip()
+    if normalized_uri == "":
+        return False
+    data_match = re.fullmatch(
+        r"data:([^;,]*)(?:;[^,]*)?;base64,.*", normalized_uri, re.S
+    )
+    if data_match is not None:
+        return data_match.group(1).strip().startswith("image/")
+    return ImageDatasetClient.dataset_uri_reference(normalized_uri) is not None
+
+
+def _attachment_uri_may_render_as_pdf(uri: str | None) -> bool:
+    if not isinstance(uri, str):
+        return False
+    normalized_uri = uri.strip()
+    if normalized_uri == "":
+        return False
+    data_match = re.fullmatch(
+        r"data:([^;,]*)(?:;[^,]*)?;base64,.*", normalized_uri, re.S
+    )
+    if data_match is not None:
+        return data_match.group(1).strip() == "application/pdf"
+    path = Path(normalized_uri)
+    return path.suffix.lower() == ".pdf"
+
+
+def _attachment_uri_may_render_inline(uri: str | None) -> bool:
+    return _attachment_uri_may_render_as_image(
+        uri
+    ) or _attachment_uri_may_render_as_pdf(uri)
+
+
+def _attachment_display_name(uri: str | None, *, name: str | None = None) -> str:
+    if isinstance(name, str) and name.strip() != "":
+        return name.strip()
+    if not isinstance(uri, str):
+        return "attachment"
+    normalized_uri = uri.strip()
+    if normalized_uri == "":
+        return "attachment"
+    data_match = re.fullmatch(
+        r"data:([^;,]*)(?:;[^,]*)?;base64,.*", normalized_uri, re.S
+    )
+    if data_match is not None:
+        return _attachment_name_for_mime_type(data_match.group(1).strip())
+    parsed = Path(normalized_uri)
+    path_name = parsed.name
+    if path_name != "" and path_name != normalized_uri:
+        return path_name
+    return "attachment"
+
+
+def _attachment_name_for_mime_type(mime_type: str) -> str:
+    normalized_mime_type = mime_type or "application/octet-stream"
+    if normalized_mime_type == "application/pdf":
+        return "document.pdf"
+    if normalized_mime_type.startswith("image/"):
+        extension = mimetypes.guess_extension(normalized_mime_type) or ".png"
+        return f"image{extension}"
+    extension = mimetypes.guess_extension(normalized_mime_type)
+    return f"attachment{extension}" if extension is not None else "attachment"
 
 
 def _image_bytes_from_data_uri(uri: str) -> bytes | None:
@@ -596,17 +989,57 @@ def _image_record_from_data_uri(
     *,
     fallback_mime_type: str | None = None,
 ) -> ImageDatasetRecord | None:
+    record = _attachment_record_from_data_uri(
+        uri,
+        fallback_mime_type=fallback_mime_type,
+    )
+    if record is None or not record.mime_type.startswith("image/"):
+        return None
+    return record
+
+
+def _attachment_record_from_data_uri(
+    uri: str,
+    *,
+    fallback_mime_type: str | None = None,
+) -> ImageDatasetRecord | None:
     match = re.fullmatch(r"data:([^;,]*)(?:;[^,]*)?;base64,(.*)", uri, re.S)
     if match is None:
         return None
-    mime_type = match.group(1).strip() or (fallback_mime_type or "image/png")
-    if not mime_type.startswith("image/"):
-        return None
+    mime_type = match.group(1).strip() or (
+        fallback_mime_type or "application/octet-stream"
+    )
     try:
         data = base64.b64decode(match.group(2), validate=True)
     except (binascii.Error, ValueError):
         return None
     return ImageDatasetRecord(data=data, mime_type=mime_type)
+
+
+async def _attachment_record_from_uri(
+    uri: str | None,
+    *,
+    image_dataset_client: ImageDatasetClient | None = None,
+    fallback_mime_type: str | None = None,
+) -> ImageDatasetRecord | None:
+    if not isinstance(uri, str):
+        return None
+    normalized_uri = uri.strip()
+    record = _attachment_record_from_data_uri(
+        normalized_uri,
+        fallback_mime_type=fallback_mime_type,
+    )
+    if record is not None:
+        return record
+    if image_dataset_client is None:
+        return None
+    try:
+        return await image_dataset_client.read_record_from_uri(
+            normalized_uri,
+            fallback_mime_type=fallback_mime_type,
+        )
+    except Exception:
+        return None
 
 
 async def _image_record_from_uri(
@@ -655,6 +1088,137 @@ def _ascii_image_from_record(
         return None
     normalized = rendered.strip("\n")
     return normalized if normalized.strip() != "" else None
+
+
+def _image_preview_from_record(
+    record: ImageDatasetRecord,
+    *,
+    columns: int = _ASK_IMAGE_RENDER_COLUMNS,
+    max_rows: int | None = None,
+) -> _AskImagePreview | None:
+    if not record.mime_type.startswith("image/"):
+        return None
+    if len(record.data) == 0:
+        return None
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(record.data)) as image:
+            width_px = max(image.width, 1)
+            height_px = max(image.height, 1)
+            png_buffer = io.BytesIO()
+            image.save(png_buffer, format="PNG")
+            png_data = png_buffer.getvalue()
+    except Exception:
+        return None
+
+    normalized_columns = max(1, columns)
+    rows = max(
+        1,
+        (height_px * normalized_columns + (width_px * 2) - 1) // (width_px * 2),
+    )
+    if max_rows is not None and max_rows > 0 and rows > max_rows:
+        rows = max_rows
+        normalized_columns = max(1, (width_px * 2 * rows) // height_px)
+    return _AskImagePreview(
+        data=png_data,
+        width_px=width_px,
+        height_px=height_px,
+        columns=normalized_columns,
+        rows=rows,
+    )
+
+
+def _pdf_text_from_record(record: ImageDatasetRecord) -> str | None:
+    if record.mime_type != "application/pdf" or len(record.data) == 0:
+        return None
+    pdftotext = shutil.which("pdftotext")
+    if pdftotext is None:
+        return None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as pdf_file:
+            pdf_file.write(record.data)
+            pdf_file.flush()
+            result = subprocess.run(
+                [pdftotext, "-layout", pdf_file.name, "-"],
+                check=False,
+                capture_output=True,
+                timeout=10,
+            )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    text = result.stdout.decode("utf-8", errors="replace").strip()
+    return text if text != "" else None
+
+
+def _pdf_page_previews_from_record(
+    record: ImageDatasetRecord,
+    *,
+    columns: int = _ASK_IMAGE_RENDER_COLUMNS,
+    max_rows: int | None = None,
+) -> tuple[_AskImagePreview, ...]:
+    if record.mime_type != "application/pdf" or len(record.data) == 0:
+        return ()
+    pdftoppm = shutil.which("pdftoppm")
+    if pdftoppm is None:
+        return ()
+    try:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            pdf_path = Path(tmp_dir) / "document.pdf"
+            output_prefix = Path(tmp_dir) / "page"
+            pdf_path.write_bytes(record.data)
+            result = subprocess.run(
+                [
+                    pdftoppm,
+                    "-png",
+                    "-r",
+                    "120",
+                    str(pdf_path),
+                    str(output_prefix),
+                ],
+                check=False,
+                capture_output=True,
+                timeout=15,
+            )
+            if result.returncode != 0:
+                return ()
+            previews: list[_AskImagePreview] = []
+            for page_path in sorted(Path(tmp_dir).glob("page-*.png")):
+                preview = _image_preview_from_record(
+                    ImageDatasetRecord(
+                        data=page_path.read_bytes(),
+                        mime_type="image/png",
+                    ),
+                    columns=columns,
+                    max_rows=max_rows,
+                )
+                if preview is not None:
+                    previews.append(preview)
+            return tuple(previews)
+    except Exception:
+        return ()
+
+
+def _pdf_preview_from_record(
+    record: ImageDatasetRecord,
+    *,
+    name: str,
+    columns: int = _ASK_IMAGE_RENDER_COLUMNS,
+    max_rows: int | None = None,
+) -> _AskPdfPreview | None:
+    if record.mime_type != "application/pdf":
+        return None
+    pages = _pdf_page_previews_from_record(
+        record,
+        columns=columns,
+        max_rows=max_rows,
+    )
+    text = _pdf_text_from_record(record)
+    if len(pages) == 0 and text is None:
+        return None
+    return _AskPdfPreview(name=name, pages=pages, text=text)
 
 
 def _ascii_image_from_uri(
@@ -740,7 +1304,8 @@ def _ask_conversation_message_from_agent_message(
 ) -> _AskConversationMessage | None:
     if isinstance(message, (StartThread, TurnStart, TurnSteer)):
         text = _agent_message_content_text(message.content)
-        if text == "":
+        attachment_uris = _agent_message_content_attachment_uris(message.content)
+        if text == "" and len(attachment_uris) == 0:
             return None
         return _AskConversationMessage(
             message_id=message.message_id,
@@ -750,10 +1315,12 @@ def _ask_conversation_message_from_agent_message(
                 default="you",
             ),
             text=text,
+            attachment_uris=attachment_uris,
         )
     if isinstance(message, (TurnStartAccepted, TurnSteerAccepted)):
         text = _agent_message_content_text(message.content)
-        if text == "":
+        attachment_uris = _agent_message_content_attachment_uris(message.content)
+        if text == "" and len(attachment_uris) == 0:
             return None
         return _AskConversationMessage(
             message_id=message.source_message_id,
@@ -763,6 +1330,7 @@ def _ask_conversation_message_from_agent_message(
                 default="user",
             ),
             text=text,
+            attachment_uris=attachment_uris,
         )
     if isinstance(message, TurnEnded):
         if message.error is None:
@@ -794,7 +1362,7 @@ def _ask_conversation_message_from_agent_message(
             text=message.text,
         )
     if isinstance(message, AgentFileContentDelta):
-        image_ascii = _ascii_image_from_uri(message.url)
+        can_render_inline = _attachment_uri_may_render_inline(message.url)
         return _AskConversationMessage(
             message_id=message.item_id,
             role=_role_for_sender(
@@ -802,39 +1370,35 @@ def _ask_conversation_message_from_agent_message(
                 local_participant_name=local_participant_name,
                 default="assistant",
             ),
-            text=image_ascii or f"[attachment] {message.url}",
-            kind="image" if image_ascii is not None else "text",
+            text="" if can_render_inline else _attachment_display_text(message.url),
+            kind="image" if can_render_inline else "text",
+            attachment_uris=(message.url,) if can_render_inline else (),
         )
     if isinstance(message, AgentImageGenerationPartial):
         if message.image is None:
             return None
-        image_ascii = _ascii_image_from_uri(message.image.uri)
-        attachment_text = _dataset_image_attachment_text(message.image.uri)
-        if image_ascii is None and attachment_text is None:
+        if not _attachment_uri_may_render_as_image(message.image.uri):
             return None
         return _AskConversationMessage(
             message_id=message.item_id,
             role="assistant",
-            text=image_ascii or attachment_text or "",
-            kind="image" if image_ascii is not None else "text",
+            text="",
+            kind="image",
+            attachment_uris=(message.image.uri,),
         )
     if isinstance(message, AgentImageGenerationCompleted):
-        images: list[tuple[str, Literal["image", "text"]]] = []
+        image_uris: list[str] = []
         for image in message.images:
-            image_ascii = _ascii_image_from_uri(image.uri)
-            if image_ascii is not None:
-                images.append((image_ascii, "image"))
-                continue
-            attachment_text = _dataset_image_attachment_text(image.uri)
-            if attachment_text is not None:
-                images.append((attachment_text, "text"))
-        if len(images) == 0:
+            if _attachment_uri_may_render_as_image(image.uri):
+                image_uris.append(image.uri)
+        if len(image_uris) == 0:
             return None
         return _AskConversationMessage(
             message_id=message.item_id,
             role="assistant",
-            text="\n\n".join(text for text, _kind in images),
-            kind="image" if all(kind == "image" for _text, kind in images) else "text",
+            text="",
+            kind="image",
+            attachment_uris=tuple(image_uris),
         )
     return None
 
@@ -1120,14 +1684,25 @@ class _AgentMessageSession:
         self,
         *,
         prompt: str,
+        attachments: Sequence[_AskInputAttachment] = (),
         on_message: Callable[[AgentMessage], Awaitable[None] | None] | None = None,
     ) -> str:
-        content = [
-            AgentTextContent(
-                type="text",
-                text=prompt,
+        content: list[AgentTextContent | AgentFileContent] = []
+        if prompt.strip() != "":
+            content.append(
+                AgentTextContent(
+                    type="text",
+                    text=prompt,
+                )
             )
-        ]
+        content.extend(
+            AgentFileContent(
+                type="file",
+                url=attachment.uri,
+                name=attachment.name,
+            )
+            for attachment in attachments
+        )
         current_model = (
             self._model_provider() if self._model_provider is not None else None
         )
@@ -1562,6 +2137,7 @@ class _AskSession:
         self,
         *,
         prompt: str,
+        attachments: Sequence[_AskInputAttachment] = (),
         on_message: Callable[[AgentMessage], Awaitable[None] | None] | None = None,
     ) -> str:
         async def _handle_adapter_status(status: str) -> None:
@@ -1579,9 +2155,14 @@ class _AskSession:
             if on_message is None
             else lambda status: asyncio.create_task(_handle_adapter_status(status))
         )
+        file_attachments = [
+            AgentFileContent(type="file", url=attachment.uri, name=attachment.name)
+            for attachment in attachments
+        ]
         try:
             return await self._session.ask(
                 prompt=prompt,
+                attachments=file_attachments,
                 model=self._model,
                 on_message=on_message,
             )
@@ -1890,11 +2471,16 @@ async def _run_ask_tui(
 ) -> None:
     try:
         from rich.text import Text
+        from rich.style import Style
+        from textual import events
         from textual._context import active_app
         from textual.app import App, ComposeResult
         from textual.binding import Binding
         from textual.containers import Horizontal, Vertical, VerticalScroll
+        from textual.screen import Screen
         from textual.widgets import Markdown as TextualMarkdown, Static, TextArea
+        from textual.widgets._text_area import TextAreaTheme
+        from textual_image.widget import Image as TextualTerminalImage
     except ImportError as exc:
         typer.echo(
             "Textual is required for interactive ask mode. Install meshagent-cli dependencies and retry."
@@ -1910,12 +2496,405 @@ async def _run_ask_tui(
         pending: bool = False
         kind: Literal["text", "image", "diff"] = "text"
         message_id: str | None = None
+        image_renderable: Any | None = None
 
     @dataclass(slots=True)
     class _RenderedAskFeedEntry:
         entry: _AskFeedEntry
         widget: Vertical
         body_widget: Any
+
+    def _ask_terminal_image_widget(image: _AskImagePreview, **kwargs: Any) -> Any:
+        from PIL import Image
+
+        class _AskTerminalImage(
+            TextualTerminalImage,
+            Renderable=TextualTerminalImage._Renderable,
+        ):
+            def __init__(
+                self,
+                terminal_image: Image.Image,
+                *,
+                preview: _AskImagePreview,
+                **image_kwargs: Any,
+            ) -> None:
+                self._preview = preview
+                super().__init__(terminal_image, **image_kwargs)
+
+            def get_content_width(self, container: Any, viewport: Any) -> int:
+                del container, viewport
+                return self._preview.columns
+
+            def get_content_height(
+                self,
+                container: Any,
+                viewport: Any,
+                width: int,
+            ) -> int:
+                del container, viewport, width
+                return self._preview.rows
+
+        with Image.open(io.BytesIO(image.data)) as opened_image:
+            terminal_image = opened_image.copy()
+        widget = _AskTerminalImage(terminal_image, preview=image, **kwargs)
+        widget.styles.width = image.columns
+        widget.styles.height = image.rows
+        widget.styles.max_height = max(1, image.rows)
+        return widget
+
+    def _ask_feed_image_spacer() -> Any:
+        return Static(" ", classes="feed-entry-body")
+
+    def _ask_fullscreen_image_preview(
+        image: _AskImagePreview,
+        *,
+        columns: int,
+        rows: int,
+    ) -> _AskImagePreview:
+        preview = _image_preview_from_record(
+            ImageDatasetRecord(data=image.data, mime_type="image/png"),
+            columns=max(1, columns),
+            max_rows=max(1, rows),
+        )
+        return preview if preview is not None else image
+
+    def _pdf_text_pages(text: str | None) -> tuple[str, ...]:
+        if text is None or text.strip() == "":
+            return ()
+        form_pages = [page.strip() for page in text.split("\f") if page.strip() != ""]
+        if len(form_pages) > 1:
+            return tuple(form_pages)
+        lines = text.strip().splitlines()
+        page_size = 48
+        return tuple(
+            "\n".join(lines[index : index + page_size]).strip()
+            for index in range(0, len(lines), page_size)
+            if "\n".join(lines[index : index + page_size]).strip() != ""
+        )
+
+    class _AskPdfViewer(Screen[None]):
+        CSS = """
+        #pdf-viewer-header {
+            width: 100%;
+            height: 1;
+            background: #1a1d22;
+            color: #cfd3dc;
+        }
+        #pdf-viewer-scroll {
+            width: 100%;
+            height: 1fr;
+            padding: 0;
+            align: center middle;
+        }
+        #pdf-viewer-body {
+            width: auto;
+            height: auto;
+        }
+        .pdf-viewer-image {
+            width: auto;
+            height: auto;
+        }
+        """
+
+        BINDINGS = [
+            Binding("escape", "close", "Close", priority=True),
+            Binding("q", "close", "Close", priority=True),
+            Binding("right", "next_page", "Next", priority=True),
+            Binding("pagedown", "next_page", "Next", priority=True),
+            Binding("space", "next_page", "Next", priority=True),
+            Binding("left", "previous_page", "Previous", priority=True),
+            Binding("pageup", "previous_page", "Previous", priority=True),
+        ]
+
+        def __init__(self, preview: _AskPdfPreview) -> None:
+            super().__init__()
+            self._preview = preview
+            self._page_index = 0
+            self._body: Vertical | None = None
+            self._header: Static | None = None
+            self._text_pages = _pdf_text_pages(preview.text)
+
+        def compose(self) -> ComposeResult:
+            yield Static("", id="pdf-viewer-header")
+            with VerticalScroll(id="pdf-viewer-scroll"):
+                yield Vertical(id="pdf-viewer-body")
+
+        async def on_mount(self) -> None:
+            self._header = self.query_one("#pdf-viewer-header", Static)
+            self._body = self.query_one("#pdf-viewer-body", Vertical)
+            await self._render_page()
+
+        async def on_resize(self, event: events.Resize) -> None:
+            del event
+            await self._render_page()
+
+        def _page_count(self) -> int:
+            if len(self._preview.pages) > 0:
+                return len(self._preview.pages)
+            return max(1, len(self._text_pages))
+
+        async def _render_page(self) -> None:
+            if self._header is not None:
+                self._header.update(
+                    f" {self._preview.name}  "
+                    f"{self._page_index + 1}/{self._page_count()}  "
+                    "←/→ page  esc close"
+                )
+            if self._body is None:
+                return
+            await self._body.remove_children()
+            if len(self._preview.pages) > 0:
+                await self._body.mount(
+                    _ask_terminal_image_widget(
+                        _ask_fullscreen_image_preview(
+                            self._preview.pages[self._page_index],
+                            columns=self.size.width,
+                            rows=max(1, self.size.height - 1),
+                        ),
+                        classes="pdf-viewer-image",
+                    )
+                )
+                return
+            text = (
+                self._text_pages[self._page_index]
+                if len(self._text_pages) > 0
+                else "Unable to render PDF preview."
+            )
+            await self._body.mount(Static(Text.from_ansi(text)))
+
+        async def action_next_page(self) -> None:
+            self._page_index = min(self._page_count() - 1, self._page_index + 1)
+            await self._render_page()
+
+        async def action_previous_page(self) -> None:
+            self._page_index = max(0, self._page_index - 1)
+            await self._render_page()
+
+        def key_escape(self, event: events.Key) -> None:
+            event.prevent_default()
+            event.stop()
+            self.dismiss(None)
+
+        def key_q(self, event: events.Key) -> None:
+            event.prevent_default()
+            event.stop()
+            self.dismiss(None)
+
+        async def key_right(self, event: events.Key) -> None:
+            event.prevent_default()
+            event.stop()
+            await self.action_next_page()
+
+        async def key_pagedown(self, event: events.Key) -> None:
+            event.prevent_default()
+            event.stop()
+            await self.action_next_page()
+
+        async def key_space(self, event: events.Key) -> None:
+            event.prevent_default()
+            event.stop()
+            await self.action_next_page()
+
+        async def key_left(self, event: events.Key) -> None:
+            event.prevent_default()
+            event.stop()
+            await self.action_previous_page()
+
+        async def key_pageup(self, event: events.Key) -> None:
+            event.prevent_default()
+            event.stop()
+            await self.action_previous_page()
+
+        def action_close(self) -> None:
+            self.dismiss(None)
+
+    class _AskImageViewer(Screen[None]):
+        CSS = """
+        #image-viewer-scroll {
+            width: 100%;
+            height: 100%;
+            padding: 0;
+            align: center middle;
+        }
+        #image-viewer-body {
+            width: auto;
+            height: auto;
+        }
+        .image-viewer-image {
+            width: auto;
+            height: auto;
+        }
+        """
+
+        BINDINGS = [
+            Binding("escape", "close", "Close", priority=True),
+            Binding("q", "close", "Close", priority=True),
+        ]
+
+        def __init__(self, preview: _AskImagePreview) -> None:
+            super().__init__()
+            self._preview = preview
+            self._body: Vertical | None = None
+
+        def compose(self) -> ComposeResult:
+            with VerticalScroll(id="image-viewer-scroll"):
+                yield Vertical(id="image-viewer-body")
+
+        async def on_mount(self) -> None:
+            self._body = self.query_one("#image-viewer-body", Vertical)
+            await self._render_image()
+
+        async def on_resize(self, event: events.Resize) -> None:
+            del event
+            await self._render_image()
+
+        async def _render_image(self) -> None:
+            if self._body is None:
+                return
+            await self._body.remove_children()
+            await self._body.mount(
+                _ask_terminal_image_widget(
+                    _ask_fullscreen_image_preview(
+                        self._preview,
+                        columns=self.size.width,
+                        rows=self.size.height,
+                    ),
+                    classes="image-viewer-image",
+                )
+            )
+
+        def key_escape(self, event: events.Key) -> None:
+            event.prevent_default()
+            event.stop()
+            self.dismiss(None)
+
+        def key_q(self, event: events.Key) -> None:
+            event.prevent_default()
+            event.stop()
+            self.dismiss(None)
+
+        def action_close(self) -> None:
+            self.dismiss(None)
+
+    class _AskImagePreviewWidget(Vertical):
+        can_focus = True
+
+        def __init__(self, preview: _AskImagePreview) -> None:
+            self._preview = preview
+            super().__init__(
+                _ask_feed_image_spacer(),
+                _ask_terminal_image_widget(
+                    preview,
+                    classes="feed-entry-image",
+                ),
+                classes="feed-entry-images",
+            )
+
+        def on_click(self, event: Any) -> None:
+            event.prevent_default()
+            event.stop()
+            self.app.push_screen(_AskImageViewer(self._preview))
+
+    class _AskPdfPreviewWidget(Vertical):
+        can_focus = True
+
+        def __init__(self, preview: _AskPdfPreview) -> None:
+            self._preview = preview
+            children: list[Any] = [
+                Static(
+                    Text(f"[{preview.name}]", style="cyan underline"),
+                    classes="feed-entry-body",
+                )
+            ]
+            if len(preview.pages) > 0:
+                children.append(_ask_feed_image_spacer())
+                children.append(
+                    _ask_terminal_image_widget(
+                        preview.pages[0],
+                        classes="feed-entry-image",
+                    )
+                )
+            elif preview.text is not None:
+                children.append(_ask_feed_image_spacer())
+                children.append(
+                    Static(
+                        Text.from_ansi(preview.text[:4000]),
+                        classes="feed-entry-body",
+                    )
+                )
+            super().__init__(*children, classes="feed-entry-images")
+
+        def on_click(self, event: Any) -> None:
+            event.prevent_default()
+            event.stop()
+            self.app.push_screen(_AskPdfViewer(self._preview))
+
+    class _AskInputTextArea(TextArea):
+        BINDINGS = [
+            *TextArea.BINDINGS,
+            Binding("cmd+v", "paste", show=False),
+            Binding("meta+v", "paste", show=False),
+        ]
+        _placeholder_style_name = "meshagent.image-placeholder"
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self.register_theme(
+                TextAreaTheme(
+                    name="meshagent-ask-input",
+                    base_style=Style(color="white", bgcolor="#1a1d22"),
+                    cursor_line_style=Style(bgcolor="#1a1d22"),
+                    gutter_style=Style(bgcolor="#1a1d22"),
+                    cursor_line_gutter_style=Style(bgcolor="#1a1d22"),
+                    syntax_styles={
+                        self._placeholder_style_name: Style(color="#7dd3fc", bold=True)
+                    },
+                )
+            )
+            self.theme = "meshagent-ask-input"
+
+        def _build_highlight_map(self) -> None:
+            super()._build_highlight_map()
+            for line_number, line in enumerate(self.document.lines):
+                for match in _ASK_INPUT_ATTACHMENT_PLACEHOLDER_RE.finditer(line):
+                    self._highlights[line_number].append(
+                        (
+                            match.start(),
+                            match.end(),
+                            self._placeholder_style_name,
+                        )
+                    )
+
+        def on_paste(self, event: events.Paste) -> None:
+            app = self.app
+            if not isinstance(app, _AskTextualApp):
+                return
+            if not app._handle_input_paste(event.text, source="input-textarea"):
+                return
+            event.prevent_default()
+            event.stop()
+
+        async def _on_paste(self, event: events.Paste) -> None:
+            app = self.app
+            if isinstance(app, _AskTextualApp) and app._handle_input_paste(
+                event.text, source="input-textarea-private"
+            ):
+                event.prevent_default()
+                event.stop()
+                return
+            await super()._on_paste(event)
+
+        async def action_paste(self) -> None:
+            app = self.app
+            if isinstance(
+                app, _AskTextualApp
+            ) and app._handle_clipboard_attachment_paste(
+                source="input-textarea-action"
+            ):
+                return
+            result = super().action_paste()
+            if inspect.isawaitable(result):
+                await result
 
     @dataclass(slots=True)
     class _AskToolCallState:
@@ -2036,6 +3015,14 @@ async def _run_ask_tui(
         }
         .feed-entry-body {
             width: 100%;
+        }
+        .feed-entry-image {
+            width: auto;
+            height: auto;
+        }
+        .feed-entry-images {
+            width: auto;
+            height: auto;
         }
         .feed-entry--you .feed-entry-body {
             color: white;
@@ -2241,6 +3228,9 @@ async def _run_ask_tui(
             self._audio_error_reported = False
             self._side_panel_focused = False
             self._thread_generation: int | None = None
+            self._input_attachments: list[_AskInputAttachment] = []
+            self._next_input_image_number = 1
+            self._attaching_pasted_images = False
 
         @property
         def _session(self) -> Any:
@@ -2267,7 +3257,7 @@ async def _run_ask_tui(
                     yield Static("", id="command-menu")
                     with Horizontal(id="input-row"):
                         yield Static("›", id="input-prompt")
-                        yield TextArea(
+                        yield _AskInputTextArea(
                             "",
                             id="ask-input",
                             soft_wrap=True,
@@ -2324,6 +3314,9 @@ async def _run_ask_tui(
             self.exit()
 
         async def action_interrupt_turn(self) -> None:
+            if isinstance(self.screen, (_AskImageViewer, _AskPdfViewer)):
+                self.screen.dismiss(None)
+                return
             if self._side_panel_focused:
                 self._submit_side_panel_key("escape", None)
                 return
@@ -2454,25 +3447,40 @@ async def _run_ask_tui(
                 await self._submit_command_selector_selection()
                 return
 
-            prompt = self._input_view.text.rstrip()
-            if await self._open_command_selector_if_available(prompt.strip()):
+            raw_prompt = self._input_view.text.rstrip()
+            attachments = _ask_present_input_attachments(
+                raw_prompt,
+                self._input_attachments,
+            )
+            prompt = _ask_prompt_without_attachment_placeholders(
+                raw_prompt,
+                attachments,
+            )
+            if len(attachments) == 0 and await self._open_command_selector_if_available(
+                prompt.strip()
+            ):
                 return
 
             self._input_view.load_text("")
+            self._input_attachments.clear()
             self._resize_input(self._input_view)
             self._render_command_menu()
             self._input_view.focus()
 
-            if prompt.strip() == "":
+            if prompt.strip() == "" and len(attachments) == 0:
                 return
-            if prompt.strip() in {"/quit", "/exit"}:
+            if len(attachments) == 0 and prompt.strip() in {"/quit", "/exit"}:
                 self.exit()
                 return
 
-            if self._handle_builtin_command(prompt.strip()):
+            if len(attachments) == 0 and self._handle_builtin_command(prompt.strip()):
                 return
 
-            resolved_command = self._resolve_command_submission(prompt.strip())
+            resolved_command = (
+                None
+                if len(attachments) > 0
+                else self._resolve_command_submission(prompt.strip())
+            )
             if resolved_command is not None and self._command_handler is not None:
                 if self._pending:
                     self._entries.append(
@@ -2490,10 +3498,20 @@ async def _run_ask_tui(
                 return
 
             if self._pending:
+                if len(attachments) > 0:
+                    self._entries.append(
+                        _AskFeedEntry(
+                            role="error",
+                            text="Wait for the current turn to finish before sending image attachments.",
+                        )
+                    )
+                    self._render_feed()
+                    self._scroll_to_end()
+                    return
                 self._steer_active_turn(prompt=prompt)
                 return
 
-            self._start_turn(prompt=prompt)
+            self._start_turn(prompt=prompt, attachments=attachments)
 
         def _handle_builtin_command(self, command: str) -> bool:
             if command == "/threads":
@@ -2519,7 +3537,12 @@ async def _run_ask_tui(
                 return True
             return False
 
-        def _start_turn(self, *, prompt: str) -> None:
+        def _start_turn(
+            self,
+            *,
+            prompt: str,
+            attachments: Sequence[_AskInputAttachment] = (),
+        ) -> None:
             if isinstance(self._session, ChatThreadSession):
                 self._pending = True
                 self._status_started_at = time.monotonic()
@@ -2530,6 +3553,7 @@ async def _run_ask_tui(
                 self._submit_task = asyncio.create_task(
                     self._run_prompt(
                         prompt=prompt,
+                        attachments=attachments,
                     )
                 )
                 return
@@ -2544,6 +3568,7 @@ async def _run_ask_tui(
             self._submit_task = asyncio.create_task(
                 self._run_prompt(
                     prompt=prompt,
+                    attachments=attachments,
                 )
             )
 
@@ -2714,6 +3739,7 @@ async def _run_ask_tui(
             self,
             *,
             prompt: str,
+            attachments: Sequence[_AskInputAttachment] = (),
         ) -> None:
             try:
                 session = self._session
@@ -2721,10 +3747,12 @@ async def _run_ask_tui(
                     await self._run_chat_thread_prompt(
                         session=session,
                         prompt=prompt,
+                        attachments=attachments,
                     )
                 else:
                     await session.ask(
                         prompt=prompt,
+                        attachments=attachments,
                         on_message=self._handle_agent_message,
                     )
             except asyncio.CancelledError:
@@ -2757,10 +3785,12 @@ async def _run_ask_tui(
             *,
             session: ChatThreadSession,
             prompt: str,
+            attachments: Sequence[_AskInputAttachment] = (),
         ) -> None:
             await _send_chat_thread_prompt(
                 session=session,
                 prompt=prompt,
+                attachments=attachments,
             )
 
         async def _finalize_active_assistant(self) -> None:
@@ -2898,8 +3928,190 @@ async def _run_ask_tui(
         def on_text_area_changed(self, event: TextArea.Changed) -> None:
             if self._input_view is None or event.text_area is not self._input_view:
                 return
+            self._sync_input_attachments_from_text()
             self._resize_input(event.text_area)
             self._render_command_menu()
+
+        def on_paste(self, event: events.Paste) -> None:
+            if self._input_view is None:
+                return
+            if not self._handle_input_paste(event.text, source="app"):
+                return
+            event.prevent_default()
+            event.stop()
+
+        async def _on_paste(self, event: events.Paste) -> None:
+            if self._input_view is None:
+                return
+            if not self._handle_input_paste(event.text, source="app-private"):
+                return
+            event.prevent_default()
+            event.stop()
+
+        def _handle_input_paste(self, text: str, *, source: str) -> bool:
+            file_paths = dropped_file_paths_from_text(
+                text,
+                current_working_directory=self._current_working_directory,
+            )
+            attachment_paths = _input_attachment_file_paths_from_text(
+                text,
+                current_working_directory=self._current_working_directory,
+            )
+            image_paths = [
+                path
+                for path in attachment_paths
+                if _mime_type_for_path(path).startswith("image/")
+            ]
+            _debug_ask_paste_event(
+                source=source,
+                text=text,
+                current_working_directory=self._current_working_directory,
+                file_paths=file_paths,
+                image_paths=image_paths,
+                attachment_paths=attachment_paths,
+            )
+            if len(attachment_paths) == 0:
+                return False
+            if self._attaching_pasted_images:
+                return True
+            self._attaching_pasted_images = True
+            task = asyncio.create_task(self._attach_input_files(attachment_paths))
+            task.add_done_callback(_consume_task_exception)
+            return True
+
+        def _handle_clipboard_attachment_paste(self, *, source: str) -> bool:
+            attachments = _macos_clipboard_attachments()
+            if len(attachments.files) == 0 and len(attachments.data) == 0:
+                return False
+            _debug_ask_paste_event(
+                source=source,
+                text="<clipboard>",
+                current_working_directory=self._current_working_directory,
+                file_paths=attachments.files,
+                image_paths=[
+                    path
+                    for path in attachments.files
+                    if _mime_type_for_path(path).startswith("image/")
+                ],
+                attachment_paths=attachments.files,
+            )
+            if self._attaching_pasted_images:
+                return True
+            self._attaching_pasted_images = True
+            task = asyncio.create_task(
+                self._attach_input_files(
+                    attachments.files,
+                    data_attachments=attachments.data,
+                )
+            )
+            task.add_done_callback(_consume_task_exception)
+            return True
+
+        def _sync_input_attachments_from_text(self) -> None:
+            if self._input_view is None:
+                self._input_attachments.clear()
+                return
+            self._input_attachments = _ask_present_input_attachments(
+                self._input_view.text,
+                self._input_attachments,
+            )
+
+        async def _attach_input_files(
+            self,
+            paths: Sequence[Path],
+            *,
+            data_attachments: Sequence[_ClipboardAttachmentData] = (),
+        ) -> None:
+            try:
+                for path in paths:
+                    placeholder = _input_attachment_placeholder_for_file(
+                        path,
+                        image_number=self._next_input_image_number,
+                    )
+                    if _mime_type_for_path(path).startswith("image/"):
+                        self._next_input_image_number += 1
+                    try:
+                        attachment = await _save_ask_input_file_attachment(
+                            path=path,
+                            placeholder=placeholder,
+                        )
+                    except Exception as exc:
+                        _debug_ask_attachment_event(
+                            event="attach-error",
+                            placeholder=placeholder,
+                            image_path=path,
+                            error=exc,
+                        )
+                        self._entries.append(
+                            _AskFeedEntry(
+                                role="error",
+                                text=f"Unable to attach {path.name}: {exc}",
+                            )
+                        )
+                        self._render_feed()
+                        self._scroll_to_end()
+                        continue
+                    self._insert_input_attachment(attachment, path)
+
+                for data_attachment in data_attachments:
+                    placeholder = _input_attachment_placeholder_for_data(
+                        data_attachment,
+                        image_number=self._next_input_image_number,
+                    )
+                    if data_attachment.mime_type.startswith("image/"):
+                        self._next_input_image_number += 1
+                    attachment = _ask_input_attachment_from_bytes(
+                        data=data_attachment.data,
+                        mime_type=data_attachment.mime_type,
+                        name=data_attachment.name,
+                        placeholder=placeholder,
+                    )
+                    self._insert_input_attachment(
+                        attachment, Path(data_attachment.name)
+                    )
+
+                if self._input_view is not None:
+                    self._resize_input(self._input_view)
+                    self._render_command_menu()
+                    self._input_view.focus()
+            finally:
+                self._attaching_pasted_images = False
+
+        def _insert_input_attachment(
+            self, attachment: _AskInputAttachment, debug_path: Path
+        ) -> None:
+            self._input_attachments.append(attachment)
+            if self._input_view is not None:
+                insertion = self._attachment_placeholder_insertion(
+                    attachment.placeholder
+                )
+                self._append_input_text(insertion)
+                self._input_view._build_highlight_map()
+                self._input_view.refresh()
+                _debug_ask_attachment_event(
+                    event="attach-inserted",
+                    placeholder=attachment.placeholder,
+                    image_path=debug_path,
+                    input_text=self._input_view.text,
+                )
+
+        def _attachment_placeholder_insertion(self, placeholder: str) -> str:
+            if self._input_view is None:
+                return placeholder
+            text = self._input_view.text
+            if text == "":
+                return placeholder
+            return f" {placeholder} "
+
+        def _append_input_text(self, text: str) -> None:
+            if self._input_view is None:
+                return
+            next_text = f"{self._input_view.text}{text}"
+            self._input_view.load_text(next_text)
+            last_line = next_text.splitlines()[-1] if next_text != "" else ""
+            self._input_view.move_cursor(
+                (len(next_text.splitlines()) - 1, len(last_line))
+            )
 
         def _render_command_menu(self) -> None:
             if self._command_menu_view is None:
@@ -3212,11 +4424,12 @@ async def _run_ask_tui(
             *,
             role: str,
             uri: str | Sequence[str] | None,
+            text: str = "",
             fallback_mime_type: str | None = None,
             message_id: str | None = None,
         ) -> None:
             uris = [uri] if isinstance(uri, str) or uri is None else list(uri)
-            image_parts: list[str] = []
+            inline_renderables: list[Any] = []
             attachment_parts: list[str] = []
             image_dataset_client = (
                 self._image_dataset_client
@@ -3228,27 +4441,53 @@ async def _run_ask_tui(
                 )
             )
             for item_uri in uris:
-                image_ascii = await _ascii_image_from_uri_async(
+                attachment_record = await _attachment_record_from_uri(
                     item_uri,
                     image_dataset_client=image_dataset_client,
                     fallback_mime_type=fallback_mime_type,
                 )
-                if image_ascii is not None:
-                    image_parts.append(image_ascii)
-                    continue
+                if (
+                    attachment_record is not None
+                    and attachment_record.mime_type.startswith("image/")
+                ):
+                    image_preview = _image_preview_from_record(
+                        attachment_record,
+                        max_rows=max(1, self.size.height // 2),
+                    )
+                    if image_preview is not None:
+                        inline_renderables.append(image_preview)
+                        continue
+                if (
+                    attachment_record is not None
+                    and attachment_record.mime_type == "application/pdf"
+                ):
+                    pdf_preview = _pdf_preview_from_record(
+                        attachment_record,
+                        name=_attachment_display_name(item_uri),
+                        max_rows=max(1, self.size.height // 2),
+                    )
+                    if pdf_preview is not None:
+                        inline_renderables.append(pdf_preview)
+                        continue
                 if isinstance(item_uri, str) and item_uri.strip() != "":
-                    attachment_parts.append(f"[attachment] {item_uri.strip()}")
-            if len(image_parts) > 0:
+                    attachment_parts.append(_attachment_display_text(item_uri))
+            if len(inline_renderables) > 0:
+                inline_renderables.extend(attachment_parts)
                 entry = _AskFeedEntry(
                     role=role,
-                    text="\n\n".join(image_parts),
+                    text=text.strip(),
                     kind="image",
                     message_id=message_id,
+                    image_renderable=inline_renderables,
                 )
             elif len(attachment_parts) > 0:
                 entry = _AskFeedEntry(
                     role=role,
-                    text="\n\n".join(attachment_parts),
+                    text="\n\n".join(
+                        part
+                        for part in (text.strip(), "\n\n".join(attachment_parts))
+                        if part != ""
+                    ),
                     message_id=message_id,
                 )
             else:
@@ -3276,14 +4515,16 @@ async def _run_ask_tui(
             self,
             *,
             message: _AskConversationMessage,
-            uri: str,
+            uri: str | Sequence[str],
         ) -> None:
             try:
                 await self._append_image_or_attachment_entry(
                     role=message.role,
                     uri=uri,
+                    text=message.text,
                     message_id=message.message_id,
                 )
+                self._rendered_session_message_ids.add(message.message_id)
             finally:
                 self._pending_session_image_message_ids.discard(message.message_id)
 
@@ -3619,16 +4860,35 @@ async def _run_ask_tui(
                     kind=message.kind,
                     message_id=message.message_id,
                 )
+                renderable_attachment_uris = tuple(
+                    uri
+                    for uri in message.attachment_uris
+                    if _attachment_uri_may_render_inline(uri)
+                )
                 dataset_image_uri = _dataset_image_attachment_uri(message.text)
                 if (
-                    dataset_image_uri is not None
-                    and (
-                        self._image_dataset_client is not None
-                        or (
-                            isinstance(session, _AskImageDatasetProvider)
-                            and session.image_dataset_client is not None
-                        )
-                    )
+                    len(renderable_attachment_uris) == 0
+                    and dataset_image_uri is not None
+                ):
+                    renderable_attachment_uris = (dataset_image_uri,)
+                existing_entry = next(
+                    (
+                        existing
+                        for existing in self._entries
+                        if existing.message_id == message.message_id
+                    ),
+                    None,
+                )
+                already_rendered_attachment = (
+                    existing_entry is not None
+                    and existing_entry.kind == "image"
+                    and len(renderable_attachment_uris) > 0
+                )
+                if already_rendered_attachment:
+                    self._rendered_session_message_ids.add(message.message_id)
+                    continue
+                if (
+                    len(renderable_attachment_uris) > 0
                     and message.message_id
                     not in self._pending_session_image_message_ids
                 ):
@@ -3636,25 +4896,14 @@ async def _run_ask_tui(
                     task = asyncio.create_task(
                         self._hydrate_session_image_entry(
                             message=message,
-                            uri=dataset_image_uri,
+                            uri=renderable_attachment_uris
+                            if len(renderable_attachment_uris) > 1
+                            else renderable_attachment_uris[0],
                         )
                     )
                     task.add_done_callback(_consume_task_exception)
+                    continue
                 if message.message_id in self._rendered_session_message_ids:
-                    existing_entry = next(
-                        (
-                            existing
-                            for existing in self._entries
-                            if existing.message_id == message.message_id
-                        ),
-                        None,
-                    )
-                    if (
-                        existing_entry is not None
-                        and existing_entry.kind == "image"
-                        and dataset_image_uri is not None
-                    ):
-                        continue
                     if any(
                         existing.message_id == message.message_id
                         for existing in self._entries
@@ -3960,7 +5209,7 @@ async def _run_ask_tui(
                 return True
             return previous_participant_role != entry.role
 
-        def _feed_entry_body_renderable(self, entry: _AskFeedEntry) -> Text:
+        def _feed_entry_body_renderable(self, entry: _AskFeedEntry) -> Any:
             body_text = entry.text if entry.text.strip() != "" else " "
             body_style = "white" if entry.role == "you" else ""
             if entry.role == "error":
@@ -4008,6 +5257,44 @@ async def _run_ask_tui(
                 text.stylize("dim")
             return text
 
+        def _feed_entry_image_widget(self, entry: _AskFeedEntry) -> Any:
+            renderables = entry.image_renderable
+            body_text = entry.text.strip()
+            if isinstance(renderables, list):
+                image_widgets: list[Any] = []
+                if body_text != "":
+                    image_widgets.append(
+                        Static(
+                            self._feed_entry_body_renderable(
+                                _AskFeedEntry(
+                                    role=entry.role,
+                                    text=body_text,
+                                    kind="text",
+                                )
+                            ),
+                            classes="feed-entry-body",
+                        )
+                    )
+                for renderable in renderables:
+                    if isinstance(renderable, _AskImagePreview):
+                        image_widgets.append(_AskImagePreviewWidget(renderable))
+                    elif isinstance(renderable, _AskPdfPreview):
+                        image_widgets.append(_AskPdfPreviewWidget(renderable))
+                    else:
+                        image_widgets.append(
+                            Static(
+                                renderable,
+                                classes="feed-entry-body",
+                            )
+                        )
+                if len(image_widgets) == 1:
+                    return image_widgets[0]
+                return Vertical(*image_widgets, classes="feed-entry-images")
+            return Static(
+                self._feed_entry_body_renderable(entry),
+                classes="feed-entry-body",
+            )
+
         def _render_entry(
             self, entry: _AskFeedEntry, *, show_header: bool
         ) -> _RenderedAskFeedEntry:
@@ -4051,11 +5338,8 @@ async def _run_ask_tui(
                     self._feed_entry_body_renderable(entry),
                     classes="feed-entry-body",
                 )
-            elif entry.kind == "image" and body_text.strip() != "":
-                body_widget = Static(
-                    self._feed_entry_body_renderable(entry),
-                    classes="feed-entry-body",
-                )
+            elif entry.kind == "image":
+                body_widget = self._feed_entry_image_widget(entry)
             elif entry.role != "you" and body_text.strip() != "":
                 body_widget = TextualMarkdown(
                     body_text,
