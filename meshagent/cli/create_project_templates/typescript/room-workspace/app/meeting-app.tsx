@@ -288,7 +288,7 @@ function MeetingWorkspace({ room }: { room: RoomClient }) {
       <div className="app-shell">
         <header className="topbar">
           <div className="brand">
-            <h1>Meeting App</h1>
+            <h1>Workspace App</h1>
             <div className="status">{participants.length} participant{participants.length === 1 ? "" : "s"}</div>
           </div>
           <nav className="tabs" aria-label="Room views">
@@ -405,7 +405,7 @@ export default function Home() {
       <main className="app-shell">
         <header className="topbar">
           <div className="brand">
-            <h1>Meeting App</h1>
+            <h1>Workspace App</h1>
             <div className="status">{connectionLabel(state, error)}</div>
           </div>
         </header>
