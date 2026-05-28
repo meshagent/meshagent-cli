@@ -1,6 +1,6 @@
-# TypeScript Meeting App
+# TypeScript Workspace App
 
-Browser room app with chat, meetings, and files. The app connects with `RoomClient.withIAP()`, so deployed users authenticate through the room IAP cookie instead of a browser-visible access token.
+Browser workspace app with chat, meetings, and files. The app connects with `RoomClient.withIAP()`, so deployed users authenticate through the room IAP cookie instead of a browser-visible access token.
 
 This template intentionally opens the current room directly. It does not include project or room switching UI.
 

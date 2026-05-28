@@ -3602,6 +3602,92 @@ async def test_process_use_tui_uses_chat_channel_session(
 
 
 @pytest.mark.asyncio
+async def test_open_process_use_chat_session_does_not_start_room_client_twice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _DummyParticipant:
+        def get_attribute(self, name: str) -> str:
+            assert name == "name"
+            return "local-user"
+
+    class _DummyRoomClient:
+        local_participant = _DummyParticipant()
+
+        async def __aenter__(self):
+            raise AssertionError(
+                "room client was already opened by _open_process_room_client"
+            )
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type
+            del exc
+            del tb
+
+    class _DummyChatSession:
+        pass
+
+    class _DummyMessagingChatClient:
+        def __init__(self, *, room, participant_name: str) -> None:
+            self.room = room
+            self.participant_name = participant_name
+            self.enter_calls = 0
+            self.open_thread_calls: list[dict[str, object]] = []
+
+        async def __aenter__(self):
+            self.enter_calls += 1
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            del exc_type
+            del exc
+            del tb
+
+        async def open_thread(self, thread_path: str, **kwargs):
+            self.open_thread_calls.append({"thread_path": thread_path, **kwargs})
+            return _DummyChatSession()
+
+    room_client = _DummyRoomClient()
+    created_chat_clients: list[_DummyMessagingChatClient] = []
+
+    async def fake_open_process_room_client(**kwargs):
+        del kwargs
+        return room_client
+
+    def fake_messaging_chat_client(**kwargs):
+        client = _DummyMessagingChatClient(**kwargs)
+        created_chat_clients.append(client)
+        return client
+
+    monkeypatch.setattr(
+        process, "_open_process_room_client", fake_open_process_room_client
+    )
+    monkeypatch.setattr(process, "MessagingChatClient", fake_messaging_chat_client)
+
+    opened_room, chat_session = await process._open_process_use_chat_session(
+        account_client=object(),
+        project_id="project-123",
+        room="quickstart",
+        participant_name="assistant",
+        thread_path="/threads/remote.thread",
+    )
+
+    assert opened_room is room_client
+    assert isinstance(chat_session, _DummyChatSession)
+    assert len(created_chat_clients) == 1
+    assert created_chat_clients[0].room is room_client
+    assert created_chat_clients[0].participant_name == "assistant"
+    assert created_chat_clients[0].enter_calls == 1
+    assert created_chat_clients[0].open_thread_calls == [
+        {
+            "thread_path": "/threads/remote.thread",
+            "local_participant_name": "local-user",
+            "close_client_on_close": True,
+            "load": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_process_chat_channel_direct_session_uses_thread_status_messages() -> (
     None
 ):

@@ -1337,7 +1337,6 @@ async def _open_process_use_chat_session(
     chat_client: MessagingChatClient | None = None
     chat_session: ChatThreadSession | None = None
     try:
-        await user_client.__aenter__()
         local_participant_name = user_client.local_participant.get_attribute("name")
         chat_client = MessagingChatClient(
             room=user_client,

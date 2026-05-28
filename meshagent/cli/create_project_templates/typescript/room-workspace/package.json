@@ -7,7 +7,7 @@
     "build": "NEXT_TELEMETRY_DISABLED=1 next build",
     "codex": "meshagent room connect -- meshagent codex join --agent-name codex --channel chat --thread-storage codex",
     "dev": "NEXT_TELEMETRY_DISABLED=1 meshagent room connect -- node dev-server.mjs",
-    "deploy": "meshagent deploy . --tag meshagent-create-typescript-meeting-app:dev --private --validation-mode=cookie --liveness /health --wait",
+    "deploy": "meshagent deploy . --tag meshagent-create-typescript-workspace-app:dev --private --validation-mode=cookie --liveness /health --wait",
     "start": "NEXT_TELEMETRY_DISABLED=1 node .next/standalone/server.js"
   },
   "dependencies": {
