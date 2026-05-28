@@ -12,6 +12,7 @@ import pytest
 
 from meshagent.agents.context import AgentSessionContext
 from meshagent.agents.messages import (
+    AGENT_EVENT_THREAD_LOADED,
     AGENT_EVENT_THREAD_STARTED,
     AGENT_EVENT_THREAD_STATUS,
     AGENT_EVENT_TEXT_CONTENT_DELTA,
@@ -39,6 +40,7 @@ from meshagent.agents.messages import (
     ModelsResponse,
     RenameThread,
     StartThread,
+    ThreadLoaded,
     TurnEnded,
     TurnStart,
     TurnStartAccepted,
@@ -332,6 +334,18 @@ def test_chatbot_use_help_hides_removed_tool_request_options() -> None:
         for param in use_command.params
         if isinstance(param, TyperOption)
     )
+
+
+def test_process_run_accepts_backend_option() -> None:
+    run_command = get_command(process.app).commands["run"]
+    visible_options = {
+        option
+        for param in run_command.params
+        if isinstance(param, TyperOption) and not param.hidden
+        for option in param.opts
+    }
+
+    assert "--backend" in visible_options
 
 
 def _chat_with_keyword_arguments(module) -> dict[int, set[str]]:
@@ -1028,6 +1042,24 @@ def test_configured_process_models_include_backend_in_provider_identity() -> Non
         providers=response.providers,
         current_model=None,
     )
+
+
+def test_process_backend_options_expand_to_unfiltered_backend_defaults() -> None:
+    selected_backends = process._normalize_process_backend_options(
+        ["chat", "llm", "codex", "chat"]
+    )
+
+    assert selected_backends == ["chat", "llm", "codex"]
+    assert process._process_models_for_backend_option(
+        model=["openai/gpt-5.5"],
+        backend=selected_backends,
+    ) == [
+        "chat/none",
+        "llm/openai/gpt-5.2",
+        "llm/anthropic/claude-3-5-sonnet-latest",
+        "codex/gpt-5.5",
+    ]
+    assert process._normalize_process_model_specs(["chat/none"])[0].backend == "chat"
 
 
 def test_models_response_is_filtered_to_configured_process_models() -> None:
@@ -2366,6 +2398,17 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
 
         def send(self, message: Message) -> None:
             self.sent_messages.append(message)
+            if isinstance(message.data, OpenThread):
+                assert message.data.load is True
+                self.subscribed_queue.put_nowait(
+                    Message(
+                        data=ThreadLoaded(
+                            type=AGENT_EVENT_THREAD_LOADED,
+                            thread_id=message.data.thread_id,
+                            source_message_id=message.data.message_id,
+                        )
+                    )
+                )
 
         async def route(self, message: Message) -> None:
             self.sent_messages.append(message)
@@ -2430,17 +2473,29 @@ async def test_process_run_tui_sends_selected_backend_for_mixed_backends(
 
     class _DummySupervisor:
         def __init__(self) -> None:
+            self.events: asyncio.Queue[Message] = asyncio.Queue()
             self.sent_messages: list[Message] = []
             self.processes: list[object] = []
 
         def subscribe_local_events(self):
-            return asyncio.Queue()
+            return self.events
 
         def unsubscribe_local_events(self, queue) -> None:
             del queue
 
         def send(self, message: Message) -> None:
             self.sent_messages.append(message)
+            if isinstance(message.data, OpenThread):
+                assert message.data.load is True
+                self.events.put_nowait(
+                    Message(
+                        data=ThreadLoaded(
+                            type=AGENT_EVENT_THREAD_LOADED,
+                            thread_id=message.data.thread_id,
+                            source_message_id=message.data.message_id,
+                        )
+                    )
+                )
 
         async def route(self, message: Message) -> None:
             self.sent_messages.append(message)
@@ -2499,7 +2554,17 @@ async def test_process_run_tui_closes_local_events_after_supervisor_detaches(
             self.unsubscribed_queue = queue
 
         def send(self, message: Message) -> None:
-            del message
+            if isinstance(message.data, OpenThread):
+                assert message.data.load is True
+                self.subscribed_queue.put_nowait(
+                    Message(
+                        data=ThreadLoaded(
+                            type=AGENT_EVENT_THREAD_LOADED,
+                            thread_id=message.data.thread_id,
+                            source_message_id=message.data.message_id,
+                        )
+                    )
+                )
 
         async def route(self, message: Message) -> None:
             del message
@@ -2689,16 +2754,10 @@ async def test_process_run_tui_loads_existing_thread_messages(
 
     captured: dict[str, object] = {}
 
-    class _FakeStorage:
-        pass
-
-    class _FakeProcess:
-        thread_id = "/threads/process-run.thread"
-        thread_storage = _FakeStorage()
-
     class _DummySupervisor:
         def __init__(self) -> None:
             self.events: asyncio.Queue[Message] = asyncio.Queue()
+            self.sent_messages: list[Message] = []
             self.processes: list[object] = []
 
         def subscribe_local_events(self):
@@ -2708,11 +2767,46 @@ async def test_process_run_tui_loads_existing_thread_messages(
             assert queue is self.events
 
         def send(self, message: Message) -> None:
-            del message
+            self.sent_messages.append(message)
+            if not isinstance(message.data, OpenThread):
+                return
+            assert message.data.load is True
+            self.events.put_nowait(
+                Message(
+                    data=TurnStart(
+                        type=AGENT_MESSAGE_TURN_START,
+                        thread_id="/threads/process-run.thread",
+                        message_id="existing-1",
+                        content=[AgentTextContent(type="text", text="existing prompt")],
+                        sender_name="alex",
+                    )
+                )
+            )
+            self.events.put_nowait(
+                Message(
+                    data=AgentTextContentDelta(
+                        type=AGENT_EVENT_TEXT_CONTENT_DELTA,
+                        thread_id="/threads/process-run.thread",
+                        message_id="existing-2",
+                        turn_id="turn-existing",
+                        item_id="existing-2",
+                        text="existing answer",
+                        sender_name="helper",
+                    )
+                )
+            )
+            self.events.put_nowait(
+                Message(
+                    data=ThreadLoaded(
+                        type=AGENT_EVENT_THREAD_LOADED,
+                        thread_id=message.data.thread_id,
+                        source_message_id=message.data.message_id,
+                    )
+                )
+            )
 
         async def route(self, message: Message) -> None:
-            assert isinstance(message.data, OpenThread)
-            self.processes.append(_FakeProcess())
+            self.send(message)
 
     class _DummyBot:
         def __init__(self) -> None:
@@ -2722,30 +2816,10 @@ async def test_process_run_tui_loads_existing_thread_messages(
         captured["messages"] = kwargs["session"].messages
 
     monkeypatch.setattr(ask_module, "_run_ask_tui", fake_run_ask_tui)
-    monkeypatch.setattr(
-        process,
-        "_thread_agent_messages_from_storage",
-        lambda thread_storage: [
-            TurnStart(
-                type=AGENT_MESSAGE_TURN_START,
-                thread_id="/threads/process-run.thread",
-                message_id="existing-1",
-                content=[AgentTextContent(type="text", text="existing prompt")],
-                sender_name="alex",
-            ),
-            AgentTextContentDelta(
-                type=AGENT_EVENT_TEXT_CONTENT_DELTA,
-                thread_id="/threads/process-run.thread",
-                message_id="existing-2",
-                turn_id="turn-existing",
-                item_id="existing-2",
-                text="existing answer",
-            ),
-        ],
-    )
 
+    bot = _DummyBot()
     await process._run_process_run_tui(
-        bot=_DummyBot(),
+        bot=bot,
         model="gpt-5.5",
         thread_path="/threads/process-run.thread",
         thread_storage="meshdocument",
@@ -2774,6 +2848,12 @@ async def test_process_run_tui_loads_existing_thread_messages(
             sender_name="helper",
         ),
     )
+    open_thread = next(
+        message.data
+        for message in bot._supervisor.sent_messages
+        if isinstance(message.data, OpenThread)
+    )
+    assert open_thread.load is True
 
 
 @pytest.mark.asyncio

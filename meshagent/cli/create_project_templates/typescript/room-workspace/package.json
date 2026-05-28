@@ -13,7 +13,7 @@
   "dependencies": {
     "@meshagent/meshagent": "^__MESHAGENT_CLIENT_VERSION__",
     "@meshagent/meshagent-livekit": "^__MESHAGENT_CLIENT_VERSION__",
-    "@meshagent/meshagent-node-ts": "^__MESHAGENT_CLIENT_VERSION__",
+    "@meshagent/meshagent-node": "^__MESHAGENT_CLIENT_VERSION__",
     "@meshagent/meshagent-react": "^__MESHAGENT_CLIENT_VERSION__",
     "@meshagent/meshagent-react-dev": "^__MESHAGENT_CLIENT_VERSION__",
     "@meshagent/meshagent-tailwind": "^__MESHAGENT_CLIENT_VERSION__",

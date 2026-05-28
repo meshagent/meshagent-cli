@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@meshagent/meshagent": "^__MESHAGENT_CLIENT_VERSION__",
-    "@meshagent/meshagent-node-ts": "^__MESHAGENT_CLIENT_VERSION__",
+    "@meshagent/meshagent-node": "^__MESHAGENT_CLIENT_VERSION__",
     "next": "^16.2.6",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

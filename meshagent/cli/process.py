@@ -1,6 +1,5 @@
 import typer
 import contextlib
-import inspect
 import jwt
 from aiohttp import web
 from rich import print
@@ -179,7 +178,7 @@ from meshagent.agents.chat_client import (
     MessagingChatClient,
     WebSocketChatClient,
 )
-from meshagent.agents.process import ContentScheme, Message
+from meshagent.agents.process import ContentScheme
 from meshagent.agents.images_dataset import ImageDatasetClient, ImagesDataset
 from meshagent.agents.thread_storage import (
     NoopThreadStorageRepository,
@@ -215,7 +214,8 @@ from meshagent.api.client import ConflictError
 
 OutputModality = Literal["text", "audio"]
 WebSocketAuthMode = Literal["iap", "jwt", "none"]
-ProcessBackendName = Literal["llm", "codex"]
+ProcessBackendName = Literal["llm", "codex", "chat"]
+ProcessBackendOptionName = Literal["llm", "codex", "chat"]
 
 logger = logging.getLogger("process")
 _MESHAGENT_PROJECT_ID_HEADER = "Meshagent-Project-Id"
@@ -506,18 +506,6 @@ def _mesh_document_agent_messages(
         )
 
     return messages
-
-
-async def _thread_agent_messages_from_storage(
-    thread_storage: object,
-) -> list[AgentMessage]:
-    from meshagent.agents.dataset_thread_storage import DatasetThreadStorage
-    from meshagent.agents.process_thread_adapter import MeshDocumentThreadStorage
-
-    if isinstance(thread_storage, (DatasetThreadStorage, MeshDocumentThreadStorage)):
-        await thread_storage.wait_until_ready()
-        return thread_storage.agent_messages()
-    return []
 
 
 def _thread_storage_class_for_backend(thread_storage: "ThreadStorageBackend"):
@@ -821,7 +809,6 @@ async def _run_process_run_tui(
         current_model=initial_model,
         fallback=", ".join(configured_models),
     )
-    resolved_agent_name = _normalized_annotation_string(agent_name)
     open_on_start = not (
         threading_mode == "default-new"
         and (thread_path is None or thread_path.strip() == "")
@@ -852,56 +839,23 @@ async def _run_process_run_tui(
         current = _current_session()
         return current.thread_path if current.has_thread_path else None
 
-    def _stored_message_with_sender(message: AgentMessage) -> AgentMessage:
-        if resolved_agent_name is None:
-            return message
-        if isinstance(message, (AgentTextContentDelta, AgentFileContentDelta)):
-            if message.sender_name is not None and message.sender_name.strip() != "":
-                return message
-            return message.model_copy(update={"sender_name": resolved_agent_name})
-        return message
-
     async def _load_current_thread_from_process_storage() -> None:
         current = _current_session()
         if not current.has_thread_path:
             return
-        if thread_storage == "codex":
-            open_thread = OpenThread(
-                type=AGENT_MESSAGE_THREAD_OPEN,
-                thread_id=current.thread_path,
-                load=True,
-            )
-            await current.send(open_thread)
-            while True:
-                event = await current.receive()
-                if event.get("type") != AGENT_EVENT_THREAD_LOADED:
-                    continue
-                if event.get("source_message_id") != open_thread.message_id:
-                    continue
-                return
-        supervisor = bot._supervisor
-        await supervisor.route(
-            Message(
-                data=OpenThread(
-                    type=AGENT_MESSAGE_THREAD_OPEN,
-                    thread_id=current.thread_path,
-                )
-            )
+        open_thread = OpenThread(
+            type=AGENT_MESSAGE_THREAD_OPEN,
+            thread_id=current.thread_path,
+            load=True,
         )
-        for agent_process in supervisor.processes:
-            if agent_process.thread_id != current.thread_path:
+        await current.send(open_thread)
+        while True:
+            event = await current.receive()
+            if event.get("type") != AGENT_EVENT_THREAD_LOADED:
                 continue
-            process_thread_storage = agent_process.thread_storage
-            if process_thread_storage is None:
-                break
-            storage_messages = _thread_agent_messages_from_storage(
-                process_thread_storage
-            )
-            if inspect.isawaitable(storage_messages):
-                storage_messages = await storage_messages
-            for stored_message in storage_messages:
-                current.add_agent_message(_stored_message_with_sender(stored_message))
-            break
+            if event.get("source_message_id") != open_thread.message_id:
+                continue
+            return
 
     def _selected_model_modalities() -> tuple[OutputModality, ...]:
         model_info = _model_info_for_current_selection(
@@ -3173,7 +3127,7 @@ def _parse_process_model_spec(model: str) -> _ProcessModelSpec:
         backend_name = parts[0]
         provider_name = parts[1]
         model_name = "/".join(parts[2:]).strip()
-        if backend_name not in ("llm", "codex"):
+        if backend_name not in ("llm", "codex", "chat"):
             raise ValueError(f"unknown model backend {backend_name!r}")
         if provider_name == "" or model_name == "":
             raise ValueError(f"invalid model spec {model!r}")
@@ -3194,6 +3148,14 @@ def _parse_process_model_spec(model: str) -> _ProcessModelSpec:
             provider="openai",
             model=model_name,
         )
+    if prefix == "chat":
+        if model_name != "none":
+            raise ValueError("chat backend only supports model 'none'")
+        return _ProcessModelSpec(
+            backend="chat",
+            provider="chat",
+            model=model_name,
+        )
     if prefix == "llm":
         return _ProcessModelSpec(
             backend="llm",
@@ -3209,6 +3171,52 @@ def _parse_process_model_spec(model: str) -> _ProcessModelSpec:
 
 def _normalize_process_model_specs(model: str | list[str]) -> list[_ProcessModelSpec]:
     return [_parse_process_model_spec(item) for item in _normalize_model_options(model)]
+
+
+def _process_models_for_backend_option(
+    *,
+    model: str | list[str],
+    backend: list[str] | None,
+) -> list[str]:
+    if backend is None or len(backend) == 0:
+        return _normalize_model_options(model)
+
+    models: list[str] = []
+    for backend_name in backend:
+        if backend_name == "llm":
+            models.extend(
+                [
+                    "llm/openai/gpt-5.2",
+                    "llm/anthropic/claude-3-5-sonnet-latest",
+                ]
+            )
+        elif backend_name == "codex":
+            models.append("codex/gpt-5.5")
+        elif backend_name == "chat":
+            models.append("chat/none")
+        else:
+            raise ValueError(f"unknown backend {backend_name!r}")
+    return models
+
+
+def _normalize_process_backend_options(
+    backend: list[str] | None,
+) -> list[ProcessBackendOptionName]:
+    normalized: list[ProcessBackendOptionName] = []
+    for item in backend or []:
+        if item == "llm":
+            backend_name: ProcessBackendOptionName = "llm"
+        elif item == "codex":
+            backend_name = "codex"
+        elif item == "chat":
+            backend_name = "chat"
+        else:
+            raise typer.BadParameter(
+                f"unknown backend {item!r}; supported: llm, codex, chat"
+            )
+        if backend_name not in normalized:
+            normalized.append(backend_name)
+    return normalized
 
 
 def _provider_model_display_name(
@@ -3545,6 +3553,8 @@ def _models_response_backend_name(backend: str | None) -> ProcessBackendName | N
         return "llm"
     if backend == "codex":
         return "codex"
+    if backend == "chat":
+        return "chat"
     return None
 
 
@@ -4158,6 +4168,7 @@ def _build_runtime_agent(
     runtime: Literal["chatbot", "process"],
     normalized_tool_options: NormalizedRequiredToolOptions,
     model: str | list[str],
+    backend: list[str] | None,
     rule: list[str],
     rules_file: Optional[list[str]],
     instructions: Optional[list[str]],
@@ -4219,7 +4230,11 @@ def _build_runtime_agent(
     preamble_rule: bool = True,
 ):
     builder = _builder_for_runtime(runtime)
-    selected_models = _normalize_model_options(model)
+    selected_models = (
+        _process_models_for_backend_option(model=model, backend=backend)
+        if runtime == "process"
+        else _normalize_model_options(model)
+    )
     selected_output_modalities = _normalize_output_modalities(output_modalities)
     builder_model: str | list[str]
     if runtime == "process":
@@ -4289,6 +4304,7 @@ def _build_runtime_agent(
         "output_audio_bitrate": output_audio_bitrate,
     }
     if runtime == "process":
+        builder_kwargs["backend"] = backend
         builder_kwargs["meshagent_project_id"] = meshagent_project_id
         builder_kwargs["thread_storage"] = thread_storage
         builder_kwargs["context_management"] = context_management
@@ -4959,6 +4975,7 @@ def build_process_agent(
     shell_copy_env: Optional[list[str]] = None,
     shell_set_env: Optional[list[str]] = None,
     channels: Optional[list[str]] = None,
+    backend: list[str] | None = None,
     websocket_auth: WebSocketAuthMode = "jwt",
     transcription_model: str | None = DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL,
     voice: str | None = None,
@@ -4994,6 +5011,8 @@ def build_process_agent(
     from meshagent.agents.process import (
         AgentBackend,
         AgentSupervisor,
+        ChatBackend,
+        ChatAgentProcess,
         LLMBackend,
         LLMAgentProcess,
         Message,
@@ -5074,13 +5093,21 @@ def build_process_agent(
             except FileNotFoundError:
                 print(f"[yellow]rules file not found at {rules_path}[/yellow]")
 
-    selected_model_specs = _normalize_process_model_specs(model)
+    selected_backends = _normalize_process_backend_options(backend)
+    selected_model_specs = _normalize_process_model_specs(
+        _process_models_for_backend_option(model=model, backend=selected_backends)
+    )
+    filter_model_specs = [] if len(selected_backends) > 0 else selected_model_specs
     llm_model_specs = [spec for spec in selected_model_specs if spec.backend == "llm"]
     codex_model_specs = [
         spec for spec in selected_model_specs if spec.backend == "codex"
     ]
+    chat_model_specs = [spec for spec in selected_model_specs if spec.backend == "chat"]
     has_llm_backend = len(llm_model_specs) > 0
     has_codex_backend = len(codex_model_specs) > 0
+    has_chat_backend = len(chat_model_specs) > 0
+    unfiltered_llm_backend = "llm" in selected_backends
+    unfiltered_codex_backend = "codex" in selected_backends
     if thread_storage == "codex" and has_llm_backend:
         print("[red]--thread-storage=codex only supports Codex backends[/red]")
         raise typer.Exit(1)
@@ -5197,7 +5224,7 @@ def build_process_agent(
                     compaction_threshold=compaction_threshold,
                     max_output_tokens=max_output_tokens,
                     reasoning_effort=reasoning_effort,
-                    allowed_models=openai_models,
+                    allowed_models=None if unfiltered_llm_backend else openai_models,
                     **openai_adapter_kwargs,
                 ),
             )
@@ -5233,7 +5260,7 @@ def build_process_agent(
                     model=anthropic_models[0],
                     api_key=api_key,
                     log_requests=log_llm_requests,
-                    allowed_models=anthropic_models,
+                    allowed_models=None if unfiltered_llm_backend else anthropic_models,
                 ),
             )
         for provider_name in provider_order:
@@ -5546,7 +5573,9 @@ def build_process_agent(
                             client_title="MeshAgent Process Codex",
                         ),
                         client_factory=CodexAsyncAppServerClient,
-                        default_model=codex_model_specs[0].model,
+                        default_model=None
+                        if unfiltered_codex_backend
+                        else codex_model_specs[0].model,
                         provider_name=codex_model_specs[0].provider,
                         provider_friendly_name="OpenAI Codex",
                         thread_storage=codex_thread_storage,
@@ -5570,6 +5599,18 @@ def build_process_agent(
                         realtime_connection_factory=create_realtime_connection,
                     )
 
+                chat_backend: ChatBackend | None = None
+                if has_chat_backend:
+                    chat_backend = ChatBackend(
+                        process_factory=lambda thread_id, backend_name: (
+                            supervisor.create_chat_thread_process(
+                                thread_id=thread_id,
+                                backend_name=backend_name,
+                            )
+                        ),
+                        thread_id_factory=create_thread_id,
+                    )
+
                 for spec in selected_model_specs:
                     if spec.backend == "llm" and llm_backend is not None:
                         if llm_backend not in agent_backends:
@@ -5577,6 +5618,9 @@ def build_process_agent(
                     elif spec.backend == "codex" and codex_backend is not None:
                         if codex_backend not in agent_backends:
                             agent_backends.append(codex_backend)
+                    elif spec.backend == "chat" and chat_backend is not None:
+                        if chat_backend not in agent_backends:
+                            agent_backends.append(chat_backend)
 
                 if len(agent_backends) == 0:
                     raise RoomException("no process backends are configured")
@@ -6132,7 +6176,7 @@ def build_process_agent(
                 message = Message(
                     data=_filter_models_response_to_configured_models(
                         message.data,
-                        model_specs=selected_model_specs,
+                        model_specs=filter_model_specs,
                     ),
                     sender=message.sender,
                     source=message.source,
@@ -6232,6 +6276,25 @@ def build_process_agent(
                 process.register_content_scheme(_room_content_scheme(room=room))
             return process
 
+        def create_chat_thread_process(
+            self,
+            *,
+            thread_id: str,
+            backend_name: str,
+        ) -> ChatAgentProcess:
+            room = self._agent.room
+            thread_storage_instance = None
+            if room is not None:
+                thread_storage_instance = create_thread_storage(
+                    room=room,
+                    thread_id=thread_id,
+                )
+            return ChatAgentProcess(
+                thread_id=thread_id,
+                backend=backend_name,
+                thread_storage=thread_storage_instance,
+            )
+
     return CustomProcessAgent
 
 
@@ -6295,6 +6358,16 @@ async def join(
             help="Name of an LLM model to make available. Can be repeated.",
         ),
     ] = ["gpt-5.5"],
+    backend: Annotated[
+        list[str],
+        typer.Option(
+            "--backend",
+            help=(
+                "Process backend to make available. Can be repeated. "
+                "Supported: llm, codex, chat."
+            ),
+        ),
+    ] = [],
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -6637,6 +6710,7 @@ async def join(
             runtime=runtime,
             normalized_tool_options=normalized_tool_options,
             model=model,
+            backend=backend,
             rule=rule,
             rules_file=rules_file,
             instructions=instructions,
@@ -6775,6 +6849,16 @@ async def service(
             help="Name of an LLM model to make available. Can be repeated.",
         ),
     ] = ["gpt-5.5"],
+    backend: Annotated[
+        list[str],
+        typer.Option(
+            "--backend",
+            help=(
+                "Process backend to make available. Can be repeated. "
+                "Supported: llm, codex, chat."
+            ),
+        ),
+    ] = [],
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -7090,6 +7174,7 @@ async def service(
             runtime=runtime,
             normalized_tool_options=normalized_tool_options,
             model=model,
+            backend=backend,
             rule=rule,
             rules_file=rules_file,
             instructions=instructions,
@@ -7209,6 +7294,16 @@ async def spec(
             help="Name of an LLM model to make available. Can be repeated.",
         ),
     ] = ["gpt-5.5"],
+    backend: Annotated[
+        list[str],
+        typer.Option(
+            "--backend",
+            help=(
+                "Process backend to make available. Can be repeated. "
+                "Supported: llm, codex, chat."
+            ),
+        ),
+    ] = [],
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -7493,6 +7588,7 @@ async def spec(
             runtime=runtime,
             normalized_tool_options=normalized_tool_options,
             model=model,
+            backend=backend,
             rule=rule,
             rules_file=rules_file,
             instructions=instructions,
@@ -7628,6 +7724,16 @@ async def deploy(
             help="Name of an LLM model to make available. Can be repeated.",
         ),
     ] = ["gpt-5.5"],
+    backend: Annotated[
+        list[str],
+        typer.Option(
+            "--backend",
+            help=(
+                "Process backend to make available. Can be repeated. "
+                "Supported: llm, codex, chat."
+            ),
+        ),
+    ] = [],
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -7919,6 +8025,7 @@ async def deploy(
             runtime=runtime,
             normalized_tool_options=normalized_tool_options,
             model=model,
+            backend=backend,
             rule=rule,
             rules_file=rules_file,
             instructions=instructions,
@@ -10118,6 +10225,16 @@ async def run(
             help="Name of an LLM model to make available. Can be repeated.",
         ),
     ] = ["gpt-5.5"],
+    backend: Annotated[
+        list[str],
+        typer.Option(
+            "--backend",
+            help=(
+                "Process backend to make available. Can be repeated. "
+                "Supported: llm, codex, chat."
+            ),
+        ),
+    ] = [],
     image_generation: Annotated[
         Optional[str], typer.Option(..., help="Name of an image gen model")
     ] = None,
@@ -10477,7 +10594,12 @@ async def run(
     else:
         room_name = _require_resolved_room(resolve_room(room))
 
-    selected_model_specs = _normalize_process_model_specs(model)
+    selected_backends = _normalize_process_backend_options(backend)
+    resolved_process_models = _process_models_for_backend_option(
+        model=model,
+        backend=selected_backends,
+    )
+    selected_model_specs = _normalize_process_model_specs(resolved_process_models)
     has_llm_backend = any(spec.backend == "llm" for spec in selected_model_specs)
 
     key = None if no_room else await resolve_key(project_id=project_id, key=key)
@@ -10555,7 +10677,8 @@ async def run(
             meshagent_project_id=meshagent_project_id,
             runtime=runtime,
             normalized_tool_options=normalized_tool_options,
-            model=model,
+            model=resolved_process_models,
+            backend=selected_backends,
             rule=rule,
             rules_file=rules_file,
             instructions=instructions,
@@ -10620,7 +10743,7 @@ async def run(
                 process_tui_kwargs: dict[str, Any] = {
                     "bot": bot,
                     "room": client,
-                    "model": model,
+                    "model": resolved_process_models,
                     "thread_path": thread_path,
                     "thread_storage": resolved_thread_storage,
                     "agent_name": agent_name,

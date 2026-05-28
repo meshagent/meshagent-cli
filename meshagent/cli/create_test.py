@@ -1062,7 +1062,7 @@ def test_init_creates_typescript_room_chat_non_interactively(tmp_path) -> None:
     dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     assert '"name": "meshagent-create-typescript-room-chat"' in package_json
     assert '"@meshagent/meshagent": "^' in package_json
-    assert '"@meshagent/meshagent-node-ts": "^' in package_json
+    assert '"@meshagent/meshagent-node": "^' in package_json
     assert '"next": "^16.2.6"' in package_json
     assert "http-proxy" not in package_json
     assert '"@msgpack/msgpack"' not in package_json
@@ -1087,7 +1087,7 @@ def test_init_creates_typescript_room_chat_non_interactively(tmp_path) -> None:
         in readme
     )
     dev_server = (tmp_path / "dev-server.mjs").read_text(encoding="utf-8")
-    assert 'from "@meshagent/meshagent-node-ts"' in dev_server
+    assert 'from "@meshagent/meshagent-node"' in dev_server
     assert "attachRoomWebSocketProxy(server" in dev_server
     assert "FROM scratch" in dockerfile
     assert "LABEL meshagent.runtime=node" in dockerfile

@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { attachRoomWebSocketProxy } from "@meshagent/meshagent-node-ts";
+import { attachRoomWebSocketProxy } from "@meshagent/meshagent-node";
 import next from "next";
 
 const hostname = process.env.HOSTNAME || "0.0.0.0";
