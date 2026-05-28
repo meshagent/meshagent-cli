@@ -64,7 +64,7 @@ from meshagent.api import (
     RemoteParticipant,
 )
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
-from meshagent.cli import async_typer
+from meshagent.cli import async_typer, auth_async
 from meshagent.cli.ask import AskCommandOption
 from meshagent.cli.helper import (
     NormalizedRequiredToolOptions,
@@ -147,6 +147,7 @@ from meshagent.agents.messages import (
     AGENT_EVENT_FILE_CONTENT_DELTA,
     AGENT_EVENT_MODEL_CHANGED,
     AGENT_EVENT_TEXT_CONTENT_DELTA,
+    AGENT_EVENT_THREAD_LOADED,
     AGENT_EVENT_THREAD_STARTED,
     AGENT_MESSAGE_MODELS_RESPONSE,
     AGENT_MESSAGE_THREAD_OPEN,
@@ -217,6 +218,7 @@ WebSocketAuthMode = Literal["iap", "jwt", "none"]
 ProcessBackendName = Literal["llm", "codex"]
 
 logger = logging.getLogger("process")
+_MESHAGENT_PROJECT_ID_HEADER = "Meshagent-Project-Id"
 
 
 @dataclass(frozen=True, slots=True)
@@ -863,6 +865,20 @@ async def _run_process_run_tui(
         current = _current_session()
         if not current.has_thread_path:
             return
+        if thread_storage == "codex":
+            open_thread = OpenThread(
+                type=AGENT_MESSAGE_THREAD_OPEN,
+                thread_id=current.thread_path,
+                load=True,
+            )
+            await current.send(open_thread)
+            while True:
+                event = await current.receive()
+                if event.get("type") != AGENT_EVENT_THREAD_LOADED:
+                    continue
+                if event.get("source_message_id") != open_thread.message_id:
+                    continue
+                return
         supervisor = bot._supervisor
         await supervisor.route(
             Message(
@@ -1975,7 +1991,7 @@ async def _run_process_use_tui(
         await _close_process_use_room_client(user_client)
 
 
-app = async_typer.AsyncTyper(help="Join a process-backed agent to a room")
+app = async_typer.AsyncTyper(help="Run process-backed agents")
 app.add_deprecated_option_aliases(
     {**DEPRECATED_REQUIRE_OPTION_ALIASES, "--database-namespace": "--dataset-namespace"}
 )
@@ -2081,6 +2097,16 @@ ThreadStorageOption = Annotated[
     typer.Option(
         "--thread-storage",
         help="Thread storage backend for process agents.",
+    ),
+]
+ProcessRunThreadStorageOption = Annotated[
+    ThreadStorageBackend | None,
+    typer.Option(
+        "--thread-storage",
+        help=(
+            "Thread storage backend for process agents. Defaults to meshdocument "
+            "with a room, or none with --no-room."
+        ),
     ),
 ]
 
@@ -2213,7 +2239,7 @@ ChannelOption = Annotated[
         help=(
             "Attach a channel to the agent process. "
             "Can be repeated. Currently supported: chat, mail:EMAIL_ADDRESS, "
-            "queue:QUEUE_NAME, toolkit:NAME, websocket:PORT, "
+            "memory, queue:QUEUE_NAME, toolkit:NAME, websocket:PORT, "
             "websocket://HOST:PORT."
         ),
     ),
@@ -2323,6 +2349,11 @@ def _resolved_channels(
             if "chat" not in seen_channels:
                 seen_channels.add("chat")
                 normalized_channels.append("chat")
+            continue
+        if normalized.casefold() == "memory":
+            if "memory" not in seen_channels:
+                seen_channels.add("memory")
+                normalized_channels.append("memory")
             continue
 
         if normalized[:5].casefold() == "mail:":
@@ -2669,11 +2700,168 @@ def _has_chat_channel(*, channels: list[str]) -> bool:
     return "chat" in channels
 
 
+def _has_memory_channel(*, channels: list[str]) -> bool:
+    return "memory" in channels
+
+
 def _require_resolved_room(room: str | None) -> str:
     if room is None or room.strip() == "":
         print("[bold red]--room is required (or set MESHAGENT_ROOM)[/bold red]")
         raise typer.Exit(1)
     return room.strip()
+
+
+async def _resolve_process_access_token() -> str | None:
+    env_token = os.environ.get("MESHAGENT_TOKEN")
+    if env_token is not None:
+        normalized_env_token = env_token.strip()
+        if normalized_env_token != "":
+            return normalized_env_token
+
+    access_token = await auth_async.get_access_token()
+    if access_token is None:
+        return None
+
+    normalized_access_token = access_token.strip()
+    return normalized_access_token or None
+
+
+def _process_run_room_requirements(
+    *,
+    runtime: Literal["chatbot", "process"],
+    channels: list[str],
+    thread_storage: "ThreadStorageBackend",
+    normalized_tool_options: NormalizedRequiredToolOptions,
+    require_read_only_storage: Optional[str],
+    require_table_read: list[str] | None,
+    require_table_write: list[str] | None,
+    use_memory: Optional[str],
+    room_rules: list[str],
+    discover_script_tools: Optional[bool],
+    storage_tool_room_path: list[str],
+    shell_room_mount: list[str],
+    shell_tool_room_path: list[str],
+    require_document_authoring: Optional[str],
+    require_discovery: Optional[str],
+    require_advanced_shell: Optional[bool],
+    llm_participant: Optional[str],
+    delegate_shell_token: Optional[bool],
+    verbose_dataset: bool,
+    save_audio_input: bool,
+) -> list[str]:
+    requirements: list[str] = []
+    if runtime != "process":
+        requirements.append("chatbot runtime")
+
+    normalized_thread_storage = _normalize_thread_storage_backend(thread_storage)
+    if normalized_thread_storage in ("dataset", "meshdocument"):
+        requirements.append(f"--thread-storage={thread_storage}")
+
+    for channel in channels:
+        if not (
+            _has_chat_channel(channels=[channel])
+            or _has_memory_channel(channels=[channel])
+        ):
+            requirements.append(f"--channel={channel}")
+
+    if len(normalized_tool_options["toolkit"]) > 0:
+        requirements.append("--require-toolkit")
+    if len(normalized_tool_options["schema"]) > 0:
+        requirements.append("--require-schema")
+    if discover_script_tools:
+        requirements.append("--discover-script-tools")
+    if len(room_rules) > 0:
+        requirements.append("--room-rules")
+    if len(storage_tool_room_path) > 0:
+        requirements.append("--storage-tool-room-path")
+    if len(shell_room_mount) > 0 or len(shell_tool_room_path) > 0:
+        requirements.append("--shell-room-mount")
+    if normalized_tool_options["require_storage"]:
+        requirements.append("--storage")
+    if require_read_only_storage:
+        requirements.append("--read-only-storage")
+    if len(require_table_read or []) > 0:
+        requirements.append("--table-read")
+    if len(require_table_write or []) > 0:
+        requirements.append("--table-write")
+    if use_memory:
+        requirements.append("--memory")
+    if require_document_authoring:
+        requirements.append("--document-authoring")
+    if require_discovery:
+        requirements.append("--discovery")
+    if normalized_tool_options["require_computer_use"]:
+        requirements.append("--computer-use")
+    if normalized_tool_options["require_shell"]:
+        requirements.append("--shell")
+    if require_advanced_shell:
+        requirements.append("--advanced-shell")
+    if normalized_tool_options["require_apply_patch"]:
+        requirements.append("--apply-patch")
+    if llm_participant:
+        requirements.append("--llm-participant")
+    if delegate_shell_token:
+        requirements.append("--delegate-shell-token")
+    if verbose_dataset:
+        requirements.append("--verbose-dataset")
+    if save_audio_input:
+        requirements.append("--save-audio-input")
+    return requirements
+
+
+def _require_process_run_can_skip_room(
+    *,
+    runtime: Literal["chatbot", "process"],
+    channels: list[str],
+    thread_storage: "ThreadStorageBackend",
+    normalized_tool_options: NormalizedRequiredToolOptions,
+    require_read_only_storage: Optional[str],
+    require_table_read: list[str] | None,
+    require_table_write: list[str] | None,
+    use_memory: Optional[str],
+    room_rules: list[str],
+    discover_script_tools: Optional[bool],
+    storage_tool_room_path: list[str],
+    shell_room_mount: list[str],
+    shell_tool_room_path: list[str],
+    require_document_authoring: Optional[str],
+    require_discovery: Optional[str],
+    require_advanced_shell: Optional[bool],
+    llm_participant: Optional[str],
+    delegate_shell_token: Optional[bool],
+    verbose_dataset: bool,
+    save_audio_input: bool,
+) -> None:
+    requirements = _process_run_room_requirements(
+        runtime=runtime,
+        channels=channels,
+        thread_storage=thread_storage,
+        normalized_tool_options=normalized_tool_options,
+        require_read_only_storage=require_read_only_storage,
+        require_table_read=require_table_read,
+        require_table_write=require_table_write,
+        use_memory=use_memory,
+        room_rules=room_rules,
+        discover_script_tools=discover_script_tools,
+        storage_tool_room_path=storage_tool_room_path,
+        shell_room_mount=shell_room_mount,
+        shell_tool_room_path=shell_tool_room_path,
+        require_document_authoring=require_document_authoring,
+        require_discovery=require_discovery,
+        require_advanced_shell=require_advanced_shell,
+        llm_participant=llm_participant,
+        delegate_shell_token=delegate_shell_token,
+        verbose_dataset=verbose_dataset,
+        save_audio_input=save_audio_input,
+    )
+    if len(requirements) == 0:
+        return
+
+    print(
+        "[bold red]--no-room cannot be used because these options require a room: "
+        f"{', '.join(requirements)}[/bold red]"
+    )
+    raise typer.Exit(1)
 
 
 def _normalized_thread_dir(*, thread_dir: Optional[str]) -> Optional[str]:
@@ -3682,6 +3870,7 @@ def _build_decision_llm_adapter(
     *,
     decision_model: str,
     api_key: str | None = None,
+    meshagent_project_id: str | None = None,
     log_llm_requests: Optional[bool],
 ) -> LLMAdapter:
     if decision_model.startswith("claude-"):
@@ -3691,10 +3880,32 @@ def _build_decision_llm_adapter(
             log_requests=log_llm_requests,
         )
 
+    client = _openai_proxy_client(
+        api_key=api_key,
+        meshagent_project_id=meshagent_project_id,
+    )
     return OpenAIResponsesAdapter(
         model=decision_model,
         api_key=api_key,
+        client=client,
         log_requests=log_llm_requests,
+    )
+
+
+def _openai_proxy_client(
+    *,
+    api_key: str | None,
+    meshagent_project_id: str | None,
+):
+    if meshagent_project_id is None or meshagent_project_id.strip() == "":
+        return None
+    from meshagent.openai.proxy import resolve_base_url
+    from openai import AsyncOpenAI
+
+    return AsyncOpenAI(
+        base_url=resolve_base_url(None),
+        api_key=api_key,
+        default_headers={_MESHAGENT_PROJECT_ID_HEADER: meshagent_project_id},
     )
 
 
@@ -3943,6 +4154,7 @@ def _build_runtime_agent(
     *,
     client: RoomClient | None,
     api_key: str | None = None,
+    meshagent_project_id: str | None = None,
     runtime: Literal["chatbot", "process"],
     normalized_tool_options: NormalizedRequiredToolOptions,
     model: str | list[str],
@@ -4077,6 +4289,7 @@ def _build_runtime_agent(
         "output_audio_bitrate": output_audio_bitrate,
     }
     if runtime == "process":
+        builder_kwargs["meshagent_project_id"] = meshagent_project_id
         builder_kwargs["thread_storage"] = thread_storage
         builder_kwargs["context_management"] = context_management
         builder_kwargs["compaction_threshold"] = compaction_threshold
@@ -4693,6 +4906,7 @@ def build_process_agent(
     *,
     client: RoomClient | None = None,
     api_key: str | None = None,
+    meshagent_project_id: str | None = None,
     model: str | list[str],
     rule: List[str],
     toolkit: List[str],
@@ -4926,6 +5140,7 @@ def build_process_agent(
     channel_llm_adapter = _build_decision_llm_adapter(
         decision_model=resolved_channel_decision_model,
         api_key=api_key,
+        meshagent_project_id=meshagent_project_id,
         log_llm_requests=log_llm_requests,
     )
 
@@ -4962,6 +5177,12 @@ def build_process_agent(
         providers_by_name: dict[str, LLMProvider] = {}
         if openai_models:
             openai_adapter_kwargs: dict[str, Any] = {}
+            openai_client = _openai_proxy_client(
+                api_key=api_key,
+                meshagent_project_id=meshagent_project_id,
+            )
+            if openai_client is not None:
+                openai_adapter_kwargs["client"] = openai_client
             if computer_use or require_computer_use:
                 openai_adapter_kwargs["response_options"] = {
                     "reasoning": {"summary": "concise"}
@@ -5044,8 +5265,20 @@ def build_process_agent(
             self._advanced_shell_toolkit: ContainerToolkit | None = None
             self._required_shell_tools: dict[str, BaseTool] = {}
             self._resolved_threading_mode: str | None = None
+            self._started = False
+            self._local_participant = Participant(
+                id="assistant",
+                attributes={"name": "assistant"},
+            )
             if threading_mode != "none":
                 self._resolved_threading_mode = threading_mode
+
+        @property
+        def process_participant(self) -> Participant:
+            room = self._room
+            if room is not None:
+                return room.local_participant
+            return self._local_participant
 
         def _get_required_shell_tool(self, *, model: str) -> BaseTool:
             shell_tool = self._required_shell_tools.get(model)
@@ -5096,20 +5329,21 @@ def build_process_agent(
                 exposed_toolkits.extend(channel.get_exposed_toolkits())
             return exposed_toolkits
 
-        async def start(self, *, room: RoomClient) -> None:
-            if self._room is not None:
+        async def start(self, *, room: RoomClient | None) -> None:
+            if self._started:
                 raise RoomException("agent is already started")
 
+            self._started = True
             self._room = room
-            if require_image_generation:
+            if room is not None and require_image_generation:
                 for provider in llm_providers:
                     if isinstance(provider.adapter, OpenAIResponsesAdapter):
                         provider.adapter.set_images_dataset(
                             ImagesDataset(room.datasets)
                         )
-            if require_mcp:
+            if room is not None and require_mcp:
                 await room.local_participant.set_attribute("supports_mcp", True)
-            if _has_chat_channel(channels=resolved_channels):
+            if room is not None and _has_chat_channel(channels=resolved_channels):
                 self._chat_channel = MessagingChatChannel(
                     room=room,
                     threading_mode=self._resolved_threading_mode,
@@ -5119,6 +5353,8 @@ def build_process_agent(
                 )
             self._mail_channels = []
             for channel_spec in resolved_channels:
+                if room is None:
+                    continue
                 if channel_spec[:5].casefold() != "mail:":
                     continue
                 mail_config = _parse_mail_channel(channel=channel_spec)
@@ -5135,6 +5371,8 @@ def build_process_agent(
                 )
             self._queue_channels = []
             for channel_spec in resolved_channels:
+                if room is None:
+                    continue
                 if channel_spec[:6].casefold() != "queue:":
                     continue
                 queue_config = _parse_queue_channel(channel=channel_spec)
@@ -5150,6 +5388,8 @@ def build_process_agent(
                 )
             self._toolkit_channels = []
             for channel_spec in resolved_channels:
+                if room is None:
+                    continue
                 if channel_spec[:8].casefold() != "toolkit:":
                     continue
                 toolkit_config = _parse_toolkit_channel(channel=channel_spec)
@@ -5162,6 +5402,8 @@ def build_process_agent(
                 )
             self._websocket_channels = []
             for channel_spec in resolved_channels:
+                if room is None:
+                    continue
                 if not _is_websocket_channel(channel_spec):
                     continue
                 self._websocket_channels.append(
@@ -5183,7 +5425,8 @@ def build_process_agent(
             supervisor: AgentSupervisor | None = None
 
             try:
-                await self.install_requirements()
+                if room is not None:
+                    await self.install_requirements()
 
                 env = _build_shell_tool_env(
                     base_env=base_shell_env,
@@ -5192,9 +5435,13 @@ def build_process_agent(
                 )
 
                 if require_shell:
+                    if room is None:
+                        raise RoomException("shell tools require a room")
                     self._shell_env = env
 
                 if require_advanced_shell:
+                    if room is None:
+                        raise RoomException("advanced shell tools require a room")
                     self._advanced_shell_toolkit = ContainerToolkit(
                         room=room,
                         working_dir=working_dir,
@@ -5203,7 +5450,7 @@ def build_process_agent(
                         env=env or None,
                     )
 
-                if room_rules_path is not None:
+                if room is not None and room_rules_path is not None:
                     for room_rules_file in room_rules_path:
                         await self._load_room_rules(path=room_rules_file)
 
@@ -5292,7 +5539,7 @@ def build_process_agent(
                         else "none"
                     )
                     codex_backend = CodexBackend(
-                        participant=room.local_participant,
+                        participant=self.process_participant,
                         config=CodexAppServerConfig(
                             cwd=working_dir,
                             client_name="meshagent_process_codex",
@@ -5385,6 +5632,8 @@ def build_process_agent(
 
                 self._exposed_toolkits = await self.get_exposed_toolkits()
                 for toolkit in self._exposed_toolkits:
+                    if room is None:
+                        continue
                     hosted_toolkit = await _start_hosted_toolkit(
                         room=room,
                         toolkit=toolkit,
@@ -5409,6 +5658,7 @@ def build_process_agent(
                 self._websocket_channels = []
                 self._advanced_shell_toolkit = None
                 self._room = None
+                self._started = False
                 raise
 
         async def stop(self) -> None:
@@ -5435,6 +5685,7 @@ def build_process_agent(
                 self._advanced_shell_toolkit = None
                 self._shell_env = dict(base_shell_env)
                 await super().stop()
+                self._started = False
 
         async def init_session(self) -> AgentSessionContext:
             from meshagent.cli.helper import init_context_from_spec
@@ -5785,14 +6036,17 @@ def build_process_agent(
                         )
                     )
 
-            required_toolkits = await self.get_required_toolkits(
-                context=RoomToolContext(
-                    room=self.room,
-                    caller=self.room.local_participant,
-                    on_behalf_of=sender,
-                    event_handler=handle_tool_event,
+            required_toolkits: list[Toolkit] = []
+            room = self._room
+            if room is not None:
+                required_toolkits = await self.get_required_toolkits(
+                    context=RoomToolContext(
+                        room=room,
+                        caller=room.local_participant,
+                        on_behalf_of=sender,
+                        event_handler=handle_tool_event,
+                    )
                 )
-            )
 
             combined_toolkits: list[Toolkit] = [*toolkits]
             combined_toolkits.extend(built_required_toolkits)
@@ -5944,17 +6198,21 @@ def build_process_agent(
             def publish_thread_status(message) -> None:
                 self.send(Message(data=message, source=process))
 
+            room = self._agent.room
+            thread_storage_instance = None
+            if room is not None:
+                thread_storage_instance = create_thread_storage(
+                    room=room,
+                    thread_id=thread_id,
+                )
             process = LLMAgentProcess(
                 thread_id=thread_id,
-                participant=self._agent.room.local_participant,
+                participant=self._agent.process_participant,
                 llm_providers=llm_providers,
                 default_provider=default_provider,
                 backend_name=backend_name,
                 toolkits=[*toolkits],
-                thread_storage=create_thread_storage(
-                    room=self._agent.room,
-                    thread_id=thread_id,
-                ),
+                thread_storage=thread_storage_instance,
                 thread_status_publisher=AgentMessageThreadStatusPublisher(
                     thread_id=thread_id,
                     publish=publish_thread_status,
@@ -5970,7 +6228,8 @@ def build_process_agent(
                     )
                 ),
             )
-            process.register_content_scheme(_room_content_scheme(room=self._agent.room))
+            if room is not None:
+                process.register_content_scheme(_room_content_scheme(room=room))
             return process
 
     return CustomProcessAgent
@@ -9806,9 +10065,7 @@ async def chat_with(
             await account_client.close()
 
 
-@app.async_command(
-    "run", help="Join a room, run a process-backed agent, and wait for messages."
-)
+@app.async_command("run", help="Run a process-backed agent and wait for messages.")
 async def run(
     *,
     project_id: ProjectIdOption,
@@ -10036,7 +10293,7 @@ async def run(
     ] = None,
     threading_mode: ThreadingModeOption = "default-new",
     thread_dir: ThreadDirOption = None,
-    thread_storage: ThreadStorageOption = "meshdocument",
+    thread_storage: ProcessRunThreadStorageOption = None,
     context_management: ContextManagementOption = "auto",
     compaction_threshold: CompactionThresholdOption = None,
     max_output_tokens: MaxOutputTokensOption = 32000,
@@ -10081,6 +10338,16 @@ async def run(
             help="Persist realtime audio input chunks to dataset thread storage as binary attachments.",
         ),
     ] = False,
+    no_room: Annotated[
+        bool,
+        typer.Option(
+            "--no-room",
+            help=(
+                "Run locally without connecting to a room. Fails if room-backed "
+                "storage, channels, or tools are configured."
+            ),
+        ),
+    ] = False,
     websocket_auth: Annotated[
         WebSocketAuthMode,
         typer.Option(
@@ -10121,11 +10388,17 @@ async def run(
         runtime=runtime,
         channel=channel,
     )
+    if runtime == "process" and len(resolved_channels) == 0:
+        resolved_channels = ["memory"]
     websocket_run_channel = _process_run_websocket_channel(channels=resolved_channels)
-    if runtime == "process" and not _has_chat_channel(channels=resolved_channels):
+    if (
+        runtime == "process"
+        and not _has_chat_channel(channels=resolved_channels)
+        and not _has_memory_channel(channels=resolved_channels)
+    ):
         if websocket_run_channel is None:
             raise typer.BadParameter(
-                "--channel=chat or --channel=websocket:PORT is required"
+                "--channel=chat, --channel=memory, or --channel=websocket:PORT is required"
             )
     working_dir = _resolve_working_dir_option(
         working_dir=working_dir,
@@ -10139,11 +10412,18 @@ async def run(
         runtime=runtime,
         dataset_namespace=dataset_namespace,
     )
+    resolved_thread_storage: ThreadStorageBackend = (
+        thread_storage
+        if thread_storage is not None
+        else "none"
+        if no_room
+        else "meshdocument"
+    )
     resolved_threading_mode, resolved_thread_dir = _resolve_process_threading_options(
         agent_name=agent_name,
         threading_mode=threading_mode,
         thread_dir=thread_dir,
-        thread_storage=thread_storage,
+        thread_storage=resolved_thread_storage,
     )
     normalized_tool_options = normalize_required_tool_options(
         toolkit=toolkit,
@@ -10168,31 +10448,79 @@ async def run(
         storage=storage,
         require_storage=require_storage,
     )
-    room = _require_resolved_room(resolve_room(room))
+    if no_room and room is not None and room.strip() != "":
+        raise typer.BadParameter("--room cannot be used with --no-room")
+    if no_room:
+        _require_process_run_can_skip_room(
+            runtime=runtime,
+            channels=resolved_channels,
+            thread_storage=resolved_thread_storage,
+            normalized_tool_options=normalized_tool_options,
+            require_read_only_storage=require_read_only_storage,
+            require_table_read=require_table_read,
+            require_table_write=require_table_write,
+            use_memory=use_memory,
+            room_rules=room_rules,
+            discover_script_tools=discover_script_tools,
+            storage_tool_room_path=storage_tool_room_path,
+            shell_room_mount=shell_room_mount,
+            shell_tool_room_path=shell_tool_room_path,
+            require_document_authoring=require_document_authoring,
+            require_discovery=require_discovery,
+            require_advanced_shell=require_advanced_shell,
+            llm_participant=llm_participant,
+            delegate_shell_token=delegate_shell_token,
+            verbose_dataset=verbose_dataset,
+            save_audio_input=save_audio_input,
+        )
+        room_name: str | None = None
+    else:
+        room_name = _require_resolved_room(resolve_room(room))
 
-    key = await resolve_key(project_id=project_id, key=key)
-    account_client = await get_client()
+    selected_model_specs = _normalize_process_model_specs(model)
+    has_llm_backend = any(spec.backend == "llm" for spec in selected_model_specs)
+
+    key = None if no_room else await resolve_key(project_id=project_id, key=key)
+    account_client = None if no_room else await get_client()
     try:
-        project_id = await resolve_project_id(project_id=project_id)
-
-        jwt = os.getenv("MESHAGENT_TOKEN")
-        if jwt is None:
-            if agent_name is None:
+        meshagent_project_id = (
+            await resolve_project_id(project_id=project_id)
+            if no_room and has_llm_backend
+            else None
+        )
+        if no_room and has_llm_backend:
+            jwt = await _resolve_process_access_token()
+            if jwt is None:
                 print(
-                    "[bold red]--agent-name must be specified when the MESHAGENT_TOKEN environment variable is not set[/bold red]"
+                    "[bold red]No MeshAgent token or OAuth access token available. "
+                    "Set MESHAGENT_TOKEN or run `meshagent auth login` first.[/bold red]"
                 )
                 raise typer.Exit(1)
+        elif no_room:
+            jwt = await _resolve_process_access_token()
+        else:
+            project_id = await resolve_project_id(project_id=project_id)
 
-            token = ParticipantToken(
-                name=agent_name,
-            )
+            jwt = os.getenv("MESHAGENT_TOKEN")
+            if jwt is None:
+                if agent_name is None:
+                    print(
+                        "[bold red]--agent-name must be specified when the MESHAGENT_TOKEN environment variable is not set[/bold red]"
+                    )
+                    raise typer.Exit(1)
 
-            token.add_api_grant(ApiScope.agent_default(tunnels=require_computer_use))
+                token = ParticipantToken(
+                    name=agent_name,
+                )
 
-            token.add_role_grant(role=role)
-            token.add_room_grant(room)
+                token.add_api_grant(
+                    ApiScope.agent_default(tunnels=require_computer_use)
+                )
 
-            jwt = token.to_jwt(api_key=key)
+                token.add_role_grant(role=role)
+                token.add_room_grant(room_name)
+
+                jwt = token.to_jwt(api_key=key)
 
         default_room_storage_mount = bool(
             normalized_tool_options["require_storage"] or require_read_only_storage
@@ -10213,15 +10541,18 @@ async def run(
             config_paths=shell_tool_config_mount,
         )
 
-        client = RoomClient(
-            protocol_factory=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room),
-                token=jwt,
-            ).create_factory()
-        )
+        client = None
+        if room_name is not None:
+            client = RoomClient(
+                protocol_factory=WebSocketClientProtocol(
+                    url=websocket_room_url(room_name=room_name),
+                    token=jwt,
+                ).create_factory()
+            )
         CustomChatbot = _build_runtime_agent(
             client=client,
             api_key=jwt,
+            meshagent_project_id=meshagent_project_id,
             runtime=runtime,
             normalized_tool_options=normalized_tool_options,
             model=model,
@@ -10259,7 +10590,7 @@ async def run(
             always_reply=always_reply,
             threading_mode=resolved_threading_mode,
             thread_dir=resolved_thread_dir,
-            thread_storage=thread_storage,
+            thread_storage=resolved_thread_storage,
             context_management=context_management,
             compaction_threshold=compaction_threshold,
             max_output_tokens=max_output_tokens,
@@ -10284,14 +10615,14 @@ async def run(
 
         bot = CustomChatbot()
 
-        async def run_interactive_session(client: RoomClient) -> None:
+        async def run_interactive_session(client: "RoomClient | None") -> None:
             if runtime == "process":
                 process_tui_kwargs: dict[str, Any] = {
                     "bot": bot,
                     "room": client,
                     "model": model,
                     "thread_path": thread_path,
-                    "thread_storage": thread_storage,
+                    "thread_storage": resolved_thread_storage,
                     "agent_name": agent_name,
                     "thread_dir": resolved_thread_dir,
                     "threading_mode": resolved_threading_mode,
@@ -10331,6 +10662,8 @@ async def run(
                     )
                     process_tui_kwargs["output_audio_bitrate"] = output_audio_bitrate
                 if websocket_run_channel is not None:
+                    if client is None:
+                        raise RoomException("websocket channel requires a room")
                     process_tui_kwargs[
                         "chat_client"
                     ] = await _open_process_run_websocket_chat_session(
@@ -10340,7 +10673,7 @@ async def run(
                         websocket_auth=websocket_auth,
                         iap_token=jwt,
                         thread_path=thread_path,
-                        thread_storage=thread_storage,
+                        thread_storage=resolved_thread_storage,
                         agent_name=agent_name,
                         thread_dir=resolved_thread_dir,
                         threading_mode=resolved_threading_mode,
@@ -10349,15 +10682,21 @@ async def run(
                     _run_process_run_tui(**process_tui_kwargs)
                 )
             else:
+                if client is None or room_name is None:
+                    raise RoomException("chatbot runtime requires a room")
                 interaction_task = asyncio.create_task(
                     chat_with(
                         participant_name=client.local_participant.get_attribute("name"),
-                        room=room,
+                        room=room_name,
                         project_id=project_id,
                         thread_path=thread_path,
                         message=message,
                     )
                 )
+
+            if client is None:
+                await interaction_task
+                return
 
             done, pending = await asyncio.wait(
                 [
@@ -10374,11 +10713,18 @@ async def run(
                 task.result()
 
         try:
-            await _run_agent_room_session(
-                client=client,
-                bot=bot,
-                runner=run_interactive_session,
-            )
+            if client is None:
+                await bot.start(room=None)
+                try:
+                    await run_interactive_session(None)
+                finally:
+                    await _await_cleanup(bot.stop(), label="agent stop")
+            else:
+                await _run_agent_room_session(
+                    client=client,
+                    bot=bot,
+                    runner=run_interactive_session,
+                )
         except KeyboardInterrupt:
             return
 
@@ -10386,7 +10732,8 @@ async def run(
         return
 
     finally:
-        await account_client.close()
+        if account_client is not None:
+            await account_client.close()
 
 
 @app.async_command(

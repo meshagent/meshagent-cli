@@ -711,6 +711,58 @@ async def test_agent_message_session_eagerly_records_local_start_message() -> No
     ]
 
 
+@pytest.mark.asyncio
+async def test_ask_pending_turn_start_renders_inline_when_thread_is_idle() -> None:
+    sent_payloads: list[object] = []
+    client = ask_module.LocalChatClient(
+        thread_path="/threads/test.thread",
+        send_message=sent_payloads.append,
+        events=asyncio.Queue(),
+    )
+    session = client.thread_session
+
+    await session.send_text(text="queued prompt", message_id="message-1")
+
+    assert ask_module._ask_inline_pending_message_ids(
+        session,
+        external_thread_active=False,
+    ) == {"message-1"}
+    assert (
+        ask_module._ask_queued_message_labels(
+            session,
+            external_thread_active=False,
+        )
+        == []
+    )
+    assert [(message.message_id, message.type) for message in session.messages] == [
+        ("message-1", ask_module.AGENT_MESSAGE_TURN_START)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ask_pending_turn_start_stays_queued_when_thread_is_active() -> None:
+    client = ask_module.LocalChatClient(
+        thread_path="/threads/test.thread",
+        send_message=lambda message: None,
+        events=asyncio.Queue(),
+    )
+    session = client.thread_session
+
+    await session.send_text(text="queued prompt", message_id="message-1")
+
+    assert (
+        ask_module._ask_inline_pending_message_ids(
+            session,
+            external_thread_active=True,
+        )
+        == set()
+    )
+    assert ask_module._ask_queued_message_labels(
+        session,
+        external_thread_active=True,
+    ) == ["user: queued prompt"]
+
+
 def test_ask_conversation_messages_render_new_thread_start_message() -> None:
     message = StartThread(
         type=AGENT_MESSAGE_THREAD_START,

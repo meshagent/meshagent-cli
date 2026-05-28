@@ -830,6 +830,18 @@ async def _save_ask_input_file_attachment(
     path: Path,
     placeholder: str,
 ) -> _AskInputAttachment:
+    return await asyncio.to_thread(
+        _save_ask_input_file_attachment_sync,
+        path=path,
+        placeholder=placeholder,
+    )
+
+
+def _save_ask_input_file_attachment_sync(
+    *,
+    path: Path,
+    placeholder: str,
+) -> _AskInputAttachment:
     data = path.read_bytes()
     mime_type = _mime_type_for_path(path)
     return _ask_input_attachment_from_bytes(
@@ -1251,6 +1263,46 @@ def _dataset_image_attachment_text(uri: str | None) -> str | None:
     if ImageDatasetClient.dataset_uri_reference(normalized_uri) is None:
         return None
     return f"[attachment] {normalized_uri}"
+
+
+def _ask_inline_pending_message_ids(
+    session: _AskExternalThreadState,
+    *,
+    external_thread_active: bool,
+) -> set[str]:
+    if external_thread_active:
+        return set()
+    if not isinstance(session, ChatThreadSession):
+        return set()
+
+    message_ids: set[str] = set()
+    for pending in session.pending_inputs:
+        if not isinstance(pending.payload, (StartThread, TurnStart)):
+            continue
+        if _agent_message_content_text(pending.payload.content or []).strip() == "":
+            continue
+        message_ids.add(pending.message_id)
+    return message_ids
+
+
+def _ask_queued_message_labels(
+    session: _AskExternalThreadState,
+    *,
+    external_thread_active: bool,
+) -> list[str]:
+    inline_message_ids = _ask_inline_pending_message_ids(
+        session,
+        external_thread_active=external_thread_active,
+    )
+    if len(inline_message_ids) == 0:
+        return list(session.queued_message_labels)
+    if not isinstance(session, ChatThreadSession):
+        return list(session.queued_message_labels)
+    return [
+        pending.label
+        for pending in session.pending_inputs
+        if pending.message_id not in inline_message_ids
+    ]
 
 
 async def _ascii_image_from_uri_async(
@@ -4060,7 +4112,8 @@ async def _run_ask_tui(
                     )
                     if data_attachment.mime_type.startswith("image/"):
                         self._next_input_image_number += 1
-                    attachment = _ask_input_attachment_from_bytes(
+                    attachment = await asyncio.to_thread(
+                        _ask_input_attachment_from_bytes,
                         data=data_attachment.data,
                         mime_type=data_attachment.mime_type,
                         name=data_attachment.name,
@@ -4450,7 +4503,8 @@ async def _run_ask_tui(
                     attachment_record is not None
                     and attachment_record.mime_type.startswith("image/")
                 ):
-                    image_preview = _image_preview_from_record(
+                    image_preview = await asyncio.to_thread(
+                        _image_preview_from_record,
                         attachment_record,
                         max_rows=max(1, self.size.height // 2),
                     )
@@ -4461,7 +4515,8 @@ async def _run_ask_tui(
                     attachment_record is not None
                     and attachment_record.mime_type == "application/pdf"
                 ):
-                    pdf_preview = _pdf_preview_from_record(
+                    pdf_preview = await asyncio.to_thread(
+                        _pdf_preview_from_record,
                         attachment_record,
                         name=_attachment_display_name(item_uri),
                         max_rows=max(1, self.size.height // 2),
@@ -4778,8 +4833,11 @@ async def _run_ask_tui(
                 if thread_status is not None
                 else session.thread_status_text
             )
-            labels = list(session.queued_message_labels)
             active = status is not None and status.strip() != ""
+            labels = _ask_queued_message_labels(
+                session,
+                external_thread_active=active,
+            )
             status_changed = active != self._external_thread_active
             queue_changed = labels != self._external_queued_messages
             self._external_thread_active = active
@@ -4827,10 +4885,16 @@ async def _run_ask_tui(
             if not isinstance(session, _AskExternalThreadState):
                 return
             session_messages = session.messages
-            queued_message_ids: set[str] = set()
+            hidden_queued_message_ids: set[str] = set()
             if isinstance(session, ChatThreadSession):
-                queued_message_ids = {
-                    pending.message_id for pending in session.pending_inputs
+                inline_pending_message_ids = _ask_inline_pending_message_ids(
+                    session,
+                    external_thread_active=self._external_thread_active,
+                )
+                hidden_queued_message_ids = {
+                    pending.message_id
+                    for pending in session.pending_inputs
+                    if pending.message_id not in inline_pending_message_ids
                 }
             if any(isinstance(message, AgentMessage) for message in session_messages):
                 local_participant_name = (
@@ -4850,7 +4914,7 @@ async def _run_ask_tui(
 
             changed = False
             for message in session_messages[start_index:]:
-                if message.message_id in queued_message_ids:
+                if message.message_id in hidden_queued_message_ids:
                     continue
                 if message.message_id == self._active_assistant_item_id:
                     continue
