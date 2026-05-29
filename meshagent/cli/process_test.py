@@ -1408,6 +1408,32 @@ def test_build_process_agent_passes_project_header_client_to_openai_adapters(
     assert created_adapters[1]["client"] is proxy_client_calls[1]["client"]
 
 
+def test_build_process_agent_enables_server_tool_search_for_openai_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_adapters: list[dict[str, object]] = []
+
+    class _FakeOpenAIAdapter:
+        def __init__(self, **kwargs) -> None:
+            created_adapters.append(kwargs)
+
+    monkeypatch.setattr(process, "OpenAIResponsesAdapter", _FakeOpenAIAdapter)
+
+    agent_cls = process.build_process_agent(
+        model="gpt-5.5",
+        rule=[],
+        toolkit=["RequiredAssistant"],
+        schema=[],
+        tool_search="agent",
+        require_table_read=[],
+        require_table_write=[],
+        channels=[],
+    )
+
+    assert agent_cls is not None
+    assert created_adapters[1]["tool_search"] == "server"
+
+
 def test_chatbot_agent_annotations_include_thread_dir() -> None:
     assert chatbot._chatbot_agent_annotations(
         threading_mode="default-new",
@@ -5513,6 +5539,111 @@ async def test_process_turn_toolkits_pass_room_context_to_required_toolkits(
     assert len(contexts) == 1
     assert isinstance(contexts[0], RoomToolContext)
     assert contexts[0].room is agent._room
+
+
+@pytest.mark.asyncio
+async def test_process_turn_toolkits_agent_tool_search_uses_static_agent_toolkits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_cls = process.build_process_agent(
+        model="gpt-5.5",
+        rule=[],
+        toolkit=["RequiredAssistant"],
+        schema=[],
+        require_storage=True,
+        default_room_storage_mount=True,
+        require_shell=True,
+        require_time=True,
+        tool_search="agent",
+        require_table_read=[],
+        require_table_write=[],
+    )
+    agent = agent_cls()
+    agent._room = _FakeProcessRoom()
+    required_toolkit = Toolkit(name="RequiredAssistant", tools=[])
+
+    async def _fake_get_required_toolkits(*, context):
+        del context
+        return [required_toolkit]
+
+    monkeypatch.setattr(agent, "get_required_toolkits", _fake_get_required_toolkits)
+
+    combined_toolkits = await agent.get_process_turn_toolkits(
+        process=_FakeProcessState(),
+        sender=None,
+        model="gpt-5.5",
+        turns=[
+            TurnStart(
+                type="meshagent.agent.turn.start",
+                thread_id="threads/example",
+                content=[AgentTextContent(type="text", text="hello")],
+            )
+        ],
+    )
+
+    toolkit_names = [toolkit.name for toolkit in combined_toolkits]
+    assert "storage" in toolkit_names
+    assert "shell" in toolkit_names
+    assert "datetime" in toolkit_names
+    assert "RequiredAssistant" in toolkit_names
+
+
+@pytest.mark.asyncio
+async def test_process_turn_toolkits_room_tool_search_adds_annotated_room_toolkits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_cls = process.build_process_agent(
+        model="gpt-5.5",
+        rule=[],
+        toolkit=["RequiredAssistant"],
+        schema=[],
+        require_storage=True,
+        default_room_storage_mount=True,
+        require_shell=True,
+        require_time=True,
+        tool_search="room",
+        require_table_read=[],
+        require_table_write=[],
+    )
+    agent = agent_cls()
+    agent._room = _FakeProcessRoom()
+    required_toolkit = Toolkit(name="RequiredAssistant", tools=[])
+    room_toolkit = Toolkit(name="SearchableAssistant", tools=[])
+
+    async def _fake_get_required_toolkits(*, context):
+        del context
+        return [required_toolkit]
+
+    async def _fake_get_tool_search_toolkits(*, context):
+        del context
+        return [room_toolkit]
+
+    monkeypatch.setattr(agent, "get_required_toolkits", _fake_get_required_toolkits)
+    monkeypatch.setattr(
+        agent,
+        "get_tool_search_toolkits",
+        _fake_get_tool_search_toolkits,
+    )
+
+    combined_toolkits = await agent.get_process_turn_toolkits(
+        process=_FakeProcessState(),
+        sender=None,
+        model="gpt-5.5",
+        turns=[
+            TurnStart(
+                type="meshagent.agent.turn.start",
+                thread_id="threads/example",
+                content=[AgentTextContent(type="text", text="hello")],
+            )
+        ],
+    )
+
+    toolkit_names = [toolkit.name for toolkit in combined_toolkits]
+    assert "storage" in toolkit_names
+    assert "shell" in toolkit_names
+    assert "datetime" in toolkit_names
+    assert "RequiredAssistant" in toolkit_names
+    assert "SearchableAssistant" in toolkit_names
 
 
 @pytest.mark.asyncio

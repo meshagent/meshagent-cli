@@ -1951,6 +1951,7 @@ ThreadingMode = Literal["none", "default-new"]
 ThreadStorageBackend = Literal["meshdocument", "meshagent", "dataset", "none", "codex"]
 NormalizedThreadStorageBackend = Literal["meshdocument", "dataset", "none", "codex"]
 ContextManagementMode = Literal["auto", "standalone", "none"]
+ProcessToolSearchMode = Literal["room", "agent", "none"]
 
 ShellCopyEnvOption = Annotated[
     list[str],
@@ -2068,6 +2069,18 @@ ContextManagementOption = Annotated[
         help=(
             "Context compaction mode for OpenAI Responses process agents: "
             "auto, standalone, or none."
+        ),
+    ),
+]
+
+ToolSearchOption = Annotated[
+    ProcessToolSearchMode,
+    typer.Option(
+        "--tool-search",
+        help=(
+            "Expose required toolkits through OpenAI Responses tool search. "
+            "Use agent for statically configured non-OpenAI builtin tools, "
+            "room for those plus annotated room toolkits, or none."
         ),
     ),
 ]
@@ -4194,6 +4207,7 @@ def _build_runtime_agent(
     compaction_threshold: Optional[int],
     max_output_tokens: Optional[int],
     reasoning_effort: Optional[str],
+    tool_search: ProcessToolSearchMode,
     transcription_model: str | None,
     working_dir: Optional[str],
     dataset_namespace: Optional[list[str]],
@@ -4308,6 +4322,7 @@ def _build_runtime_agent(
         builder_kwargs["compaction_threshold"] = compaction_threshold
         builder_kwargs["max_output_tokens"] = max_output_tokens
         builder_kwargs["reasoning_effort"] = reasoning_effort
+        builder_kwargs["tool_search"] = tool_search
         builder_kwargs["verbose_dataset"] = verbose_dataset
         builder_kwargs["save_audio_input"] = save_audio_input
         builder_kwargs["preamble_rule"] = preamble_rule
@@ -4964,6 +4979,7 @@ def build_process_agent(
     compaction_threshold: Optional[int] = None,
     max_output_tokens: Optional[int] = 32000,
     reasoning_effort: Optional[str] = None,
+    tool_search: ProcessToolSearchMode = "none",
     skill_dirs: Optional[list[str]] = None,
     threading_mode: ThreadingMode = "default-new",
     shell_image: Optional[str] = None,
@@ -5134,6 +5150,9 @@ def build_process_agent(
             "[red]--reasoning-effort is only supported by OpenAI Responses models[/red]"
         )
         raise typer.Exit(1)
+    if tool_search != "none" and not supports_openai_responses_tools:
+        print("[red]--tool-search is only supported by OpenAI Responses models[/red]")
+        raise typer.Exit(1)
     base_shell_env = _copy_shell_env_vars(copy_env=shell_copy_env)
     base_shell_env.update(_set_shell_env_vars(set_env=shell_set_env))
     resolved_shell_image = resolve_shell_image(shell_image)
@@ -5221,6 +5240,7 @@ def build_process_agent(
                     compaction_threshold=compaction_threshold,
                     max_output_tokens=max_output_tokens,
                     reasoning_effort=reasoning_effort,
+                    tool_search="server" if tool_search != "none" else None,
                     allowed_models=None if unfiltered_llm_backend else openai_models,
                     **openai_adapter_kwargs,
                 ),
@@ -6078,16 +6098,22 @@ def build_process_agent(
                     )
 
             required_toolkits: list[Toolkit] = []
+            room_tool_search_toolkits: list[Toolkit] = []
             room = self._room
             if room is not None:
-                required_toolkits = await self.get_required_toolkits(
-                    context=RoomToolContext(
-                        room=room,
-                        caller=room.local_participant,
-                        on_behalf_of=sender,
-                        event_handler=handle_tool_event,
-                    )
+                room_tool_context = RoomToolContext(
+                    room=room,
+                    caller=room.local_participant,
+                    on_behalf_of=sender,
+                    event_handler=handle_tool_event,
                 )
+                required_toolkits = await self.get_required_toolkits(
+                    context=room_tool_context
+                )
+                if tool_search == "room":
+                    room_tool_search_toolkits = await self.get_tool_search_toolkits(
+                        context=room_tool_context
+                    )
 
             combined_toolkits: list[Toolkit] = [*toolkits]
             combined_toolkits.extend(built_required_toolkits)
@@ -6095,6 +6121,22 @@ def build_process_agent(
             combined_toolkits.extend(extra_toolkits)
             if process.thread_storage is not None:
                 combined_toolkits.append(process.thread_storage.make_toolkit())
+
+            if tool_search == "room":
+                seen_toolkits = {
+                    (toolkit.name, tuple(tool.name for tool in toolkit.tools))
+                    for toolkit in combined_toolkits
+                }
+                for toolkit in room_tool_search_toolkits:
+                    toolkit_key = (
+                        toolkit.name,
+                        tuple(tool.name for tool in toolkit.tools),
+                    )
+                    if toolkit_key in seen_toolkits:
+                        continue
+                    seen_toolkits.add(toolkit_key)
+                    combined_toolkits.append(toolkit)
+
             return combined_toolkits
 
     class _ProcessSupervisor(AgentSupervisor):
@@ -6329,6 +6371,7 @@ async def join(
             "--require-toolkit", "-rt", help="the name or url of a required toolkit"
         ),
     ] = [],
+    tool_search: ToolSearchOption = "none",
     require_schema: Annotated[
         List[str],
         typer.Option(
@@ -6747,6 +6790,7 @@ async def join(
             compaction_threshold=compaction_threshold,
             max_output_tokens=max_output_tokens,
             reasoning_effort=reasoning_effort,
+            tool_search=tool_search,
             working_dir=working_dir,
             dataset_namespace=resolved_dataset_namespace,
             skill_dirs=skill_dir,
@@ -6820,6 +6864,7 @@ async def service(
             "--require-toolkit", "-rt", help="the name or url of a required toolkit"
         ),
     ] = [],
+    tool_search: ToolSearchOption = "none",
     require_schema: Annotated[
         List[str],
         typer.Option(
@@ -7211,6 +7256,7 @@ async def service(
             compaction_threshold=compaction_threshold,
             max_output_tokens=max_output_tokens,
             reasoning_effort=reasoning_effort,
+            tool_search=tool_search,
             working_dir=working_dir,
             dataset_namespace=resolved_dataset_namespace,
             skill_dirs=skill_dir,
@@ -7265,6 +7311,7 @@ async def spec(
             "--require-toolkit", "-rt", help="the name or url of a required toolkit"
         ),
     ] = [],
+    tool_search: ToolSearchOption = "none",
     require_schema: Annotated[
         List[str],
         typer.Option(
@@ -7625,6 +7672,7 @@ async def spec(
             compaction_threshold=compaction_threshold,
             max_output_tokens=max_output_tokens,
             reasoning_effort=reasoning_effort,
+            tool_search=tool_search,
             working_dir=working_dir,
             dataset_namespace=resolved_dataset_namespace,
             skill_dirs=skill_dir,
@@ -7695,6 +7743,7 @@ async def deploy(
             "--require-toolkit", "-rt", help="the name or url of a required toolkit"
         ),
     ] = [],
+    tool_search: ToolSearchOption = "none",
     require_schema: Annotated[
         List[str],
         typer.Option(
@@ -8062,6 +8111,7 @@ async def deploy(
             compaction_threshold=compaction_threshold,
             max_output_tokens=max_output_tokens,
             reasoning_effort=reasoning_effort,
+            tool_search=tool_search,
             working_dir=working_dir,
             dataset_namespace=resolved_dataset_namespace,
             skill_dirs=skill_dir,
@@ -10196,6 +10246,7 @@ async def run(
             "--require-toolkit", "-rt", help="the name or url of a required toolkit"
         ),
     ] = [],
+    tool_search: ToolSearchOption = "none",
     require_schema: Annotated[
         List[str],
         typer.Option(
@@ -10564,6 +10615,8 @@ async def run(
     )
     if no_room and room is not None and room.strip() != "":
         raise typer.BadParameter("--room cannot be used with --no-room")
+    if no_room and tool_search != "none":
+        raise typer.BadParameter("--tool-search cannot be used with --no-room")
     if no_room:
         _require_process_run_can_skip_room(
             runtime=runtime,
@@ -10715,6 +10768,7 @@ async def run(
             compaction_threshold=compaction_threshold,
             max_output_tokens=max_output_tokens,
             reasoning_effort=reasoning_effort,
+            tool_search=tool_search,
             verbose_dataset=verbose_dataset,
             working_dir=working_dir,
             dataset_namespace=resolved_dataset_namespace,
