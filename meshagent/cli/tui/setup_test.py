@@ -324,19 +324,14 @@ def test_show_codex_choice_prefers_existing_profiles(monkeypatch) -> None:
             "billing, usage analytics, and governance in your MeshAgent "
             "account instead of managing separate provider subscriptions. "
             "Found existing MeshAgent Codex configuration for this project. "
-            "Use it as-is, update it for the current MeshAgent setup, configure "
-            "MeshAgent as the default, or remove it."
+            "Update it for the current project, remove it, or leave Codex "
+            "unchanged."
         ),
         "help_text": "Use Up/Down and Enter.",
         "centered": False,
         "options": [
-            (
-                "Use existing Codex configuration",
-                "__codex_continue__",
-            ),
-            ("Update existing Codex configuration", "__codex_update__"),
-            ("Make MeshAgent the Codex default", "__codex_create__"),
-            ("Remove existing Codex configuration", "__codex_remove__"),
+            ("Update Codex MeshAgent configuration", "__codex_update__"),
+            ("Remove Codex MeshAgent configuration", "__codex_remove__"),
             (
                 'No, I will use "meshagent launch codex" if I want to use Codex via MeshAgent.',
                 "__codex_skip__",
@@ -388,14 +383,12 @@ def test_show_codex_choice_omits_single_existing_configuration_name(
         "billing, usage analytics, and governance in your MeshAgent "
         "account instead of managing separate provider subscriptions. "
         "Found existing MeshAgent Codex configuration for this project. "
-        "Use it as-is, update it for the current MeshAgent setup, configure "
-        "MeshAgent as the default, or remove it."
+        "Update it for the current project, remove it, or leave Codex "
+        "unchanged."
     )
     assert captured["options"] == [
-        ("Use existing Codex configuration", "__codex_continue__"),
-        ("Update existing Codex configuration", "__codex_update__"),
-        ("Make MeshAgent the Codex default", "__codex_create__"),
-        ("Remove existing Codex configuration", "__codex_remove__"),
+        ("Update Codex MeshAgent configuration", "__codex_update__"),
+        ("Remove Codex MeshAgent configuration", "__codex_remove__"),
         (
             'No, I will use "meshagent launch codex" if I want to use Codex via MeshAgent.',
             "__codex_skip__",
@@ -445,14 +438,12 @@ def test_show_codex_choice_hides_single_custom_configuration_name(
         "billing, usage analytics, and governance in your MeshAgent "
         "account instead of managing separate provider subscriptions. "
         "Found existing MeshAgent Codex configuration for this project. "
-        "Use it as-is, update it for the current MeshAgent setup, configure "
-        "MeshAgent as the default, or remove it."
+        "Update it for the current project, remove it, or leave Codex "
+        "unchanged."
     )
     assert captured["options"] == [
-        ("Use existing Codex configuration", "__codex_continue__"),
-        ("Update existing Codex configuration", "__codex_update__"),
-        ("Make MeshAgent the Codex default", "__codex_create__"),
-        ("Remove existing Codex configuration", "__codex_remove__"),
+        ("Update Codex MeshAgent configuration", "__codex_update__"),
+        ("Remove Codex MeshAgent configuration", "__codex_remove__"),
         (
             'No, I will use "meshagent launch codex" if I want to use Codex via MeshAgent.',
             "__codex_skip__",
@@ -482,6 +473,40 @@ def test_codex_create_choice_configures_default_without_profile_prompt(
     event = SimpleNamespace(option=SimpleNamespace(id="__codex_create__"))
     asyncio.run(app.on_option_list_option_selected(event))
 
+    assert configured_defaults == ["meshagent"]
+    assert prompted is False
+
+
+def test_codex_update_choice_refreshes_default_without_default_prompt(
+    monkeypatch,
+) -> None:
+    app = _new_setup_app(has_codex_cli=True)
+    app._mode = "codex_choice"
+    app._existing_codex_profile_ids = ["meshagent", "meshagent-work"]
+    removed_profiles: list[str] = []
+    configured_defaults: list[str | None] = []
+    prompted = False
+
+    async def _remove_profile(profile_id: str) -> None:
+        removed_profiles.append(profile_id)
+
+    async def _configure_default(profile_id: str | None) -> None:
+        configured_defaults.append(profile_id)
+
+    def _show_default_choice(*, profile_ids) -> None:
+        del profile_ids
+        nonlocal prompted
+        prompted = True
+
+    monkeypatch.setattr(app, "_remove_codex_profile_operation", _remove_profile)
+    monkeypatch.setattr(app, "_configure_codex_default_profile", _configure_default)
+    monkeypatch.setattr(app, "_show_codex_default_choice", _show_default_choice)
+    monkeypatch.setattr(app, "_set_busy", lambda **kwargs: None)
+
+    event = SimpleNamespace(option=SimpleNamespace(id="__codex_update__"))
+    asyncio.run(app.on_option_list_option_selected(event))
+
+    assert removed_profiles == ["meshagent", "meshagent-work"]
     assert configured_defaults == ["meshagent"]
     assert prompted is False
 

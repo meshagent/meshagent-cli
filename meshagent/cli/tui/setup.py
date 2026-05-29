@@ -946,9 +946,8 @@ class SetupWizardApp(App[None]):
         else:
             profile_message = (
                 f"{_tool_proxy_setup_message(tool_name='Codex')} Found existing "
-                "MeshAgent Codex configuration for this project. Use it as-is, "
-                "update it for the current MeshAgent setup, configure MeshAgent "
-                "as the default, or remove it."
+                "MeshAgent Codex configuration for this project. Update it for "
+                "the current project, remove it, or leave Codex unchanged."
             )
 
             self._set_text(
@@ -959,19 +958,11 @@ class SetupWizardApp(App[None]):
             self._set_options(
                 options=[
                     Option(
-                        "Use existing Codex configuration",
-                        id=CODEX_CONTINUE_OPTION_ID,
-                    ),
-                    Option(
-                        "Update existing Codex configuration",
+                        "Update Codex MeshAgent configuration",
                         id=CODEX_UPDATE_OPTION_ID,
                     ),
                     Option(
-                        "Make MeshAgent the Codex default",
-                        id=CODEX_CREATE_OPTION_ID,
-                    ),
-                    Option(
-                        "Remove existing Codex configuration",
+                        "Remove Codex MeshAgent configuration",
                         id=CODEX_REMOVE_OPTION_ID,
                     ),
                     Option(
@@ -1320,31 +1311,27 @@ class SetupWizardApp(App[None]):
         )
 
     async def _update_existing_codex_profiles(self) -> None:
-        if (
-            self._replace_codex_profile_operation is None
-            or len(self._existing_codex_profile_ids) == 0
-        ):
+        if len(self._existing_codex_profile_ids) == 0:
             await self._continue_with_existing_codex_profiles()
             return
 
         self._set_busy(
             title="Updating Codex",
-            message="Updating existing Codex configurations for the current project...",
+            message="Updating Codex to use MeshAgent by default...",
             help_text="Please wait.",
         )
         updated_profile_ids: list[str] = []
         try:
-            for profile_id in self._existing_codex_profile_ids:
-                await self._replace_codex_profile_operation(profile_id)
-                updated_profile_ids.append(profile_id)
+            if self._remove_codex_profile_operation is not None:
+                for profile_id in self._existing_codex_profile_ids:
+                    await self._remove_codex_profile_operation(profile_id)
+                    updated_profile_ids.append(profile_id)
         except Exception as ex:
             await self._set_error_mode(f"Unable to update Codex: {ex}")
             return
 
         self._updated_codex_profile_ids = updated_profile_ids
-        await self._maybe_continue_to_codex_default_choice(
-            self._existing_codex_profile_ids
-        )
+        await self._configure_codex_default_profile(self._default_codex_profile_name)
 
     async def _remove_existing_codex_profiles(self) -> None:
         if (
@@ -1368,7 +1355,7 @@ class SetupWizardApp(App[None]):
 
         self._removed_codex_profile_ids = list(self._existing_codex_profile_ids)
         self._existing_codex_profile_ids = []
-        self._show_codex_choice()
+        await self._maybe_continue_to_claude_setup()
 
     async def _replace_conflicting_codex_profile(self) -> None:
         profile_id = self._pending_codex_conflict_profile_id
