@@ -135,6 +135,11 @@ def test_setup_command_launches_ask_after_success(monkeypatch) -> None:
         lambda *, api_url=None: "https://api.meshagent.com",
     )
     monkeypatch.setattr(
+        root_commands,
+        "_current_meshagent_executable",
+        lambda: "/tmp/current/bin/meshagent",
+    )
+    monkeypatch.setattr(
         "meshagent.cli.tool_integrations.has_codex_cli",
         lambda: True,
     )
@@ -379,18 +384,25 @@ def test_setup_command_passes_codex_default_profile_operations(
         )
         return "meshagent"
 
-    def _fake_set_codex_default_profile(
+    def _fake_configure_codex_default_integration(
         *,
-        profile_id: str | None,
+        project_id: str | None = None,
+        provider_id: str,
+        api_url: str | None = None,
+        meshagent_executable: str | None = None,
         config_path=None,
-    ) -> bool:
+        **kwargs,
+    ) -> None:
         configured_defaults.append(
             {
-                "profile_id": profile_id,
+                "project_id": project_id,
+                "provider_id": provider_id,
+                "api_url": api_url,
+                "meshagent_executable": meshagent_executable,
                 "config_path": None if config_path is None else str(config_path),
             }
         )
-        return True
+        assert kwargs == {}
 
     def _fake_clear_codex_default_profile_if_meshagent_project(
         *,
@@ -432,8 +444,8 @@ def test_setup_command_passes_codex_default_profile_operations(
         _fake_find_current_codex_default_profile,
     )
     monkeypatch.setattr(
-        "meshagent.cli.tool_integrations.set_codex_default_profile",
-        _fake_set_codex_default_profile,
+        "meshagent.cli.tool_integrations.configure_codex_default_integration",
+        _fake_configure_codex_default_integration,
     )
     monkeypatch.setattr(
         (
@@ -445,6 +457,11 @@ def test_setup_command_passes_codex_default_profile_operations(
     monkeypatch.setattr(
         "meshagent.cli.local_settings.resolve_api_url",
         lambda *, api_url=None: "https://api.meshagent.com",
+    )
+    monkeypatch.setattr(
+        root_commands,
+        "_current_meshagent_executable",
+        lambda: "/tmp/current/bin/meshagent",
     )
     monkeypatch.setattr(
         root_commands,
@@ -465,7 +482,10 @@ def test_setup_command_passes_codex_default_profile_operations(
     ]
     assert configured_defaults == [
         {
-            "profile_id": "meshagent-work",
+            "project_id": "project-123",
+            "provider_id": "meshagent-work",
+            "api_url": "https://api.meshagent.com",
+            "meshagent_executable": "/tmp/current/bin/meshagent",
             "config_path": None,
         }
     ]

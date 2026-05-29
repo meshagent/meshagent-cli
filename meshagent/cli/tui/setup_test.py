@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 from textual.widgets.option_list import Option
 
@@ -269,7 +270,7 @@ def test_show_codex_choice_renders_options(monkeypatch) -> None:
         "centered": False,
         "options": [
             (
-                "Yes, use the MeshAgent proxy with Codex",
+                "Yes, make MeshAgent the default for Codex",
                 "__codex_create__",
             ),
             (
@@ -322,20 +323,20 @@ def test_show_codex_choice_prefers_existing_profiles(monkeypatch) -> None:
             "MeshAgent proxy so you can centralize OpenAI and Anthropic "
             "billing, usage analytics, and governance in your MeshAgent "
             "account instead of managing separate provider subscriptions. "
-            "Found existing MeshAgent Codex profiles for this project: "
-            "meshagent, meshagent-work. Use them as-is, update them for the "
-            "current MeshAgent setup, create another profile, or remove them."
+            "Found existing MeshAgent Codex configuration for this project. "
+            "Use it as-is, update it for the current MeshAgent setup, configure "
+            "MeshAgent as the default, or remove it."
         ),
         "help_text": "Use Up/Down and Enter.",
         "centered": False,
         "options": [
             (
-                "Use existing Codex profiles",
+                "Use existing Codex configuration",
                 "__codex_continue__",
             ),
-            ("Update existing Codex profiles", "__codex_update__"),
-            ("Create another Codex profile", "__codex_create__"),
-            ("Remove existing Codex profiles", "__codex_remove__"),
+            ("Update existing Codex configuration", "__codex_update__"),
+            ("Make MeshAgent the Codex default", "__codex_create__"),
+            ("Remove existing Codex configuration", "__codex_remove__"),
             (
                 'No, I will use "meshagent launch codex" if I want to use Codex via MeshAgent.',
                 "__codex_skip__",
@@ -343,6 +344,146 @@ def test_show_codex_choice_prefers_existing_profiles(monkeypatch) -> None:
         ],
         "highlighted_id": "__codex_update__",
     }
+
+
+def test_show_codex_choice_omits_single_existing_configuration_name(
+    monkeypatch,
+) -> None:
+    app = _new_setup_app(has_codex_cli=True)
+    app._existing_codex_profile_ids = ["meshagent"]
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        app,
+        "_set_text",
+        lambda *, title, message, help_text, centered=False: captured.update(
+            {
+                "title": title,
+                "message": message,
+                "help_text": help_text,
+                "centered": centered,
+            }
+        ),
+    )
+    monkeypatch.setattr(app, "_clear_error", lambda: None)
+    monkeypatch.setattr(app, "_hide_input", lambda: None)
+    monkeypatch.setattr(app, "_hide_status", lambda: None)
+    monkeypatch.setattr(app, "_hide_url", lambda: None)
+    monkeypatch.setattr(
+        app,
+        "_set_options",
+        lambda *, options, highlighted_id=None: captured.update(
+            {
+                "options": [(str(option.prompt), option.id) for option in options],
+                "highlighted_id": highlighted_id,
+            }
+        ),
+    )
+
+    app._show_codex_choice()
+
+    assert captured["message"] == (
+        "Codex was detected on this machine. Configure Codex to use the "
+        "MeshAgent proxy so you can centralize OpenAI and Anthropic "
+        "billing, usage analytics, and governance in your MeshAgent "
+        "account instead of managing separate provider subscriptions. "
+        "Found existing MeshAgent Codex configuration for this project. "
+        "Use it as-is, update it for the current MeshAgent setup, configure "
+        "MeshAgent as the default, or remove it."
+    )
+    assert captured["options"] == [
+        ("Use existing Codex configuration", "__codex_continue__"),
+        ("Update existing Codex configuration", "__codex_update__"),
+        ("Make MeshAgent the Codex default", "__codex_create__"),
+        ("Remove existing Codex configuration", "__codex_remove__"),
+        (
+            'No, I will use "meshagent launch codex" if I want to use Codex via MeshAgent.',
+            "__codex_skip__",
+        ),
+    ]
+
+
+def test_show_codex_choice_hides_single_custom_configuration_name(
+    monkeypatch,
+) -> None:
+    app = _new_setup_app(has_codex_cli=True)
+    app._existing_codex_profile_ids = ["tula"]
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        app,
+        "_set_text",
+        lambda *, title, message, help_text, centered=False: captured.update(
+            {
+                "title": title,
+                "message": message,
+                "help_text": help_text,
+                "centered": centered,
+            }
+        ),
+    )
+    monkeypatch.setattr(app, "_clear_error", lambda: None)
+    monkeypatch.setattr(app, "_hide_input", lambda: None)
+    monkeypatch.setattr(app, "_hide_status", lambda: None)
+    monkeypatch.setattr(app, "_hide_url", lambda: None)
+    monkeypatch.setattr(
+        app,
+        "_set_options",
+        lambda *, options, highlighted_id=None: captured.update(
+            {
+                "options": [(str(option.prompt), option.id) for option in options],
+                "highlighted_id": highlighted_id,
+            }
+        ),
+    )
+
+    app._show_codex_choice()
+
+    assert captured["message"] == (
+        "Codex was detected on this machine. Configure Codex to use the "
+        "MeshAgent proxy so you can centralize OpenAI and Anthropic "
+        "billing, usage analytics, and governance in your MeshAgent "
+        "account instead of managing separate provider subscriptions. "
+        "Found existing MeshAgent Codex configuration for this project. "
+        "Use it as-is, update it for the current MeshAgent setup, configure "
+        "MeshAgent as the default, or remove it."
+    )
+    assert captured["options"] == [
+        ("Use existing Codex configuration", "__codex_continue__"),
+        ("Update existing Codex configuration", "__codex_update__"),
+        ("Make MeshAgent the Codex default", "__codex_create__"),
+        ("Remove existing Codex configuration", "__codex_remove__"),
+        (
+            'No, I will use "meshagent launch codex" if I want to use Codex via MeshAgent.',
+            "__codex_skip__",
+        ),
+    ]
+
+
+def test_codex_create_choice_configures_default_without_profile_prompt(
+    monkeypatch,
+) -> None:
+    app = _new_setup_app(has_codex_cli=True)
+    app._mode = "codex_choice"
+    configured_defaults: list[str | None] = []
+    prompted = False
+
+    async def _configure_default(profile_id: str | None) -> None:
+        configured_defaults.append(profile_id)
+
+    def _set_profile_prompt(*, initial_value: str | None = None) -> None:
+        del initial_value
+        nonlocal prompted
+        prompted = True
+
+    monkeypatch.setattr(app, "_configure_codex_default_profile", _configure_default)
+    monkeypatch.setattr(app, "_set_mode_codex_profile_name", _set_profile_prompt)
+
+    event = SimpleNamespace(option=SimpleNamespace(id="__codex_create__"))
+    asyncio.run(app.on_option_list_option_selected(event))
+
+    assert configured_defaults == ["meshagent"]
+    assert prompted is False
 
 
 def test_show_codex_profile_conflict_renders_options(monkeypatch) -> None:
@@ -382,11 +523,11 @@ def test_show_codex_profile_conflict_renders_options(monkeypatch) -> None:
     )
 
     assert captured == {
-        "title": "Codex Profile Conflict",
+        "title": "Codex Configuration Conflict",
         "message": (
-            "Codex profile meshagent is currently configured for MeshAgent "
+            "Codex configuration meshagent is currently configured for MeshAgent "
             "project project-old. Update it to use the current project, remove "
-            "it, or go back to choose a different profile name."
+            "it, or go back to choose a different configuration name."
         ),
         "help_text": "Use Up/Down and Enter.",
         "centered": False,
@@ -439,17 +580,17 @@ def test_show_codex_default_choice_highlights_current_default(monkeypatch) -> No
     assert captured == {
         "title": "Codex Default",
         "message": (
-            "Choose which MeshAgent Codex profile should be the default profile."
+            "Choose which MeshAgent Codex configuration should be the default provider."
         ),
         "help_text": "Use Up/Down and Enter.",
         "centered": False,
         "options": [
             (
-                "Make meshagent the default profile",
+                "Make meshagent the default provider",
                 "__codex_default_profile__:meshagent",
             ),
             (
-                "Make meshagent-work the default profile",
+                "Make meshagent-work the default provider",
                 "__codex_default_profile__:meshagent-work",
             ),
             (
@@ -557,7 +698,7 @@ def test_show_claude_choice_renders_options(monkeypatch) -> None:
         "centered": False,
         "options": [
             (
-                "Yes, use the MeshAgent proxy with Claude",
+                "Yes, make MeshAgent the default for Claude",
                 "__claude_configure__",
             ),
             (
@@ -771,9 +912,9 @@ def test_finish_success_reports_codex_default_and_claude_configuration(
     assert captured == {
         "title": "Setup Complete",
         "message": (
-            "Project activated and Codex profile meshagent created. "
-            "Codex default profile meshagent is selected. "
-            "Claude is configured to use MeshAgent."
+            "Project activated and Codex configuration meshagent created. "
+            "Codex is configured to use MeshAgent by default. "
+            "Claude is configured to use MeshAgent by default."
         ),
         "help_text": "",
         "centered": False,
