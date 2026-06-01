@@ -724,6 +724,71 @@ async def test_process_agent_passes_threading_mode_to_mail_channel(
 
 
 @pytest.mark.asyncio
+async def test_process_agent_uses_agent_thread_list_for_multiple_storage_backends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import meshagent.agents
+    from meshagent.agents.process import Channel
+
+    captured_calls: list[dict[str, object]] = []
+
+    class _RecordingChatChannel(Channel):
+        def __init__(
+            self,
+            *,
+            room,
+            threading_mode: str | None = None,
+            thread_dir: str | None = None,
+            thread_url_scheme: str | None = None,
+            thread_path_extension: str = ".thread",
+            thread_list_path: str | None = None,
+            llm_adapter=None,
+        ) -> None:
+            super().__init__()
+            captured_calls.append(
+                {
+                    "room": room,
+                    "threading_mode": threading_mode,
+                    "thread_dir": thread_dir,
+                    "thread_url_scheme": thread_url_scheme,
+                    "thread_path_extension": thread_path_extension,
+                    "thread_list_path": thread_list_path,
+                    "llm_adapter": llm_adapter,
+                }
+            )
+
+        def handles(self, message: Message) -> bool:
+            del message
+            return False
+
+    monkeypatch.setattr(meshagent.agents, "MessagingChatChannel", _RecordingChatChannel)
+
+    agent_cls = process.build_process_agent(
+        model="gpt-5.5",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        threading_mode="default-new",
+        thread_storage=["dataset", "meshdocument"],
+        channels=["chat"],
+    )
+    agent = agent_cls()
+
+    async def _skip_install_requirements() -> None:
+        return None
+
+    monkeypatch.setattr(agent, "install_requirements", _skip_install_requirements)
+
+    await agent.start(room=_FakeProcessRoomClient())  # type: ignore[arg-type]
+    try:
+        assert len(captured_calls) == 1
+        assert captured_calls[0]["thread_url_scheme"] == "dataset"
+        assert captured_calls[0]["thread_list_path"] == "agent://threads"
+    finally:
+        await agent.stop()
+
+
+@pytest.mark.asyncio
 async def test_process_agent_uses_shared_decision_adapter_for_threaded_channels(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2513,6 +2578,55 @@ def test_process_run_thread_id_uses_dataset_scheme_for_dataset_storage(
             thread_dir="threads/custom",
         )
         == "tmp://threads/custom/main"
+    )
+
+
+def test_process_thread_storage_options_preserve_first_backend_as_default() -> None:
+    assert process._normalize_thread_storage_backends(
+        ["meshdocument", "dataset", "meshagent"]
+    ) == ["meshdocument", "dataset"]
+
+
+def test_process_new_meshdocument_thread_uses_scheme_when_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(process.uuid, "uuid4", lambda: "fixed-id")
+
+    assert (
+        process._new_process_thread_path_for_dir(
+            thread_dir="/agents/helper/threads",
+            thread_storage="meshdocument",
+            use_scheme=True,
+        )
+        == "meshdocument://agents/helper/threads/fixed-id.thread"
+    )
+
+
+def test_process_thread_dir_is_normalized_per_storage_backend() -> None:
+    assert (
+        process._thread_dir_for_storage_backend(
+            thread_dir="dataset://agents/helper/threads",
+            thread_storage="meshdocument",
+        )
+        == "/agents/helper/threads"
+    )
+    assert (
+        process._thread_dir_for_storage_backend(
+            thread_dir="/agents/helper/threads",
+            thread_storage="dataset",
+        )
+        == "dataset://agents/helper/threads"
+    )
+
+
+def test_process_unschemed_thread_path_routes_to_meshdocument_when_configured() -> None:
+    assert (
+        process._thread_storage_backend_for_thread(
+            thread_id="/agents/helper/threads/legacy.thread",
+            thread_storage_backends=["dataset", "meshdocument"],
+            default_thread_storage="dataset",
+        )
+        == "meshdocument"
     )
 
 

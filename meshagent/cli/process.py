@@ -11,6 +11,7 @@ from typing import (
     Literal,
     Awaitable,
     Callable,
+    cast,
     Iterable,
 )
 import uuid
@@ -181,6 +182,7 @@ from meshagent.agents.chat_client import (
 from meshagent.agents.process import ContentScheme
 from meshagent.agents.images_dataset import ImageDatasetClient, ImagesDataset
 from meshagent.agents.thread_storage import (
+    MultiThreadStorageRepository,
     NoopThreadStorageRepository,
     ThreadListEntry,
     ThreadListEvent,
@@ -2131,6 +2133,7 @@ app.add_deprecated_option_aliases(
 ThreadingMode = Literal["none", "default-new"]
 ThreadStorageBackend = Literal["meshdocument", "meshagent", "dataset", "none", "codex"]
 NormalizedThreadStorageBackend = Literal["meshdocument", "dataset", "none", "codex"]
+ThreadStorageBackends = ThreadStorageBackend | str | list[str]
 ContextManagementMode = Literal["auto", "standalone", "none"]
 ProcessToolSearchMode = Literal["room", "agent", "none"]
 
@@ -2226,19 +2229,23 @@ ThreadDirOption = Annotated[
 ]
 
 ThreadStorageOption = Annotated[
-    ThreadStorageBackend,
-    typer.Option(
-        "--thread-storage",
-        help="Thread storage backend for process agents.",
-    ),
-]
-ProcessRunThreadStorageOption = Annotated[
-    ThreadStorageBackend | None,
+    list[str] | None,
     typer.Option(
         "--thread-storage",
         help=(
-            "Thread storage backend for process agents. Defaults to meshdocument "
-            "with a room, or none with --no-room."
+            "Thread storage backend for process agents. Can be repeated; "
+            "the first value is the default."
+        ),
+    ),
+]
+ProcessRunThreadStorageOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--thread-storage",
+        help=(
+            "Thread storage backend for process agents. Can be repeated; "
+            "the first value is the default. Defaults to meshdocument with a room, "
+            "or none with --no-room."
         ),
     ),
 ]
@@ -2454,9 +2461,10 @@ def _resolve_process_threading_options(
     agent_name: str | None,
     threading_mode: ThreadingMode,
     thread_dir: str | None,
-    thread_storage: ThreadStorageBackend = "meshdocument",
+    thread_storage: ThreadStorageBackends = "meshdocument",
 ) -> tuple[ThreadingMode, str | None]:
-    thread_storage = _normalize_thread_storage_backend(thread_storage)
+    thread_storage_backends = _normalize_thread_storage_backends(thread_storage)
+    thread_storage = thread_storage_backends[0]
     if thread_dir is not None:
         return threading_mode, thread_dir
 
@@ -3028,6 +3036,30 @@ def _dataset_thread_url_for_path(*, path: str) -> str:
     return _thread_url_for_path(scheme="dataset", path=path)
 
 
+def _thread_dir_for_storage_backend(
+    *,
+    thread_dir: str,
+    thread_storage: ThreadStorageBackends,
+) -> str:
+    normalized = thread_dir.strip().rstrip("/")
+    if normalized.startswith("dataset://"):
+        raw_path = normalized[len("dataset://") :].strip("/")
+    elif normalized.startswith("meshdocument://"):
+        raw_path = normalized[len("meshdocument://") :].strip("/")
+    elif normalized.startswith("tmp://"):
+        raw_path = normalized[len("tmp://") :].strip("/")
+    else:
+        raw_path = normalized.strip("/")
+
+    if thread_storage == "dataset":
+        return _dataset_thread_url_for_path(path=raw_path)
+    if thread_storage == "none":
+        return _thread_url_for_path(scheme="tmp", path=raw_path)
+    if raw_path != "":
+        return f"/{raw_path}"
+    return raw_path
+
+
 def _normalized_annotation_string(value: object) -> str | None:
     if not isinstance(value, str):
         return None
@@ -3049,11 +3081,22 @@ def _process_thread_path_for_dir(
     *,
     thread_dir: str,
     thread_storage: "ThreadStorageBackend",
+    use_scheme: bool = False,
 ) -> str:
     if thread_storage == "dataset" and not thread_dir.startswith("dataset://"):
         return _dataset_thread_url_for_path(path=f"{thread_dir}/main")
     if thread_storage == "none" and not thread_dir.startswith("tmp://"):
         return _thread_url_for_path(scheme="tmp", path=f"{thread_dir}/main")
+    if thread_storage == "meshdocument" and (
+        use_scheme or thread_dir.startswith("meshdocument://")
+    ):
+        normalized_thread_dir = thread_dir
+        if normalized_thread_dir.startswith("meshdocument://"):
+            normalized_thread_dir = normalized_thread_dir[len("meshdocument://") :]
+        return _thread_url_for_path(
+            scheme="meshdocument",
+            path=f"{normalized_thread_dir}/main.thread",
+        )
     return _chat_thread_path_for_dir(thread_dir)
 
 
@@ -3061,6 +3104,7 @@ def _new_process_thread_path_for_dir(
     *,
     thread_dir: str,
     thread_storage: "ThreadStorageBackend",
+    use_scheme: bool = False,
 ) -> str:
     path = posixpath.join(thread_dir.strip().strip("/"), str(uuid.uuid4()))
     if thread_storage == "dataset" and not thread_dir.startswith("dataset://"):
@@ -3071,6 +3115,16 @@ def _new_process_thread_path_for_dir(
         return f"{thread_dir}/{posixpath.basename(path)}"
     if thread_dir.startswith("tmp://"):
         return f"{thread_dir}/{posixpath.basename(path)}"
+    if thread_storage == "meshdocument" and (
+        use_scheme or thread_dir.startswith("meshdocument://")
+    ):
+        normalized_path = path
+        if normalized_path.startswith("meshdocument://"):
+            normalized_path = normalized_path[len("meshdocument://") :]
+        return _thread_url_for_path(
+            scheme="meshdocument",
+            path=f"{normalized_path}.thread",
+        )
     return f"/{path}.thread"
 
 
@@ -3294,11 +3348,77 @@ def _provider_name_for_model(model: str) -> str:
 
 
 def _normalize_thread_storage_backend(
-    thread_storage: ThreadStorageBackend,
+    thread_storage: str,
 ) -> NormalizedThreadStorageBackend:
-    if thread_storage == "meshagent":
+    normalized = thread_storage.strip().casefold()
+    if normalized == "meshagent":
         return "meshdocument"
-    return thread_storage
+    if normalized in {"meshdocument", "dataset", "none", "codex"}:
+        return cast(NormalizedThreadStorageBackend, normalized)
+    raise ValueError(f"unsupported thread storage backend {thread_storage!r}")
+
+
+def _normalize_thread_storage_backends(
+    thread_storage: ThreadStorageBackends | None,
+    *,
+    default: ThreadStorageBackend = "meshdocument",
+) -> list[NormalizedThreadStorageBackend]:
+    raw_values: list[str]
+    if thread_storage is None:
+        raw_values = []
+    elif isinstance(thread_storage, list):
+        raw_values = thread_storage
+    else:
+        raw_values = [thread_storage]
+    if len(raw_values) == 0:
+        raw_values = [default]
+
+    normalized: list[NormalizedThreadStorageBackend] = []
+    for value in raw_values:
+        backend = _normalize_thread_storage_backend(value)
+        if backend not in normalized:
+            normalized.append(backend)
+    return normalized
+
+
+def _default_thread_storage_backend(
+    thread_storage: ThreadStorageBackends | None,
+    *,
+    default: ThreadStorageBackend = "meshdocument",
+) -> NormalizedThreadStorageBackend:
+    return _normalize_thread_storage_backends(
+        thread_storage,
+        default=default,
+    )[0]
+
+
+def _thread_storage_backend_for_thread(
+    *,
+    thread_id: str,
+    thread_storage_backends: list[NormalizedThreadStorageBackend],
+    default_thread_storage: NormalizedThreadStorageBackend,
+    requested_storage: str | None = None,
+) -> NormalizedThreadStorageBackend:
+    if isinstance(requested_storage, str) and requested_storage.strip() != "":
+        requested = _normalize_thread_storage_backend(requested_storage.strip())
+        if requested not in thread_storage_backends:
+            raise ValueError(
+                f"thread storage backend {requested_storage!r} is not configured"
+            )
+        return requested
+    if thread_id.startswith("dataset://"):
+        return "dataset"
+    if thread_id.startswith("tmp://"):
+        return "none"
+    if thread_id.startswith("codex://"):
+        return "codex"
+    if thread_id.startswith("meshdocument://"):
+        return "meshdocument"
+    if "meshdocument" in thread_storage_backends and (
+        thread_id.startswith("/") or thread_id.endswith(".thread")
+    ):
+        return "meshdocument"
+    return default_thread_storage
 
 
 def _parse_process_model_spec(model: str) -> _ProcessModelSpec:
@@ -4138,9 +4258,10 @@ def _process_agent_annotations(
     *,
     threading_mode: ThreadingMode,
     thread_dir: Optional[str],
-    thread_storage: ThreadStorageBackend,
+    thread_storage: ThreadStorageBackends,
     channel: list[str],
 ) -> dict[str, str]:
+    thread_storage = _default_thread_storage_backend(thread_storage)
     if not _has_chat_channel(channels=channel):
         return {}
     annotations = _chatbot_agent_annotations(
@@ -4192,14 +4313,15 @@ def _agent_annotations_for_runtime(
     runtime: Literal["chatbot", "process"],
     threading_mode: ThreadingMode,
     thread_dir: Optional[str],
-    thread_storage: ThreadStorageBackend,
+    thread_storage: ThreadStorageBackends,
     channel: list[str],
 ) -> dict[str, str]:
+    default_thread_storage = _default_thread_storage_backend(thread_storage)
     if runtime == "process":
         return _process_agent_annotations(
             threading_mode=threading_mode,
             thread_dir=thread_dir,
-            thread_storage=thread_storage,
+            thread_storage=default_thread_storage,
             channel=channel,
         )
     return _chatbot_agent_annotations(
@@ -5155,7 +5277,7 @@ def build_process_agent(
     dataset_namespace: Optional[list[str]] = None,
     always_reply: Optional[bool] = None,
     thread_dir: Optional[str] = None,
-    thread_storage: ThreadStorageBackend = "meshdocument",
+    thread_storage: ThreadStorageBackends = "meshdocument",
     context_management: ContextManagementMode = "auto",
     compaction_threshold: Optional[int] = None,
     max_output_tokens: Optional[int] = 32000,
@@ -5222,7 +5344,8 @@ def build_process_agent(
 
     requirements = []
     toolkits = []
-    thread_storage = _normalize_thread_storage_backend(thread_storage)
+    thread_storage_backends = _normalize_thread_storage_backends(thread_storage)
+    thread_storage = thread_storage_backends[0]
 
     if storage_tool_local_paths is None:
         storage_tool_local_paths = []
@@ -5234,6 +5357,8 @@ def build_process_agent(
         if thread_storage == "dataset"
         else "tmp"
         if thread_storage == "none"
+        else "meshdocument"
+        if thread_storage == "meshdocument" and len(thread_storage_backends) > 1
         else None
     )
     thread_path_extension = "" if thread_storage in ("dataset", "none") else ".thread"
@@ -5241,15 +5366,41 @@ def build_process_agent(
         {
             "thread_url_scheme": thread_url_scheme,
             "thread_path_extension": thread_path_extension,
+            **(
+                {"thread_list_path": "agent://threads"}
+                if len(thread_storage_backends) > 1
+                else {}
+            ),
         }
         if thread_url_scheme is not None
         else {}
     )
 
-    def create_thread_storage(*, room: RoomClient, thread_id: str):
-        if thread_storage == "none":
+    def thread_storage_backend_for_thread(
+        *,
+        thread_id: str,
+        requested_storage: str | None = None,
+    ) -> NormalizedThreadStorageBackend:
+        return _thread_storage_backend_for_thread(
+            thread_id=thread_id,
+            thread_storage_backends=thread_storage_backends,
+            default_thread_storage=thread_storage,
+            requested_storage=requested_storage,
+        )
+
+    def create_thread_storage(
+        *,
+        room: RoomClient,
+        thread_id: str,
+        requested_storage: str | None = None,
+    ):
+        resolved_thread_storage = thread_storage_backend_for_thread(
+            thread_id=thread_id,
+            requested_storage=requested_storage,
+        )
+        if resolved_thread_storage == "none":
             return None
-        if thread_storage == "dataset":
+        if resolved_thread_storage == "dataset":
             if not thread_id.startswith("dataset://"):
                 raise ValueError(
                     "dataset thread storage requires a dataset:// thread id"
@@ -5680,32 +5831,61 @@ def build_process_agent(
                         await self._load_room_rules(path=room_rules_file)
 
                 normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
-                thread_storage_repository = (
-                    _thread_storage_repository_for_backend(
-                        thread_storage=thread_storage,
-                        room=room,
-                        thread_dir=normalized_thread_dir,
+                logical_thread_dir = normalized_thread_dir
+                thread_storage_repository = NoopThreadStorageRepository()
+                if logical_thread_dir is not None:
+                    repositories = [
+                        _thread_storage_repository_for_backend(
+                            thread_storage=backend,
+                            room=room,
+                            thread_dir=_thread_dir_for_storage_backend(
+                                thread_dir=logical_thread_dir,
+                                thread_storage=backend,
+                            ),
+                        )
+                        for backend in thread_storage_backends
+                    ]
+                    thread_storage_repository = (
+                        repositories[0]
+                        if len(repositories) == 1
+                        else MultiThreadStorageRepository(
+                            repositories=repositories,
+                            default_scheme=thread_storage,
+                        )
                     )
-                    if normalized_thread_dir is not None
-                    else NoopThreadStorageRepository()
-                )
 
                 async def create_thread_id(
                     start_thread: StartThread,
                     sender: Participant | None,
                 ) -> str:
-                    del start_thread
                     del sender
-                    if normalized_thread_dir is not None:
+                    resolved_thread_storage = thread_storage_backend_for_thread(
+                        thread_id="",
+                        requested_storage=start_thread.storage,
+                    )
+                    if logical_thread_dir is not None:
+                        thread_dir_for_backend = _thread_dir_for_storage_backend(
+                            thread_dir=logical_thread_dir,
+                            thread_storage=resolved_thread_storage,
+                        )
                         return _new_process_thread_path_for_dir(
-                            thread_dir=normalized_thread_dir,
-                            thread_storage=thread_storage,
+                            thread_dir=thread_dir_for_backend,
+                            thread_storage=resolved_thread_storage,
+                            use_scheme=len(thread_storage_backends) > 1,
                         )
                     generated_path = f"process-run/{uuid.uuid4()}"
-                    if thread_storage == "dataset":
+                    if resolved_thread_storage == "dataset":
                         return _dataset_thread_url_for_path(path=generated_path)
-                    if thread_storage == "none":
+                    if resolved_thread_storage == "none":
                         return _thread_url_for_path(scheme="tmp", path=generated_path)
+                    if (
+                        resolved_thread_storage == "meshdocument"
+                        and len(thread_storage_backends) > 1
+                    ):
+                        return _thread_url_for_path(
+                            scheme="meshdocument",
+                            path=f"{generated_path}.thread",
+                        )
                     return f"/{generated_path}.thread"
 
                 async def create_realtime_connection(
@@ -6780,7 +6960,7 @@ async def join(
     ] = None,
     threading_mode: ThreadingModeOption = "default-new",
     thread_dir: ThreadDirOption = None,
-    thread_storage: ThreadStorageOption = "meshdocument",
+    thread_storage: ThreadStorageOption = None,
     context_management: ContextManagementOption = "auto",
     compaction_threshold: CompactionThresholdOption = None,
     max_output_tokens: MaxOutputTokensOption = 32000,
@@ -7268,7 +7448,7 @@ async def service(
     ] = None,
     threading_mode: ThreadingModeOption = "default-new",
     thread_dir: ThreadDirOption = None,
-    thread_storage: ThreadStorageOption = "meshdocument",
+    thread_storage: ThreadStorageOption = None,
     context_management: ContextManagementOption = "auto",
     compaction_threshold: CompactionThresholdOption = None,
     max_output_tokens: MaxOutputTokensOption = 32000,
@@ -7699,7 +7879,7 @@ async def spec(
     ] = None,
     threading_mode: ThreadingModeOption = "default-new",
     thread_dir: ThreadDirOption = None,
-    thread_storage: ThreadStorageOption = "meshdocument",
+    thread_storage: ThreadStorageOption = None,
     context_management: ContextManagementOption = "auto",
     compaction_threshold: CompactionThresholdOption = None,
     max_output_tokens: MaxOutputTokensOption = 32000,
@@ -8131,7 +8311,7 @@ async def deploy(
     ] = None,
     threading_mode: ThreadingModeOption = "default-new",
     thread_dir: ThreadDirOption = None,
-    thread_storage: ThreadStorageOption = "meshdocument",
+    thread_storage: ThreadStorageOption = None,
     context_management: ContextManagementOption = "auto",
     compaction_threshold: CompactionThresholdOption = None,
     max_output_tokens: MaxOutputTokensOption = 32000,
@@ -10758,18 +10938,16 @@ async def run(
         runtime=runtime,
         dataset_namespace=dataset_namespace,
     )
-    resolved_thread_storage: ThreadStorageBackend = (
-        thread_storage
-        if thread_storage is not None
-        else "none"
-        if no_room
-        else "meshdocument"
+    resolved_thread_storage_backends = _normalize_thread_storage_backends(
+        thread_storage,
+        default="none" if no_room else "meshdocument",
     )
+    resolved_thread_storage = resolved_thread_storage_backends[0]
     resolved_threading_mode, resolved_thread_dir = _resolve_process_threading_options(
         agent_name=agent_name,
         threading_mode=threading_mode,
         thread_dir=thread_dir,
-        thread_storage=resolved_thread_storage,
+        thread_storage=resolved_thread_storage_backends,
     )
     normalized_tool_options = normalize_required_tool_options(
         toolkit=toolkit,
@@ -10944,7 +11122,7 @@ async def run(
             always_reply=always_reply,
             threading_mode=resolved_threading_mode,
             thread_dir=resolved_thread_dir,
-            thread_storage=resolved_thread_storage,
+            thread_storage=resolved_thread_storage_backends,
             context_management=context_management,
             compaction_threshold=compaction_threshold,
             max_output_tokens=max_output_tokens,
@@ -11103,7 +11281,7 @@ async def list_threads_command(
         Optional[str], typer.Option(..., help="Name of the agent to list threads for")
     ] = None,
     thread_dir: ThreadDirOption = None,
-    thread_storage: ThreadStorageOption = "meshdocument",
+    thread_storage: ThreadStorageOption = None,
     limit: Annotated[int, typer.Option("--limit", help="Maximum threads to show")] = 20,
     offset: Annotated[int, typer.Option("--offset", help="Thread list offset")] = 0,
     output: Annotated[
@@ -11115,12 +11293,14 @@ async def list_threads_command(
         ),
     ] = "text",
 ):
+    thread_storage_backends = _normalize_thread_storage_backends(thread_storage)
+    default_thread_storage = thread_storage_backends[0]
     runtime = _current_command_runtime()
     if runtime != "process":
         print("[bold red]threads is only supported for process agents[/bold red]")
         raise typer.Exit(1)
 
-    if _normalize_thread_storage_backend(thread_storage) == "codex":
+    if default_thread_storage == "codex":
         page = await _list_codex_threads(limit=limit, offset=offset)
         title = (
             f"{agent_name.strip()} threads"
@@ -11143,7 +11323,7 @@ async def list_threads_command(
         agent_name=agent_name,
         threading_mode="default-new",
         thread_dir=thread_dir,
-        thread_storage=thread_storage,
+        thread_storage=thread_storage_backends,
     )
     del resolved_threading_mode
     if resolved_thread_dir is None:
@@ -11151,9 +11331,19 @@ async def list_threads_command(
             "[bold red]--agent-name or --thread-dir must be specified for process threads[/bold red]"
         )
         raise typer.Exit(1)
+    logical_thread_dir = (
+        _normalized_thread_dir(thread_dir=thread_dir)
+        or _default_process_thread_dir(agent_name=agent_name)
+        or resolved_thread_dir
+    )
 
-    storage_class = _thread_storage_class_for_backend(thread_storage)
-    if storage_class is None:
+    storage_backend_classes = [
+        (backend, _thread_storage_class_for_backend(backend))
+        for backend in thread_storage_backends
+        if backend != "codex"
+    ]
+    storage_classes = [storage_class for _, storage_class in storage_backend_classes]
+    if any(storage_class is None for storage_class in storage_classes):
         print(
             "[bold red]thread listing is not available for --thread-storage=none[/bold red]"
         )
@@ -11169,7 +11359,25 @@ async def list_threads_command(
             project_id=project_id,
             room=room,
         )
-        repository = storage_class(room=user_client, thread_dir=resolved_thread_dir)
+        repositories = [
+            storage_class(
+                room=user_client,
+                thread_dir=_thread_dir_for_storage_backend(
+                    thread_dir=logical_thread_dir,
+                    thread_storage=backend,
+                ),
+            )
+            for backend, storage_class in storage_backend_classes
+            if storage_class is not None
+        ]
+        repository = (
+            repositories[0]
+            if len(repositories) == 1
+            else MultiThreadStorageRepository(
+                repositories=repositories,
+                default_scheme=default_thread_storage,
+            )
+        )
         page = await repository.list_threads(
             limit=limit,
             offset=offset,
@@ -11205,7 +11413,7 @@ async def list_messages_command(
         Optional[str], typer.Option(..., help="Name of the agent to inspect")
     ] = None,
     thread_dir: ThreadDirOption = None,
-    thread_storage: ThreadStorageOption = "meshdocument",
+    thread_storage: ThreadStorageOption = None,
     thread_id: Annotated[
         str,
         typer.Option("--thread-id", help="Thread id to inspect"),
@@ -11219,13 +11427,14 @@ async def list_messages_command(
         ),
     ] = "text",
 ):
+    default_thread_storage = _default_thread_storage_backend(thread_storage)
     resolved_thread_id = _resolve_process_inspect_thread_path(
         thread_id=thread_id,
         agent_name=agent_name,
         thread_dir=thread_dir,
-        thread_storage=thread_storage,
+        thread_storage=default_thread_storage,
     )
-    if _normalize_thread_storage_backend(thread_storage) == "codex":
+    if default_thread_storage == "codex":
         messages = await _load_codex_thread_agent_messages(thread_id=resolved_thread_id)
         print_thread_messages(messages=messages, output=output)
         return
