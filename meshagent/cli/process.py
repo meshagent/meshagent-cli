@@ -532,6 +532,187 @@ def _thread_storage_repository_for_backend(
     return storage_class(room=room, thread_dir=thread_dir)
 
 
+def _resolve_process_inspect_thread_path(
+    *,
+    thread_id: str,
+    agent_name: str | None,
+    thread_dir: str | None,
+    thread_storage: "ThreadStorageBackend",
+) -> str:
+    normalized = thread_id.strip()
+    if normalized == "":
+        return normalized
+    if (
+        normalized.startswith("/")
+        or normalized.startswith("dataset://")
+        or normalized.startswith("tmp://")
+        or thread_storage == "codex"
+    ):
+        return normalized
+
+    _, resolved_thread_dir = _resolve_process_threading_options(
+        agent_name=agent_name,
+        threading_mode="default-new",
+        thread_dir=thread_dir,
+        thread_storage=thread_storage,
+    )
+    normalized_thread_dir = _normalized_thread_dir(thread_dir=resolved_thread_dir)
+    if normalized_thread_dir is None:
+        if thread_storage == "dataset":
+            return _dataset_thread_url_for_path(path=normalized)
+        return normalized
+
+    relative_name = normalized.lstrip("/")
+    if thread_storage == "dataset":
+        if normalized_thread_dir.startswith("dataset://"):
+            return f"{normalized_thread_dir}/{relative_name}"
+        return _dataset_thread_url_for_path(
+            path=posixpath.join(normalized_thread_dir.strip("/"), relative_name)
+        )
+
+    if normalized.endswith(".thread"):
+        filename = relative_name
+    else:
+        filename = f"{relative_name}.thread"
+    return f"/{posixpath.join(normalized_thread_dir.strip('/'), filename)}"
+
+
+def _codex_thread_messages_from_read_response(
+    *,
+    response: Any,
+    thread_id: str,
+) -> list[AgentMessage]:
+    from meshagent.agents.messages import (
+        AGENT_EVENT_TEXT_CONTENT_DELTA,
+        AGENT_EVENT_TURN_ENDED,
+        AGENT_EVENT_TURN_START_ACCEPTED,
+        AgentTextContentDelta,
+        TurnEnded,
+        TurnStartAccepted,
+    )
+    from meshagent.api.agent_content import AgentFileContent, AgentTextContent
+    from meshagent.codex.vendor.openai_codex.generated.v2_all import (
+        AgentMessageThreadItem,
+        ImageUserInput,
+        LocalImageUserInput,
+        TextUserInput,
+        UserMessageThreadItem,
+    )
+
+    messages: list[AgentMessage] = []
+    for turn in response.thread.turns:
+        turn_messages: list[AgentMessage] = []
+        for item in turn.items:
+            thread_item = item.root
+            if isinstance(thread_item, UserMessageThreadItem):
+                content: list[AgentTextContent | AgentFileContent] = []
+                for input_item in thread_item.content:
+                    user_input = input_item.root
+                    if isinstance(user_input, TextUserInput):
+                        if user_input.text.strip() != "":
+                            content.append(
+                                AgentTextContent(type="text", text=user_input.text)
+                            )
+                        continue
+                    if isinstance(user_input, ImageUserInput):
+                        content.append(
+                            AgentFileContent(type="file", url=user_input.url)
+                        )
+                        continue
+                    if isinstance(user_input, LocalImageUserInput):
+                        content.append(
+                            AgentFileContent(type="file", url=user_input.path)
+                        )
+                        continue
+                if len(content) == 0:
+                    continue
+                turn_messages.append(
+                    TurnStartAccepted(
+                        type=AGENT_EVENT_TURN_START_ACCEPTED,
+                        message_id=thread_item.id,
+                        thread_id=thread_id,
+                        turn_id=turn.id,
+                        source_message_id=thread_item.id,
+                        content=content,
+                    )
+                )
+                continue
+            if isinstance(thread_item, AgentMessageThreadItem):
+                if thread_item.text.strip() == "":
+                    continue
+                turn_messages.append(
+                    AgentTextContentDelta(
+                        type=AGENT_EVENT_TEXT_CONTENT_DELTA,
+                        thread_id=thread_id,
+                        turn_id=turn.id,
+                        item_id=thread_item.id,
+                        provider="codex",
+                        model=None,
+                        text=thread_item.text,
+                    )
+                )
+        messages.extend(turn_messages)
+        if len(turn_messages) > 0:
+            messages.append(
+                TurnEnded(
+                    type=AGENT_EVENT_TURN_ENDED,
+                    thread_id=thread_id,
+                    turn_id=turn.id,
+                )
+            )
+    return messages
+
+
+async def _load_codex_thread_agent_messages(
+    *,
+    thread_id: str,
+) -> list[AgentMessage]:
+    from meshagent.codex import AppServerConfig, AsyncAppServerClient
+
+    client = AsyncAppServerClient(
+        AppServerConfig(
+            client_name="meshagent_process_inspect_codex",
+            client_title="MeshAgent Process Inspect Codex",
+        )
+    )
+    await client.start()
+    try:
+        await client.initialize()
+        response = await client.thread_read(thread_id, include_turns=True)
+        return _codex_thread_messages_from_read_response(
+            response=response,
+            thread_id=thread_id,
+        )
+    finally:
+        await client.close()
+
+
+async def _list_codex_threads(
+    *,
+    limit: int,
+    offset: int,
+):
+    from meshagent.codex import AppServerConfig, AsyncAppServerClient
+    from meshagent.codex import CodexThreadStorageRepository
+
+    client = AsyncAppServerClient(
+        AppServerConfig(
+            client_name="meshagent_process_inspect_codex",
+            client_title="MeshAgent Process Inspect Codex",
+        )
+    )
+    await client.start()
+    try:
+        await client.initialize()
+        repository = CodexThreadStorageRepository(
+            client=client,
+            default_model=lambda: "gpt-5.5",
+        )
+        return await repository.list_threads(limit=limit, offset=offset)
+    finally:
+        await client.close()
+
+
 def _thread_storage_class_for_path(*, thread_path: str):
     if thread_path.strip().startswith("dataset://"):
         from meshagent.agents.dataset_thread_storage import DatasetThreadStorage
@@ -10938,16 +11119,25 @@ async def list_threads_command(
     if runtime != "process":
         print("[bold red]threads is only supported for process agents[/bold red]")
         raise typer.Exit(1)
-    if agent_name is None or agent_name.strip() == "":
-        print("[bold red]--agent-name must be specified for process threads[/bold red]")
-        raise typer.Exit(1)
 
-    storage_class = _thread_storage_class_for_backend(thread_storage)
-    if storage_class is None:
-        print(
-            "[bold red]thread listing is not available for --thread-storage=none[/bold red]"
+    if _normalize_thread_storage_backend(thread_storage) == "codex":
+        page = await _list_codex_threads(limit=limit, offset=offset)
+        title = (
+            f"{agent_name.strip()} threads"
+            if agent_name is not None and agent_name.strip() != ""
+            else "Codex threads"
         )
-        raise typer.Exit(1)
+        print_thread_list(
+            page=page,
+            title=title,
+            output=output,
+        )
+        if page.offset + len(page.threads) < page.total:
+            print(
+                f"Showing {page.offset + 1}-{page.offset + len(page.threads)} "
+                f"of {page.total} threads."
+            )
+        return
 
     resolved_threading_mode, resolved_thread_dir = _resolve_process_threading_options(
         agent_name=agent_name,
@@ -10957,7 +11147,16 @@ async def list_threads_command(
     )
     del resolved_threading_mode
     if resolved_thread_dir is None:
-        print("[bold red]unable to resolve a thread directory[/bold red]")
+        print(
+            "[bold red]--agent-name or --thread-dir must be specified for process threads[/bold red]"
+        )
+        raise typer.Exit(1)
+
+    storage_class = _thread_storage_class_for_backend(thread_storage)
+    if storage_class is None:
+        print(
+            "[bold red]thread listing is not available for --thread-storage=none[/bold red]"
+        )
         raise typer.Exit(1)
 
     room = _require_resolved_room(resolve_room(room))
@@ -10977,7 +11176,11 @@ async def list_threads_command(
         )
         print_thread_list(
             page=page,
-            title=f"{agent_name.strip()} threads",
+            title=(
+                f"{agent_name.strip()} threads"
+                if agent_name is not None and agent_name.strip() != ""
+                else f"{resolved_thread_dir} threads"
+            ),
             output=output,
         )
         if page.offset + len(page.threads) < page.total:
@@ -10998,6 +11201,11 @@ async def list_messages_command(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
+    agent_name: Annotated[
+        Optional[str], typer.Option(..., help="Name of the agent to inspect")
+    ] = None,
+    thread_dir: ThreadDirOption = None,
+    thread_storage: ThreadStorageOption = "meshdocument",
     thread_id: Annotated[
         str,
         typer.Option("--thread-id", help="Thread id to inspect"),
@@ -11011,6 +11219,17 @@ async def list_messages_command(
         ),
     ] = "text",
 ):
+    resolved_thread_id = _resolve_process_inspect_thread_path(
+        thread_id=thread_id,
+        agent_name=agent_name,
+        thread_dir=thread_dir,
+        thread_storage=thread_storage,
+    )
+    if _normalize_thread_storage_backend(thread_storage) == "codex":
+        messages = await _load_codex_thread_agent_messages(thread_id=resolved_thread_id)
+        print_thread_messages(messages=messages, output=output)
+        return
+
     room = _require_resolved_room(resolve_room(room))
     account_client = await get_client()
     user_client: RoomClient | None = None
@@ -11023,7 +11242,7 @@ async def list_messages_command(
         )
         messages = await load_thread_agent_messages(
             room=user_client,
-            thread_id=thread_id,
+            thread_id=resolved_thread_id,
         )
         print_thread_messages(messages=messages, output=output)
     finally:

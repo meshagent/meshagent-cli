@@ -2264,6 +2264,120 @@ async def test_process_run_no_room_rejects_room_storage(
 
 
 @pytest.mark.asyncio
+async def test_process_threads_codex_does_not_require_room(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    page = ThreadListPage(
+        threads=[
+            ThreadListEntry(
+                name="Thread",
+                path="codex-thread-1",
+                created_at="2026-01-01T00:00:00Z",
+                modified_at="2026-01-02T00:00:00Z",
+            )
+        ],
+        total=1,
+        offset=0,
+        limit=20,
+    )
+
+    async def fake_list_codex_threads(**kwargs):
+        captured["list_kwargs"] = kwargs
+        return page
+
+    async def fail_get_client():
+        raise AssertionError("codex thread listing should not open a room client")
+
+    monkeypatch.setattr(process, "_list_codex_threads", fake_list_codex_threads)
+    monkeypatch.setattr(process, "get_client", fail_get_client)
+    monkeypatch.setattr(process, "_current_command_runtime", lambda: "process")
+    monkeypatch.setattr(
+        process,
+        "print_thread_list",
+        lambda **kwargs: captured.update({"print_kwargs": kwargs}),
+    )
+
+    await process.list_threads_command(
+        project_id=None,
+        room=None,
+        agent_name=None,
+        thread_dir=None,
+        thread_storage="codex",
+        limit=20,
+        offset=0,
+        output="text",
+    )
+
+    assert captured["list_kwargs"] == {"limit": 20, "offset": 0}
+    assert captured["print_kwargs"] == {
+        "page": page,
+        "title": "Codex threads",
+        "output": "text",
+    }
+
+
+@pytest.mark.asyncio
+async def test_process_messages_codex_does_not_require_room(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_load_codex_thread_agent_messages(**kwargs):
+        captured["load_kwargs"] = kwargs
+        return []
+
+    async def fail_get_client():
+        raise AssertionError("codex message listing should not open a room client")
+
+    monkeypatch.setattr(
+        process,
+        "_load_codex_thread_agent_messages",
+        fake_load_codex_thread_agent_messages,
+    )
+    monkeypatch.setattr(process, "get_client", fail_get_client)
+    monkeypatch.setattr(
+        process,
+        "print_thread_messages",
+        lambda **kwargs: captured.update({"print_kwargs": kwargs}),
+    )
+
+    await process.list_messages_command(
+        project_id=None,
+        room=None,
+        agent_name="codex",
+        thread_dir=None,
+        thread_storage="codex",
+        thread_id="codex-thread-1",
+        output="json",
+    )
+
+    assert captured["load_kwargs"] == {"thread_id": "codex-thread-1"}
+    assert captured["print_kwargs"] == {"messages": [], "output": "json"}
+
+
+def test_process_messages_relative_thread_id_uses_agent_thread_dir() -> None:
+    assert (
+        process._resolve_process_inspect_thread_path(
+            thread_id="abc123",
+            agent_name="helper",
+            thread_dir=None,
+            thread_storage="meshdocument",
+        )
+        == "/agents/helper/threads/abc123.thread"
+    )
+    assert (
+        process._resolve_process_inspect_thread_path(
+            thread_id="abc123",
+            agent_name="helper",
+            thread_dir=None,
+            thread_storage="dataset",
+        )
+        == "dataset://agents/helper/threads/abc123"
+    )
+
+
+@pytest.mark.asyncio
 async def test_process_run_no_room_rejects_room_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
