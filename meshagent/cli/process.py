@@ -314,27 +314,6 @@ def _pending_agent_message_label(payload: dict[str, Any]) -> str | None:
     return label
 
 
-def _start_thread_list_name(start_thread: StartThread) -> str:
-    if isinstance(start_thread.name, str) and start_thread.name.strip() != "":
-        return start_thread.name.strip()
-
-    text_parts: list[str] = []
-    attachment_count = 0
-    for item in start_thread.content or []:
-        if isinstance(item, AgentTextContent) and item.text.strip() != "":
-            text_parts.append(item.text.strip())
-        elif isinstance(item, AgentFileContent):
-            attachment_count += 1
-    text = " ".join(text_parts).strip()
-    if text != "":
-        words = re.findall(r"[A-Za-z0-9']+", text)
-        if len(words) > 0:
-            return " ".join(words[:6]).title()
-    if attachment_count > 0:
-        return "Attachment Thread"
-    return "New Chat"
-
-
 def _process_run_thread_id(
     *,
     thread_path: str | None,
@@ -5975,6 +5954,9 @@ def build_process_agent(
                         ),
                         thread_id_factory=create_thread_id,
                         realtime_connection_factory=create_realtime_connection,
+                        thread_name_adapter=channel_llm_adapter,
+                        thread_name_caller=lambda: self.process_participant,
+                        thread_name_model=resolved_channel_decision_model,
                     )
 
                 chat_backend: ChatBackend | None = None
@@ -6617,9 +6599,6 @@ def build_process_agent(
                 Message(data=thread_started, sender=sender)
             )
             self._send_to_channels(Message(data=thread_started, sender=sender))
-
-        def thread_list_name_for_start_thread(self, start_thread: StartThread) -> str:
-            return _start_thread_list_name(start_thread)
 
         def create_llm_thread_process(
             self,
