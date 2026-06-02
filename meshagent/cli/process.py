@@ -1,8 +1,10 @@
 import typer
 import contextlib
 import jwt
+import sys
 from aiohttp import web
 from rich import print
+from rich.console import Console
 from typing import (
     Annotated,
     Any,
@@ -13,8 +15,16 @@ from typing import (
     Callable,
     cast,
     Iterable,
+    Sequence,
 )
 import uuid
+from opentelemetry import trace as otel_trace
+from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
+from opentelemetry.sdk.trace.export import (
+    SimpleSpanProcessor,
+    SpanExporter,
+    SpanExportResult,
+)
 from meshagent.tools import (
     BaseTool,
     Toolkit,
@@ -205,7 +215,6 @@ from meshagent.cli.host import get_service, run_services, get_deferred, service_
 import yaml
 
 import shlex
-import sys
 import re
 
 import asyncio
@@ -312,6 +321,62 @@ def _pending_agent_message_label(payload: dict[str, Any]) -> str | None:
     if label == "":
         return None
     return label
+
+
+_PROFILE_SPANS_ENABLED = False
+
+
+class _ProfileSpanExporter(SpanExporter):
+    def __init__(self) -> None:
+        self._console = Console(file=sys.stderr, force_terminal=False)
+
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        for span in spans:
+            if span.end_time is None:
+                continue
+            duration_ms = (span.end_time - span.start_time) / 1_000_000
+            attrs = span.attributes or {}
+            selected_attrs = []
+            for key in (
+                "thread_id",
+                "turn_id",
+                "source_message_id",
+                "model",
+                "toolkit_count",
+                "queued_message_count",
+                "agent.thread.id",
+                "agent.thread.backend",
+                "custom_builder",
+                "provider_configured",
+                "inline_instructions",
+                "message_type",
+                "error",
+            ):
+                if key in attrs:
+                    selected_attrs.append(f"{key}={attrs[key]!r}")
+            suffix = "" if len(selected_attrs) == 0 else " " + " ".join(selected_attrs)
+            self._console.print(f"[profile] {span.name} {duration_ms:.1f}ms{suffix}")
+        return SpanExportResult.SUCCESS
+
+    def shutdown(self) -> None:
+        return None
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        del timeout_millis
+        return True
+
+
+def _enable_profile_spans() -> None:
+    global _PROFILE_SPANS_ENABLED
+    if _PROFILE_SPANS_ENABLED:
+        return
+
+    provider = otel_trace.get_tracer_provider()
+    if not isinstance(provider, TracerProvider):
+        provider = TracerProvider()
+        otel_trace.set_tracer_provider(provider)
+    provider.add_span_processor(SimpleSpanProcessor(_ProfileSpanExporter()))
+    _PROFILE_SPANS_ENABLED = True
 
 
 def _process_run_thread_id(
@@ -5608,6 +5673,13 @@ def build_process_agent(
             super().__init__(requires=requirements)
             self._skill_dirs = skill_dirs
             self._client_rules = client_rules if len(client_rules) > 0 else None
+            self._override_client_instructions = (
+                len(rule) > 0
+                or self._client_rules is not None
+                or (instructions is not None and len(instructions) > 0)
+                or (room_rules_path is not None and len(room_rules_path) > 0)
+                or (skill_dirs is not None and len(skill_dirs) > 0)
+            )
             self._supervisor: AgentSupervisor | None = None
             self._exposed_toolkits = []
             self._chat_channel: MessagingChatChannel | None = None
@@ -6154,17 +6226,46 @@ def build_process_agent(
         async def get_rules(self, *, participant: Optional[Participant]) -> list[str]:
             rules = [*rule]
             storage_toolkit = self.get_skills_storage_toolkit()
+            skill_prompt_task: asyncio.Task[str] | None = None
+            instruction_rule_tasks: list[asyncio.Task[list[str]]] = []
+            room_rule_tasks: list[asyncio.Task[list[str]]] = []
 
             if self._skill_dirs is not None and len(self._skill_dirs) > 0:
-                rules.append(
-                    "You have access to to following skills which follow the agentskills spec:"
-                )
-                rules.append(
-                    await to_prompt(
+                skill_prompt_task = asyncio.create_task(
+                    to_prompt(
                         [*(Path(p) for p in self._skill_dirs)],
                         storage_toolkit=storage_toolkit,
                     )
                 )
+
+            if instructions is not None:
+                for instructions_path in instructions:
+                    instruction_rule_tasks.append(
+                        asyncio.create_task(
+                            _load_storage_rules(
+                                path=instructions_path,
+                                storage_toolkit=storage_toolkit,
+                                participant=participant,
+                            )
+                        )
+                    )
+
+            if room_rules_path is not None:
+                for room_rules_file in room_rules_path:
+                    room_rule_tasks.append(
+                        asyncio.create_task(
+                            self._load_room_rules(
+                                path=room_rules_file,
+                                participant=participant,
+                            )
+                        )
+                    )
+
+            if skill_prompt_task is not None:
+                rules.append(
+                    "You have access to to following skills which follow the agentskills spec:"
+                )
+                rules.append(await skill_prompt_task)
                 rules.append(
                     "Use the shell or storage tool to find out more about skills and execute them when they are required"
                 )
@@ -6176,30 +6277,31 @@ def build_process_agent(
                     if selected_rules is not None:
                         rules.extend(selected_rules)
 
-            if instructions is not None:
-                for instructions_path in instructions:
-                    rules.extend(
-                        await _load_storage_rules(
-                            path=instructions_path,
-                            storage_toolkit=storage_toolkit,
-                            participant=participant,
-                        )
-                    )
+            if len(instruction_rule_tasks) > 0:
+                for loaded_rules in await asyncio.gather(*instruction_rule_tasks):
+                    rules.extend(loaded_rules)
 
-            if room_rules_path is not None:
-                for room_rules_file in room_rules_path:
-                    rules.extend(
-                        await self._load_room_rules(
-                            path=room_rules_file,
-                            participant=participant,
-                        )
-                    )
+            if len(room_rule_tasks) > 0:
+                for loaded_rules in await asyncio.gather(*room_rule_tasks):
+                    rules.extend(loaded_rules)
 
             if preamble_rule and len(rules) == 0:
                 rules.append(DEFAULT_PREAMBLE_RULE)
 
             rules.append("based on the previous transcript, take your turn and respond")
             return rules
+
+        async def get_configured_turn_instructions(
+            self,
+            *,
+            participant: Optional[Participant],
+        ) -> str | None:
+            if not self._override_client_instructions:
+                return None
+            rules = await self.get_rules(participant=participant)
+            if len(rules) == 0:
+                return None
+            return "\n".join(rules)
 
         async def get_process_turn_toolkits(
             self,
@@ -6497,6 +6599,7 @@ def build_process_agent(
             self._agent = agent
             self._local_event_queues: list[asyncio.Queue[Message]] = []
             self._thread_delete_watch_task: asyncio.Task[None] | None = None
+            self._configured_instructions_by_message_id: dict[str, str] = {}
 
         async def on_start(self) -> None:
             await super().on_start()
@@ -6571,6 +6674,44 @@ def build_process_agent(
             if message.source is not None:
                 self._send_to_local_event_queues(message)
             super().send(message)
+
+        async def _configured_turn_instructions(
+            self,
+            *,
+            sender: Participant | None,
+        ) -> str | None:
+            return await self._agent.get_configured_turn_instructions(
+                participant=sender
+            )
+
+        async def on_thread_start_message(
+            self,
+            start_thread: StartThread,
+            sender: Participant | None,
+        ) -> StartThread:
+            instructions = await self._configured_turn_instructions(sender=sender)
+            if instructions is None:
+                return start_thread
+            if start_thread.content is not None:
+                self._configured_instructions_by_message_id[start_thread.message_id] = (
+                    instructions
+                )
+            return start_thread.model_copy(update={"instructions": instructions})
+
+        async def on_turn_start_message(
+            self,
+            turn_start: TurnStart,
+            sender: Participant | None,
+        ) -> TurnStart:
+            instructions = self._configured_instructions_by_message_id.pop(
+                turn_start.message_id,
+                None,
+            )
+            if instructions is None:
+                instructions = await self._configured_turn_instructions(sender=sender)
+            if instructions is None:
+                return turn_start
+            return turn_start.model_copy(update={"instructions": instructions})
 
         def _send_thread_list_event(
             self,
@@ -6867,7 +7008,7 @@ async def join(
     require_time: Annotated[
         bool,
         typer.Option(
-            "--time",
+            "--time/--no-time",
             help="Enable time/datetime tools",
         ),
     ] = True,
@@ -6970,6 +7111,13 @@ async def join(
         Optional[bool],
         typer.Option(..., help="log all requests to the llm"),
     ] = False,
+    profile: Annotated[
+        bool,
+        typer.Option(
+            "--profile",
+            help="Print OpenTelemetry span timings for process startup and turns.",
+        ),
+    ] = False,
     verbose_dataset: Annotated[
         bool,
         typer.Option(
@@ -6985,6 +7133,9 @@ async def join(
         ),
     ] = False,
 ):
+    if profile:
+        _enable_profile_spans()
+
     runtime = _current_command_runtime()
     resolved_channels = _resolved_channels(runtime=runtime, channel=channel)
     _require_process_channels(runtime=runtime, channels=resolved_channels)
@@ -7359,7 +7510,7 @@ async def service(
     require_time: Annotated[
         bool,
         typer.Option(
-            "--time",
+            "--time/--no-time",
             help="Enable time/datetime tools",
         ),
     ] = True,
@@ -7799,7 +7950,7 @@ async def spec(
     require_time: Annotated[
         bool,
         typer.Option(
-            "--time",
+            "--time/--no-time",
             help="Enable time/datetime tools",
         ),
     ] = True,
@@ -8231,7 +8382,7 @@ async def deploy(
     require_time: Annotated[
         bool,
         typer.Option(
-            "--time",
+            "--time/--no-time",
             help="Enable time/datetime tools",
         ),
     ] = True,
@@ -10735,7 +10886,7 @@ async def run(
     require_time: Annotated[
         bool,
         typer.Option(
-            "--time",
+            "--time/--no-time",
             help="Enable time/datetime tools",
         ),
     ] = True,
@@ -10829,6 +10980,13 @@ async def run(
             help="Enable verbose logging and disable default log suppression",
         ),
     ] = False,
+    profile: Annotated[
+        bool,
+        typer.Option(
+            "--profile",
+            help="Print OpenTelemetry span timings for process startup and turns.",
+        ),
+    ] = False,
     verbose_dataset: Annotated[
         bool,
         typer.Option(
@@ -10888,6 +11046,9 @@ async def run(
         typer.Option(..., help="request the storage tool"),
     ] = None,
 ):
+    if profile:
+        _enable_profile_spans()
+
     runtime = _current_command_runtime()
     resolved_channels = _resolved_channels(
         runtime=runtime,
