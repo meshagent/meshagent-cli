@@ -4137,6 +4137,8 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
         def get_attribute(self, name: str):
             if name == "name":
                 return "remote-helper"
+            if name == "supports_agent_messages":
+                return True
             if name == "thread.status.text./threads/remote.thread":
                 return "stale attribute status"
             return None
@@ -4149,12 +4151,24 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
             self.participant = _Participant()
 
         def on(self, event: str, handler) -> None:
-            assert event == "message"
-            self.handlers.append(handler)
+            assert event in {
+                "message",
+                "participant_added",
+                "participant_removed",
+                "messaging_enabled",
+            }
+            if event == "message":
+                self.handlers.append(handler)
 
         def off(self, event: str, handler) -> None:
-            assert event == "message"
-            self.handlers.remove(handler)
+            assert event in {
+                "message",
+                "participant_added",
+                "participant_removed",
+                "messaging_enabled",
+            }
+            if event == "message":
+                self.handlers.remove(handler)
 
         def get_participants(self) -> list[_Participant]:
             return [self.participant]
@@ -4309,6 +4323,8 @@ async def test_process_use_chat_channel_client_routes_multiple_threads() -> None
         def get_attribute(self, name: str):
             if name == "name":
                 return "remote-helper"
+            if name == "supports_agent_messages":
+                return True
             return None
 
     class _Messaging:
@@ -4319,12 +4335,24 @@ async def test_process_use_chat_channel_client_routes_multiple_threads() -> None
             self.participant = _Participant()
 
         def on(self, event: str, handler) -> None:
-            assert event == "message"
-            self.handlers.append(handler)
+            assert event in {
+                "message",
+                "participant_added",
+                "participant_removed",
+                "messaging_enabled",
+            }
+            if event == "message":
+                self.handlers.append(handler)
 
         def off(self, event: str, handler) -> None:
-            assert event == "message"
-            self.handlers.remove(handler)
+            assert event in {
+                "message",
+                "participant_added",
+                "participant_removed",
+                "messaging_enabled",
+            }
+            if event == "message":
+                self.handlers.remove(handler)
 
         def get_participants(self) -> list[_Participant]:
             return [self.participant]
@@ -4422,6 +4450,8 @@ async def test_process_use_chat_channel_client_resolves_studio_thread_path(
         def get_attribute(self, name: str):
             if name == "name":
                 return "remote-helper"
+            if name == "supports_agent_messages":
+                return True
             return attributes.get(name)
 
     class _Messaging:
@@ -4432,12 +4462,24 @@ async def test_process_use_chat_channel_client_resolves_studio_thread_path(
             self.participant = _Participant()
 
         def on(self, event: str, handler) -> None:
-            assert event == "message"
-            self.handlers.append(handler)
+            assert event in {
+                "message",
+                "participant_added",
+                "participant_removed",
+                "messaging_enabled",
+            }
+            if event == "message":
+                self.handlers.append(handler)
 
         def off(self, event: str, handler) -> None:
-            assert event == "message"
-            self.handlers.remove(handler)
+            assert event in {
+                "message",
+                "participant_added",
+                "participant_removed",
+                "messaging_enabled",
+            }
+            if event == "message":
+                self.handlers.remove(handler)
 
         def get_participants(self) -> list[_Participant]:
             return [self.participant]
@@ -4519,12 +4561,24 @@ async def test_process_use_chat_channel_client_starts_default_new_thread_with_me
             self.participant = _Participant()
 
         def on(self, event: str, handler) -> None:
-            assert event == "message"
-            self.handlers.append(handler)
+            assert event in {
+                "message",
+                "participant_added",
+                "participant_removed",
+                "messaging_enabled",
+            }
+            if event == "message":
+                self.handlers.append(handler)
 
         def off(self, event: str, handler) -> None:
-            assert event == "message"
-            self.handlers.remove(handler)
+            assert event in {
+                "message",
+                "participant_added",
+                "participant_removed",
+                "messaging_enabled",
+            }
+            if event == "message":
+                self.handlers.remove(handler)
 
         def get_participants(self) -> list[_Participant]:
             return [self.participant]
@@ -4645,12 +4699,24 @@ async def test_process_use_chat_channel_client_uses_main_thread_for_default_new_
             self.participant = _Participant()
 
         def on(self, event: str, handler) -> None:
-            assert event == "message"
-            self.handlers.append(handler)
+            assert event in {
+                "message",
+                "participant_added",
+                "participant_removed",
+                "messaging_enabled",
+            }
+            if event == "message":
+                self.handlers.append(handler)
 
         def off(self, event: str, handler) -> None:
-            assert event == "message"
-            self.handlers.remove(handler)
+            assert event in {
+                "message",
+                "participant_added",
+                "participant_removed",
+                "messaging_enabled",
+            }
+            if event == "message":
+                self.handlers.remove(handler)
 
         def get_participants(self) -> list[_Participant]:
             return [self.participant]
@@ -4717,6 +4783,8 @@ async def test_process_use_chat_channel_client_reports_accepted_remote_inputs() 
         def get_attribute(self, name: str):
             if name == "name":
                 return "remote-helper"
+            if name == "supports_agent_messages":
+                return True
             return None
 
     class _Messaging:
@@ -4727,12 +4795,24 @@ async def test_process_use_chat_channel_client_reports_accepted_remote_inputs() 
             self.participant = _Participant()
 
         def on(self, event: str, handler) -> None:
-            assert event == "message"
-            self.handlers.append(handler)
+            assert event in {
+                "message",
+                "participant_added",
+                "participant_removed",
+                "messaging_enabled",
+            }
+            if event == "message":
+                self.handlers.append(handler)
 
         def off(self, event: str, handler) -> None:
-            assert event == "message"
-            self.handlers.remove(handler)
+            assert event in {
+                "message",
+                "participant_added",
+                "participant_removed",
+                "messaging_enabled",
+            }
+            if event == "message":
+                self.handlers.remove(handler)
 
         def get_participants(self) -> list[_Participant]:
             return [self.participant]
