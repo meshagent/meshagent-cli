@@ -374,10 +374,34 @@ def test_chat_with_call_sites_match_chat_with_signature() -> None:
 
 
 def test_resolved_channels_accept_mail_channel() -> None:
-    assert chatbot._resolved_channels(
+    assert process._resolved_channels(
         runtime="process",
         channel=["chat", "mail:mailbox@mail.meshagent.com"],
     ) == ["chat", "mail:mailbox@mail.meshagent.com"]
+
+
+def test_resolved_channels_accept_mail_channel_reply_all_option() -> None:
+    assert process._resolved_channels(
+        runtime="process",
+        channel=["mail:mailbox@mail.meshagent.com?reply-all=true"],
+    ) == ["mail:mailbox@mail.meshagent.com?reply-all=true"]
+
+
+def test_parse_mail_channel_accepts_reply_all_false() -> None:
+    config = process._parse_mail_channel(
+        channel="mail:mailbox@mail.meshagent.com?reply-all=false"
+    )
+
+    assert config.email_address == "mailbox@mail.meshagent.com"
+    assert config.queue_name == "mailbox@mail.meshagent.com"
+    assert config.reply_all is False
+
+
+def test_parse_mail_channel_rejects_unknown_option() -> None:
+    with pytest.raises(typer.BadParameter, match="unsupported mail channel option"):
+        process._parse_mail_channel(
+            channel="mail:mailbox@mail.meshagent.com?reply_all=true"
+        )
 
 
 def test_resolved_channels_accept_queue_channel() -> None:
@@ -671,6 +695,7 @@ async def test_process_agent_passes_threading_mode_to_mail_channel(
             room,
             queue_name: str,
             email_address: str,
+            reply_all: bool = False,
             threading_mode: str | None = None,
             thread_dir: str | None = None,
             llm_adapter=None,
@@ -681,6 +706,7 @@ async def test_process_agent_passes_threading_mode_to_mail_channel(
                     "room": room,
                     "queue_name": queue_name,
                     "email_address": email_address,
+                    "reply_all": reply_all,
                     "threading_mode": threading_mode,
                     "thread_dir": thread_dir,
                     "llm_adapter": llm_adapter,
@@ -700,7 +726,7 @@ async def test_process_agent_passes_threading_mode_to_mail_channel(
         schema=[],
         threading_mode="default-new",
         thread_dir="/threads/mail",
-        channels=["mail:mailbox@mail.meshagent.com"],
+        channels=["mail:mailbox@mail.meshagent.com?reply-all=true"],
     )
     agent = agent_cls()
     room = _FakeProcessRoomClient()
@@ -716,6 +742,7 @@ async def test_process_agent_passes_threading_mode_to_mail_channel(
         assert captured_calls[0]["room"] is room
         assert captured_calls[0]["queue_name"] == "mailbox@mail.meshagent.com"
         assert captured_calls[0]["email_address"] == "mailbox@mail.meshagent.com"
+        assert captured_calls[0]["reply_all"] is True
         assert captured_calls[0]["threading_mode"] == "default-new"
         assert captured_calls[0]["thread_dir"] == "/threads/mail"
         assert captured_calls[0]["llm_adapter"] is not None
@@ -886,6 +913,7 @@ async def test_process_agent_uses_shared_decision_adapter_for_threaded_channels(
             room,
             queue_name: str,
             email_address: str,
+            reply_all: bool = False,
             threading_mode: str | None = None,
             thread_dir: str | None = None,
             llm_adapter=None,
@@ -897,6 +925,7 @@ async def test_process_agent_uses_shared_decision_adapter_for_threaded_channels(
                     "room": room,
                     "queue_name": queue_name,
                     "email_address": email_address,
+                    "reply_all": reply_all,
                     "threading_mode": threading_mode,
                     "thread_dir": thread_dir,
                     "llm_adapter": llm_adapter,

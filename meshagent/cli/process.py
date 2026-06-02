@@ -135,7 +135,7 @@ from meshagent.anthropic import (
 
 from pathlib import Path, PurePosixPath
 import posixpath
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse
 
 from meshagent.tools.script import get_script_tools
 
@@ -2434,8 +2434,9 @@ ChannelOption = Annotated[
         "--channel",
         help=(
             "Attach a channel to the agent process. "
-            "Can be repeated. Currently supported: chat, mail:EMAIL_ADDRESS, "
-            "memory, queue:QUEUE_NAME, toolkit:NAME, websocket:PORT, "
+            "Can be repeated. Currently supported: chat, "
+            "mail:EMAIL_ADDRESS[?reply-all=true|false], memory, queue:QUEUE_NAME, "
+            "toolkit:NAME, websocket:PORT, "
             "websocket://HOST:PORT."
         ),
     ),
@@ -2446,6 +2447,7 @@ ChannelOption = Annotated[
 class _MailChannelConfig:
     queue_name: str
     email_address: str
+    reply_all: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -2558,9 +2560,10 @@ def _resolved_channels(
             channel_key = f"mail:{mail_config.email_address.casefold()}"
             if channel_key not in seen_channels:
                 seen_channels.add(channel_key)
-                normalized_channels.append(
-                    f"mail:{mail_config.email_address}",
-                )
+                channel_value = f"mail:{mail_config.email_address}"
+                if mail_config.reply_all:
+                    channel_value = f"{channel_value}?reply-all=true"
+                normalized_channels.append(channel_value)
             continue
 
         if normalized[:6].casefold() == "queue:":
@@ -2612,15 +2615,30 @@ def _parse_mail_channel(*, channel: str) -> _MailChannelConfig:
     if channel[:5].casefold() != "mail:":
         raise typer.BadParameter(f"unsupported mail channel: {channel}")
 
-    address = channel[5:].strip()
+    parsed = urlparse(channel)
+    address = parsed.path.strip()
     if address == "":
         raise typer.BadParameter(
-            "mail channels must be passed as --channel=mail:mailbox@example.com"
+            "mail channels must be passed as "
+            "--channel=mail:mailbox@example.com[?reply-all=true|false]"
         )
+    reply_all = False
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if key.casefold() != "reply-all":
+            raise typer.BadParameter(f"unsupported mail channel option: {key}")
+        normalized_value = value.strip().casefold()
+        if normalized_value == "true":
+            reply_all = True
+            continue
+        if normalized_value == "false":
+            reply_all = False
+            continue
+        raise typer.BadParameter("mail channel reply-all option must be true or false")
 
     return _MailChannelConfig(
         queue_name=address,
         email_address=address,
+        reply_all=reply_all,
     )
 
 
@@ -5790,6 +5808,7 @@ def build_process_agent(
                         room=room,
                         queue_name=mail_config.queue_name,
                         email_address=mail_config.email_address,
+                        reply_all=mail_config.reply_all,
                         threading_mode=self._resolved_threading_mode,
                         thread_dir=thread_dir,
                         **channel_thread_url_kwargs,
