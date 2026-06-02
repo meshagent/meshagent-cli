@@ -9,7 +9,7 @@ requires-python = ">=3.13"
 license = "Apache-2.0"
 keywords = []
 dependencies = [
-  "typer~=0.21",
+  "typer~=0.26.6",
   "aiofiles~=24.1",
   "fastmcp~=2.8",
   "opentelemetry-distro~=0.59b0",
