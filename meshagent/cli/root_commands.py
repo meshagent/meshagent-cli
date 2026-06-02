@@ -99,6 +99,7 @@ def _setup_command(
         from meshagent.cli.tool_integrations import (
             CODEX_DEFAULT_PROFILE_ID,
             clear_codex_default_profile_if_meshagent_project,
+            configure_codex_default_integration,
             clear_claude_code_integration,
             configure_codex_integration,
             configure_claude_code_integration,
@@ -109,7 +110,6 @@ def _setup_command(
             inspect_claude_code_integration,
             remove_codex_integration,
             replace_codex_integration,
-            set_codex_default_profile,
         )
         from meshagent.cli.tui.setup import (
             SetupClaudeConfiguration,
@@ -235,7 +235,12 @@ def _setup_command(
                 )
                 return
 
-            set_codex_default_profile(profile_id=profile_id)
+            configure_codex_default_integration(
+                project_id=project_id,
+                provider_id=profile_id,
+                api_url=resolve_api_url(),
+                meshagent_executable=current_meshagent_executable,
+            )
 
         async def configure_claude(project_id: str) -> None:
             configure_claude_code_integration(

@@ -11,6 +11,7 @@ def test_configure_codex_integration_writes_named_profile(
     monkeypatch, tmp_path: Path
 ) -> None:
     config_path = tmp_path / "config.toml"
+    profile_path = tmp_path / "meshagent.config.toml"
 
     monkeypatch.setattr(
         tool_integrations,
@@ -28,7 +29,11 @@ def test_configure_codex_integration_writes_named_profile(
     assert result.changed is True
     assert result.provider_id == "meshagent"
     assert result.profile_id == "meshagent"
-    assert config_path.read_text() == (
+    assert result.config_path == profile_path
+    assert profile_path.read_text() == (
+        'model_provider = "meshagent"\n'
+        'model = "gpt-5.5"\n'
+        "\n"
         "[model_providers.meshagent]\n"
         'name = "MeshAgent"\n'
         'base_url = "https://api.meshagent.life/openai/v1"\n'
@@ -39,10 +44,44 @@ def test_configure_codex_integration_writes_named_profile(
         'args = ["auth", "token"]\n'
         "timeout_ms = 10000\n"
         "refresh_interval_ms = 300000\n"
-        "\n"
-        "[profiles.meshagent]\n"
+    )
+
+
+def test_configure_codex_default_integration_writes_default_provider(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "config.toml"
+
+    monkeypatch.setattr(
+        tool_integrations,
+        "get_active_project",
+        lambda: "project-life",
+    )
+    result = tool_integrations.configure_codex_default_integration(
+        project_id="project-life",
+        api_url="https://api.meshagent.life",
+        meshagent_executable="/tmp/meshagent-life/bin/meshagent",
+        config_path=config_path,
+    )
+
+    assert result.changed is True
+    assert result.provider_id == "meshagent"
+    assert result.profile_id == "meshagent"
+    assert result.config_path == config_path
+    assert config_path.read_text() == (
         'model_provider = "meshagent"\n'
         'model = "gpt-5.5"\n'
+        "\n"
+        "[model_providers.meshagent]\n"
+        'name = "MeshAgent"\n'
+        'base_url = "https://api.meshagent.life/openai/v1"\n'
+        'http_headers = {"Meshagent-Project-Id"="project-life"}\n'
+        "\n"
+        "[model_providers.meshagent.auth]\n"
+        'command = "/tmp/meshagent-life/bin/meshagent"\n'
+        'args = ["auth", "token"]\n'
+        "timeout_ms = 10000\n"
+        "refresh_interval_ms = 300000\n"
     )
 
 
@@ -83,8 +122,9 @@ def test_configure_codex_integration_prefers_meshagent_command_from_path(
         config_path=config_path,
     )
 
-    assert f'command = "{installed_meshagent}"\n' in config_path.read_text()
-    assert 'args = ["auth", "token"]\n' in config_path.read_text()
+    profile_path = tmp_path / "meshagent.config.toml"
+    assert f'command = "{installed_meshagent}"\n' in profile_path.read_text()
+    assert 'args = ["auth", "token"]\n' in profile_path.read_text()
 
 
 def test_configure_codex_integration_appends_after_existing_content(
@@ -108,14 +148,19 @@ def test_configure_codex_integration_appends_after_existing_content(
     )
 
     updated = config_path.read_text()
+    profile_path = tmp_path / "meshagent-prod.config.toml"
     assert result.changed is True
     assert result.provider_id == "meshagent-prod"
     assert result.profile_id == "meshagent-prod"
-    assert updated.startswith('model = "gpt-5.5"\n\n')
-    assert "[model_providers.meshagent-prod]\n" in updated
-    assert "[profiles.meshagent-prod]\n" in updated
-    assert 'command = "/opt/homebrew/bin/meshagent"\n' in updated
-    assert 'args = ["auth", "token"]\n' in updated
+    assert updated == 'model = "gpt-5.5"\n'
+    profile_content = profile_path.read_text()
+    assert profile_content.startswith(
+        'model_provider = "meshagent-prod"\nmodel = "gpt-5.5"\n\n'
+    )
+    assert "[model_providers.meshagent-prod]\n" in profile_content
+    assert "[profiles.meshagent-prod]\n" not in profile_content
+    assert 'command = "/opt/homebrew/bin/meshagent"\n' in profile_content
+    assert 'args = ["auth", "token"]\n' in profile_content
 
 
 def test_configure_codex_integration_rejects_profile_name_in_use(
@@ -138,7 +183,7 @@ def test_configure_codex_integration_rejects_profile_name_in_use(
         lambda: "project-1",
     )
 
-    with pytest.raises(ValueError, match="already in use"):
+    with pytest.raises(ValueError, match="already defined"):
         tool_integrations.configure_codex_integration(
             profile_id="meshagent",
             project_id="project-1",
@@ -212,10 +257,21 @@ def test_configure_codex_integration_does_not_create_auth_wrapper_files(
     )
 
     assert wrapper_dir.exists() is False
+    profile_contents = [
+        (tmp_path / "meshagent.config.toml").read_text(),
+        (tmp_path / "meshagent-work.config.toml").read_text(),
+    ]
     assert (
-        config_path.read_text().count('command = "/opt/homebrew/bin/meshagent"\n') == 2
+        sum(
+            content.count('command = "/opt/homebrew/bin/meshagent"\n')
+            for content in profile_contents
+        )
+        == 2
     )
-    assert config_path.read_text().count('args = ["auth", "token"]\n') == 2
+    assert (
+        sum(content.count('args = ["auth", "token"]\n') for content in profile_contents)
+        == 2
+    )
 
 
 def test_configure_codex_integration_requires_active_project(
@@ -247,6 +303,10 @@ def test_find_existing_codex_profiles_returns_matching_profiles(
         'name = "OpenAI"\n'
         'base_url = "https://api.openai.com/v1"\n'
         "\n"
+        "[model_providers.openrouter]\n"
+        'name = "OpenRouter"\n'
+        'base_url = "https://openrouter.ai/api/v1"\n'
+        "\n"
         "[model_providers.meshagent-old]\n"
         'name = "MeshAgent"\n'
         'base_url = "https://api.meshagent.life/openai/v1"\n'
@@ -260,6 +320,10 @@ def test_find_existing_codex_profiles_returns_matching_profiles(
         "[profiles.default]\n"
         'model_provider = "openai"\n'
         'model = "gpt-5.5"\n'
+        "\n"
+        "[profiles.router]\n"
+        'model_provider = "openrouter"\n'
+        'model = "openai/gpt-5.5"\n'
         "\n"
         "[profiles.meshagent-work]\n"
         'model_provider = "meshagent-work"\n'
@@ -314,7 +378,7 @@ def test_find_current_codex_default_profile_returns_matching_profile(
     )
 
 
-def test_set_codex_default_profile_writes_root_profile_setting(
+def test_set_codex_default_profile_writes_root_model_provider_setting(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.toml"
@@ -334,7 +398,7 @@ def test_set_codex_default_profile_writes_root_profile_setting(
         )
         is True
     )
-    assert config_path.read_text().startswith('profile = "meshagent"\n')
+    assert config_path.read_text().startswith('model_provider = "meshagent"\n')
 
 
 def test_clear_codex_default_profile_if_meshagent_project_removes_profile(
@@ -368,7 +432,9 @@ def test_clear_codex_default_profile_if_meshagent_project_removes_profile(
         )
         is True
     )
-    assert 'profile = "meshagent"\n' not in config_path.read_text()
+    updated = config_path.read_text()
+    assert 'profile = "meshagent"\n' not in updated
+    assert 'model_provider = "openai"\n' in updated
 
 
 def test_replace_codex_integration_updates_existing_meshagent_profile(
@@ -411,7 +477,8 @@ def test_replace_codex_integration_updates_existing_meshagent_profile(
 
     assert result.changed is True
     assert config_path.read_text() == (
-        'profile = "meshagent"\n'
+        'model_provider = "meshagent"\n'
+        'model = "gpt-5.2"\n'
         "\n"
         "[model_providers.meshagent]\n"
         'name = "MeshAgent"\n'
@@ -423,10 +490,6 @@ def test_replace_codex_integration_updates_existing_meshagent_profile(
         'args = ["auth", "token"]\n'
         "timeout_ms = 10000\n"
         "refresh_interval_ms = 300000\n"
-        "\n"
-        "[profiles.meshagent]\n"
-        'model_provider = "meshagent"\n'
-        'model = "gpt-5.2"\n'
     )
 
 
@@ -471,6 +534,38 @@ def test_remove_codex_integration_keeps_shared_provider_for_other_profiles(
     )
 
 
+def test_remove_codex_integration_resets_default_and_removes_matching_profile_file(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    profile_path = tmp_path / "meshagent.config.toml"
+    provider_block = (
+        "[model_providers.meshagent]\n"
+        'name = "MeshAgent"\n'
+        'base_url = "https://api.meshagent.com/openai/v1"\n'
+        'http_headers = {"Meshagent-Project-Id"="project-life"}\n'
+    )
+    config_path.write_text(
+        f'model_provider = "meshagent"\nmodel = "gpt-5.5"\n\n{provider_block}'
+    )
+    profile_path.write_text(
+        f'model_provider = "meshagent"\nmodel = "gpt-5.5"\n\n{provider_block}'
+    )
+
+    assert (
+        tool_integrations.remove_codex_integration(
+            profile_id="meshagent",
+            config_path=config_path,
+        )
+        is True
+    )
+
+    updated = config_path.read_text()
+    assert 'model_provider = "openai"\n' in updated
+    assert "[model_providers.meshagent]\n" not in updated
+    assert not profile_path.exists()
+
+
 def test_maybe_configure_local_tool_integrations_skips_when_codex_missing() -> None:
     confirmations: list[str] = []
     prompts: list[str] = []
@@ -510,15 +605,15 @@ def test_maybe_configure_local_tool_integrations_skips_when_user_declines(
 
     assert confirmations == [
         (
-            "Codex detected. Add a MeshAgent proxy profile to ~/.codex/config.toml "
-            "so Codex uses your MeshAgent account by default?",
+            "Codex detected. Configure Codex to use your MeshAgent account by "
+            "default in ~/.codex/config.toml?",
             True,
         )
     ]
     assert messages == []
 
 
-def test_maybe_configure_local_tool_integrations_retries_until_profile_name_is_usable(
+def test_maybe_configure_local_tool_integrations_configures_codex_default(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.toml"
@@ -526,14 +621,15 @@ def test_maybe_configure_local_tool_integrations_retries_until_profile_name_is_u
         '[profiles.meshagent]\nmodel_provider = "meshagent"\nmodel = "gpt-5.5"\n'
     )
     messages: list[str] = []
-    prompt_values = iter(["bad name", "meshagent", "meshagent-work"])
 
     tool_integrations.maybe_configure_local_tool_integrations(
         project_id="project-1",
         api_url="https://api.meshagent.life",
         meshagent_executable="/opt/homebrew/bin/meshagent",
         confirm_fn=lambda text, default=False: True,
-        prompt_fn=lambda text, default="meshagent": next(prompt_values),
+        prompt_fn=lambda text, default="meshagent": (_ for _ in ()).throw(
+            AssertionError("profile prompt should not be shown")
+        ),
         echo_fn=messages.append,
         which=lambda command: "/opt/homebrew/bin/codex" if command == "codex" else None,
         config_path=config_path,
@@ -541,20 +637,13 @@ def test_maybe_configure_local_tool_integrations_retries_until_profile_name_is_u
 
     assert messages == [
         (
-            "Codex profile names may only include letters, numbers, hyphens, "
-            "and underscores."
-        ),
-        (
-            f"Codex profile `meshagent` is already in use in {config_path}. "
-            "Choose a different name."
-        ),
-        (
-            f"Configured Codex profile `meshagent-work` in {config_path}. "
-            "Use `codex -p meshagent-work` to run Codex through MeshAgent."
+            f"Configured Codex to use MeshAgent by default in {config_path}. "
+            "Run `codex` to use Codex through MeshAgent."
         ),
     ]
     updated = config_path.read_text()
-    assert "[profiles.meshagent-work]\n" in updated
+    assert 'model_provider = "meshagent"\n' in updated
+    assert "[profiles.meshagent]\n" not in updated
     assert 'command = "/opt/homebrew/bin/meshagent"\n' in updated
     assert 'args = ["auth", "token"]\n' in updated
 
@@ -571,6 +660,10 @@ def test_build_codex_launch_command_sets_profile_overrides() -> None:
     assert command == [
         "/tmp/codex",
         "-c",
+        'model_provider="meshagent"',
+        "-c",
+        'model="gpt-5.5"',
+        "-c",
         'model_providers.meshagent.name="MeshAgent"',
         "-c",
         'model_providers.meshagent.base_url="https://api.meshagent.test/openai/v1"',
@@ -584,12 +677,6 @@ def test_build_codex_launch_command_sets_profile_overrides() -> None:
         "model_providers.meshagent.auth.timeout_ms=10000",
         "-c",
         "model_providers.meshagent.auth.refresh_interval_ms=300000",
-        "-c",
-        'profiles.meshagent.model_provider="meshagent"',
-        "-c",
-        'profiles.meshagent.model="gpt-5.5"',
-        "-p",
-        "meshagent",
         "--search",
         "fix auth flow",
     ]
@@ -626,6 +713,10 @@ def test_launch_codex_runs_subprocess() -> None:
     assert captured["command"] == [
         "/tmp/codex",
         "-c",
+        'model_provider="meshagent"',
+        "-c",
+        'model="gpt-5.5"',
+        "-c",
         'model_providers.meshagent.name="MeshAgent"',
         "-c",
         'model_providers.meshagent.base_url="https://api.meshagent.test/openai/v1"',
@@ -639,12 +730,6 @@ def test_launch_codex_runs_subprocess() -> None:
         "model_providers.meshagent.auth.timeout_ms=10000",
         "-c",
         "model_providers.meshagent.auth.refresh_interval_ms=300000",
-        "-c",
-        'profiles.meshagent.model_provider="meshagent"',
-        "-c",
-        'profiles.meshagent.model="gpt-5.5"',
-        "-p",
-        "meshagent",
         "write tests",
     ]
 
