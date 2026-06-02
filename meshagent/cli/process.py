@@ -2177,7 +2177,11 @@ app.add_deprecated_option_aliases(
 ThreadingMode = Literal["none", "default-new"]
 ThreadStorageBackend = Literal["meshdocument", "meshagent", "dataset", "none", "codex"]
 NormalizedThreadStorageBackend = Literal["meshdocument", "dataset", "none", "codex"]
-ThreadStorageBackends = ThreadStorageBackend | str | list[str]
+ThreadStorageBackends = ThreadStorageBackend | str | list[str] | tuple[str, ...]
+DEFAULT_PROCESS_THREAD_STORAGE_BACKENDS: tuple[str, str] = (
+    "dataset",
+    "meshdocument",
+)
 ContextManagementMode = Literal["auto", "standalone", "none"]
 ProcessToolSearchMode = Literal["room", "agent", "none"]
 
@@ -2278,7 +2282,7 @@ ThreadStorageOption = Annotated[
         "--thread-storage",
         help=(
             "Thread storage backend for process agents. Can be repeated; "
-            "the first value is the default."
+            "the first value is the default. Defaults to dataset then meshdocument."
         ),
     ),
 ]
@@ -2288,8 +2292,8 @@ ProcessRunThreadStorageOption = Annotated[
         "--thread-storage",
         help=(
             "Thread storage backend for process agents. Can be repeated; "
-            "the first value is the default. Defaults to meshdocument with a room, "
-            "or none with --no-room."
+            "the first value is the default. Defaults to dataset then meshdocument "
+            "with a room, or none with --no-room."
         ),
     ),
 ]
@@ -2507,7 +2511,7 @@ def _resolve_process_threading_options(
     agent_name: str | None,
     threading_mode: ThreadingMode,
     thread_dir: str | None,
-    thread_storage: ThreadStorageBackends = "meshdocument",
+    thread_storage: ThreadStorageBackends = DEFAULT_PROCESS_THREAD_STORAGE_BACKENDS,
 ) -> tuple[ThreadingMode, str | None]:
     thread_storage_backends = _normalize_thread_storage_backends(thread_storage)
     thread_storage = thread_storage_backends[0]
@@ -3423,17 +3427,20 @@ def _normalize_thread_storage_backend(
 def _normalize_thread_storage_backends(
     thread_storage: ThreadStorageBackends | None,
     *,
-    default: ThreadStorageBackend = "meshdocument",
+    default: ThreadStorageBackends = DEFAULT_PROCESS_THREAD_STORAGE_BACKENDS,
 ) -> list[NormalizedThreadStorageBackend]:
     raw_values: list[str]
     if thread_storage is None:
         raw_values = []
-    elif isinstance(thread_storage, list):
-        raw_values = thread_storage
+    elif isinstance(thread_storage, (list, tuple)):
+        raw_values = list(thread_storage)
     else:
         raw_values = [thread_storage]
     if len(raw_values) == 0:
-        raw_values = [default]
+        if isinstance(default, (list, tuple)):
+            raw_values = list(default)
+        else:
+            raw_values = [default]
 
     normalized: list[NormalizedThreadStorageBackend] = []
     for value in raw_values:
@@ -3446,7 +3453,7 @@ def _normalize_thread_storage_backends(
 def _default_thread_storage_backend(
     thread_storage: ThreadStorageBackends | None,
     *,
-    default: ThreadStorageBackend = "meshdocument",
+    default: ThreadStorageBackends = DEFAULT_PROCESS_THREAD_STORAGE_BACKENDS,
 ) -> NormalizedThreadStorageBackend:
     return _normalize_thread_storage_backends(
         thread_storage,
@@ -5339,7 +5346,7 @@ def build_process_agent(
     dataset_namespace: Optional[list[str]] = None,
     always_reply: Optional[bool] = None,
     thread_dir: Optional[str] = None,
-    thread_storage: ThreadStorageBackends = "meshdocument",
+    thread_storage: ThreadStorageBackends = DEFAULT_PROCESS_THREAD_STORAGE_BACKENDS,
     context_management: ContextManagementMode = "auto",
     compaction_threshold: Optional[int] = None,
     max_output_tokens: Optional[int] = 32000,
@@ -11099,7 +11106,7 @@ async def run(
     )
     resolved_thread_storage_backends = _normalize_thread_storage_backends(
         thread_storage,
-        default="none" if no_room else "meshdocument",
+        default="none" if no_room else DEFAULT_PROCESS_THREAD_STORAGE_BACKENDS,
     )
     resolved_thread_storage = resolved_thread_storage_backends[0]
     resolved_threading_mode, resolved_thread_dir = _resolve_process_threading_options(

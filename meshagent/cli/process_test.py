@@ -631,6 +631,9 @@ async def test_process_agent_passes_threading_mode_to_queue_channel(
             queue_name: str,
             threading_mode: str | None = None,
             thread_dir: str | None = None,
+            thread_url_scheme: str | None = None,
+            thread_path_extension: str | None = None,
+            thread_list_path: str | None = None,
             llm_adapter=None,
         ) -> None:
             super().__init__()
@@ -640,6 +643,9 @@ async def test_process_agent_passes_threading_mode_to_queue_channel(
                     "queue_name": queue_name,
                     "threading_mode": threading_mode,
                     "thread_dir": thread_dir,
+                    "thread_url_scheme": thread_url_scheme,
+                    "thread_path_extension": thread_path_extension,
+                    "thread_list_path": thread_list_path,
                     "llm_adapter": llm_adapter,
                 }
             )
@@ -674,6 +680,9 @@ async def test_process_agent_passes_threading_mode_to_queue_channel(
         assert captured_calls[0]["queue_name"] == "jobs"
         assert captured_calls[0]["threading_mode"] == "default-new"
         assert captured_calls[0]["thread_dir"] == "/threads/queue"
+        assert captured_calls[0]["thread_url_scheme"] == "dataset"
+        assert captured_calls[0]["thread_path_extension"] == ""
+        assert captured_calls[0]["thread_list_path"] == "agent://threads"
         assert captured_calls[0]["llm_adapter"] is not None
     finally:
         await agent.stop()
@@ -698,6 +707,9 @@ async def test_process_agent_passes_threading_mode_to_mail_channel(
             reply_all: bool = False,
             threading_mode: str | None = None,
             thread_dir: str | None = None,
+            thread_url_scheme: str | None = None,
+            thread_path_extension: str | None = None,
+            thread_list_path: str | None = None,
             llm_adapter=None,
         ) -> None:
             super().__init__()
@@ -709,6 +721,9 @@ async def test_process_agent_passes_threading_mode_to_mail_channel(
                     "reply_all": reply_all,
                     "threading_mode": threading_mode,
                     "thread_dir": thread_dir,
+                    "thread_url_scheme": thread_url_scheme,
+                    "thread_path_extension": thread_path_extension,
+                    "thread_list_path": thread_list_path,
                     "llm_adapter": llm_adapter,
                 }
             )
@@ -745,6 +760,9 @@ async def test_process_agent_passes_threading_mode_to_mail_channel(
         assert captured_calls[0]["reply_all"] is True
         assert captured_calls[0]["threading_mode"] == "default-new"
         assert captured_calls[0]["thread_dir"] == "/threads/mail"
+        assert captured_calls[0]["thread_url_scheme"] == "dataset"
+        assert captured_calls[0]["thread_path_extension"] == ""
+        assert captured_calls[0]["thread_list_path"] == "agent://threads"
         assert captured_calls[0]["llm_adapter"] is not None
     finally:
         await agent.stop()
@@ -1346,19 +1364,25 @@ def test_build_process_agent_groups_repeated_models_by_provider(
             *,
             model: str,
             api_key=None,
+            client=None,
             log_requests=None,
             context_management=None,
             compaction_threshold=None,
             max_output_tokens=None,
             reasoning_effort=None,
+            response_options=None,
+            tool_search=None,
             allowed_models=None,
         ) -> None:
             del api_key
+            del client
             del log_requests
             del context_management
             del compaction_threshold
             del max_output_tokens
             del reasoning_effort
+            del response_options
+            del tool_search
             created_adapters.append(
                 {
                     "provider": "openai",
@@ -2062,6 +2086,7 @@ async def test_process_run_starts_room_agent_and_uses_ask_tui(
     def fake_build_runtime_agent(**kwargs):
         captured["runtime"] = kwargs["runtime"]
         captured["channels"] = kwargs["channels"]
+        captured["thread_storage"] = kwargs["thread_storage"]
         return lambda: process_agent
 
     async def fake_run_process_run_tui(**kwargs):
@@ -2093,6 +2118,7 @@ async def test_process_run_starts_room_agent_and_uses_ask_tui(
 
     assert captured["runtime"] == "process"
     assert captured["channels"] == ["memory"]
+    assert captured["thread_storage"] == ["dataset", "meshdocument"]
     assert room_client.enter_calls == 1
     assert room_client.exit_calls == 1
     assert process_agent.start_calls == 1
@@ -2103,9 +2129,9 @@ async def test_process_run_starts_room_agent_and_uses_ask_tui(
         "room": room_client,
         "model": ["gpt-5.5"],
         "thread_path": None,
-        "thread_storage": "meshdocument",
+        "thread_storage": "dataset",
         "agent_name": "helper",
-        "thread_dir": "/agents/helper/threads",
+        "thread_dir": "dataset://agents/helper/threads",
         "threading_mode": "default-new",
         "message": None,
         "working_dir": None,
@@ -2194,7 +2220,7 @@ async def test_process_run_no_room_starts_local_agent_and_uses_oauth_token(
     assert captured["api_key"] == "oauth-token"
     assert captured["meshagent_project_id"] == "project-123"
     assert captured["runtime"] == "process"
-    assert captured["thread_storage"] == "none"
+    assert captured["thread_storage"] == ["none"]
     assert captured["channels"] == ["chat"]
     assert process_agent.start_calls == 1
     assert process_agent.stop_calls == 1
@@ -2262,7 +2288,7 @@ async def test_process_run_no_room_defaults_to_memory_channel_and_ephemeral_stor
     )
 
     assert captured["channels"] == ["memory"]
-    assert captured["thread_storage"] == "none"
+    assert captured["thread_storage"] == ["none"]
     assert captured["meshagent_project_id"] == "project-123"
     assert captured["thread_dir"] == "tmp://agents/helper/threads"
     assert captured["started_room"] is None
@@ -2317,7 +2343,7 @@ async def test_process_run_no_room_allows_codex_storage_without_token(
     assert captured["oauth_requested"] is True
     assert captured["client"] is None
     assert captured["api_key"] is None
-    assert captured["thread_storage"] == "codex"
+    assert captured["thread_storage"] == ["codex"]
     assert captured["started_room"] is None
     assert captured["stopped"] is True
 
@@ -2614,6 +2640,13 @@ def test_process_thread_storage_options_preserve_first_backend_as_default() -> N
     assert process._normalize_thread_storage_backends(
         ["meshdocument", "dataset", "meshagent"]
     ) == ["meshdocument", "dataset"]
+
+
+def test_process_thread_storage_defaults_to_dataset_and_meshdocument() -> None:
+    assert process._normalize_thread_storage_backends(None) == [
+        "dataset",
+        "meshdocument",
+    ]
 
 
 def test_process_new_meshdocument_thread_uses_scheme_when_requested(
@@ -4963,6 +4996,7 @@ class _FakeProcessRoomClient(RoomClient):
         self._local_participant = _FakeParticipant()
         self._protocol = _FakeProcessProtocol()
         self._messaging = _FakeMessagingClient()
+        self._datasets = object()
 
     @property
     def local_participant(self):
@@ -4975,6 +5009,10 @@ class _FakeProcessRoomClient(RoomClient):
     @property
     def messaging(self):
         return self._messaging
+
+    @property
+    def datasets(self):
+        return self._datasets
 
 
 class _FakeProcessThreadAdapter:
