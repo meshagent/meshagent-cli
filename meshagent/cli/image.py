@@ -2920,70 +2920,7 @@ async def _upsert_email_mailbox(
     )
 
 
-def _merge_runtime_default_environment(
-    *,
-    environment: list[EnvironmentVariable] | None,
-    runtime_container: _RuntimeContainerOverride,
-) -> list[EnvironmentVariable] | None:
-    if len(runtime_container.default_environment) == 0:
-        return environment
-
-    merged_environment = (
-        [env_var.model_copy(deep=True) for env_var in environment]
-        if environment is not None
-        else []
-    )
-    existing_names = {env_var.name for env_var in merged_environment}
-    for env_var in runtime_container.default_environment:
-        if env_var.name in existing_names:
-            continue
-        merged_environment.append(env_var.model_copy(deep=True))
-        existing_names.add(env_var.name)
-    return merged_environment
-
-
-def _apply_runtime_container_to_template_service_spec(
-    *,
-    service_spec: ServiceSpec,
-    runtime_container: _RuntimeContainerOverride | None,
-) -> ServiceSpec:
-    if runtime_container is None:
-        return service_spec
-    if service_spec.container is None:
-        raise typer.BadParameter(
-            "packed Dockerfile runtime injection requires a container service"
-        )
-
-    container = service_spec.container
-    storage = _apply_runtime_image_mount(
-        storage=container.storage,
-        runtime_image_mount=runtime_container.image_mount,
-    )
-    environment = _merge_runtime_default_environment(
-        environment=container.environment,
-        runtime_container=runtime_container,
-    )
-    container = container.model_copy(
-        update={
-            "image": runtime_container.image,
-            "command": runtime_container.command,
-            "working_dir": runtime_container.working_dir,
-            "environment": environment,
-            "storage": storage,
-        }
-    )
-    return service_spec.model_copy(update={"container": container})
-
-
-def _build_deploy_template_plan(
-    *,
-    service_spec: ServiceSpec,
-    runtime_container: _RuntimeContainerOverride | None = None,
-) -> _ServiceDeployPlan:
-    service_spec = _apply_runtime_container_to_template_service_spec(
-        service_spec=service_spec,
-        runtime_container=runtime_container,
-    )
+def _build_deploy_template_plan(*, service_spec: ServiceSpec) -> _ServiceDeployPlan:
     service_id = service_spec.metadata.name
     annotations = dict(service_spec.metadata.annotations or {})
     service_id = (
@@ -4628,18 +4565,7 @@ async def deploy_image(
                     room_name=resolved_room,
                     service_name=service_spec.metadata.name,
                 )
-                deploy_plan = _build_deploy_template_plan(
-                    service_spec=service_spec,
-                    runtime_container=runtime_container,
-                )
-                _validate_packed_dockerfile_volume_mounts(
-                    dockerfile_metadata=packed_dockerfile_metadata,
-                    storage=(
-                        deploy_plan.spec.container.storage
-                        if deploy_plan.spec.container is not None
-                        else None
-                    ),
-                )
+                deploy_plan = _build_deploy_template_plan(service_spec=service_spec)
                 environment = (
                     deploy_plan.spec.container.environment
                     if deploy_plan.spec.container is not None
