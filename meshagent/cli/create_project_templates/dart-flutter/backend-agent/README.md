@@ -1,6 +1,6 @@
 # Dart Agent Toolkit
 
-Minimal headless Dart service that exposes custom tools to MeshAgent agents.
+Illustrates how to use a Meshagent agent tool: join the room, publish `ping`, `status`, and `echo`, call them as a proof, and keep the toolkit available for agents. It is a compact way to understand that agent tools are your process answering room requests.
 
 ## Next Steps
 

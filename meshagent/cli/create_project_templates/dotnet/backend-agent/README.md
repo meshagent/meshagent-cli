@@ -1,6 +1,6 @@
 # .NET Agent Toolkit
 
-Minimal headless .NET service that exposes custom tools to MeshAgent agents.
+Illustrates how to use a Meshagent agent tool: register the toolkit in a room, handle the incoming tool-call message, return JSON, and clean up the registration. This is the version to study when you want more control over exactly how the protocol works.
 
 ## Next Steps
 

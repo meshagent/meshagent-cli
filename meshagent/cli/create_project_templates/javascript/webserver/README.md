@@ -1,22 +1,16 @@
 # JavaScript Web App
 
-Minimal Node.js public HTTP service with a health route.
+Shows how a simple server becomes a public MeshAgent URL without hiding the moving parts. You run it locally, deploy it, check `/health`, and watch a room-connected toolkit change the page data, which is the first step toward apps that agents can actually operate.
 
 ## Next Steps
 
-1. Install dependencies:
-
-   ```bash
-   npm install
-   ```
-
-2. Run locally:
+1. Run locally:
 
    ```bash
    npm run dev
    ```
 
-3. Deploy:
+2. Deploy:
 
    ```bash
    npm run deploy

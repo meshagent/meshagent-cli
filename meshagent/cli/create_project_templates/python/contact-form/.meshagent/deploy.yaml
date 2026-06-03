@@ -19,7 +19,11 @@ variables:
     type: email
   - name: to_email
     title: Destination email
-    description: Email address that receives contact form submissions.
+    description: External or public email address that receives contact form submissions.
+  - name: delivery_email
+    title: SMTP envelope recipient
+    description: Optional external delivery alias when the destination is a private MeshAgent mailbox.
+    optional: true
 container:
   image: meshagent/python:default
   template: agent
@@ -30,6 +34,8 @@ container:
       value: "{{ from_email }}"
     - name: CONTACT_FORM_TO
       value: "{{ to_email }}"
+    - name: CONTACT_FORM_DELIVERY_TO
+      value: "{{ delivery_email }}"
   storage:
     images:
       - image: "{{ image }}"
@@ -41,4 +47,5 @@ ports:
   - num: 8000
     type: http
     published: true
+    public: true
     liveness: /health

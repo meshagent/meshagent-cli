@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typer._click.testing import CliRunner
+import json
+
+from meshagent.cli.testing import CliRunner
 
 from meshagent.api.specs.service import ServiceTemplateSpec
 from meshagent.cli import create as create_module
@@ -10,6 +12,10 @@ from meshagent.cli.create import create_command
 
 def _assert_no_dockerfile(project_path) -> None:
     assert not (project_path / "Dockerfile").exists()
+
+
+def _assert_template_dockerfile(project_path) -> None:
+    assert (project_path / "Dockerfile").is_file()
 
 
 def _assert_runtime_image_mount_deploy_yaml(
@@ -44,6 +50,18 @@ def _assert_runtime_image_mount_deploy_yaml(
     assert image_mount.subpath == "app"
     assert image_mount.read_only is True
     return spec
+
+
+def _assert_npm_dev_auto_installs(project_path) -> None:
+    package_json = json.loads(
+        (project_path / "package.json").read_text(encoding="utf-8")
+    )
+    assert package_json["scripts"]["predev"] == "node scripts/ensure-deps.mjs"
+    ensure_deps = (project_path / "scripts" / "ensure-deps.mjs").read_text(
+        encoding="utf-8"
+    )
+    assert "Installing missing npm dependencies" in ensure_deps
+    assert 'spawnSync("npm", ["install"]' in ensure_deps
 
 
 def _assert_node_content_toolkit(
@@ -107,6 +125,105 @@ def test_create_templates_are_self_contained_directories() -> None:
         assert "package-lock.json" not in files
 
 
+def test_npm_create_templates_bootstrap_dev_and_ignore_local_venvs() -> None:
+    for template in create_module.TEMPLATES.values():
+        files = create_module._walk_template_files(template.template_dir)
+        if "package.json" not in files:
+            continue
+
+        dockerignore = create_module._read_create_template(
+            f"{template.template_dir}/.dockerignore"
+        )
+        package_json = json.loads(
+            create_module._read_create_template(f"{template.template_dir}/package.json")
+        )
+        readme = create_module._read_create_template(
+            f"{template.template_dir}/README.md"
+        )
+
+        assert "node_modules/" in dockerignore, template.template_dir
+        assert ".venv/" in dockerignore, template.template_dir
+        assert "venv/" in dockerignore, template.template_dir
+        assert package_json["scripts"]["predev"] == "node scripts/ensure-deps.mjs"
+        assert "npm install" not in readme, template.template_dir
+        assert "Install dependencies" not in readme, template.template_dir
+
+
+def test_create_template_tui_descriptions_avoid_repetitive_opening() -> None:
+    banned_phrases = (
+        "bundled output",
+        "compiled server",
+        "liveness",
+        "production shape",
+        "typed source",
+    )
+
+    for template in create_module.TEMPLATES.values():
+        description = create_module._template_choice_description(template)
+        focus = create_module.FOCUSES[template.focus_id]
+        lower_description = description.lower()
+
+        assert not description.startswith(
+            ("Choose this when", "This example", "This is")
+        )
+        assert focus.description.rstrip(".") not in description
+        assert not any(phrase in lower_description for phrase in banned_phrases)
+        if template.focus_id == create_module.AGENT_FOCUS:
+            assert description.startswith(
+                "Illustrates how to use a Meshagent agent tool: "
+            )
+        if (
+            template.language_id == "typescript"
+            and template.focus_id == create_module.AGENT_FOCUS
+        ):
+            assert "give custom functionality a tool name" in description
+            assert "let MeshAgent route tool call results" in description
+            assert "give a backend function a tool name" not in description
+            assert "let MeshAgent route requests" not in description
+        assert len(description) > 120
+
+
+def test_published_http_create_template_ports_are_public() -> None:
+    for template in create_module.TEMPLATES.values():
+        files = create_module._walk_template_files(template.template_dir)
+        if ".meshagent/deploy.yaml" not in files:
+            continue
+        deploy_yaml = create_module._read_create_template(
+            f"{template.template_dir}/.meshagent/deploy.yaml"
+        )
+        if "published: true" in deploy_yaml:
+            assert "public: true" in deploy_yaml, template.template_dir
+
+
+def test_static_nginx_create_templates_mount_writable_data_dir() -> None:
+    for template in create_module.TEMPLATES.values():
+        files = create_module._walk_template_files(template.template_dir)
+        if "Dockerfile" not in files or ".meshagent/deploy.yaml" not in files:
+            continue
+
+        dockerfile = create_module._read_create_template(
+            f"{template.template_dir}/Dockerfile"
+        )
+        if "/data/nginx" not in dockerfile:
+            continue
+
+        deploy_yaml = create_module._read_create_template(
+            f"{template.template_dir}/.meshagent/deploy.yaml"
+        )
+        spec = ServiceTemplateSpec.from_yaml(
+            deploy_yaml,
+            values={"image": "registry.example.com/test-app:dev"},
+        )
+
+        assert spec.container is not None
+        assert spec.container.storage is not None, template.template_dir
+        assert spec.container.storage.empty_dirs is not None, template.template_dir
+        assert any(
+            mount.path == "/data" and mount.read_only is False
+            for mount in spec.container.storage.empty_dirs
+        ), template.template_dir
+
+
 def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> None:
     (tmp_path / ".gitkeep").write_text("", encoding="utf-8")
 
@@ -147,7 +264,7 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert not (tmp_path / "Makefile").exists()
-    _assert_no_dockerfile(tmp_path)
+    _assert_template_dockerfile(tmp_path)
 
     assert "Python Agent Toolkit" in readme
     assert "./scripts/install.sh" in readme
@@ -219,9 +336,9 @@ def test_init_colorizes_next_steps_when_color_is_enabled(tmp_path) -> None:
     assert result.exit_code == 0
     assert "\x1b[" in result.output
     assert "Next steps:" in result.output
-    assert "1. Install dependencies" in result.output
-    assert "2. Run locally" in result.output
-    assert "3. Deploy" in result.output
+    assert "Install dependencies" not in result.output
+    assert "1. Run locally" in result.output
+    assert "2. Deploy" in result.output
 
 
 def test_init_colorizes_agent_toolkit_pairing_guidance(tmp_path) -> None:
@@ -264,7 +381,7 @@ def test_init_renders_meshagent_image_prefix_from_environment(
     )
 
     assert result.exit_code == 0
-    _assert_no_dockerfile(tmp_path)
+    _assert_template_dockerfile(tmp_path)
 
 
 def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
@@ -295,7 +412,7 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert not (tmp_path / "Makefile").exists()
-    _assert_no_dockerfile(tmp_path)
+    _assert_template_dockerfile(tmp_path)
 
     assert "Python Web App" in readme
     assert "./scripts/install.sh" in readme
@@ -366,21 +483,14 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "3. Run locally" in result.output
     assert "4. Deploy" in result.output
     assert "meshagent rooms create <room> --if-not-exists" in result.output
+    assert "Email setup is handled by the deploy template" in result.output
+    assert ".meshagent/deploy.yaml injects CONTACT_FORM_FROM" in result.output
     assert (
-        "Before testing a submission, set up the sender mailbox for that room"
-        in result.output
+        "meshagent deploy creates or updates the public sender mailbox" in result.output
     )
-    assert "New mailbox:" in result.output
-    assert "Existing mailbox for that room:" in result.output
-    assert (
-        "meshagent mailbox create --address contact-<room-slug>@mail.meshagent.com --room <room> --queue contact-<room-slug>@mail.meshagent.com --public"
-        in result.output
-    )
-    assert (
-        "meshagent mailbox update contact-<room-slug>@mail.meshagent.com --room <room> --queue contact-<room-slug>@mail.meshagent.com --public"
-        in result.output
-    )
-    assert "If create returns 409" in result.output
+    assert "Before testing a submission, set up the sender mailbox" not in result.output
+    assert "meshagent mailbox create" not in result.output
+    assert "meshagent mailbox update" not in result.output
     assert "If CONTACT_FORM_TO is also a private MeshAgent mailbox" in result.output
     assert "CONTACT_FORM_FROM" in result.output
     assert "CONTACT_FORM_TO" in result.output
@@ -399,27 +509,29 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     deploy_yaml = (tmp_path / ".meshagent" / "deploy.yaml").read_text(encoding="utf-8")
-    _assert_no_dockerfile(tmp_path)
+    _assert_template_dockerfile(tmp_path)
 
     assert "Python Contact Form" in readme
     assert "meshagent rooms create <room> --if-not-exists" in readme
     assert "./scripts/dev.sh --room <room>" in readme
     assert "CONTACT_FORM_TO=you@example.com ./scripts/deploy.sh --room <room>" in readme
-    assert (
-        "meshagent mailbox create --address contact-<room-slug>@mail.meshagent.com"
-        in readme
-    )
+    assert "Deploy uses `.meshagent/deploy.yaml` as a service template" in readme
+    assert "deploy creates or updates the public sender mailbox" in readme
+    assert "meshagent mailbox create" not in readme
+    assert "meshagent mailbox update" not in readme
     assert "CONTACT_FORM_FROM" in readme
     assert "CONTACT_FORM_TO" in readme
     assert "Read `README.md`" in agents_md
     assert "Read `README.md`" in claude_md
 
-    assert '"aiohttp[speedups]~=3.13.0"' in pyproject
-    assert '"meshagent-api==' in pyproject
+    assert '"aiohttp~=3.13.0"' in pyproject
+    assert '"meshagent-api==' not in pyproject
     assert "EmailMessage" in server_py
     assert "smtplib.SMTP" in server_py
     assert "CONTACT_FORM_FROM" in server_py
     assert "CONTACT_FORM_TO" in server_py
+    assert "CONTACT_FORM_DELIVERY_TO" in server_py
+    assert "to_addrs=[delivery_to]" in server_py
     assert "SMTP_HOSTNAME" in server_py
     assert "MESHAGENT_MAIL_DOMAIN" in server_py
     assert "Unable to send mail: {detail}" in server_py
@@ -444,6 +556,7 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "CONTACT_FORM_FROM" in dev_sh
     assert "mailbox_from_room" in dev_sh
     assert "CONTACT_FORM_TO" in dev_sh
+    assert "CONTACT_FORM_DELIVERY_TO" in dev_sh
     assert "SMTP_HOSTNAME" in dev_sh
     assert "SMTP_USERNAME" in dev_sh
     assert "mail.meshagent.com" in dev_sh
@@ -462,6 +575,7 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "--meshagent-token agentDefault" in deploy_sh
     assert '--set "from_email=$CONTACT_FORM_FROM"' in deploy_sh
     assert '--set "to_email=$CONTACT_FORM_TO"' in deploy_sh
+    assert '--set "delivery_email=$CONTACT_FORM_DELIVERY_TO"' in deploy_sh
     assert "mailbox_from_room" in deploy_sh
     assert '"$@"' in deploy_sh
     assert "If you passed --room and the room does not exist yet" not in deploy_sh
@@ -474,13 +588,22 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "kind: ServiceTemplate" in deploy_yaml
     assert "name: from_email" in deploy_yaml
     assert "name: to_email" in deploy_yaml
+    assert "name: delivery_email" in deploy_yaml
     assert "type: email" in deploy_yaml
+    to_email_section = deploy_yaml.split("name: to_email", 1)[1].split("container:", 1)[
+        0
+    ]
+    assert "type: email" not in to_email_section
     assert "template: agent" in deploy_yaml
     assert "num: 8000" in deploy_yaml
     assert "CONTACT_FORM_FROM" in deploy_yaml
     assert "CONTACT_FORM_TO" in deploy_yaml
+    assert "CONTACT_FORM_DELIVERY_TO" in deploy_yaml
+    assert "published: true" in deploy_yaml
+    assert "public: true" in deploy_yaml
+    assert "liveness: /health" in deploy_yaml
     assert diagnosis.language == "Python"
-    assert diagnosis.sdk == "meshagent-api"
+    assert diagnosis.sdk is None
     assert diagnosis.has_health_route is True
     assert diagnosis.has_http_port_hint is True
 
@@ -511,7 +634,8 @@ def test_init_creates_javascript_webserver_non_interactively(tmp_path) -> None:
     assert npmrc.is_file()
     assert server_js.is_file()
     assert dev_content_json.is_file()
-    _assert_no_dockerfile(tmp_path)
+    _assert_npm_dev_auto_installs(tmp_path)
+    _assert_template_dockerfile(tmp_path)
     package_text = package_json.read_text(encoding="utf-8")
     npmrc_text = npmrc.read_text(encoding="utf-8")
     dev_content = dev_content_json.read_text(encoding="utf-8")
@@ -571,6 +695,7 @@ def test_init_creates_javascript_backend_agent_non_interactively(tmp_path) -> No
     )
     assert "cache=.npm-cache" in (tmp_path / ".npmrc").read_text(encoding="utf-8")
     assert not (tmp_path / "dev-content.json").exists()
+    _assert_npm_dev_auto_installs(tmp_path)
     package_text = (tmp_path / "package.json").read_text(encoding="utf-8")
     assert '"dev": "meshagent room connect -- node server.js"' in package_text
     assert (
@@ -585,7 +710,7 @@ def test_init_creates_javascript_backend_agent_non_interactively(tmp_path) -> No
         proof_path="agent-proof.json",
     )
     assert "server.listen" not in server_js
-    _assert_no_dockerfile(tmp_path)
+    _assert_template_dockerfile(tmp_path)
     _assert_runtime_image_mount_deploy_yaml(
         tmp_path,
         runtime="node",
@@ -617,7 +742,8 @@ def test_init_creates_typescript_webserver_non_interactively(tmp_path) -> None:
     assert (tmp_path / "tsconfig.json").is_file()
     assert (tmp_path / "src" / "server.ts").is_file()
     assert (tmp_path / "src" / "dev-content.json").is_file()
-    _assert_no_dockerfile(tmp_path)
+    _assert_npm_dev_auto_installs(tmp_path)
+    _assert_template_dockerfile(tmp_path)
     package_text = (tmp_path / "package.json").read_text(encoding="utf-8")
     npmrc_text = (tmp_path / ".npmrc").read_text(encoding="utf-8")
     assert "cache=.npm-cache" in npmrc_text
@@ -682,6 +808,7 @@ def test_init_creates_typescript_backend_agent_non_interactively(tmp_path) -> No
     )
     assert "cache=.npm-cache" in (tmp_path / ".npmrc").read_text(encoding="utf-8")
     assert not (tmp_path / "src" / "dev-content.json").exists()
+    _assert_npm_dev_auto_installs(tmp_path)
     package_text = (tmp_path / "package.json").read_text(encoding="utf-8")
     assert '"dev": "meshagent room connect -- tsx src/server.ts"' in package_text
     assert (
@@ -696,7 +823,7 @@ def test_init_creates_typescript_backend_agent_non_interactively(tmp_path) -> No
         proof_path="src/agent-proof.json",
     )
     assert "server.listen" not in server_ts
-    _assert_no_dockerfile(tmp_path)
+    _assert_template_dockerfile(tmp_path)
     _assert_runtime_image_mount_deploy_yaml(
         tmp_path,
         runtime="node",
@@ -735,6 +862,7 @@ def test_init_creates_typescript_chatbot_non_interactively(tmp_path) -> None:
     assert (tmp_path / "tsconfig.json").is_file()
     assert (tmp_path / "src" / "server.ts").is_file()
     assert not (tmp_path / "src" / "dev-content.json").exists()
+    _assert_npm_dev_auto_installs(tmp_path)
     package_text = (tmp_path / "package.json").read_text(encoding="utf-8")
     assert '"name": "meshagent-create-typescript-chatbot"' in package_text
     assert (
@@ -744,6 +872,7 @@ def test_init_creates_typescript_chatbot_non_interactively(tmp_path) -> None:
     assert "@meshagent/meshagent" not in package_text
     server_ts = (tmp_path / "src" / "server.ts").read_text(encoding="utf-8")
     assert 'const http = require("node:http")' in server_ts
+    assert 'const { spawn } = require("node:child_process")' in server_ts
     assert "http.createServer" in server_ts
     assert "OPENAI_BASE_URL" in server_ts
     assert "OPENAI_API_KEY" in server_ts
@@ -763,7 +892,12 @@ def test_init_creates_typescript_chatbot_non_interactively(tmp_path) -> None:
     assert "chatbot-proof.json" not in server_ts
     assert "chatbot-storage-proof.json" not in server_ts
     assert "server.listen" in server_ts
-    _assert_no_dockerfile(tmp_path)
+    assert "MESHAGENT_CREATE_OPEN_BROWSER" in server_ts
+    assert "process.stdin.isTTY || process.stdout.isTTY" in server_ts
+    assert "Browser will launch at ${url}" in server_ts
+    assert "http://127.0.0.1:${port}/" in server_ts
+    assert "maybeOpenBrowser(localURL)" in server_ts
+    _assert_template_dockerfile(tmp_path)
     _assert_runtime_image_mount_deploy_yaml(
         tmp_path,
         runtime="node",
@@ -806,6 +940,7 @@ def test_init_creates_typescript_anthropic_chatbot_non_interactively(
     assert (tmp_path / "tsconfig.json").is_file()
     assert (tmp_path / "src" / "server.ts").is_file()
     assert not (tmp_path / "src" / "dev-content.json").exists()
+    _assert_npm_dev_auto_installs(tmp_path)
     package_text = (tmp_path / "package.json").read_text(encoding="utf-8")
     assert '"name": "meshagent-create-typescript-chatbot-anthropic"' in package_text
     assert (
@@ -815,6 +950,7 @@ def test_init_creates_typescript_anthropic_chatbot_non_interactively(
     assert "@meshagent/meshagent" not in package_text
     server_ts = (tmp_path / "src" / "server.ts").read_text(encoding="utf-8")
     assert 'const http = require("node:http")' in server_ts
+    assert 'const { spawn } = require("node:child_process")' in server_ts
     assert "http.createServer" in server_ts
     assert "ANTHROPIC_BASE_URL" in server_ts
     assert "ANTHROPIC_API_KEY" in server_ts
@@ -841,7 +977,12 @@ def test_init_creates_typescript_anthropic_chatbot_non_interactively(
     assert "chatbot-proof.json" not in server_ts
     assert "chatbot-storage-proof.json" not in server_ts
     assert "server.listen" in server_ts
-    _assert_no_dockerfile(tmp_path)
+    assert "MESHAGENT_CREATE_OPEN_BROWSER" in server_ts
+    assert "process.stdin.isTTY || process.stdout.isTTY" in server_ts
+    assert "Browser will launch at ${url}" in server_ts
+    assert "http://127.0.0.1:${port}/" in server_ts
+    assert "maybeOpenBrowser(localURL)" in server_ts
+    _assert_template_dockerfile(tmp_path)
     _assert_runtime_image_mount_deploy_yaml(
         tmp_path,
         runtime="node",
@@ -920,7 +1061,8 @@ def test_init_creates_react_webserver_non_interactively(tmp_path) -> None:
     assert (tmp_path / "scripts" / "dev-content-toolkit.js").is_file()
     assert (tmp_path / "src" / "dev-content.json").is_file()
     assert (tmp_path / "src" / "main.tsx").is_file()
-    _assert_no_dockerfile(tmp_path)
+    _assert_npm_dev_auto_installs(tmp_path)
+    _assert_template_dockerfile(tmp_path)
     package_json = (tmp_path / "package.json").read_text(encoding="utf-8")
     npmrc = (tmp_path / ".npmrc").read_text(encoding="utf-8")
     main_tsx = (tmp_path / "src" / "main.tsx").read_text(encoding="utf-8")
@@ -991,7 +1133,8 @@ def test_init_creates_typescript_chatbot_ui_non_interactively(tmp_path) -> None:
     assert (tmp_path / "app" / "page.tsx").is_file()
     assert (tmp_path / "app" / "globals.css").is_file()
     assert (tmp_path / "app" / "health" / "route.ts").is_file()
-    _assert_no_dockerfile(tmp_path)
+    _assert_npm_dev_auto_installs(tmp_path)
+    _assert_template_dockerfile(tmp_path)
 
     package_json = (tmp_path / "package.json").read_text(encoding="utf-8")
     page_tsx = (tmp_path / "app" / "page.tsx").read_text(encoding="utf-8")
@@ -1000,8 +1143,11 @@ def test_init_creates_typescript_chatbot_ui_non_interactively(tmp_path) -> None:
     assert '"next"' in package_json
     assert '"next": "^16.2.6"' in package_json
     assert '"@vercel/ncc"' not in package_json
-    assert '"build": "next build"' in package_json
-    assert '"start": "node .next/standalone/server.js"' in package_json
+    assert '"build": "NEXT_TELEMETRY_DISABLED=1 next build"' in package_json
+    assert (
+        '"start": "NEXT_TELEMETRY_DISABLED=1 node .next/standalone/server.js"'
+        in package_json
+    )
     assert (
         '"deploy": "meshagent deploy . --tag meshagent-create-typescript-chatbot-ui:dev --private --validation-mode=cookie --extra-port=assistant:/messages --liveness /health --wait"'
         in package_json
@@ -1054,6 +1200,7 @@ def test_init_creates_typescript_room_chat_non_interactively(tmp_path) -> None:
     assert (tmp_path / "app" / "globals.css").is_file()
     assert (tmp_path / "app" / "health" / "route.ts").is_file()
     assert (tmp_path / "Dockerfile").is_file()
+    _assert_npm_dev_auto_installs(tmp_path)
 
     package_json = (tmp_path / "package.json").read_text(encoding="utf-8")
     next_config = (tmp_path / "next.config.ts").read_text(encoding="utf-8")
@@ -1066,9 +1213,15 @@ def test_init_creates_typescript_room_chat_non_interactively(tmp_path) -> None:
     assert '"next": "^16.2.6"' in package_json
     assert "http-proxy" not in package_json
     assert '"@msgpack/msgpack"' not in package_json
-    assert '"dev": "meshagent room connect -- node dev-server.mjs"' in package_json
-    assert '"build": "next build"' in package_json
-    assert '"start": "node .next/standalone/server.js"' in package_json
+    assert (
+        '"dev": "NEXT_TELEMETRY_DISABLED=1 meshagent room connect -- node dev-server.mjs"'
+        in package_json
+    )
+    assert '"build": "NEXT_TELEMETRY_DISABLED=1 next build"' in package_json
+    assert (
+        '"start": "NEXT_TELEMETRY_DISABLED=1 node .next/standalone/server.js"'
+        in package_json
+    )
     assert (
         '"deploy": "meshagent deploy . --tag meshagent-create-typescript-room-chat:dev --private --validation-mode=cookie --liveness /health --wait"'
         in package_json
@@ -1105,21 +1258,21 @@ def test_init_creates_typescript_room_chat_non_interactively(tmp_path) -> None:
     assert env["PORT"] == "3000"
 
 
-def test_init_creates_typescript_meeting_app_non_interactively(tmp_path) -> None:
+def test_init_creates_typescript_room_workspace_non_interactively(tmp_path) -> None:
     result = CliRunner().invoke(
         create_command,
         [
             "--language",
             "typescript",
             "--focus",
-            "meeting-app",
+            "room-workspace",
             "--no-interactive",
             str(tmp_path),
         ],
     )
 
     assert result.exit_code == 0
-    assert "Created a minimal deployable TypeScript Meeting App" in result.output
+    assert "Created a minimal deployable TypeScript Room Workspace" in result.output
     assert "npm run dev" in result.output
     assert "npm run deploy" in result.output
     assert (tmp_path / "package.json").is_file()
@@ -1127,18 +1280,22 @@ def test_init_creates_typescript_meeting_app_non_interactively(tmp_path) -> None
     assert (tmp_path / "app" / "globals.css").is_file()
     assert (tmp_path / "dev-server.mjs").is_file()
     assert (tmp_path / "Dockerfile").is_file()
+    _assert_npm_dev_auto_installs(tmp_path)
 
     package_json = (tmp_path / "package.json").read_text(encoding="utf-8")
-    page_tsx = (tmp_path / "app" / "page.tsx").read_text(encoding="utf-8")
+    page_tsx = (tmp_path / "app" / "meeting-app.tsx").read_text(encoding="utf-8")
     readme = (tmp_path / "README.md").read_text(encoding="utf-8")
-    assert '"name": "meshagent-create-typescript-meeting-app"' in package_json
+    assert '"name": "meshagent-create-typescript-room-workspace"' in package_json
     assert '"@meshagent/meshagent": "^' in package_json
     assert '"@meshagent/meshagent-react": "^' in package_json
     assert '"@meshagent/meshagent-tailwind": "^' in package_json
     assert '"@meshagent/meshagent-livekit": "^' in package_json
-    assert '"dev": "meshagent room connect -- node dev-server.mjs"' in package_json
     assert (
-        '"deploy": "meshagent deploy . --tag meshagent-create-typescript-meeting-app:dev --private --validation-mode=cookie --liveness /health --wait"'
+        '"dev": "NEXT_TELEMETRY_DISABLED=1 meshagent room connect -- node dev-server.mjs"'
+        in package_json
+    )
+    assert (
+        '"deploy": "meshagent deploy . --tag meshagent-create-typescript-workspace-app:dev --private --validation-mode=cookie --liveness /health --wait"'
         in package_json
     )
     assert 'from "@meshagent/meshagent"' in page_tsx
@@ -1251,7 +1408,7 @@ def test_init_creates_dotnet_backend_agent_non_interactively(tmp_path) -> None:
     dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert not (tmp_path / "Makefile").exists()
-    _assert_no_dockerfile(tmp_path)
+    _assert_template_dockerfile(tmp_path)
     assert '<Project Sdk="Microsoft.NET.Sdk">' in csproj
     assert "<OutputType>Exe</OutputType>" in csproj
     assert "RoomClient" in program_cs
@@ -1312,7 +1469,7 @@ def test_init_creates_dotnet_webserver_non_interactively(tmp_path) -> None:
     dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert not (tmp_path / "Makefile").exists()
-    _assert_no_dockerfile(tmp_path)
+    _assert_template_dockerfile(tmp_path)
     assert '<Project Sdk="Microsoft.NET.Sdk.Web">' in csproj
     assert 'PackageReference Include="Meshagent.Api"' in csproj
     assert 'MapGet("/health"' in program_cs
@@ -1366,7 +1523,7 @@ def test_init_creates_flutter_webserver_non_interactively(tmp_path) -> None:
     install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")
     dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
-    _assert_no_dockerfile(tmp_path)
+    _assert_template_dockerfile(tmp_path)
     assert 'PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"' in install_sh
     assert "command -v flutter" in install_sh
     assert "command -v docker" not in install_sh
@@ -1435,7 +1592,7 @@ def test_init_creates_dart_backend_agent_non_interactively(tmp_path) -> None:
     assert "wroteDevProof" not in server_dart
     assert "room.dispose()" in server_dart
     assert "HttpServer" not in server_dart
-    _assert_no_dockerfile(tmp_path)
+    _assert_template_dockerfile(tmp_path)
     install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")
     dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
@@ -1493,7 +1650,7 @@ def test_init_rejects_unknown_focus(tmp_path) -> None:
         "chatbot-anthropic",
         "chatbot-ui",
         "room-chat",
-        "meeting-app",
+        "room-workspace",
         "contact-form",
     ):
         assert expected_focus in result.output
@@ -1506,7 +1663,7 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
     monkeypatch.setattr(create_module, "_stdio_is_interactive", lambda: True)
 
     captured_languages: list[tuple[str, str, str, tuple[str, ...]]] = []
-    captured_focuses: list[tuple[str, str, str]] = []
+    captured_focuses: list[tuple[str, str, str, tuple[tuple[str, str], ...]]] = []
 
     def fake_run_create_tui(*, language_choices, focus_choices):
         captured_languages.extend(language_choices)
@@ -1533,7 +1690,7 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
         "chatbot-anthropic",
         "chatbot-ui",
         "room-chat",
-        "meeting-app",
+        "room-workspace",
         "contact-form",
     ]
     focus_labels = {choice[0]: choice[1] for choice in captured_focuses}
@@ -1543,7 +1700,7 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
     assert focus_labels["chatbot-anthropic"] == "Anthropic Chatbot"
     assert focus_labels["chatbot-ui"] == "Agent UI"
     assert focus_labels["room-chat"] == "Room Chat"
-    assert focus_labels["meeting-app"] == "Meeting App"
+    assert focus_labels["room-workspace"] == "Room Workspace"
     assert focus_labels["contact-form"] == "Contact Form"
     focus_descriptions = {choice[0]: choice[2] for choice in captured_focuses}
     assert focus_descriptions["webserver"] == (
@@ -1567,11 +1724,46 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
     assert focus_descriptions["room-chat"] == (
         "Browser multi-user chat backed by the room messaging API."
     )
-    assert focus_descriptions["meeting-app"] == (
+    assert focus_descriptions["room-workspace"] == (
         "Browser room app with chat, meetings, and files."
     )
     assert focus_descriptions["contact-form"] == (
         "Public HTML contact form that sends email through a room mailbox."
+    )
+    descriptions_by_focus = {choice[0]: dict(choice[3]) for choice in captured_focuses}
+    assert descriptions_by_focus["webserver"]["python"] == (
+        "Demonstrates how a small local web service becomes a real public URL "
+        "on MeshAgent. You see the settings in `.meshagent/deploy.yaml`, the "
+        "health check MeshAgent uses before sending traffic, and a local "
+        "toolkit connected to the room so agents can change the content users "
+        "see."
+    )
+    assert descriptions_by_focus["webserver"]["javascript"] == (
+        "Shows how a simple server becomes a public MeshAgent URL without "
+        "hiding the moving parts. You run it locally, deploy it, check "
+        "`/health`, and watch a room-connected toolkit change the page data, "
+        "which is the first step toward apps that agents can actually operate."
+    )
+    assert descriptions_by_focus["backend-agent"]["python"] == (
+        "Illustrates how to use a Meshagent agent tool: write a normal "
+        "backend function, register it in a room, and let agents call it by "
+        "name. The `ping`, `status`, and `echo` tools keep the flow obvious, "
+        "then you replace them with the actions your agent should actually "
+        "perform."
+    )
+    assert descriptions_by_focus["contact-form"]["python"] == (
+        "Shows a realistic app problem: a public form needs configuration, "
+        "validation, and email delivery. MeshAgent provides the room mailbox "
+        "path, deploy-time settings, and automatic sender mailbox creation, so "
+        "beginners can see how real app settings get wired into a deployed "
+        "service."
+    )
+    assert descriptions_by_focus["room-workspace"]["typescript"] == (
+        "Shows why room apps matter once you need more than one feature. A "
+        "private page connects to the room, chats with agents, shows meeting "
+        "and file views, reads room storage, exposes a developer console, and "
+        "lets Codex join the same room, so beginners can see the whole "
+        "MeshAgent workspace shape."
     )
     assert {choice[0]: choice[3] for choice in captured_languages}["python"] == (
         "webserver",
@@ -1588,7 +1780,7 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
         "chatbot-anthropic",
         "chatbot-ui",
         "room-chat",
-        "meeting-app",
+        "room-workspace",
     )
     assert (tmp_path / "server.js").is_file()
     assert "@meshagent/meshagent" in (tmp_path / "package.json").read_text(
@@ -1691,10 +1883,13 @@ def test_init_tui_language_screen_lists_languages_only(monkeypatch) -> None:
 def test_init_tui_focus_screen_asks_for_webserver_or_backend_agent(
     monkeypatch,
 ) -> None:
+    from types import SimpleNamespace
+
     from meshagent.cli.tui.create import (
         CreateFocusChoice,
         CreateLanguageChoice,
         CreateWizardApp,
+        _focus_option_id,
     )
 
     app = CreateWizardApp(
@@ -1711,11 +1906,37 @@ def test_init_tui_focus_screen_asks_for_webserver_or_backend_agent(
                 id="webserver",
                 label="Web App",
                 description="Public HTTP service with a health endpoint.",
+                descriptions_by_language=(
+                    (
+                        "python",
+                        (
+                            "Demonstrates how a small local web service "
+                            "becomes a real public URL on MeshAgent. You see "
+                            "the settings in `.meshagent/deploy.yaml`, the "
+                            "health check MeshAgent uses before sending "
+                            "traffic, and a local toolkit connected to the "
+                            "room so agents can change the content users see."
+                        ),
+                    ),
+                ),
             ),
             CreateFocusChoice(
                 id="backend-agent",
                 label="Agent Toolkit",
                 description="Expose custom functionality to agents in the room.",
+                descriptions_by_language=(
+                    (
+                        "python",
+                        (
+                            "Illustrates how to use a Meshagent agent tool: "
+                            "write a normal backend function, register it in a "
+                            "room, and let agents call it by name. The `ping`, "
+                            "`status`, and `echo` tools keep the flow obvious, "
+                            "then you replace them with the actions your agent "
+                            "should actually perform."
+                        ),
+                    ),
+                ),
             ),
         ],
     )
@@ -1723,6 +1944,7 @@ def test_init_tui_focus_screen_asks_for_webserver_or_backend_agent(
     app._selected_language_label = "Python"
     captured_text: dict[str, str] = {}
     captured_options = []
+    captured_descriptions: list[tuple[str, str]] = []
 
     def fake_set_text(*, title: str, message: str, help_text: str) -> None:
         captured_text["title"] = title
@@ -1732,23 +1954,100 @@ def test_init_tui_focus_screen_asks_for_webserver_or_backend_agent(
     def fake_set_options(options) -> None:
         captured_options[:] = list(options)
 
+    def fake_set_focus_description(*, title: str, body: str) -> None:
+        captured_descriptions.append((title, body))
+
     monkeypatch.setattr(app, "_set_text", fake_set_text)
     monkeypatch.setattr(app, "_set_options", fake_set_options)
+    monkeypatch.setattr(app, "_set_focus_description", fake_set_focus_description)
 
     app._show_focus_selection()
 
     assert captured_text["message"] == "Choose what you want to build for Python."
-    assert "Web App creates an HTTP service" in captured_text["help_text"]
-    assert (
-        "Agent Toolkit exposes custom functionality to agents in the room"
-        in captured_text["help_text"]
+    assert captured_text["help_text"] == (
+        "Use Up/Down to preview examples and Enter to select. Esc goes back."
     )
     assert [str(option.prompt) for option in captured_options] == [
-        "Web App - Public HTTP service with a health endpoint.",
-        "Agent Toolkit - Expose custom functionality to agents in the room.",
+        "Web App",
+        "Agent Toolkit",
         "Back",
         "Cancel",
     ]
+    assert captured_descriptions[-1] == (
+        "Public HTTP service with a health endpoint.",
+        (
+            "Demonstrates how a small local web service becomes a real public "
+            "URL on MeshAgent. You see the settings in `.meshagent/deploy.yaml`, "
+            "the health check MeshAgent uses before sending traffic, and a "
+            "local toolkit connected to the room so agents can change the "
+            "content users see."
+        ),
+    )
+
+    app.on_option_list_option_highlighted(
+        SimpleNamespace(option=SimpleNamespace(id=_focus_option_id("backend-agent")))
+    )
+
+    assert captured_descriptions[-1] == (
+        "Expose custom functionality to agents in the room.",
+        (
+            "Illustrates how to use a Meshagent agent tool: write a normal "
+            "backend function, register it in a room, and let agents call it "
+            "by name. The `ping`, `status`, and `echo` tools keep the flow "
+            "obvious, then you replace them with the actions your agent should "
+            "actually perform."
+        ),
+    )
+
+
+async def test_init_tui_focus_description_body_scrolls_when_overflowing() -> None:
+    from textual.containers import VerticalScroll
+    from textual.widgets import Static
+
+    from meshagent.cli.tui.create import (
+        CreateFocusChoice,
+        CreateLanguageChoice,
+        CreateWizardApp,
+    )
+
+    long_description = " ".join(
+        [
+            "This description is intentionally long so the right-hand panel "
+            "needs its own scroll area."
+        ]
+        * 40
+    )
+    app = CreateWizardApp(
+        languages=[
+            CreateLanguageChoice(
+                id="typescript",
+                label="TypeScript",
+                description="Node.js TypeScript services, agents, and chat apps.",
+                focus_ids=("webserver",),
+            )
+        ],
+        focuses=[
+            CreateFocusChoice(
+                id="webserver",
+                label="Web App",
+                description="Public HTTP service with a health endpoint.",
+                descriptions_by_language=(("typescript", long_description),),
+            )
+        ],
+    )
+
+    async with app.run_test(size=(80, 12)) as pilot:
+        app._selected_language_id = "typescript"
+        app._selected_language_label = "TypeScript"
+        app._show_focus_selection()
+        await pilot.pause()
+
+        scroll = app.query_one("#init-description-scroll", VerticalScroll)
+        body = app.query_one("#init-description", Static)
+
+        assert body.parent is scroll
+        assert scroll.display is True
+        assert scroll.max_scroll_y > 0
 
 
 def test_init_tui_existing_project_screen_offers_subfolder_or_cancel(
@@ -1888,7 +2187,7 @@ def test_init_existing_code_interactive_creates_project_in_subfolder(
     assert f"  cd {project_root.resolve()}" in result.output
     assert (project_root / "package.json").is_file()
     assert (project_root / "src" / "server.ts").is_file()
-    _assert_no_dockerfile(project_root)
+    _assert_template_dockerfile(project_root)
     _assert_no_dockerfile(tmp_path)
     assert "@meshagent/meshagent" in (project_root / "package.json").read_text(
         encoding="utf-8"

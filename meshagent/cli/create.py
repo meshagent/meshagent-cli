@@ -117,17 +117,14 @@ AGENT_NEXT_STEPS = (
     "./scripts/deploy.sh",
 )
 NPM_WEBSERVER_NEXT_STEPS = (
-    "npm install",
     "npm run dev",
     "npm run deploy",
 )
 NPM_STATIC_WEBSERVER_NEXT_STEPS = (
-    "npm install",
     "npm run dev",
     "npm run deploy",
 )
 NPM_CHATBOT_UI_NEXT_STEPS = (
-    "npm install",
     "npm run dev",
     "npm run deploy",
 )
@@ -138,7 +135,6 @@ CONTACT_FORM_NEXT_STEPS = (
     "CONTACT_FORM_TO=you@example.com ./scripts/deploy.sh --room <room>",
 )
 NPM_AGENT_NEXT_STEPS = (
-    "npm install",
     "npm run dev",
     "npm run deploy",
 )
@@ -658,16 +654,64 @@ def _language_choices() -> Sequence[tuple[str, str, str, tuple[str, ...]]]:
     )
 
 
-def _focus_choices() -> Sequence[tuple[str, str, str]]:
+def _first_explanatory_readme_paragraph(markdown: str) -> str | None:
+    paragraph_lines: list[str] = []
+    in_fenced_block = False
+
+    for raw_line in markdown.splitlines():
+        line = raw_line.strip()
+        if line.startswith("```") or line.startswith("~~~"):
+            in_fenced_block = not in_fenced_block
+            continue
+        if in_fenced_block:
+            continue
+        if line == "":
+            if paragraph_lines:
+                break
+            continue
+        if line.startswith("#"):
+            if paragraph_lines:
+                break
+            continue
+
+        paragraph_lines.append(line)
+
+    if not paragraph_lines:
+        return None
+    return " ".join(" ".join(paragraph_lines).split())
+
+
+def _template_choice_description(template: CreateTemplate) -> str:
+    try:
+        readme = _read_create_template(f"{template.template_dir}/README.md")
+    except FileNotFoundError:
+        return template.description
+
+    return _first_explanatory_readme_paragraph(readme) or template.description
+
+
+def _focus_choices() -> Sequence[tuple[str, str, str, tuple[tuple[str, str], ...]]]:
     return tuple(
-        (focus.id, focus.label, focus.description) for focus in FOCUSES.values()
+        (
+            focus.id,
+            focus.label,
+            focus.description,
+            tuple(
+                (template.language_id, _template_choice_description(template))
+                for template in TEMPLATES.values()
+                if template.focus_id == focus.id
+            ),
+        )
+        for focus in FOCUSES.values()
     )
 
 
 def _run_create_tui(
     *,
     language_choices: Sequence[tuple[str, str, str, tuple[str, ...]]],
-    focus_choices: Sequence[tuple[str, str, str]],
+    focus_choices: Sequence[
+        tuple[str, str, str, Sequence[tuple[str, str]]] | tuple[str, str, str]
+    ],
 ) -> tuple[str, str] | None:
     from meshagent.cli.tui.create import (
         CreateFocusChoice,
@@ -685,8 +729,15 @@ def _run_create_tui(
         for language_id, label, description, focus_ids in language_choices
     ]
     focuses = [
-        CreateFocusChoice(id=focus_id, label=label, description=description)
-        for focus_id, label, description in focus_choices
+        CreateFocusChoice(
+            id=focus_id,
+            label=label,
+            description=description,
+            descriptions_by_language=tuple(descriptions_by_language),
+        )
+        for focus_id, label, description, descriptions_by_language in (
+            (*choice, ()) if len(choice) == 3 else choice for choice in focus_choices
+        )
     ]
     result = asyncio.run(run_create_wizard_tui(languages=languages, focuses=focuses))
     if result.status != "completed":
@@ -812,27 +863,31 @@ def _print_agent_toolkit_guidance(template: CreateTemplate) -> None:
     typer.secho(f"  {command}", fg="green")
 
 
-def _print_contact_form_mailbox_guidance(template: CreateTemplate) -> None:
+def _print_contact_form_email_guidance(template: CreateTemplate) -> None:
     if template.focus_id != CONTACT_FORM_FOCUS:
         return
     typer.echo("")
     typer.secho(
-        "Before testing a submission, set up the sender mailbox for that room:",
+        "Email setup is handled by the deploy template:",
         fg="cyan",
         bold=True,
     )
-    typer.echo("  New mailbox:")
-    typer.secho(
-        "    meshagent mailbox create --address contact-<room-slug>@mail.meshagent.com --room <room> --queue contact-<room-slug>@mail.meshagent.com --public",
-        fg="green",
-    )
-    typer.echo("  Existing mailbox for that room:")
-    typer.secho(
-        "    meshagent mailbox update contact-<room-slug>@mail.meshagent.com --room <room> --queue contact-<room-slug>@mail.meshagent.com --public",
-        fg="green",
+    typer.echo(
+        "  .meshagent/deploy.yaml injects CONTACT_FORM_FROM and CONTACT_FORM_TO into the service."
     )
     typer.echo(
-        "Use that mailbox as CONTACT_FORM_FROM. If create returns 409, choose another room-specific local part; do not reuse a mailbox unless it is listed for this room. Set CONTACT_FORM_TO to the address that should receive submissions."
+        "  meshagent deploy creates or updates the public sender mailbox from CONTACT_FORM_FROM."
+    )
+    typer.echo(
+        "  ./scripts/deploy.sh derives CONTACT_FORM_FROM from --room when you do not set it."
+    )
+    typer.echo(
+        "Set CONTACT_FORM_TO to the address that should receive submissions. "
+        "Set CONTACT_FORM_FROM only when you want a specific sender mailbox on "
+        "the MeshAgent mail domain."
+    )
+    typer.echo(
+        "If deploy reports that the sender mailbox already routes to a different room, choose another room-specific local part."
     )
     typer.echo(
         "If CONTACT_FORM_TO is also a private MeshAgent mailbox, use a public destination mailbox or an external delivery alias."
@@ -851,7 +906,7 @@ def _print_created_report(
     typer.echo("")
     _print_next_steps(template.next_steps, enter_project_root=enter_project_root)
     _print_agent_toolkit_guidance(template)
-    _print_contact_form_mailbox_guidance(template)
+    _print_contact_form_email_guidance(template)
 
 
 app = async_typer.AsyncTyper(add_completion=False)
@@ -885,7 +940,7 @@ def _create_command(
                 "Project focus for non-interactive use. Use stable IDs: webserver "
                 "(Web App), backend-agent (Agent Toolkit), chatbot (OpenAI Chatbot), "
                 "chatbot-anthropic (Anthropic Chatbot), chatbot-ui (Agent UI), "
-                "room-chat (Room Chat), meeting-app (Meeting App), or "
+                "room-chat (Room Chat), room-workspace (Room Workspace), or "
                 "contact-form (Contact Form)."
             ),
         ),

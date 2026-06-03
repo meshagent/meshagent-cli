@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "NEXT_TELEMETRY_DISABLED=1 next build",
+    "predev": "node scripts/ensure-deps.mjs",
     "dev": "NEXT_TELEMETRY_DISABLED=1 next dev -H 0.0.0.0",
     "deploy": "meshagent deploy . --tag meshagent-create-typescript-chatbot-ui:dev --private --validation-mode=cookie --extra-port=assistant:/messages --liveness /health --wait",
     "start": "NEXT_TELEMETRY_DISABLED=1 node .next/standalone/server.js"

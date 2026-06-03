@@ -5,6 +5,7 @@
   "type": "commonjs",
   "scripts": {
     "build": "ncc build server.js -o dist",
+    "predev": "node scripts/ensure-deps.mjs",
     "dev": "meshagent room connect -- node server.js",
     "deploy": "meshagent deploy . --tag meshagent-create-javascript:dev --public --liveness /health --wait",
     "start": "node dist/index.js"

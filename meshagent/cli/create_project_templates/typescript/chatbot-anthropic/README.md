@@ -1,22 +1,16 @@
 # TypeScript Anthropic Chatbot
 
-Minimal browser chatbot backed by the room Anthropic proxy.
+Shows the same safe browser-to-server chatbot pattern using the room Anthropic proxy. You can compare the request format with the OpenAI sample while keeping the important MeshAgent lessons the same: public URL, `/health`, and server-side credentials.
 
 ## Next Steps
 
-1. Install dependencies:
-
-   ```bash
-   npm install
-   ```
-
-2. Run locally:
+1. Run locally:
 
    ```bash
    npm run dev
    ```
 
-3. Deploy:
+2. Deploy:
 
    ```bash
    npm run deploy

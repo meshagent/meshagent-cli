@@ -9,6 +9,7 @@ DOTNET_SKIP_FIRST_TIME_EXPERIENCE="${DOTNET_SKIP_FIRST_TIME_EXPERIENCE:-1}"
 export DOTNET_CLI_HOME NUGET_PACKAGES DOTNET_NOLOGO DOTNET_SKIP_FIRST_TIME_EXPERIENCE
 if command -v dotnet >/dev/null 2>&1; then
   dotnet restore
+  dotnet publish -c Release -o .meshagent/publish --no-restore --disable-build-servers /p:UseSharedCompilation=false
 else
   echo "The .NET SDK 9.0 is required on the host. Install dotnet, then rerun this script." >&2
   exit 127

@@ -37,6 +37,7 @@ _suppress_textual_debug_features()
 from textual._context import active_app
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
@@ -82,6 +83,15 @@ class CreateFocusChoice:
     id: str
     label: str
     description: str
+    descriptions_by_language: tuple[tuple[str, str], ...] = ()
+
+    def description_for_language(self, language_id: str | None) -> str:
+        if language_id is None:
+            return self.description
+        for candidate_language_id, description in self.descriptions_by_language:
+            if candidate_language_id == language_id:
+                return description
+        return self.description
 
 
 @dataclass(frozen=True, slots=True)
@@ -354,11 +364,42 @@ class CreateWizardApp(App[None]):
         color: #cad6f4;
         margin: 0 0 1 0;
     }
-    #init-options {
+    #init-choice-pane {
         width: 100%;
         height: 1fr;
+        layout: horizontal;
+    }
+    #init-options {
+        width: 1fr;
+        height: 100%;
         border: round #7ca9ff;
         background: #0a1120;
+    }
+    #init-description-pane {
+        width: 2fr;
+        height: 100%;
+        border: round #7ca9ff;
+        background: #0a1120;
+        padding: 1 2;
+        margin: 0 0 0 1;
+    }
+    #init-description-title {
+        width: 100%;
+        content-align: left middle;
+        color: #f4f7ff;
+        text-style: bold;
+        margin: 0 0 1 0;
+    }
+    #init-description {
+        width: 100%;
+        height: auto;
+        content-align: left top;
+        color: #cad6f4;
+        margin: 0;
+    }
+    #init-description-scroll {
+        width: 100%;
+        height: 1fr;
     }
     #init-help {
         width: 100%;
@@ -388,6 +429,10 @@ class CreateWizardApp(App[None]):
         self._title_view: Static | None = None
         self._message_view: Static | None = None
         self._options_view: OptionList | None = None
+        self._description_pane_view: Vertical | None = None
+        self._description_scroll_view: VerticalScroll | None = None
+        self._description_title_view: Static | None = None
+        self._description_view: Static | None = None
         self._help_view: Static | None = None
         self.result = CreateWizardResult(
             status="canceled",
@@ -397,14 +442,32 @@ class CreateWizardApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Static("", id="init-title")
         yield Static("", id="init-message")
-        yield OptionList(id="init-options")
+        yield Horizontal(
+            OptionList(id="init-options"),
+            Vertical(
+                Static("", id="init-description-title"),
+                VerticalScroll(
+                    Static("", id="init-description"),
+                    id="init-description-scroll",
+                ),
+                id="init-description-pane",
+            ),
+            id="init-choice-pane",
+        )
         yield Static("", id="init-help")
 
     async def on_mount(self) -> None:
         self._title_view = self.query_one("#init-title", Static)
         self._message_view = self.query_one("#init-message", Static)
         self._options_view = self.query_one("#init-options", OptionList)
+        self._description_pane_view = self.query_one("#init-description-pane", Vertical)
+        self._description_title_view = self.query_one("#init-description-title", Static)
+        self._description_scroll_view = self.query_one(
+            "#init-description-scroll", VerticalScroll
+        )
+        self._description_view = self.query_one("#init-description", Static)
         self._help_view = self.query_one("#init-help", Static)
+        self._clear_focus_description()
         self._show_language_selection()
 
     async def action_cancel_init(self) -> None:
@@ -454,6 +517,16 @@ class CreateWizardApp(App[None]):
         )
         self.exit()
 
+    def on_option_list_option_highlighted(
+        self,
+        event: OptionList.OptionHighlighted,
+    ) -> None:
+        selected_id = event.option.id
+        if not isinstance(selected_id, str):
+            self._clear_focus_description()
+            return
+        self._update_focus_description_for_option_id(selected_id)
+
     @staticmethod
     def _first_enabled_option_index(options: Sequence[Option]) -> int | None:
         for index, option in enumerate(options):
@@ -471,6 +544,12 @@ class CreateWizardApp(App[None]):
         for language in self._languages:
             if language.id == language_id:
                 return language
+        return None
+
+    def _focus_choice(self, focus_id: str) -> CreateFocusChoice | None:
+        for focus in self._focuses:
+            if focus.id == focus_id:
+                return focus
         return None
 
     def _focuses_for_selected_language(self) -> list[CreateFocusChoice]:
@@ -492,6 +571,54 @@ class CreateWizardApp(App[None]):
         if self._help_view is not None:
             self._help_view.update(help_text)
 
+    def _set_focus_description(self, *, title: str, body: str) -> None:
+        if self._description_pane_view is not None:
+            self._description_pane_view.display = True
+        if self._description_title_view is not None:
+            self._description_title_view.display = True
+            self._description_title_view.update(title)
+        if self._description_scroll_view is not None:
+            self._description_scroll_view.display = True
+        if self._description_view is not None:
+            self._description_view.display = True
+            self._description_view.update(body)
+        if self._description_scroll_view is not None:
+            self._description_scroll_view.scroll_home(animate=False)
+
+    def _clear_focus_description(self, *, hide_pane: bool = True) -> None:
+        if self._description_pane_view is not None:
+            self._description_pane_view.display = not hide_pane
+        if self._description_title_view is not None:
+            self._description_title_view.display = not hide_pane
+            self._description_title_view.update("")
+        if self._description_scroll_view is not None:
+            self._description_scroll_view.display = not hide_pane
+        if self._description_view is not None:
+            self._description_view.display = not hide_pane
+            self._description_view.update("")
+        if self._description_scroll_view is not None:
+            self._description_scroll_view.scroll_home(animate=False)
+
+    def _update_focus_description_for_option_id(self, option_id: str) -> None:
+        if self._mode != "focus":
+            self._clear_focus_description()
+            return
+
+        focus_id = _focus_id_from_option_id(option_id)
+        if focus_id is None:
+            self._clear_focus_description(hide_pane=False)
+            return
+
+        focus = self._focus_choice(focus_id)
+        if focus is None:
+            self._clear_focus_description(hide_pane=False)
+            return
+
+        self._set_focus_description(
+            title=focus.description,
+            body=focus.description_for_language(self._selected_language_id),
+        )
+
     def _set_options(self, options: Sequence[Option]) -> None:
         if self._options_view is None:
             return
@@ -505,6 +632,7 @@ class CreateWizardApp(App[None]):
         self._mode = "language"
         self._selected_language_id = None
         self._selected_language_label = None
+        self._clear_focus_description()
         self._set_text(
             title="MeshAgent Create",
             message="Choose the language for the project.",
@@ -523,26 +651,28 @@ class CreateWizardApp(App[None]):
     def _show_focus_selection(self) -> None:
         self._mode = "focus"
         language_label = self._selected_language_label or "the selected language"
+        focuses = self._focuses_for_selected_language()
         self._set_text(
             title="MeshAgent Create",
             message=f"Choose what you want to build for {language_label}.",
-            help_text=(
-                "Web App creates an HTTP service. Agent Toolkit exposes custom "
-                "functionality to agents in the room. OpenAI Chatbot and "
-                "Anthropic Chatbot create browser chat apps. Agent UI creates "
-                "a browser interface for a deployed agent. Esc goes back."
-            ),
+            help_text="Use Up/Down to preview examples and Enter to select. Esc goes back.",
         )
         options = [
             Option(
-                f"{focus.label} - {focus.description}",
+                focus.label,
                 id=_focus_option_id(focus.id),
             )
-            for focus in self._focuses_for_selected_language()
+            for focus in focuses
         ]
         options.append(Option("Back", id=CREATE_BACK_OPTION_ID))
         options.append(Option("Cancel", id=CREATE_CANCEL_OPTION_ID))
         self._set_options(options)
+        if focuses:
+            self._update_focus_description_for_option_id(
+                _focus_option_id(focuses[0].id)
+            )
+        else:
+            self._clear_focus_description()
 
 
 async def _run_app(app: App[None]) -> None:

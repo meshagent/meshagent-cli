@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
+    "predev": "node scripts/ensure-deps.mjs",
     "dev": "meshagent room connect -- sh -c 'node scripts/dev-content-toolkit.js & vite --host 0.0.0.0'",
     "deploy": "meshagent deploy . --tag meshagent-create-react:dev --public --liveness /health --room-mount /:/data:rw --wait"
   },

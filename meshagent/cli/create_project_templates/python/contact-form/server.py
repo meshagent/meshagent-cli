@@ -202,6 +202,15 @@ def _email_config() -> tuple[str, str]:
     return from_address, to_address
 
 
+def _delivery_to_address(to_address: str) -> str:
+    delivery_to = os.getenv("CONTACT_FORM_DELIVERY_TO", "").strip()
+    if delivery_to == "":
+        return to_address
+    if not is_valid_email(delivery_to):
+        raise ValueError("CONTACT_FORM_DELIVERY_TO must be a valid recipient address")
+    return delivery_to
+
+
 def _flash(*, message: str, kind: str) -> str:
     return f'<p class="notice {kind}">{html.escape(message)}</p>'
 
@@ -226,6 +235,8 @@ def _build_message(values: dict[str, str]) -> EmailMessage:
 
 def _send_email(msg: EmailMessage) -> None:
     username, password, port, hostname = _smtp_config()
+    from_address, to_address = _email_config()
+    delivery_to = _delivery_to_address(to_address)
     use_starttls = os.getenv("SMTP_STARTTLS", "true").lower() not in {
         "0",
         "false",
@@ -236,7 +247,7 @@ def _send_email(msg: EmailMessage) -> None:
             smtp.starttls()
         if username and password:
             smtp.login(username, password)
-        smtp.send_message(msg)
+        smtp.send_message(msg, from_addr=from_address, to_addrs=[delivery_to])
 
 
 async def health(request: web.Request) -> web.Response:

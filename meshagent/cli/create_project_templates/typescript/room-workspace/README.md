@@ -1,18 +1,12 @@
 # TypeScript Workspace App
 
-Browser workspace app with chat, meetings, and files. The app connects with `RoomClient.withIAP()`, so deployed users authenticate through the room IAP cookie instead of a browser-visible access token.
+Shows why room apps matter once you need more than one feature. A private page connects to the room, chats with agents, shows meeting and file views, reads room storage, exposes a developer console, and lets Codex join the same room, so beginners can see the whole MeshAgent workspace shape.
 
 This template intentionally opens the current room directly. It does not include project or room switching UI.
 
 ## Next Steps
 
-1. Install dependencies:
-
-   ```bash
-   npm install
-   ```
-
-2. Run locally:
+1. Run locally:
 
    ```bash
    npm run dev
@@ -23,7 +17,7 @@ This template intentionally opens the current room directly. It does not include
    relative endpoint while the dev server forwards the websocket upgrade to the
    connected room using the `MESHAGENT_TOKEN` supplied to the process.
 
-3. Start Codex in the same room from another terminal:
+2. Start Codex in the same room from another terminal:
 
    ```bash
    npm run codex
@@ -38,7 +32,7 @@ This template intentionally opens the current room directly. It does not include
    pip install meshagent-codex
    ```
 
-4. Deploy:
+3. Deploy:
 
    ```bash
    npm run deploy

@@ -1,6 +1,6 @@
 # Python Web App
 
-Minimal async Python public HTTP service with a health route.
+Demonstrates how a small local web service becomes a real public URL on MeshAgent. You see the settings in `.meshagent/deploy.yaml`, the health check MeshAgent uses before sending traffic, and a local toolkit connected to the room so agents can change the content users see.
 
 ## Next Steps
 

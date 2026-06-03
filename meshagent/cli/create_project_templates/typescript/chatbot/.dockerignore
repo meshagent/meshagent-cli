@@ -2,5 +2,9 @@ node_modules/
 dist/
 .npm-cache/
 npm-debug.log*
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
 .git/
 .DS_Store

@@ -1,22 +1,16 @@
 # TypeScript Agent UI
 
-Minimal browser chat interface for a deployed MeshAgent agent.
+Shows why you would build a custom frontend for an agent that is already deployed. The browser opens the agent message connection, starts conversation threads and answer turns, streams assistant text as it arrives, and reconnects when needed, so the UI can feel like your product instead of a generic chat box.
 
 ## Next Steps
 
-1. Install dependencies:
-
-   ```bash
-   npm install
-   ```
-
-2. Run locally:
+1. Run locally:
 
    ```bash
    npm run dev
    ```
 
-3. Deploy:
+2. Deploy:
 
    ```bash
    npm run deploy
