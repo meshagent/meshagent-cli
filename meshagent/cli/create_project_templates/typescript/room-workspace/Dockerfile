@@ -4,7 +4,8 @@ WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY package*.json .npmrc tsconfig.json next.config.ts next-env.d.ts ./
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends git \
+  && apt-get install -y --no-install-recommends ca-certificates git \
+  && git config --global url."https://github.com/".insteadOf "ssh://git@github.com/" \
   && rm -rf /var/lib/apt/lists/* \
   && npm install
 COPY app ./app
