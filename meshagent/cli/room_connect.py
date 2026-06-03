@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 import subprocess
-from typing import Sequence
+import sys
+from typing import TYPE_CHECKING, Sequence
 
 import jwt
 import typer
@@ -12,7 +13,7 @@ from pydantic import ValidationError
 from rich import print
 
 from meshagent.api import ApiScope, ParticipantToken, RoomException
-from meshagent.api.client import NotFoundError
+from meshagent.api.client import ConflictError, NotFoundError, Room
 from meshagent.api.helpers import websocket_room_url
 from meshagent.cli import async_typer, auth_async
 from meshagent.cli.helper import (
@@ -22,13 +23,16 @@ from meshagent.cli.helper import (
     resolve_project_id,
     resolve_room,
 )
-from meshagent.cli.local_settings import resolve_api_url
+from meshagent.cli.local_settings import get_active_user_id, resolve_api_url
 
 _CONNECTED_TOKEN_ENV_NAMES = (
     "MESHAGENT_TOKEN",
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
 )
+
+if TYPE_CHECKING:
+    from meshagent.cli.tui.deploy_room import DeployRoomChoice, DeployRoomPickerResult
 
 
 @dataclass(frozen=True)
@@ -211,6 +215,133 @@ async def _mint_connected_meshagent_token(
     return token.to_jwt(api_key=key)
 
 
+def _stdio_is_interactive() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+async def _user_can_create_connect_room(
+    account_client: CustomMeshagentClient,
+    *,
+    project_id: str,
+) -> bool:
+    return await account_client.can_create_rooms(project_id)
+
+
+async def _list_connect_rooms(
+    account_client: CustomMeshagentClient,
+    *,
+    project_id: str,
+) -> list[Room]:
+    rooms_by_id: dict[str, Room] = {}
+    limit = 500
+    offset = 0
+    while True:
+        room_grants = await account_client.list_room_grants_by_user(
+            project_id=project_id,
+            user_id="me",
+            limit=limit,
+            offset=offset,
+            order_by="room_name",
+        )
+        for room_grant in room_grants:
+            rooms_by_id.setdefault(room_grant.room.id, room_grant.room)
+        if len(room_grants) < limit:
+            break
+        offset += limit
+
+    return sorted(rooms_by_id.values(), key=lambda room: room.name.lower())
+
+
+async def _run_connect_room_picker_tui(
+    *,
+    rooms: Sequence["DeployRoomChoice"],
+    can_create_room: bool,
+    create_error: str | None,
+) -> "DeployRoomPickerResult":
+    from meshagent.cli.tui.deploy_room import run_deploy_room_picker_tui
+
+    return await run_deploy_room_picker_tui(
+        rooms=rooms,
+        can_create_room=can_create_room,
+        create_error=create_error,
+        title="MeshAgent Room Connect",
+        selection_message="Choose a room for local development.",
+        selection_help_text=(
+            "Use an existing room or create a new one. "
+            "Use Up/Down and Enter. Esc or Ctrl+C cancels."
+        ),
+        create_message="Enter a name for the new room.",
+        create_help_text=(
+            "Press Enter to create the room. Esc or Ctrl+C returns to rooms."
+        ),
+        cancel_message="Room connect canceled.",
+    )
+
+
+async def _select_connect_room_interactively(*, project_id: str) -> str:
+    account_client = await get_client()
+    try:
+        can_create_room = await _user_can_create_connect_room(
+            account_client,
+            project_id=project_id,
+        )
+        rooms = await _list_connect_rooms(
+            account_client,
+            project_id=project_id,
+        )
+
+        if len(rooms) == 0 and not can_create_room:
+            raise typer.BadParameter(
+                "No rooms found for this project. Create a room or pass --room "
+                "explicitly."
+            )
+
+        from meshagent.cli.tui.deploy_room import DeployRoomChoice
+
+        room_choices = [
+            DeployRoomChoice(
+                id=room.id,
+                name=room.name,
+                description=room.annotations.get("meshagent.storage.class", ""),
+            )
+            for room in rooms
+        ]
+        create_error: str | None = None
+        while True:
+            result = await _run_connect_room_picker_tui(
+                rooms=room_choices,
+                can_create_room=can_create_room,
+                create_error=create_error,
+            )
+            if result.status == "create" and result.create_room_name is not None:
+                active_user_id = get_active_user_id()
+                if active_user_id is None:
+                    raise typer.BadParameter(
+                        "Unable to determine the active user for the room owner "
+                        "grant. Run `meshagent auth login` or pass --room explicitly."
+                    )
+                try:
+                    room = await account_client.create_room(
+                        project_id=project_id,
+                        name=result.create_room_name,
+                        permissions={active_user_id: ApiScope.full()},
+                    )
+                except ConflictError:
+                    create_error = (
+                        f"Room name '{result.create_room_name}' is already in use. "
+                        "Enter a different room name."
+                    )
+                    continue
+                print(f"[bold green]Created room {room.name}[/bold green]")
+                return room.name
+            if result.status == "completed" and result.selected_room_name is not None:
+                return result.selected_room_name
+
+            raise typer.Exit(130)
+    finally:
+        await account_client.close()
+
+
 async def _resolve_connected_room_inputs(
     *,
     project_id: str | None,
@@ -218,6 +349,10 @@ async def _resolve_connected_room_inputs(
 ) -> tuple[str, str]:
     resolved_project_id = await resolve_project_id(project_id=project_id)
     resolved_room = resolve_room(room)
+    if resolved_room is None and _stdio_is_interactive():
+        resolved_room = await _select_connect_room_interactively(
+            project_id=resolved_project_id
+        )
     if resolved_room is None:
         print("[red]--room is required (or set MESHAGENT_ROOM).[/red]")
         raise typer_click.exceptions.Exit(1)

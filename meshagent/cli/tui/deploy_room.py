@@ -233,11 +233,28 @@ class DeployRoomPickerApp(App[None]):
         rooms: Sequence[DeployRoomChoice],
         can_create_room: bool,
         create_error: str | None = None,
+        title: str = "MeshAgent Deploy",
+        selection_message: str = "Choose the room to deploy to.",
+        selection_help_text: str = (
+            "Only rooms where you are an owner are shown. "
+            "Use Up/Down and Enter. Esc or Ctrl+C cancels."
+        ),
+        create_message: str = "Enter a name for the new room.",
+        create_help_text: str = (
+            "Press Enter to create the room. Esc or Ctrl+C returns to rooms."
+        ),
+        cancel_message: str = "Deploy canceled.",
     ) -> None:
         super().__init__()
         self._rooms = list(rooms)
         self._can_create_room = can_create_room
         self._create_error = create_error
+        self._title = title
+        self._selection_message = selection_message
+        self._selection_help_text = selection_help_text
+        self._create_message = create_message
+        self._create_help_text = create_help_text
+        self._cancel_message = cancel_message
         self._mode: Literal["select", "create"] = "select"
         self._rooms_by_option_id = {
             _room_option_id(room.id): room for room in self._rooms
@@ -250,7 +267,7 @@ class DeployRoomPickerApp(App[None]):
         self._error_view: Static | None = None
         self.result = DeployRoomPickerResult(
             status="canceled",
-            message="Deploy canceled.",
+            message=self._cancel_message,
         )
 
     def compose(self) -> ComposeResult:
@@ -284,7 +301,7 @@ class DeployRoomPickerApp(App[None]):
             return
         self.result = DeployRoomPickerResult(
             status="canceled",
-            message="Deploy canceled.",
+            message=self._cancel_message,
         )
         self.exit()
 
@@ -299,7 +316,7 @@ class DeployRoomPickerApp(App[None]):
         if selected_id == DEPLOY_ROOM_CANCEL_OPTION_ID:
             self.result = DeployRoomPickerResult(
                 status="canceled",
-                message="Deploy canceled.",
+                message=self._cancel_message,
             )
             self.exit()
             return
@@ -322,12 +339,9 @@ class DeployRoomPickerApp(App[None]):
         self._mode = "select"
         self._clear_error()
         self._set_text(
-            title="MeshAgent Deploy",
-            message="Choose the room to deploy to.",
-            help_text=(
-                "Only rooms where you are an owner are shown. "
-                "Use Up/Down and Enter. Esc or Ctrl+C cancels."
-            ),
+            title=self._title,
+            message=self._selection_message,
+            help_text=self._selection_help_text,
         )
         options = [
             Option(
@@ -355,9 +369,9 @@ class DeployRoomPickerApp(App[None]):
         self._mode = "create"
         self._clear_error()
         self._set_text(
-            title="MeshAgent Deploy",
-            message="Enter a name for the new room.",
-            help_text="Press Enter to create the room. Esc or Ctrl+C returns to rooms.",
+            title=self._title,
+            message=self._create_message,
+            help_text=self._create_help_text,
         )
         if self._options_view is not None:
             self._options_view.display = False
@@ -432,6 +446,17 @@ async def run_deploy_room_picker_tui(
     rooms: Sequence[DeployRoomChoice],
     can_create_room: bool,
     create_error: str | None = None,
+    title: str = "MeshAgent Deploy",
+    selection_message: str = "Choose the room to deploy to.",
+    selection_help_text: str = (
+        "Only rooms where you are an owner are shown. "
+        "Use Up/Down and Enter. Esc or Ctrl+C cancels."
+    ),
+    create_message: str = "Enter a name for the new room.",
+    create_help_text: str = (
+        "Press Enter to create the room. Esc or Ctrl+C returns to rooms."
+    ),
+    cancel_message: str = "Deploy canceled.",
 ) -> DeployRoomPickerResult:
     current_app = active_app.get(None)
     if isinstance(current_app, DeployProgressApp):
@@ -445,6 +470,12 @@ async def run_deploy_room_picker_tui(
         rooms=rooms,
         can_create_room=can_create_room,
         create_error=create_error,
+        title=title,
+        selection_message=selection_message,
+        selection_help_text=selection_help_text,
+        create_message=create_message,
+        create_help_text=create_help_text,
+        cancel_message=cancel_message,
     )
 
     try:
@@ -452,7 +483,7 @@ async def run_deploy_room_picker_tui(
     except KeyboardInterrupt:
         return DeployRoomPickerResult(
             status="canceled",
-            message="Deploy canceled.",
+            message=cancel_message,
         )
 
     return app.result

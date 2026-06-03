@@ -2,10 +2,10 @@ from types import SimpleNamespace
 
 import pytest
 import typer
-from typer._click.testing import CliRunner
+from meshagent.cli.testing import CliRunner
 
 from meshagent.api import ApiScope, ParticipantToken
-from meshagent.api.client import NotFoundError
+from meshagent.api.client import NotFoundError, Room
 from meshagent.cli import room_connect
 from meshagent.cli import cli as root_cli
 from meshagent.cli.async_typer import get_command
@@ -21,6 +21,8 @@ class _FakeAccountClient:
         room_name: str = "connected-room",
         room_url: str = "wss://room-proxy.meshagent.test/rooms/connected-room",
         secret_values: dict[tuple[str | None, str], bytes] | None = None,
+        rooms: list[Room] | None = None,
+        can_create_rooms: bool = False,
     ) -> None:
         self.base_url = "https://api.example.meshagent.test"
         self.closed = False
@@ -28,8 +30,13 @@ class _FakeAccountClient:
         self.room_name = room_name
         self.room_url = room_url
         self.secret_values = secret_values or {}
+        self.rooms = rooms or []
+        self.can_create_rooms_value = can_create_rooms
         self.connect_calls: list[dict[str, str]] = []
         self.secret_calls: list[dict[str, str | None]] = []
+        self.can_create_rooms_calls: list[str] = []
+        self.list_room_grants_by_user_calls: list[dict[str, object]] = []
+        self.create_room_calls: list[dict[str, object]] = []
 
     async def connect_room(self, *, project_id: str, room: str) -> SimpleNamespace:
         self.connect_calls.append({"project_id": project_id, "room": room})
@@ -62,6 +69,60 @@ class _FakeAccountClient:
             raise NotFoundError(f"missing secret {secret_key}")
         return SimpleNamespace(data=self.secret_values[secret_key])
 
+    async def can_create_rooms(self, project_id: str) -> bool:
+        self.can_create_rooms_calls.append(project_id)
+        return self.can_create_rooms_value
+
+    async def list_room_grants_by_user(
+        self,
+        *,
+        project_id: str,
+        user_id: str,
+        limit: int,
+        offset: int,
+        order_by: str,
+    ) -> list[SimpleNamespace]:
+        self.list_room_grants_by_user_calls.append(
+            {
+                "project_id": project_id,
+                "user_id": user_id,
+                "limit": limit,
+                "offset": offset,
+                "order_by": order_by,
+            }
+        )
+        return [
+            SimpleNamespace(
+                room=room,
+                user_id=user_id,
+                permissions=ApiScope.full(),
+            )
+            for room in self.rooms[offset : offset + limit]
+        ]
+
+    async def create_room(
+        self,
+        *,
+        project_id: str,
+        name: str,
+        permissions: dict[str, ApiScope] | None = None,
+    ) -> Room:
+        self.create_room_calls.append(
+            {
+                "project_id": project_id,
+                "name": name,
+                "permissions": permissions,
+            }
+        )
+        room = Room(
+            id=f"room-{len(self.rooms) + 1}",
+            name=name,
+            metadata={},
+            annotations={},
+        )
+        self.rooms.append(room)
+        return room
+
     async def close(self) -> None:
         self.closed = True
 
@@ -74,6 +135,220 @@ def test_room_connect_help_mentions_llm_token_aliases() -> None:
     assert "MESHAGENT_TOKEN" in help_text
     assert "OPENAI_API_KEY" in help_text
     assert "ANTHROPIC_API_KEY" in help_text
+
+
+@pytest.mark.asyncio
+async def test_room_connect_missing_room_prompts_for_existing_room(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from meshagent.cli.tui.deploy_room import DeployRoomPickerResult
+
+    dev_room = Room(
+        id="room-1",
+        name="dev-room",
+        metadata={},
+        annotations={"meshagent.storage.class": "standard"},
+    )
+    account_client = _FakeAccountClient(rooms=[dev_room])
+    captured_picker: dict[str, object] = {}
+
+    async def _fake_get_client() -> _FakeAccountClient:
+        return account_client
+
+    async def _fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-input"
+        return "project-1"
+
+    async def _fake_run_connect_room_picker_tui(
+        *,
+        rooms,
+        can_create_room: bool,
+        create_error: str | None,
+    ) -> DeployRoomPickerResult:
+        captured_picker["rooms"] = rooms
+        captured_picker["can_create_room"] = can_create_room
+        captured_picker["create_error"] = create_error
+        return DeployRoomPickerResult(
+            status="completed",
+            selected_room_name="dev-room",
+        )
+
+    monkeypatch.setattr(room_connect, "get_client", _fake_get_client)
+    monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(room_connect, "resolve_room", lambda room: None)
+    monkeypatch.setattr(room_connect, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(
+        room_connect,
+        "_run_connect_room_picker_tui",
+        _fake_run_connect_room_picker_tui,
+    )
+
+    (
+        resolved_project_id,
+        resolved_room,
+    ) = await room_connect._resolve_connected_room_inputs(
+        project_id="project-input",
+        room=None,
+    )
+
+    assert resolved_project_id == "project-1"
+    assert resolved_room == "dev-room"
+    assert account_client.can_create_rooms_calls == ["project-1"]
+    assert account_client.list_room_grants_by_user_calls == [
+        {
+            "project_id": "project-1",
+            "user_id": "me",
+            "limit": 500,
+            "offset": 0,
+            "order_by": "room_name",
+        }
+    ]
+    assert account_client.create_room_calls == []
+    assert account_client.closed is True
+    room_choices = captured_picker["rooms"]
+    assert len(room_choices) == 1
+    assert room_choices[0].name == "dev-room"
+    assert room_choices[0].description == "standard"
+    assert captured_picker["can_create_room"] is False
+    assert captured_picker["create_error"] is None
+
+
+@pytest.mark.asyncio
+async def test_room_connect_missing_room_can_create_new_room(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from meshagent.cli.tui.deploy_room import DeployRoomPickerResult
+
+    account_client = _FakeAccountClient(can_create_rooms=True)
+
+    async def _fake_get_client() -> _FakeAccountClient:
+        return account_client
+
+    async def _fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-input"
+        return "project-1"
+
+    async def _fake_run_connect_room_picker_tui(
+        *,
+        rooms,
+        can_create_room: bool,
+        create_error: str | None,
+    ) -> DeployRoomPickerResult:
+        assert rooms == []
+        assert can_create_room is True
+        assert create_error is None
+        return DeployRoomPickerResult(status="create", create_room_name="new-room")
+
+    monkeypatch.setattr(room_connect, "get_client", _fake_get_client)
+    monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(room_connect, "resolve_room", lambda room: None)
+    monkeypatch.setattr(room_connect, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(room_connect, "get_active_user_id", lambda: "user-1")
+    monkeypatch.setattr(
+        room_connect,
+        "_run_connect_room_picker_tui",
+        _fake_run_connect_room_picker_tui,
+    )
+
+    (
+        resolved_project_id,
+        resolved_room,
+    ) = await room_connect._resolve_connected_room_inputs(
+        project_id="project-input",
+        room=None,
+    )
+
+    assert resolved_project_id == "project-1"
+    assert resolved_room == "new-room"
+    assert account_client.create_room_calls == [
+        {
+            "project_id": "project-1",
+            "name": "new-room",
+            "permissions": {"user-1": ApiScope.full()},
+        }
+    ]
+    assert account_client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_room_connect_missing_room_noninteractive_still_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-input"
+        return "project-1"
+
+    async def _unexpected_select_connect_room_interactively(*, project_id: str) -> str:
+        raise AssertionError("noninteractive room connect should not prompt")
+
+    monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(room_connect, "resolve_room", lambda room: None)
+    monkeypatch.setattr(room_connect, "_stdio_is_interactive", lambda: False)
+    monkeypatch.setattr(
+        room_connect,
+        "_select_connect_room_interactively",
+        _unexpected_select_connect_room_interactively,
+    )
+
+    with pytest.raises(room_connect.typer_click.exceptions.Exit):
+        await room_connect._resolve_connected_room_inputs(
+            project_id="project-input",
+            room=None,
+        )
+
+
+def test_room_connect_runs_command_with_interactively_selected_room(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account_client = _FakeAccountClient(room_name="picked-room")
+    captured_run: dict[str, object] = {}
+
+    async def _fake_get_client() -> _FakeAccountClient:
+        return account_client
+
+    async def _fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id is None
+        return "project-1"
+
+    async def _fake_select_connect_room_interactively(*, project_id: str) -> str:
+        assert project_id == "project-1"
+        return "picked-room"
+
+    def _fake_run(command, *, check: bool, env: dict[str, str]):
+        captured_run["command"] = command
+        captured_run["check"] = check
+        captured_run["env"] = env
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(room_connect, "get_client", _fake_get_client)
+    monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(room_connect, "resolve_room", lambda room: None)
+    monkeypatch.setattr(room_connect, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(
+        room_connect,
+        "_select_connect_room_interactively",
+        _fake_select_connect_room_interactively,
+    )
+    monkeypatch.setattr(
+        room_connect,
+        "resolve_api_url",
+        lambda: "https://env.meshagent.test",
+    )
+    monkeypatch.setattr(room_connect.subprocess, "run", _fake_run)
+
+    exit_code = room_connect.connect_command.main(
+        args=["--", "npm", "run", "dev:server"],
+        standalone_mode=False,
+    )
+
+    assert exit_code == 0
+    assert account_client.connect_calls == [
+        {"project_id": "project-1", "room": "picked-room"}
+    ]
+    assert captured_run["command"] == ["npm", "run", "dev:server"]
+    captured_env = captured_run["env"]
+    assert isinstance(captured_env, dict)
+    assert captured_env["MESHAGENT_ROOM"] == "picked-room"
 
 
 def test_room_connect_runs_command_with_connected_room_env(
