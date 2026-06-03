@@ -1328,6 +1328,7 @@ def test_init_creates_typescript_room_workspace_non_interactively(tmp_path) -> N
 
     package_json = (tmp_path / "package.json").read_text(encoding="utf-8")
     page_tsx = (tmp_path / "app" / "meeting-app.tsx").read_text(encoding="utf-8")
+    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     readme = (tmp_path / "README.md").read_text(encoding="utf-8")
     assert '"name": "meshagent-create-typescript-room-workspace"' in package_json
     assert '"@meshagent/meshagent": "^' in package_json
@@ -1349,6 +1350,8 @@ def test_init_creates_typescript_room_workspace_non_interactively(tmp_path) -> N
     assert "MeetingScope" in page_tsx
     assert "MeetingView" in page_tsx
     assert "FilePreview" in page_tsx
+    assert "apt-get install -y --no-install-recommends git" in dockerfile
+    assert "npm install" in dockerfile
     assert "project" not in page_tsx.lower()
     assert "room switch" not in page_tsx.lower()
     assert "does not include project or room switching UI" in readme

@@ -3,7 +3,10 @@ FROM ${MESHAGENT_IMAGE_PREFIX}node-sdk:__MESHAGENT_CLIENT_VERSION__ AS build
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY package*.json .npmrc tsconfig.json next.config.ts next-env.d.ts ./
-RUN npm install
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git \
+  && rm -rf /var/lib/apt/lists/* \
+  && npm install
 COPY app ./app
 RUN npm run build
 
