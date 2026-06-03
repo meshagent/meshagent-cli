@@ -18,6 +18,38 @@ def _assert_template_dockerfile(project_path) -> None:
     assert (project_path / "Dockerfile").is_file()
 
 
+def _assert_python_install_prefers_local_sdk(install_sh: str) -> None:
+    assert "SDK_ROOT=" in install_sh
+    assert "PYTHONPATH" in install_sh
+    assert "meshagent-api" in install_sh
+    assert "meshagent-tools" in install_sh
+    assert '-e "$SDK_ROOT/meshagent-api" -e "$SDK_ROOT/meshagent-tools"' in install_sh
+
+
+def _assert_python_dockerfile_installs_only_app_deps(
+    project_path, *, dependencies: tuple[str, ...]
+) -> None:
+    dockerfile = (project_path / "Dockerfile").read_text(encoding="utf-8")
+    assert (
+        "python -m pip install --no-cache-dir --target /out --no-deps ." in dockerfile
+    )
+    for dependency in dependencies:
+        assert dependency in dockerfile
+
+
+def _assert_python_dockerfile_vendors_sdk_runtime(
+    project_path, *, dependencies: tuple[str, ...]
+) -> None:
+    dockerfile = (project_path / "Dockerfile").read_text(encoding="utf-8")
+    assert "cp -a /opt/venv/lib/python3.13/site-packages/. /out/" in dockerfile
+    assert (
+        "python -m pip install --no-cache-dir --target /out --no-deps ." in dockerfile
+    )
+    assert "python -m pip install --no-cache-dir --target /out --upgrade" in dockerfile
+    for dependency in dependencies:
+        assert dependency in dockerfile
+
+
 def _assert_runtime_image_mount_deploy_yaml(
     project_path,
     *,
@@ -265,6 +297,9 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert not (tmp_path / "Makefile").exists()
     _assert_template_dockerfile(tmp_path)
+    _assert_python_dockerfile_vendors_sdk_runtime(
+        tmp_path, dependencies=("aiofiles~=24.1",)
+    )
 
     assert "Python Agent Toolkit" in readme
     assert "./scripts/install.sh" in readme
@@ -302,6 +337,7 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     assert 'PYTHON="${PYTHON:-python3.13}"' in install_sh
     assert 'VENV="${VENV:-.venv}"' in install_sh
     assert 'PIP_ONLY_BINARY="${PIP_ONLY_BINARY:-:all:}"' in install_sh
+    _assert_python_install_prefers_local_sdk(install_sh)
     assert 'meshagent room connect -- "$VENV_PYTHON" -u server.py' in dev_sh
     assert "./scripts/install.sh" not in dev_sh
     assert "MESHAGENT_CREATE_DEV_PROBE" in server_py
@@ -413,6 +449,9 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert not (tmp_path / "Makefile").exists()
     _assert_template_dockerfile(tmp_path)
+    _assert_python_dockerfile_vendors_sdk_runtime(
+        tmp_path, dependencies=("aiofiles~=24.1", '"aiohttp[speedups]~=3.13.0"')
+    )
 
     assert "Python Web App" in readme
     assert "./scripts/install.sh" in readme
@@ -452,6 +491,7 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     assert 'PYTHON="${PYTHON:-python3.13}"' in install_sh
     assert 'VENV="${VENV:-.venv}"' in install_sh
     assert 'PIP_ONLY_BINARY="${PIP_ONLY_BINARY:-:all:}"' in install_sh
+    _assert_python_install_prefers_local_sdk(install_sh)
     assert 'meshagent room connect -- "$VENV_PYTHON" -u server.py' in dev_sh
     assert "./scripts/install.sh" not in dev_sh
     assert (
@@ -510,6 +550,9 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     deploy_yaml = (tmp_path / ".meshagent" / "deploy.yaml").read_text(encoding="utf-8")
     _assert_template_dockerfile(tmp_path)
+    _assert_python_dockerfile_installs_only_app_deps(
+        tmp_path, dependencies=("aiohttp~=3.13.0",)
+    )
 
     assert "Python Contact Form" in readme
     assert "meshagent rooms create <room> --if-not-exists" in readme
@@ -553,6 +596,7 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert 'PYTHON="${PYTHON:-python3.13}"' in install_sh
     assert 'VENV="${VENV:-.venv}"' in install_sh
     assert 'PIP_ONLY_BINARY="${PIP_ONLY_BINARY:-:all:}"' in install_sh
+    assert "SDK_ROOT=" not in install_sh
     assert "CONTACT_FORM_FROM" in dev_sh
     assert "mailbox_from_room" in dev_sh
     assert "CONTACT_FORM_TO" in dev_sh
