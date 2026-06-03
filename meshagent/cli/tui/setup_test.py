@@ -36,25 +36,14 @@ def _new_setup_app(**kwargs) -> SetupWizardApp:
         del project_id
         return True
 
-    async def _list_existing_codex_profiles_operation(project_id: str) -> list[str]:
-        del project_id
+    async def _list_existing_codex_profiles_operation() -> list[str]:
         return []
-
-    async def _get_current_codex_default_profile_operation(
-        project_id: str,
-    ) -> str | None:
-        del project_id
-        return None
 
     async def _configure_codex_default_profile_operation(
         project_id: str,
-        profile_id: str | None,
+        profile_id: str,
     ) -> None:
         del project_id, profile_id
-        return None
-
-    async def _replace_codex_profile_operation(profile_id: str) -> None:
-        del profile_id
         return None
 
     async def _remove_codex_profile_operation(profile_id: str) -> None:
@@ -80,11 +69,7 @@ def _new_setup_app(**kwargs) -> SetupWizardApp:
         create_api_key_operation=_create_api_key_operation,
         has_llm_proxy_access_operation=_has_llm_proxy_access_operation,
         list_existing_codex_profiles_operation=_list_existing_codex_profiles_operation,
-        replace_codex_profile_operation=_replace_codex_profile_operation,
         remove_codex_profile_operation=_remove_codex_profile_operation,
-        get_current_codex_default_profile_operation=(
-            _get_current_codex_default_profile_operation
-        ),
         configure_codex_default_profile_operation=(
             _configure_codex_default_profile_operation
         ),
@@ -451,56 +436,41 @@ def test_show_codex_choice_hides_single_custom_configuration_name(
     ]
 
 
-def test_codex_create_choice_configures_default_without_profile_prompt(
+def test_codex_create_choice_configures_default(
     monkeypatch,
 ) -> None:
     app = _new_setup_app(has_codex_cli=True)
     app._mode = "codex_choice"
-    configured_defaults: list[str | None] = []
-    prompted = False
+    configured_defaults: list[str] = []
 
-    async def _configure_default(profile_id: str | None) -> None:
+    async def _configure_default(profile_id: str) -> None:
         configured_defaults.append(profile_id)
 
-    def _set_profile_prompt(*, initial_value: str | None = None) -> None:
-        del initial_value
-        nonlocal prompted
-        prompted = True
-
     monkeypatch.setattr(app, "_configure_codex_default_profile", _configure_default)
-    monkeypatch.setattr(app, "_set_mode_codex_profile_name", _set_profile_prompt)
 
     event = SimpleNamespace(option=SimpleNamespace(id="__codex_create__"))
     asyncio.run(app.on_option_list_option_selected(event))
 
     assert configured_defaults == ["meshagent"]
-    assert prompted is False
 
 
-def test_codex_update_choice_refreshes_default_without_default_prompt(
+def test_codex_update_choice_removes_existing_then_configures_default(
     monkeypatch,
 ) -> None:
     app = _new_setup_app(has_codex_cli=True)
     app._mode = "codex_choice"
     app._existing_codex_profile_ids = ["meshagent", "meshagent-work"]
     removed_profiles: list[str] = []
-    configured_defaults: list[str | None] = []
-    prompted = False
+    configured_defaults: list[str] = []
 
     async def _remove_profile(profile_id: str) -> None:
         removed_profiles.append(profile_id)
 
-    async def _configure_default(profile_id: str | None) -> None:
+    async def _configure_default(profile_id: str) -> None:
         configured_defaults.append(profile_id)
-
-    def _show_default_choice(*, profile_ids) -> None:
-        del profile_ids
-        nonlocal prompted
-        prompted = True
 
     monkeypatch.setattr(app, "_remove_codex_profile_operation", _remove_profile)
     monkeypatch.setattr(app, "_configure_codex_default_profile", _configure_default)
-    monkeypatch.setattr(app, "_show_codex_default_choice", _show_default_choice)
     monkeypatch.setattr(app, "_set_busy", lambda **kwargs: None)
 
     event = SimpleNamespace(option=SimpleNamespace(id="__codex_update__"))
@@ -508,123 +478,34 @@ def test_codex_update_choice_refreshes_default_without_default_prompt(
 
     assert removed_profiles == ["meshagent", "meshagent-work"]
     assert configured_defaults == ["meshagent"]
-    assert prompted is False
 
 
-def test_show_codex_profile_conflict_renders_options(monkeypatch) -> None:
+def test_codex_remove_choice_removes_existing_then_continues(
+    monkeypatch,
+) -> None:
     app = _new_setup_app(has_codex_cli=True)
-    captured: dict[str, object] = {}
+    app._mode = "codex_choice"
+    app._existing_codex_profile_ids = ["meshagent"]
+    removed_profiles: list[str] = []
+    continued = False
 
-    monkeypatch.setattr(
-        app,
-        "_set_text",
-        lambda *, title, message, help_text, centered=False: captured.update(
-            {
-                "title": title,
-                "message": message,
-                "help_text": help_text,
-                "centered": centered,
-            }
-        ),
-    )
-    monkeypatch.setattr(app, "_clear_error", lambda: None)
-    monkeypatch.setattr(app, "_hide_input", lambda: None)
-    monkeypatch.setattr(app, "_hide_status", lambda: None)
-    monkeypatch.setattr(app, "_hide_url", lambda: None)
-    monkeypatch.setattr(
-        app,
-        "_set_options",
-        lambda *, options, highlighted_id=None: captured.update(
-            {
-                "options": [(str(option.prompt), option.id) for option in options],
-                "highlighted_id": highlighted_id,
-            }
-        ),
-    )
+    async def _remove_profile(profile_id: str) -> None:
+        removed_profiles.append(profile_id)
 
-    app._show_codex_profile_conflict(
-        profile_id="meshagent",
-        project_id="project-old",
-    )
+    async def _continue_to_claude() -> None:
+        nonlocal continued
+        continued = True
 
-    assert captured == {
-        "title": "Codex Configuration Conflict",
-        "message": (
-            "Codex configuration meshagent is currently configured for MeshAgent "
-            "project project-old. Update it to use the current project, remove "
-            "it, or go back to choose a different configuration name."
-        ),
-        "help_text": "Use Up/Down and Enter.",
-        "centered": False,
-        "options": [
-            (
-                "Update meshagent to use the current project",
-                "__codex_conflict_update__",
-            ),
-            ("Remove meshagent", "__codex_conflict_remove__"),
-            ("Go back", "__codex_conflict_cancel__"),
-        ],
-        "highlighted_id": "__codex_conflict_update__",
-    }
+    monkeypatch.setattr(app, "_remove_codex_profile_operation", _remove_profile)
+    monkeypatch.setattr(app, "_maybe_continue_to_claude_setup", _continue_to_claude)
+    monkeypatch.setattr(app, "_set_busy", lambda **kwargs: None)
 
+    event = SimpleNamespace(option=SimpleNamespace(id="__codex_remove__"))
+    asyncio.run(app.on_option_list_option_selected(event))
 
-def test_show_codex_default_choice_highlights_current_default(monkeypatch) -> None:
-    app = _new_setup_app(has_codex_cli=True)
-    app._current_codex_default_profile_id = "meshagent-work"
-    captured: dict[str, object] = {}
-
-    monkeypatch.setattr(
-        app,
-        "_set_text",
-        lambda *, title, message, help_text, centered=False: captured.update(
-            {
-                "title": title,
-                "message": message,
-                "help_text": help_text,
-                "centered": centered,
-            }
-        ),
-    )
-    monkeypatch.setattr(app, "_clear_error", lambda: None)
-    monkeypatch.setattr(app, "_hide_input", lambda: None)
-    monkeypatch.setattr(app, "_hide_status", lambda: None)
-    monkeypatch.setattr(app, "_hide_url", lambda: None)
-    monkeypatch.setattr(
-        app,
-        "_set_options",
-        lambda *, options, highlighted_id=None: captured.update(
-            {
-                "options": [(str(option.prompt), option.id) for option in options],
-                "highlighted_id": highlighted_id,
-            }
-        ),
-    )
-
-    app._show_codex_default_choice(profile_ids=["meshagent", "meshagent-work"])
-
-    assert captured == {
-        "title": "Codex Default",
-        "message": (
-            "Choose which MeshAgent Codex configuration should be the default provider."
-        ),
-        "help_text": "Use Up/Down and Enter.",
-        "centered": False,
-        "options": [
-            (
-                "Make meshagent the default provider",
-                "__codex_default_profile__:meshagent",
-            ),
-            (
-                "Make meshagent-work the default provider",
-                "__codex_default_profile__:meshagent-work",
-            ),
-            (
-                'No, I will use "meshagent launch codex" if I want to use Codex via MeshAgent.',
-                "__codex_default_none__",
-            ),
-        ],
-        "highlighted_id": "__codex_default_profile__:meshagent-work",
-    }
+    assert removed_profiles == ["meshagent"]
+    assert app._removed_codex_profile_ids == ["meshagent"]
+    assert continued is True
 
 
 def test_show_codex_choice_requires_llm_proxy_access(monkeypatch) -> None:
@@ -903,7 +784,6 @@ def test_finish_success_reports_codex_default_and_claude_configuration(
 ) -> None:
     app = _new_setup_app(has_claude_code_cli=True)
     app._selected_project_id = "project-123"
-    app._configured_codex_profile_id = "meshagent"
     app._configured_codex_default_profile_id = "meshagent"
     app._configured_claude = True
     captured: dict[str, object] = {}
@@ -937,7 +817,7 @@ def test_finish_success_reports_codex_default_and_claude_configuration(
     assert captured == {
         "title": "Setup Complete",
         "message": (
-            "Project activated and Codex configuration meshagent created. "
+            "Project activated and setup finished. "
             "Codex is configured to use MeshAgent by default. "
             "Claude is configured to use MeshAgent by default."
         ),
