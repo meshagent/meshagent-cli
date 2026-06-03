@@ -149,9 +149,7 @@ def test_find_existing_codex_profiles_excludes_non_meshagent_providers(
         'base_url = "https://openrouter.ai/api/v1"\n'
     )
 
-    assert (
-        tool_integrations.find_existing_codex_profiles(config_path=config_path) == []
-    )
+    assert tool_integrations.find_existing_codex_profiles(config_path=config_path) == []
 
 
 def test_find_existing_codex_profiles_does_not_require_active_project(
@@ -172,10 +170,9 @@ def test_find_existing_codex_profiles_does_not_require_active_project(
     monkeypatch.setattr(tool_integrations, "get_active_project", lambda: None)
 
     # Detection no longer needs an active project (this is the stale-config case).
-    assert (
-        tool_integrations.find_existing_codex_profiles(config_path=config_path)
-        == ["meshagent"]
-    )
+    assert tool_integrations.find_existing_codex_profiles(config_path=config_path) == [
+        "meshagent"
+    ]
 
 
 def test_find_current_codex_default_profile_returns_matching_profile(
