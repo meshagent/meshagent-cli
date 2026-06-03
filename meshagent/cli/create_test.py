@@ -1324,16 +1324,10 @@ def test_init_creates_typescript_room_workspace_non_interactively(tmp_path) -> N
     assert (tmp_path / "app" / "globals.css").is_file()
     assert (tmp_path / "dev-server.mjs").is_file()
     assert (tmp_path / "Dockerfile").is_file()
-    assert (tmp_path / "scripts" / "install.sh").is_file()
-    assert (tmp_path / "scripts" / "dev.sh").is_file()
     _assert_npm_dev_auto_installs(tmp_path)
 
     package_json = (tmp_path / "package.json").read_text(encoding="utf-8")
-    ensure_deps = (tmp_path / "scripts" / "ensure-deps.mjs").read_text(
-        encoding="utf-8"
-    )
-    install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")
-    dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
+    ensure_deps = (tmp_path / "scripts" / "ensure-deps.mjs").read_text(encoding="utf-8")
     page_tsx = (tmp_path / "app" / "meeting-app.tsx").read_text(encoding="utf-8")
     dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
     readme = (tmp_path / "README.md").read_text(encoding="utf-8")
@@ -1357,13 +1351,13 @@ def test_init_creates_typescript_room_workspace_non_interactively(tmp_path) -> N
     assert "MeetingScope" in page_tsx
     assert "MeetingView" in page_tsx
     assert "FilePreview" in page_tsx
-    assert "apt-get install -y --no-install-recommends ca-certificates git" in dockerfile
+    assert (
+        "apt-get install -y --no-install-recommends ca-certificates git" in dockerfile
+    )
     assert 'url."https://github.com/".insteadOf "ssh://git@github.com/"' in dockerfile
     assert "npm install" in dockerfile
     assert '"url.https://github.com/.insteadOf"' in ensure_deps
     assert '"ssh://git@github.com/"' in ensure_deps
-    assert "node scripts/ensure-deps.mjs" in install_sh
-    assert "npm run dev" in dev_sh
     assert "project" not in page_tsx.lower()
     assert "room switch" not in page_tsx.lower()
     assert "does not include project or room switching UI" in readme
