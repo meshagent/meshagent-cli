@@ -98,18 +98,14 @@ def _setup_command(
         )
         from meshagent.cli.tool_integrations import (
             CODEX_DEFAULT_PROFILE_ID,
-            clear_codex_default_profile_if_meshagent_project,
             configure_codex_default_integration,
             clear_claude_code_integration,
-            configure_codex_integration,
             configure_claude_code_integration,
             find_existing_codex_profiles,
-            find_current_codex_default_profile,
             has_claude_code_cli,
             has_codex_cli,
             inspect_claude_code_integration,
             remove_codex_integration,
-            replace_codex_integration,
         )
         from meshagent.cli.tui.setup import (
             SetupClaudeConfiguration,
@@ -195,46 +191,16 @@ def _setup_command(
             finally:
                 await client.close()
 
-        async def configure_codex_profile(profile_id: str) -> None:
-            configure_codex_integration(
-                profile_id=profile_id,
-                api_url=resolve_api_url(),
-                meshagent_executable=current_meshagent_executable,
-            )
-
-        async def replace_codex_profile(profile_id: str) -> None:
-            replace_codex_integration(
-                profile_id=profile_id,
-                api_url=resolve_api_url(),
-                meshagent_executable=current_meshagent_executable,
-            )
-
         async def remove_codex_profile(profile_id: str) -> None:
             remove_codex_integration(profile_id=profile_id)
 
-        async def list_existing_codex_profiles(project_id: str) -> list[str]:
-            return find_existing_codex_profiles(
-                project_id=project_id,
-                api_url=resolve_api_url(),
-            )
-
-        async def get_current_codex_default_profile(project_id: str) -> str | None:
-            return find_current_codex_default_profile(
-                project_id=project_id,
-                api_url=resolve_api_url(),
-            )
+        async def list_existing_codex_profiles() -> list[str]:
+            return find_existing_codex_profiles()
 
         async def configure_codex_default_profile(
             project_id: str,
-            profile_id: str | None,
+            profile_id: str,
         ) -> None:
-            if profile_id is None:
-                clear_codex_default_profile_if_meshagent_project(
-                    project_id=project_id,
-                    api_url=resolve_api_url(),
-                )
-                return
-
             configure_codex_default_integration(
                 project_id=project_id,
                 provider_id=profile_id,
@@ -298,17 +264,8 @@ def _setup_command(
             list_existing_codex_profiles_operation=(
                 list_existing_codex_profiles if codex_available else None
             ),
-            configure_codex_profile_operation=(
-                configure_codex_profile if codex_available else None
-            ),
-            replace_codex_profile_operation=(
-                replace_codex_profile if codex_available else None
-            ),
             remove_codex_profile_operation=(
                 remove_codex_profile if codex_available else None
-            ),
-            get_current_codex_default_profile_operation=(
-                get_current_codex_default_profile if codex_available else None
             ),
             configure_codex_default_profile_operation=(
                 configure_codex_default_profile if codex_available else None
