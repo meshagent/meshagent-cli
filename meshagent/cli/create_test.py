@@ -733,6 +733,8 @@ def test_init_creates_python_task_queue_dashboard_non_interactively(tmp_path) ->
         command="python -m server",
     )
     assert "template: agent" in deploy_yaml
+    assert "name: domain" not in deploy_yaml
+    assert "type: route" not in deploy_yaml
     assert "num: 8000" in deploy_yaml
     assert "published: true" in deploy_yaml
     assert "public: true" in deploy_yaml

@@ -8,11 +8,6 @@ variables:
     title: Container image
     description: Image tag built and deployed by meshagent deploy.
     optional: true
-  - name: domain
-    title: Public domain
-    description: Public route domain for the task queue dashboard.
-    type: route
-    optional: true
 container:
   image: meshagent/python:default
   template: agent
