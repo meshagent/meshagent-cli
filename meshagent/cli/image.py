@@ -2734,9 +2734,40 @@ def _validate_deploy_template_variable_domains(
             )
 
 
+async def _discard_conflicting_saved_route_values(
+    *,
+    account_client: Meshagent,
+    project_id: str,
+    room_name: str,
+    template: ServiceTemplateSpec,
+    values: dict[str, str],
+    saved_values: dict[str, str],
+    explicit_value_names: set[str],
+) -> None:
+    for variable in template.variables or []:
+        if variable.type != "route":
+            continue
+        if variable.name in explicit_value_names:
+            continue
+        value = values.get(variable.name, "").strip()
+        saved_value = saved_values.get(variable.name, "").strip()
+        if value == "" or saved_value == "" or value != saved_value:
+            continue
+        try:
+            existing_route = await account_client.get_route(
+                project_id=project_id,
+                domain=value,
+            )
+        except NotFoundError:
+            continue
+        if existing_route.room_name != "" and existing_route.room_name != room_name:
+            values.pop(variable.name, None)
+
+
 async def _resolve_deploy_template_values(
     *,
     account_client: Meshagent,
+    project_id: str,
     template: ServiceTemplateSpec,
     room_name: str,
     service_name: str,
@@ -2745,16 +2776,31 @@ async def _resolve_deploy_template_values(
     set_values: list[str],
     image: str,
 ) -> dict[str, str]:
-    values = _load_yaml_string_map(values_file)
+    saved_values = _load_yaml_string_map(values_file)
+    values = dict(saved_values)
+    explicit_value_names: set[str] = set()
     for extra_values_file in extra_values_files:
-        values.update(
-            _load_yaml_string_map(Path(extra_values_file).expanduser().resolve())
+        extra_values = _load_yaml_string_map(
+            Path(extra_values_file).expanduser().resolve()
         )
-    values.setdefault("image", image)
-    values.update(_parse_template_value_overrides(set_values))
+        explicit_value_names.update(extra_values)
+        values.update(extra_values)
+    values["image"] = image
+    parsed_set_values = _parse_template_value_overrides(set_values)
+    explicit_value_names.update(parsed_set_values)
+    values.update(parsed_set_values)
 
     variables = template.variables or []
     config = await account_client.get_config() if variables else _empty_deploy_config()
+    await _discard_conflicting_saved_route_values(
+        account_client=account_client,
+        project_id=project_id,
+        room_name=room_name,
+        template=template,
+        values=values,
+        saved_values=saved_values,
+        explicit_value_names=explicit_value_names,
+    )
     if _stdio_is_interactive():
         from meshagent.cli.tui.deploy_room import (
             DeployTemplateVariablePrompt,
@@ -4542,6 +4588,7 @@ async def deploy_image(
                 )
                 deploy_template_values = await _resolve_deploy_template_values(
                     account_client=account_client,
+                    project_id=resolved_project_id,
                     template=deploy_template_spec,
                     room_name=resolved_room,
                     service_name=_derive_service_name(parsed_tag=parsed_tag),

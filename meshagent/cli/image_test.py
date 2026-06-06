@@ -100,13 +100,22 @@ class _FakeDeployConfigClient:
         *,
         pages: str | None = "pages.meshagent.example",
         mail: str | None = "mail.meshagent.example",
+        routes: dict[str, Route] | None = None,
     ) -> None:
         self._config = MeshagentDeploymentConfig(
             domains=MeshagentDomains(pages=pages, mail=mail)
         )
+        self._routes = routes or {}
 
     async def get_config(self) -> MeshagentDeploymentConfig:
         return self._config
+
+    async def get_route(self, *, project_id: str, domain: str) -> Route:
+        del project_id
+        route = self._routes.get(domain)
+        if route is None:
+            raise NotFoundError("route not found")
+        return route
 
 
 def test_root_deploy_describe_prints_local_template(tmp_path: Path) -> None:
@@ -3850,7 +3859,10 @@ async def test_resolve_deploy_template_values_uses_saved_values_and_set_override
 ) -> None:
     values_file = tmp_path / ".meshagent" / "values.yaml"
     values_file.parent.mkdir()
-    values_file.write_text("domain: old.example.com\n", encoding="utf-8")
+    values_file.write_text(
+        "domain: old.example.com\nimage: repo/old:1\n",
+        encoding="utf-8",
+    )
     template = image.ServiceTemplateSpec.from_yaml(
         yaml="""
 version: v1
@@ -3873,6 +3885,7 @@ container:
         account_client=_FakeDeployConfigClient(
             pages="example.com", mail="mail.example.com"
         ),
+        project_id="project-1",
         template=template,
         room_name="room-1",
         service_name="demo",
@@ -3911,6 +3924,7 @@ container:
 
     values = await image._resolve_deploy_template_values(
         account_client=_FakeDeployConfigClient(),
+        project_id="project-1",
         template=template,
         room_name="room-2",
         service_name="demo",
@@ -3922,6 +3936,79 @@ container:
 
     assert values == {"domain": "stale.meshagent.dev", "image": "repo/demo:1"}
     assert image._service_template_route_values(template=template, values=values) == []
+
+
+@pytest.mark.asyncio
+async def test_resolve_deploy_template_values_discards_saved_route_for_other_room(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values_file = tmp_path / ".meshagent" / "values.yaml"
+    values_file.parent.mkdir()
+    values_file.write_text(
+        "domain: old-room.pages.meshagent.example\n", encoding="utf-8"
+    )
+    template = image.ServiceTemplateSpec.from_yaml(
+        yaml="""
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: demo
+variables:
+  - name: domain
+    type: route
+    optional: true
+  - name: image
+    optional: true
+container:
+  image: "{{ image }}"
+""",
+        values={},
+    )
+    prompts: list[tuple[str, str]] = []
+
+    async def _fake_run_deploy_template_variables_tui(*, variables):
+        from meshagent.cli.tui.deploy_room import DeployTemplateVariablesResult
+
+        values = {}
+        for variable in variables:
+            prompts.append((variable.name, variable.default))
+            values[variable.name] = variable.default
+        return DeployTemplateVariablesResult(status="completed", values=values)
+
+    monkeypatch.setattr(image, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(
+        "meshagent.cli.tui.deploy_room.run_deploy_template_variables_tui",
+        _fake_run_deploy_template_variables_tui,
+    )
+
+    values = await image._resolve_deploy_template_values(
+        account_client=_FakeDeployConfigClient(
+            pages="pages.meshagent.example",
+            routes={
+                "old-room.pages.meshagent.example": _route_for_service(
+                    domain="old-room.pages.meshagent.example",
+                    room_name="old-room",
+                    port="8000",
+                    service_id="old-service",
+                )
+            },
+        ),
+        project_id="project-1",
+        template=template,
+        room_name="new-room",
+        service_name="demo",
+        values_file=values_file,
+        extra_values_files=[],
+        set_values=[],
+        image="repo/demo:1",
+    )
+
+    assert values["domain"] == "new-room.pages.meshagent.example"
+    assert image._service_template_route_values(template=template, values=values) == [
+        "new-room.pages.meshagent.example"
+    ]
+    assert prompts == [("domain", "new-room.pages.meshagent.example")]
 
 
 @pytest.mark.asyncio
@@ -3952,6 +4039,7 @@ container:
             account_client=_FakeDeployConfigClient(
                 pages="example.com", mail="mail.example.com"
             ),
+            project_id="project-1",
             template=template,
             room_name="room-1",
             service_name="demo",
@@ -4007,6 +4095,7 @@ container:
             pages="pages.meshagent.example",
             mail="mail.meshagent.example",
         ),
+        project_id="project-1",
         template=template,
         room_name="Contact Room",
         service_name="contact-form",
@@ -4048,6 +4137,7 @@ container:
     with pytest.raises(typer.BadParameter, match="configured pages domain suffix"):
         await image._resolve_deploy_template_values(
             account_client=_FakeDeployConfigClient(pages="pages.meshagent.example"),
+            project_id="project-1",
             template=template,
             room_name="room-1",
             service_name="demo",
@@ -4082,6 +4172,7 @@ container:
     with pytest.raises(typer.BadParameter, match="configured mail domain"):
         await image._resolve_deploy_template_values(
             account_client=_FakeDeployConfigClient(mail="mail.meshagent.example"),
+            project_id="project-1",
             template=template,
             room_name="room-1",
             service_name="demo",

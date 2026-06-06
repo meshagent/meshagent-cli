@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import importlib.util
 import json
+import sys
 
+import pytest
 from meshagent.cli.testing import CliRunner
 
 from meshagent.api.specs.service import ServiceTemplateSpec
@@ -733,8 +737,9 @@ def test_init_creates_python_task_queue_dashboard_non_interactively(tmp_path) ->
         command="python -m server",
     )
     assert "template: agent" in deploy_yaml
-    assert "name: domain" not in deploy_yaml
-    assert "type: route" not in deploy_yaml
+    assert "name: domain" in deploy_yaml
+    assert "Public route domain for the deployed dashboard." in deploy_yaml
+    assert "type: route" in deploy_yaml
     assert "num: 8000" in deploy_yaml
     assert "published: true" in deploy_yaml
     assert "public: true" in deploy_yaml
@@ -766,6 +771,82 @@ def test_init_creates_python_task_queue_dashboard_non_interactively(tmp_path) ->
     assert diagnosis.python_source_uses_sdk is True
     assert diagnosis.has_health_route is True
     assert diagnosis.has_http_port_hint is True
+
+
+@pytest.mark.asyncio
+async def test_python_task_queue_dashboard_local_queue_runtime_smoke(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("TASK_QUEUE_TASK_COUNT", "3")
+    monkeypatch.setenv("TASK_QUEUE_INTERVAL_SECONDS", "0.01")
+    result = CliRunner().invoke(
+        create_command,
+        [
+            "--language",
+            "python",
+            "--focus",
+            "task-queue-dashboard",
+            "--no-interactive",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 0
+
+    module_name = "_meshagent_task_queue_dashboard_smoke"
+    spec = importlib.util.spec_from_file_location(module_name, tmp_path / "server.py")
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+        state = module.DashboardState(queue_name="smoke")
+        adapter = module.LocalQueueAdapter(queue_name="smoke")
+        stop = asyncio.Event()
+        await adapter.open()
+        await state.set_connection(mode="local-memory", room_name=None)
+        listener = asyncio.create_task(
+            module.listen_for_queue_items(state=state, adapter=adapter, stop=stop)
+        )
+        try:
+            await module.schedule_demo_tasks(state=state, adapter=adapter, stop=stop)
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 1.0
+            snapshot = await state.snapshot()
+            while loop.time() < deadline:
+                snapshot = await state.snapshot()
+                metrics = snapshot["metrics"]
+                if metrics["enqueued"] == 3 and metrics["dequeued"] == 3:
+                    break
+                await asyncio.sleep(0.01)
+
+            assert snapshot["queue"]["mode"] == "local-memory"
+            assert snapshot["metrics"] == {
+                "scheduled": 3,
+                "pending": 0,
+                "enqueued": 3,
+                "dequeued": 3,
+                "current_on_queue": 0,
+            }
+            assert [task["status"] for task in snapshot["tasks"]] == [
+                "dequeued",
+                "dequeued",
+                "dequeued",
+            ]
+            assert [task["text"] for task in snapshot["tasks"]] == [
+                "scheduled text item 1",
+                "scheduled text item 2",
+                "scheduled text item 3",
+            ]
+        finally:
+            stop.set()
+            listener.cancel()
+            try:
+                await listener
+            except asyncio.CancelledError:
+                pass
+    finally:
+        sys.modules.pop(module_name, None)
 
 
 def test_init_creates_javascript_webserver_non_interactively(tmp_path) -> None:
