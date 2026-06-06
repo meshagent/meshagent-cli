@@ -6,7 +6,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from typer._click.testing import CliRunner
 import pytest
 import typer
 
@@ -31,6 +30,7 @@ from meshagent.api.image_runtime import (
 from meshagent.api.error_codes import ErrorCode
 from meshagent.api.room_ports import ROOM_INTERNAL_API_PORT
 from meshagent.cli import async_typer, cli, image
+from meshagent.cli.testing import CliRunner
 from meshagent.api.room_server_client import (
     PublishedBuildImage,
     RoomException,
@@ -3883,6 +3883,45 @@ container:
     )
 
     assert values == {"domain": "new.example.com", "image": "repo/demo:1"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_deploy_template_values_ignores_stale_saved_domain_without_route_variable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values_file = tmp_path / ".meshagent" / "values.yaml"
+    values_file.parent.mkdir()
+    values_file.write_text("domain: stale.meshagent.dev\n", encoding="utf-8")
+    template = image.ServiceTemplateSpec.from_yaml(
+        yaml="""
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: demo
+variables:
+  - name: image
+    optional: true
+container:
+  image: "{{ image }}"
+""",
+        values={},
+    )
+    monkeypatch.setattr(image, "_stdio_is_interactive", lambda: False)
+
+    values = await image._resolve_deploy_template_values(
+        account_client=_FakeDeployConfigClient(),
+        template=template,
+        room_name="room-2",
+        service_name="demo",
+        values_file=values_file,
+        extra_values_files=[],
+        set_values=[],
+        image="repo/demo:1",
+    )
+
+    assert values == {"domain": "stale.meshagent.dev", "image": "repo/demo:1"}
+    assert image._service_template_route_values(template=template, values=values) == []
 
 
 @pytest.mark.asyncio
