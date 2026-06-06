@@ -271,13 +271,15 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     assert "Created a minimal deployable Python Agent Toolkit" in result.output
     assert "meshagent doctor" not in result.output
     assert "Next steps:" in result.output
-    assert "1. Install dependencies" in result.output
-    assert "./scripts/install.sh" in result.output
-    assert "2. Run locally" in result.output
+    assert "Install dependencies" not in result.output
+    assert "./scripts/install.sh" not in result.output
+    assert "1. Run locally" in result.output
     assert "./scripts/dev.sh" in result.output
+    assert "./scripts/dev.sh --room <room>" not in result.output
     assert "MESHAGENT_ROOM=<room>" not in result.output
-    assert "3. Deploy" in result.output
+    assert "2. Deploy" in result.output
     assert "./scripts/deploy.sh" in result.output
+    assert "./scripts/deploy.sh --room <room>" not in result.output
     assert "To install an agent in your room that uses this tool run:" in result.output
     assert "meshagent process deploy --room <room>" in result.output
     assert "--agent-name meshagent-create-python-agent" in result.output
@@ -306,9 +308,11 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     )
 
     assert "Python Agent Toolkit" in readme
-    assert "./scripts/install.sh" in readme
+    assert "./scripts/install.sh" not in readme
     assert "./scripts/dev.sh" in readme
+    assert "./scripts/dev.sh --room <room>" not in readme
     assert "./scripts/deploy.sh" in readme
+    assert "./scripts/deploy.sh --room <room>" not in readme
     assert "meshagent process deploy --room <room>" in readme
     assert "--agent-name meshagent-create-python-agent" in readme
     assert "--require-toolkit meshagent.create.python-agent" in readme
@@ -342,15 +346,19 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     assert 'VENV="${VENV:-.venv}"' in install_sh
     assert 'PIP_ONLY_BINARY="${PIP_ONLY_BINARY:-:all:}"' in install_sh
     _assert_python_install_prefers_local_sdk(install_sh)
-    assert 'meshagent room connect -- "$VENV_PYTHON" -u server.py' in dev_sh
-    assert "./scripts/install.sh" not in dev_sh
+    assert "./scripts/install.sh" in dev_sh
+    assert "import aiofiles, meshagent.api, meshagent.tools" in dev_sh
+    assert 'meshagent room connect "$@" -- "$VENV_PYTHON" -u server.py' in dev_sh
+    assert "Pick a room, then the Python agent toolkit will connect." in dev_sh
+    assert "Run ./scripts/dev.sh to use the MeshAgent room picker." in dev_sh
+    assert 'if [ "$status" -eq 130 ] || [ "$status" -eq 143 ]; then' in dev_sh
     assert "MESHAGENT_CREATE_DEV_PROBE" in server_py
     assert "room.agents.invoke_tool" in server_py
     assert "room.storage.upload" not in server_py
-    assert (
-        'meshagent deploy . --tag "$IMAGE_TAG" --meshagent-token agentDefault --wait'
-        in deploy_sh
-    )
+    assert "exec meshagent deploy ." in deploy_sh
+    assert '  "$@" \\' in deploy_sh
+    assert '  --tag "$IMAGE_TAG" \\' in deploy_sh
+    assert "  --meshagent-token agentDefault \\" in deploy_sh
 
     assert diagnosis.language == "Python"
     assert diagnosis.sdk == "meshagent-api"
@@ -441,6 +449,12 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     assert result.exit_code == 0
     assert "Created a minimal deployable Python Web App" in result.output
     assert "--meshagent-token" not in result.output
+    assert "Install dependencies" not in result.output
+    assert "./scripts/install.sh" not in result.output
+    assert "./scripts/dev.sh" in result.output
+    assert "./scripts/dev.sh --room <room>" not in result.output
+    assert "./scripts/deploy.sh" in result.output
+    assert "./scripts/deploy.sh --room <room>" not in result.output
 
     pyproject = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
     readme = (tmp_path / "README.md").read_text(encoding="utf-8")
@@ -458,9 +472,11 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     )
 
     assert "Python Web App" in readme
-    assert "./scripts/install.sh" in readme
+    assert "./scripts/install.sh" not in readme
     assert "./scripts/dev.sh" in readme
+    assert "./scripts/dev.sh --room <room>" not in readme
     assert "./scripts/deploy.sh" in readme
+    assert "./scripts/deploy.sh --room <room>" not in readme
     assert "Read `README.md`" in agents_md
     assert "Read `README.md`" in claude_md
     assert '"aiohttp[speedups]~=3.13.0"' in pyproject
@@ -471,11 +487,14 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     assert "from aiohttp import web" in server_py
     assert "import aiofiles" in server_py
     assert "read_content_sync" not in server_py
-    assert "asyncio.to_thread" not in server_py
+    assert "asyncio.to_thread(webbrowser.open, url)" in server_py
     assert "content = await read_content()" in server_py
     assert 'app.router.add_get("/status", status)' in server_py
     assert 'app.router.add_get("/api/ping", ping)' in server_py
     assert "RoomClient" in server_py
+    assert "webbrowser.open" in server_py
+    assert "PYTHON_WEBSERVER_LOCAL_URL" in server_py
+    assert "PYTHON_WEBSERVER_OPEN_BROWSER" in server_py
     assert "FunctionTool" in server_py
     assert "class PythonContentToolkit" in server_py
     assert 'name="create"' in server_py
@@ -496,12 +515,20 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     assert 'VENV="${VENV:-.venv}"' in install_sh
     assert 'PIP_ONLY_BINARY="${PIP_ONLY_BINARY:-:all:}"' in install_sh
     _assert_python_install_prefers_local_sdk(install_sh)
-    assert 'meshagent room connect -- "$VENV_PYTHON" -u server.py' in dev_sh
-    assert "./scripts/install.sh" not in dev_sh
+    assert "./scripts/install.sh" in dev_sh
+    assert "import aiofiles, aiohttp, meshagent.api, meshagent.tools" in dev_sh
+    assert 'meshagent room connect "$@" -- "$VENV_PYTHON" -u server.py' in dev_sh
+    assert "PYTHON_WEBSERVER_LOCAL_URL" in dev_sh
+    assert "PYTHON_WEBSERVER_OPEN_BROWSER" in dev_sh
+    assert "webbrowser.open" not in dev_sh
+    assert "Pick a room, then the web app will launch at $LOCAL_URL" in dev_sh
     assert (
-        'meshagent deploy . --tag "$IMAGE_TAG" --public --liveness /health --wait'
-        in deploy_sh
+        "exec meshagent deploy ." in deploy_sh
     )
+    assert '  "$@" \\' in deploy_sh
+    assert '  --tag "$IMAGE_TAG" \\' in deploy_sh
+    assert "  --public \\" in deploy_sh
+    assert "  --liveness /health \\" in deploy_sh
     assert diagnosis.sdk == "meshagent-api"
     assert diagnosis.python_has_pyproject is True
     assert diagnosis.python_source_uses_sdk is True
@@ -523,10 +550,11 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "Created a minimal deployable Python Contact Form" in result.output
-    assert "2. Create room" in result.output
-    assert "3. Run locally" in result.output
-    assert "4. Deploy" in result.output
-    assert "meshagent rooms create <room> --if-not-exists" in result.output
+    assert "Install dependencies" not in result.output
+    assert "Create room" not in result.output
+    assert "1. Run locally" in result.output
+    assert "2. Deploy" in result.output
+    assert "meshagent rooms create <room> --if-not-exists" not in result.output
     assert "Email setup is handled by the deploy template" in result.output
     assert ".meshagent/deploy.yaml injects CONTACT_FORM_FROM" in result.output
     assert (
@@ -538,11 +566,13 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "If CONTACT_FORM_TO is also a private MeshAgent mailbox" in result.output
     assert "CONTACT_FORM_FROM" in result.output
     assert "CONTACT_FORM_TO" in result.output
-    assert "./scripts/dev.sh --room <room>" in result.output
+    assert "./scripts/dev.sh" in result.output
+    assert "./scripts/dev.sh --room <room>" not in result.output
     assert (
-        "CONTACT_FORM_TO=you@example.com ./scripts/deploy.sh --room <room>"
+        "CONTACT_FORM_TO=you@example.com ./scripts/deploy.sh"
         in result.output
     )
+    assert "./scripts/deploy.sh --room <room>" not in result.output
 
     pyproject = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
     readme = (tmp_path / "README.md").read_text(encoding="utf-8")
@@ -559,9 +589,11 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     )
 
     assert "Python Contact Form" in readme
-    assert "meshagent rooms create <room> --if-not-exists" in readme
-    assert "./scripts/dev.sh --room <room>" in readme
-    assert "CONTACT_FORM_TO=you@example.com ./scripts/deploy.sh --room <room>" in readme
+    assert "meshagent rooms create <room> --if-not-exists" not in readme
+    assert "./scripts/dev.sh" in readme
+    assert "./scripts/dev.sh --room <room>" not in readme
+    assert "CONTACT_FORM_TO=you@example.com ./scripts/deploy.sh" in readme
+    assert "./scripts/deploy.sh --room <room>" not in readme
     assert "Deploy uses `.meshagent/deploy.yaml` as a service template" in readme
     assert "deploy creates or updates the public sender mailbox" in readme
     assert "meshagent mailbox create" not in readme
@@ -589,7 +621,11 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "await runner.cleanup()" in server_py
     assert "except KeyboardInterrupt" in server_py
     assert "Stopped contact form." in server_py
-    assert "webbrowser" not in server_py
+    assert "webbrowser.open" in server_py
+    assert "CONTACT_FORM_LOCAL_URL" in server_py
+    assert "CONTACT_FORM_OPEN_BROWSER" in server_py
+    assert "MESHAGENT_ROOM" in server_py
+    assert "contact-{room_slug_from_name(room_name)}@mail.meshagent.com" in server_py
     assert "contact@mail.meshagent.com" in server_py
     assert "you@example.com" in server_py
     _assert_runtime_image_mount_deploy_yaml(
@@ -601,30 +637,33 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert 'VENV="${VENV:-.venv}"' in install_sh
     assert 'PIP_ONLY_BINARY="${PIP_ONLY_BINARY:-:all:}"' in install_sh
     assert "SDK_ROOT=" not in install_sh
+    assert "./scripts/install.sh" in dev_sh
     assert "CONTACT_FORM_FROM" in dev_sh
-    assert "mailbox_from_room" in dev_sh
+    assert "mailbox_from_room" not in dev_sh
     assert "CONTACT_FORM_TO" in dev_sh
     assert "CONTACT_FORM_DELIVERY_TO" in dev_sh
     assert "SMTP_HOSTNAME" in dev_sh
     assert "SMTP_USERNAME" in dev_sh
     assert "mail.meshagent.com" in dev_sh
-    assert "Browser will launch at $LOCAL_URL" in dev_sh
-    assert "webbrowser.open(sys.argv[1])" in dev_sh
+    assert "Pick a room, then the contact form will launch at $LOCAL_URL" in dev_sh
+    assert "CONTACT_FORM_LOCAL_URL" in dev_sh
+    assert "webbrowser.open" not in dev_sh
     assert "CONTACT_FORM_OPEN_BROWSER" in dev_sh
     assert "CONTACT_FORM_OPEN_BROWSER_PROMPT" not in dev_sh
     assert "read -r OPEN_BROWSER_ANSWER" not in dev_sh
-    assert 'meshagent rooms create "$ROOM_NAME" --if-not-exists' in dev_sh
+    assert 'meshagent rooms create "$ROOM_NAME" --if-not-exists' not in dev_sh
     assert 'meshagent room connect "$@" -- "$VENV_PYTHON" -u server.py' in dev_sh
     assert 'if [ "$status" -eq 130 ] || [ "$status" -eq 143 ]; then' in dev_sh
     assert "Stopped contact form." in dev_sh
-    assert "If the room does not exist yet, create it first:" in dev_sh
-    assert "meshagent rooms create <room> --if-not-exists" in dev_sh
+    assert "Run ./scripts/dev.sh to use the MeshAgent room picker." in dev_sh
+    assert "If the room does not exist yet, create it first:" not in dev_sh
+    assert "meshagent rooms create <room> --if-not-exists" not in dev_sh
     assert 'meshagent rooms create "$ROOM_NAME" --if-not-exists' not in deploy_sh
     assert "--meshagent-token agentDefault" in deploy_sh
     assert '--set "from_email=$CONTACT_FORM_FROM"' in deploy_sh
     assert '--set "to_email=$CONTACT_FORM_TO"' in deploy_sh
     assert '--set "delivery_email=$CONTACT_FORM_DELIVERY_TO"' in deploy_sh
-    assert "mailbox_from_room" in deploy_sh
+    assert "mailbox_from_room" not in deploy_sh
     assert '"$@"' in deploy_sh
     assert "If you passed --room and the room does not exist yet" not in deploy_sh
     assert "meshagent deploy will prompt for a room interactively" not in deploy_sh
@@ -753,6 +792,7 @@ def test_init_creates_python_task_queue_dashboard_non_interactively(tmp_path) ->
     assert 'meshagent rooms create "$ROOM_NAME" --if-not-exists' not in dev_sh
     assert 'meshagent room connect "$@" -- "$VENV_PYTHON" -u server.py' in dev_sh
     assert "MeshAgent room picker" in dev_sh
+    assert "without --room" not in dev_sh
     assert "TASK_QUEUE_DASHBOARD_LOCAL_URL" in dev_sh
     assert "TASK_QUEUE_DASHBOARD_OPEN_BROWSER" in dev_sh
     assert "webbrowser.open" not in dev_sh

@@ -117,6 +117,14 @@ AGENT_NEXT_STEPS = (
     "./scripts/dev.sh",
     "./scripts/deploy.sh",
 )
+PYTHON_WEBSERVER_NEXT_STEPS = (
+    "./scripts/dev.sh",
+    "./scripts/deploy.sh",
+)
+PYTHON_AGENT_NEXT_STEPS = (
+    "./scripts/dev.sh",
+    "./scripts/deploy.sh",
+)
 NPM_WEBSERVER_NEXT_STEPS = (
     "npm run dev",
     "npm run deploy",
@@ -130,10 +138,8 @@ NPM_CHATBOT_UI_NEXT_STEPS = (
     "npm run deploy",
 )
 CONTACT_FORM_NEXT_STEPS = (
-    "./scripts/install.sh",
-    "meshagent rooms create <room> --if-not-exists",
-    "./scripts/dev.sh --room <room>",
-    "CONTACT_FORM_TO=you@example.com ./scripts/deploy.sh --room <room>",
+    "./scripts/dev.sh",
+    "CONTACT_FORM_TO=you@example.com ./scripts/deploy.sh",
 )
 TASK_QUEUE_DASHBOARD_NEXT_STEPS = (
     "./scripts/dev.sh",
@@ -276,7 +282,7 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         label="Python Web App",
         description="Async Python public HTTP service with a health route.",
         template_dir=_template_dir("python", WEB_FOCUS),
-        next_steps=WEBSERVER_NEXT_STEPS,
+        next_steps=PYTHON_WEBSERVER_NEXT_STEPS,
     ),
     ("python", AGENT_FOCUS): CreateTemplate(
         language_id="python",
@@ -284,7 +290,7 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         label="Python Agent Toolkit",
         description="Headless Python service that exposes custom tools to agents.",
         template_dir=_template_dir("python", AGENT_FOCUS),
-        next_steps=AGENT_NEXT_STEPS,
+        next_steps=PYTHON_AGENT_NEXT_STEPS,
     ),
     ("python", CONTACT_FORM_FOCUS): CreateTemplate(
         language_id="python",
@@ -910,7 +916,7 @@ def _print_contact_form_email_guidance(template: CreateTemplate) -> None:
         "  meshagent deploy creates or updates the public sender mailbox from CONTACT_FORM_FROM."
     )
     typer.echo(
-        "  ./scripts/deploy.sh derives CONTACT_FORM_FROM from --room when you do not set it."
+        "  meshagent deploy prompts for the sender mailbox when CONTACT_FORM_FROM is not set."
     )
     typer.echo(
         "Set CONTACT_FORM_TO to the address that should receive submissions. "

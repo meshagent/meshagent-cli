@@ -4,19 +4,13 @@ Demonstrates how a small local web service becomes a real public URL on MeshAgen
 
 ## Next Steps
 
-1. Install dependencies:
-
-   ```bash
-   ./scripts/install.sh
-   ```
-
-2. Run locally:
+1. Run locally:
 
    ```bash
    ./scripts/dev.sh
    ```
 
-3. Deploy:
+2. Deploy:
 
    ```bash
    ./scripts/deploy.sh

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import html
 import os
 import re
 import smtplib
+import webbrowser
 from email.message import EmailMessage
 
 from aiohttp import web
@@ -158,6 +160,19 @@ def is_valid_phone(value: str) -> bool:
     return 7 <= len(digits) <= 15
 
 
+def room_slug_from_name(room_name: str) -> str:
+    room_slug = re.sub(r"[^a-z0-9]+", "-", room_name.strip().lower())
+    room_slug = re.sub(r"-+", "-", room_slug).strip("-")[:56]
+    return room_slug or "room"
+
+
+def default_from_address() -> str:
+    room_name = os.getenv("MESHAGENT_ROOM", "").strip()
+    if room_name:
+        return f"contact-{room_slug_from_name(room_name)}@mail.meshagent.com"
+    return DEFAULT_FROM_ADDRESS
+
+
 def render_page(*, flash: str = "", values: dict[str, str] | None = None) -> str:
     values = values or {}
     return (
@@ -193,7 +208,7 @@ def _smtp_config() -> tuple[str | None, str | None, int, str]:
 
 
 def _email_config() -> tuple[str, str]:
-    from_address = os.getenv("CONTACT_FORM_FROM", DEFAULT_FROM_ADDRESS).strip()
+    from_address = (os.getenv("CONTACT_FORM_FROM") or default_from_address()).strip()
     to_address = os.getenv("CONTACT_FORM_TO", DEFAULT_TO_ADDRESS).strip()
     if not is_valid_email(from_address):
         raise ValueError("CONTACT_FORM_FROM must be a valid mailbox address")
@@ -352,6 +367,16 @@ async def submit_contact(request: web.Request) -> web.Response:
     )
 
 
+async def open_local_contact_form() -> None:
+    url = os.getenv("CONTACT_FORM_LOCAL_URL")
+    if not url or os.getenv("CONTACT_FORM_OPEN_BROWSER", "1") == "0":
+        return
+    await asyncio.sleep(0.2)
+    print(f"Opening contact form at {url}", flush=True)
+    with contextlib.suppress(Exception):
+        await asyncio.to_thread(webbrowser.open, url)
+
+
 async def main() -> None:
     port = int(os.environ.get("PORT", "8000"))
     app = web.Application()
@@ -366,6 +391,7 @@ async def main() -> None:
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
     print(f"Serving contact form on 0.0.0.0:{port}", flush=True)
+    await open_local_contact_form()
     try:
         await asyncio.Event().wait()
     finally:

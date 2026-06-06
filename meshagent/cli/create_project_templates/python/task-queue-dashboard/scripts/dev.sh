@@ -23,6 +23,6 @@ if [ "$status" -eq 130 ] || [ "$status" -eq 143 ]; then
 fi
 if [ "$status" -ne 0 ]; then
   echo "" >&2
-  echo "Run ./scripts/dev.sh without --room to use the MeshAgent room picker." >&2
+  echo "Run ./scripts/dev.sh to use the MeshAgent room picker." >&2
   exit "$status"
 fi
