@@ -652,6 +652,118 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert diagnosis.has_http_port_hint is True
 
 
+def test_init_creates_python_task_queue_dashboard_non_interactively(tmp_path) -> None:
+    result = CliRunner().invoke(
+        create_command,
+        [
+            "--language",
+            "python",
+            "--focus",
+            "task-queue-dashboard",
+            "--no-interactive",
+            str(tmp_path),
+        ],
+    )
+    diagnosis = diagnose_project(tmp_path)
+
+    assert result.exit_code == 0
+    assert "Created a minimal deployable Python Task Queue Dashboard" in result.output
+    assert "meshagent rooms create <room> --if-not-exists" not in result.output
+    assert "./scripts/install.sh" not in result.output
+    assert "./scripts/dev.sh" in result.output
+    assert "./scripts/dev.sh --room <room>" not in result.output
+    assert "./scripts/deploy.sh" in result.output
+    assert "./scripts/deploy.sh --room <room>" not in result.output
+
+    pyproject = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
+    readme = (tmp_path / "README.md").read_text(encoding="utf-8")
+    agents_md = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+    claude_md = (tmp_path / "CLAUDE.md").read_text(encoding="utf-8")
+    server_py = (tmp_path / "server.py").read_text(encoding="utf-8")
+    install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")
+    dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
+    deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    deploy_yaml = (tmp_path / ".meshagent" / "deploy.yaml").read_text(encoding="utf-8")
+    _assert_template_dockerfile(tmp_path)
+    _assert_python_dockerfile_vendors_sdk_runtime(
+        tmp_path, dependencies=('"aiohttp[speedups]~=3.13.0"',)
+    )
+
+    assert "Python Task Queue Dashboard" in readme
+    assert "six scheduled demo entries enqueue text payloads 20 seconds apart" in readme
+    assert "ScheduledTaskSpec" in readme
+    assert "15-minute minimum recurring interval" in readme
+    assert "TASK_QUEUE_NAME" in readme
+    assert "TASK_QUEUE_TASK_COUNT" in readme
+    assert "TASK_QUEUE_INTERVAL_SECONDS" in readme
+    assert "./scripts/install.sh" not in readme
+    assert "meshagent rooms create <room> --if-not-exists" not in readme
+    assert "./scripts/dev.sh --room <room>" not in readme
+    assert "./scripts/deploy.sh --room <room>" not in readme
+    assert "Read `README.md`" in agents_md
+    assert "Read `README.md`" in claude_md
+
+    assert '"aiohttp[speedups]~=3.13.0"' in pyproject
+    assert '"meshagent-api==' in pyproject
+    assert "from aiohttp import web" in server_py
+    assert "RoomClient" in server_py
+    assert "WebSocketClientProtocol" in server_py
+    assert "websocket_room_url" in server_py
+    assert 'TASK_COUNT = int(os.getenv("TASK_QUEUE_TASK_COUNT", "6"))' in server_py
+    assert (
+        'TASK_INTERVAL_SECONDS = float(os.getenv("TASK_QUEUE_INTERVAL_SECONDS", "20"))'
+        in server_py
+    )
+    assert "DashboardState" in server_py
+    assert "ScheduledEntry" in server_py
+    assert "RoomQueueAdapter" in server_py
+    assert "LocalQueueAdapter" in server_py
+    assert "room.queues.open" in server_py
+    assert "room.queues.send" in server_py
+    assert "room.queues.receive" in server_py
+    assert "room.queues.list" in server_py
+    assert 'app.router.add_get("/", dashboard)' in server_py
+    assert 'app.router.add_get("/health", health)' in server_py
+    assert 'app.router.add_get("/api/dashboard", api_dashboard)' in server_py
+    assert "Dequeued text item" in server_py
+
+    _assert_runtime_image_mount_deploy_yaml(
+        tmp_path,
+        runtime="python",
+        command="python -m server",
+    )
+    assert "template: agent" in deploy_yaml
+    assert "num: 8000" in deploy_yaml
+    assert "published: true" in deploy_yaml
+    assert "public: true" in deploy_yaml
+    assert "liveness: /health" in deploy_yaml
+    assert 'PYTHON="${PYTHON:-python3.13}"' in install_sh
+    assert 'VENV="${VENV:-.venv}"' in install_sh
+    assert 'PIP_ONLY_BINARY="${PIP_ONLY_BINARY:-:all:}"' in install_sh
+    _assert_python_install_prefers_local_sdk(install_sh)
+    assert "./scripts/install.sh" in dev_sh
+    assert "import aiohttp, meshagent.api" in dev_sh
+    assert 'meshagent rooms create "$ROOM_NAME" --if-not-exists' not in dev_sh
+    assert 'meshagent room connect "$@" -- "$VENV_PYTHON" -u server.py' in dev_sh
+    assert "MeshAgent room picker" in dev_sh
+    assert "TASK_QUEUE_DASHBOARD_LOCAL_URL" in dev_sh
+    assert "TASK_QUEUE_DASHBOARD_OPEN_BROWSER" in dev_sh
+    assert "webbrowser.open" not in dev_sh
+    assert "Pick a room, then the dashboard will launch at $LOCAL_URL" in dev_sh
+    assert "webbrowser.open" in server_py
+    assert "TASK_QUEUE_DASHBOARD_LOCAL_URL" in server_py
+    assert "TASK_QUEUE_DASHBOARD_OPEN_BROWSER" in server_py
+    assert "exec meshagent deploy ." in deploy_sh
+    assert '  "$@" \\' in deploy_sh
+    assert '  --tag "$IMAGE_TAG" \\' in deploy_sh
+    assert "  --meshagent-token agentDefault" in deploy_sh
+    assert diagnosis.sdk == "meshagent-api"
+    assert diagnosis.python_has_pyproject is True
+    assert diagnosis.python_source_uses_sdk is True
+    assert diagnosis.has_health_route is True
+    assert diagnosis.has_http_port_hint is True
+
+
 def test_init_creates_javascript_webserver_non_interactively(tmp_path) -> None:
     result = CliRunner().invoke(
         create_command,
@@ -1705,6 +1817,7 @@ def test_init_rejects_unknown_focus(tmp_path) -> None:
         "room-chat",
         "room-workspace",
         "contact-form",
+        "task-queue-dashboard",
     ):
         assert expected_focus in result.output
     assert not (tmp_path / "Dockerfile").exists()
@@ -1745,6 +1858,7 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
         "room-chat",
         "room-workspace",
         "contact-form",
+        "task-queue-dashboard",
     ]
     focus_labels = {choice[0]: choice[1] for choice in captured_focuses}
     assert focus_labels["webserver"] == "Web App"
@@ -1755,6 +1869,7 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
     assert focus_labels["room-chat"] == "Room Chat"
     assert focus_labels["room-workspace"] == "Room Workspace"
     assert focus_labels["contact-form"] == "Contact Form"
+    assert focus_labels["task-queue-dashboard"] == "Task Queue Dashboard"
     focus_descriptions = {choice[0]: choice[2] for choice in captured_focuses}
     assert focus_descriptions["webserver"] == (
         "Public HTTP service with a health endpoint."
@@ -1782,6 +1897,9 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
     )
     assert focus_descriptions["contact-form"] == (
         "Public HTML contact form that sends email through a room mailbox."
+    )
+    assert focus_descriptions["task-queue-dashboard"] == (
+        "Public dashboard backed by a scheduled queue worker."
     )
     descriptions_by_focus = {choice[0]: dict(choice[3]) for choice in captured_focuses}
     assert descriptions_by_focus["webserver"]["python"] == (
@@ -1811,6 +1929,12 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
         "beginners can see how real app settings get wired into a deployed "
         "service."
     )
+    assert descriptions_by_focus["task-queue-dashboard"]["python"] == (
+        "Shows a room-connected queue workflow with an operational dashboard: "
+        "six scheduled demo entries enqueue text payloads 20 seconds apart, a "
+        "listener drains the room queue, and the page reports pending tasks, "
+        "queue size, and enqueue/dequeue totals."
+    )
     assert descriptions_by_focus["room-workspace"]["typescript"] == (
         "Shows why room apps matter once you need more than one feature. A "
         "private page connects to the room, chats with agents, shows meeting "
@@ -1822,6 +1946,7 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
         "webserver",
         "backend-agent",
         "contact-form",
+        "task-queue-dashboard",
     )
     assert {choice[0]: choice[3] for choice in captured_languages}["react"] == (
         "webserver",

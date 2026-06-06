@@ -65,6 +65,7 @@ CHATBOT_UI_FOCUS = "chatbot-ui"
 ROOM_CHAT_FOCUS = "room-chat"
 ROOM_WORKSPACE_FOCUS = "room-workspace"
 CONTACT_FORM_FOCUS = "contact-form"
+TASK_QUEUE_DASHBOARD_FOCUS = "task-queue-dashboard"
 DEFAULT_LANGUAGE = "python"
 DEFAULT_FOCUS = AGENT_FOCUS
 CREATE_TEMPLATE_PACKAGE = "meshagent.cli.create_project_templates"
@@ -133,6 +134,10 @@ CONTACT_FORM_NEXT_STEPS = (
     "meshagent rooms create <room> --if-not-exists",
     "./scripts/dev.sh --room <room>",
     "CONTACT_FORM_TO=you@example.com ./scripts/deploy.sh --room <room>",
+)
+TASK_QUEUE_DASHBOARD_NEXT_STEPS = (
+    "./scripts/dev.sh",
+    "./scripts/deploy.sh",
 )
 NPM_AGENT_NEXT_STEPS = (
     "npm run dev",
@@ -252,6 +257,11 @@ FOCUSES: Mapping[str, CreateFocus] = {
         label="Contact Form",
         description="Public HTML contact form that sends email through a room mailbox.",
     ),
+    TASK_QUEUE_DASHBOARD_FOCUS: CreateFocus(
+        id=TASK_QUEUE_DASHBOARD_FOCUS,
+        label="Task Queue Dashboard",
+        description="Public dashboard backed by a scheduled queue worker.",
+    ),
 }
 
 
@@ -283,6 +293,14 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         description="Public aiohttp contact form that sends email through room SMTP.",
         template_dir=_template_dir("python", CONTACT_FORM_FOCUS),
         next_steps=CONTACT_FORM_NEXT_STEPS,
+    ),
+    ("python", TASK_QUEUE_DASHBOARD_FOCUS): CreateTemplate(
+        language_id="python",
+        focus_id=TASK_QUEUE_DASHBOARD_FOCUS,
+        label="Python Task Queue Dashboard",
+        description="Python dashboard that schedules text work onto a room queue.",
+        template_dir=_template_dir("python", TASK_QUEUE_DASHBOARD_FOCUS),
+        next_steps=TASK_QUEUE_DASHBOARD_NEXT_STEPS,
     ),
     ("javascript", WEB_FOCUS): CreateTemplate(
         language_id="javascript",
@@ -465,6 +483,19 @@ FOCUS_ALIASES = {
     "email": CONTACT_FORM_FOCUS,
     "email-form": CONTACT_FORM_FOCUS,
     "email_form": CONTACT_FORM_FOCUS,
+    "queue": TASK_QUEUE_DASHBOARD_FOCUS,
+    "queue-dashboard": TASK_QUEUE_DASHBOARD_FOCUS,
+    "queue_dashboard": TASK_QUEUE_DASHBOARD_FOCUS,
+    "scheduled-queue": TASK_QUEUE_DASHBOARD_FOCUS,
+    "scheduled_queue": TASK_QUEUE_DASHBOARD_FOCUS,
+    "scheduled-task": TASK_QUEUE_DASHBOARD_FOCUS,
+    "scheduled_task": TASK_QUEUE_DASHBOARD_FOCUS,
+    "scheduled-task-queue": TASK_QUEUE_DASHBOARD_FOCUS,
+    "scheduled_task_queue": TASK_QUEUE_DASHBOARD_FOCUS,
+    "task-queue": TASK_QUEUE_DASHBOARD_FOCUS,
+    "task_queue": TASK_QUEUE_DASHBOARD_FOCUS,
+    "task-queue-dashboard": TASK_QUEUE_DASHBOARD_FOCUS,
+    "task_queue_dashboard": TASK_QUEUE_DASHBOARD_FOCUS,
     "roomclient": AGENT_FOCUS,
     "room-client": AGENT_FOCUS,
     "web": WEB_FOCUS,
