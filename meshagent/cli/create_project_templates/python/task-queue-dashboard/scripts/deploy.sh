@@ -6,5 +6,7 @@ IMAGE_TAG="${IMAGE_TAG:-meshagent-create-python-task-queue-dashboard:dev}"
 exec meshagent deploy . \
   "$@" \
   --tag "$IMAGE_TAG" \
+  --public \
+  --liveness /health \
   --meshagent-token agentDefault \
   --wait

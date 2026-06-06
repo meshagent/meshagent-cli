@@ -756,6 +756,8 @@ def test_init_creates_python_task_queue_dashboard_non_interactively(tmp_path) ->
     assert "exec meshagent deploy ." in deploy_sh
     assert '  "$@" \\' in deploy_sh
     assert '  --tag "$IMAGE_TAG" \\' in deploy_sh
+    assert "  --public \\" in deploy_sh
+    assert "  --liveness /health \\" in deploy_sh
     assert "  --meshagent-token agentDefault" in deploy_sh
     assert diagnosis.sdk == "meshagent-api"
     assert diagnosis.python_has_pyproject is True
