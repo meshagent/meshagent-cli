@@ -522,9 +522,7 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     assert "PYTHON_WEBSERVER_OPEN_BROWSER" in dev_sh
     assert "webbrowser.open" not in dev_sh
     assert "Pick a room, then the web app will launch at $LOCAL_URL" in dev_sh
-    assert (
-        "exec meshagent deploy ." in deploy_sh
-    )
+    assert "exec meshagent deploy ." in deploy_sh
     assert '  "$@" \\' in deploy_sh
     assert '  --tag "$IMAGE_TAG" \\' in deploy_sh
     assert "  --public \\" in deploy_sh
@@ -568,10 +566,7 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "CONTACT_FORM_TO" in result.output
     assert "./scripts/dev.sh" in result.output
     assert "./scripts/dev.sh --room <room>" not in result.output
-    assert (
-        "CONTACT_FORM_TO=you@example.com ./scripts/deploy.sh"
-        in result.output
-    )
+    assert "CONTACT_FORM_TO=you@example.com ./scripts/deploy.sh" in result.output
     assert "./scripts/deploy.sh --room <room>" not in result.output
 
     pyproject = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
