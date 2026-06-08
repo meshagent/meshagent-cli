@@ -14,6 +14,7 @@ from meshagent.api.client import (
     ConflictError,
     MeshagentDeploymentConfig,
     MeshagentDomains,
+    Mailbox,
     NotFoundError,
     PermissionDeniedError,
     ProjectInfo,
@@ -101,11 +102,13 @@ class _FakeDeployConfigClient:
         pages: str | None = "pages.meshagent.example",
         mail: str | None = "mail.meshagent.example",
         routes: dict[str, Route] | None = None,
+        mailboxes: dict[str, Mailbox] | None = None,
     ) -> None:
         self._config = MeshagentDeploymentConfig(
             domains=MeshagentDomains(pages=pages, mail=mail)
         )
         self._routes = routes or {}
+        self._mailboxes = mailboxes or {}
 
     async def get_config(self) -> MeshagentDeploymentConfig:
         return self._config
@@ -116,6 +119,13 @@ class _FakeDeployConfigClient:
         if route is None:
             raise NotFoundError("route not found")
         return route
+
+    async def get_mailbox(self, *, project_id: str, address: str) -> Mailbox:
+        del project_id
+        mailbox = self._mailboxes.get(address)
+        if mailbox is None:
+            raise NotFoundError("mailbox not found")
+        return mailbox
 
 
 def test_root_deploy_describe_prints_local_template(tmp_path: Path) -> None:
@@ -4012,6 +4022,80 @@ container:
 
 
 @pytest.mark.asyncio
+async def test_resolve_deploy_template_values_discards_saved_email_for_other_room(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values_file = tmp_path / ".meshagent" / "values.yaml"
+    values_file.parent.mkdir()
+    values_file.write_text(
+        "from_email: old-room@mail.meshagent.example\n", encoding="utf-8"
+    )
+    template = image.ServiceTemplateSpec.from_yaml(
+        yaml="""
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: demo
+variables:
+  - name: from_email
+    type: email
+    optional: true
+  - name: image
+    optional: true
+container:
+  image: "{{ image }}"
+""",
+        values={},
+    )
+    prompts: list[tuple[str, str]] = []
+
+    async def _fake_run_deploy_template_variables_tui(*, variables):
+        from meshagent.cli.tui.deploy_room import DeployTemplateVariablesResult
+
+        values = {}
+        for variable in variables:
+            prompts.append((variable.name, variable.default))
+            values[variable.name] = variable.default
+        return DeployTemplateVariablesResult(status="completed", values=values)
+
+    monkeypatch.setattr(image, "_stdio_is_interactive", lambda: True)
+    monkeypatch.setattr(
+        "meshagent.cli.tui.deploy_room.run_deploy_template_variables_tui",
+        _fake_run_deploy_template_variables_tui,
+    )
+
+    values = await image._resolve_deploy_template_values(
+        account_client=_FakeDeployConfigClient(
+            mail="mail.meshagent.example",
+            mailboxes={
+                "old-room@mail.meshagent.example": Mailbox(
+                    address="old-room@mail.meshagent.example",
+                    room="old-room",
+                    queue="old-room@mail.meshagent.example",
+                    public=True,
+                    annotations={},
+                )
+            },
+        ),
+        project_id="project-1",
+        template=template,
+        room_name="new-room",
+        service_name="demo",
+        values_file=values_file,
+        extra_values_files=[],
+        set_values=[],
+        image="repo/demo:1",
+    )
+
+    assert values["from_email"] == "demo-new-room-2cd45dcc@mail.meshagent.example"
+    assert image._service_template_email_values(template=template, values=values) == [
+        "demo-new-room-2cd45dcc@mail.meshagent.example"
+    ]
+    assert prompts == [("from_email", "demo-new-room-2cd45dcc@mail.meshagent.example")]
+
+
+@pytest.mark.asyncio
 async def test_resolve_deploy_template_values_requires_values_when_not_tty(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4106,10 +4190,16 @@ container:
     )
 
     assert values["domain"] == "contact-room.pages.meshagent.example"
-    assert values["from_email"] == "contact-form@mail.meshagent.example"
+    assert (
+        values["from_email"]
+        == "contact-form-contact-room-21c8b685@mail.meshagent.example"
+    )
     assert prompts == [
         ("Domain", "contact-room.pages.meshagent.example"),
-        ("From_email", "contact-form@mail.meshagent.example"),
+        (
+            "From_email",
+            "contact-form-contact-room-21c8b685@mail.meshagent.example",
+        ),
     ]
 
 
