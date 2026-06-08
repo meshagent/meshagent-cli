@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import html
+import json
 import os
 import re
 import smtplib
@@ -184,6 +187,23 @@ def render_page(*, flash: str = "", values: dict[str, str] | None = None) -> str
     )
 
 
+def smtp_username_from_meshagent_token() -> str | None:
+    token = os.getenv("MESHAGENT_TOKEN", "").strip()
+    parts = token.split(".")
+    if len(parts) < 2:
+        return None
+    payload = parts[1]
+    payload += "=" * (-len(payload) % 4)
+    try:
+        decoded = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")))
+    except (binascii.Error, TypeError, ValueError):
+        return None
+    username = decoded.get("name")
+    if isinstance(username, str) and username.strip() != "":
+        return username.strip()
+    return None
+
+
 def _smtp_config() -> tuple[str | None, str | None, int, str]:
     from_address, _ = _email_config()
     fallback_hostname = from_address.rsplit("@", 1)[1]
@@ -200,7 +220,7 @@ def _smtp_config() -> tuple[str | None, str | None, int, str]:
 
     port = int(os.getenv("SMTP_PORT", "587"))
     return (
-        os.getenv("SMTP_USERNAME"),
+        os.getenv("SMTP_USERNAME") or smtp_username_from_meshagent_token(),
         os.getenv("SMTP_PASSWORD") or os.getenv("MESHAGENT_TOKEN"),
         port,
         hostname,
@@ -228,6 +248,17 @@ def _delivery_to_address(to_address: str) -> str:
 
 def _flash(*, message: str, kind: str) -> str:
     return f'<p class="notice {kind}">{html.escape(message)}</p>'
+
+
+def mail_error_message(exc: Exception) -> str:
+    detail = str(exc).strip() or type(exc).__name__
+    if "5.7.1 Permission denied" in detail:
+        return (
+            "Unable to send mail: permission denied. If CONTACT_FORM_TO is a "
+            "private MeshAgent mailbox, set CONTACT_FORM_DELIVERY_TO to a public "
+            "mailbox or external delivery alias."
+        )
+    return f"Unable to send mail: {detail}"
 
 
 def _build_message(values: dict[str, str]) -> EmailMessage:
@@ -346,11 +377,10 @@ async def submit_contact(request: web.Request) -> web.Response:
     try:
         await asyncio.to_thread(_send_email, _build_message(values))
     except Exception as exc:
-        detail = str(exc).strip() or type(exc).__name__
         return web.Response(
             text=render_page(
                 flash=_flash(
-                    message=f"Unable to send mail: {detail}",
+                    message=mail_error_message(exc),
                     kind="error",
                 ),
                 values=values,

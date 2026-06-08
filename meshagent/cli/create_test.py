@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib.util
 import json
 import sys
@@ -608,7 +609,12 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "to_addrs=[delivery_to]" in server_py
     assert "SMTP_HOSTNAME" in server_py
     assert "MESHAGENT_MAIL_DOMAIN" in server_py
+    assert "smtp_username_from_meshagent_token" in server_py
+    assert "base64.urlsafe_b64decode" in server_py
     assert "Unable to send mail: {detail}" in server_py
+    assert "private MeshAgent mailbox" in server_py
+    assert "CONTACT_FORM_DELIVERY_TO to a public" in server_py
+    assert "mailbox or external delivery alias" in server_py
     assert 'app.router.add_get("/health", health)' in server_py
     assert 'app.router.add_post("/contact", submit_contact)' in server_py
     assert "asyncio.to_thread" in server_py
@@ -623,11 +629,27 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "contact-{room_slug_from_name(room_name)}@mail.meshagent.com" in server_py
     assert "contact@mail.meshagent.com" in server_py
     assert "you@example.com" in server_py
-    _assert_runtime_image_mount_deploy_yaml(
+    deploy_spec = _assert_runtime_image_mount_deploy_yaml(
         tmp_path,
         runtime="python",
         command="python -m server",
     )
+    assert deploy_spec.agents is not None
+    assert len(deploy_spec.agents) == 1
+    sender_agent = deploy_spec.agents[0]
+    assert sender_agent.name == "python-contact-form"
+    assert sender_agent.email is not None
+    assert sender_agent.email.address == "from@example.com"
+    assert sender_agent.email.public is True
+    assert deploy_spec.container is not None
+    env_by_name = {
+        env_var.name: env_var for env_var in (deploy_spec.container.environment or [])
+    }
+    assert env_by_name["SMTP_USERNAME"].value == "python-contact-form"
+    assert env_by_name["MESHAGENT_TOKEN"].token is not None
+    assert env_by_name["MESHAGENT_TOKEN"].token.identity == "python-contact-form"
+    assert env_by_name["MESHAGENT_TOKEN"].token.role == "agent"
+    assert env_by_name["SMTP_PASSWORD"].token == env_by_name["MESHAGENT_TOKEN"].token
     assert 'PYTHON="${PYTHON:-python3.13}"' in install_sh
     assert 'VENV="${VENV:-.venv}"' in install_sh
     assert 'PIP_ONLY_BINARY="${PIP_ONLY_BINARY:-:all:}"' in install_sh
@@ -655,18 +677,20 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "meshagent rooms create <room> --if-not-exists" not in dev_sh
     assert 'meshagent rooms create "$ROOM_NAME" --if-not-exists' not in deploy_sh
     assert "--meshagent-token agentDefault" in deploy_sh
-    assert '--set "from_email=$CONTACT_FORM_FROM"' in deploy_sh
-    assert '--set "to_email=$CONTACT_FORM_TO"' in deploy_sh
-    assert '--set "delivery_email=$CONTACT_FORM_DELIVERY_TO"' in deploy_sh
+    assert 'set -- "$@" --tag "$IMAGE_TAG" --meshagent-token agentDefault' in deploy_sh
+    assert 'if [ -n "$CONTACT_FORM_FROM" ]; then' in deploy_sh
+    assert 'set -- "$@" --set "from_email=$CONTACT_FORM_FROM"' in deploy_sh
+    assert 'set -- "$@" --set "to_email=$CONTACT_FORM_TO"' in deploy_sh
+    assert 'if [ -n "$CONTACT_FORM_DELIVERY_TO" ]; then' in deploy_sh
+    assert (
+        'set -- "$@" --set "delivery_email=$CONTACT_FORM_DELIVERY_TO"' in deploy_sh
+    )
     assert "mailbox_from_room" not in deploy_sh
     assert '"$@"' in deploy_sh
     assert "If you passed --room and the room does not exist yet" not in deploy_sh
     assert "meshagent deploy will prompt for a room interactively" not in deploy_sh
-    assert "exec meshagent deploy ." in deploy_sh
+    assert 'exec meshagent deploy . "$@" --wait' in deploy_sh
     assert 'if [ "$status" -eq 130 ]; then' not in deploy_sh
-    assert '  "$@" \\' in deploy_sh
-    assert '  --tag "$IMAGE_TAG" \\' in deploy_sh
-    assert "  --meshagent-token agentDefault" in deploy_sh
     assert "kind: ServiceTemplate" in deploy_yaml
     assert "name: from_email" in deploy_yaml
     assert "name: to_email" in deploy_yaml
@@ -676,11 +700,17 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
         0
     ]
     assert "type: email" not in to_email_section
+    assert "agents:" in deploy_yaml
+    assert "name: python-contact-form" in deploy_yaml
+    assert 'address: "{{ from_email }}"' in deploy_yaml
     assert "template: agent" in deploy_yaml
     assert "num: 8000" in deploy_yaml
     assert "CONTACT_FORM_FROM" in deploy_yaml
     assert "CONTACT_FORM_TO" in deploy_yaml
     assert "CONTACT_FORM_DELIVERY_TO" in deploy_yaml
+    assert "SMTP_USERNAME" in deploy_yaml
+    assert "MESHAGENT_TOKEN" in deploy_yaml
+    assert "SMTP_PASSWORD" in deploy_yaml
     assert "published: true" in deploy_yaml
     assert "public: true" in deploy_yaml
     assert "liveness: /health" in deploy_yaml
@@ -688,6 +718,54 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert diagnosis.sdk is None
     assert diagnosis.has_health_route is True
     assert diagnosis.has_http_port_hint is True
+
+
+def test_python_contact_form_smtp_config_uses_meshagent_token_name(
+    tmp_path, monkeypatch
+) -> None:
+    result = CliRunner().invoke(
+        create_command,
+        [
+            "--language",
+            "python",
+            "--focus",
+            "contact-form",
+            "--no-interactive",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 0
+
+    module_name = f"generated_contact_form_{id(tmp_path)}"
+    spec = importlib.util.spec_from_file_location(module_name, tmp_path / "server.py")
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+
+    payload = base64.urlsafe_b64encode(
+        json.dumps({"name": "python-contact-form"}).encode("utf-8")
+    ).decode("ascii")
+    token = f"header.{payload.rstrip('=')}.signature"
+    monkeypatch.delenv("SMTP_USERNAME", raising=False)
+    monkeypatch.delenv("SMTP_PASSWORD", raising=False)
+    monkeypatch.setenv("MESHAGENT_TOKEN", token)
+    monkeypatch.setenv("CONTACT_FORM_FROM", "contact@mail.meshagent.example")
+    monkeypatch.setenv("CONTACT_FORM_TO", "owner@example.com")
+
+    username, password, port, hostname = module._smtp_config()
+
+    assert username == "python-contact-form"
+    assert password == token
+    assert port == 587
+    assert hostname == "mail.meshagent.example"
+    assert (
+        module.mail_error_message(Exception("(550, b'5.7.1 Permission denied')"))
+        == "Unable to send mail: permission denied. If CONTACT_FORM_TO is a "
+        "private MeshAgent mailbox, set CONTACT_FORM_DELIVERY_TO to a public "
+        "mailbox or external delivery alias."
+    )
 
 
 def test_init_creates_python_task_queue_dashboard_non_interactively(tmp_path) -> None:
