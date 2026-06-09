@@ -19,11 +19,7 @@ variables:
     type: email
   - name: to_email
     title: Destination email
-    description: External or public email address that receives contact form submissions.
-  - name: delivery_email
-    title: SMTP envelope recipient
-    description: Optional external delivery alias when the destination is a private MeshAgent mailbox.
-    optional: true
+    description: Email address that receives contact form submissions.
 agents:
   - name: python-contact-form
     email:
@@ -39,8 +35,6 @@ container:
       value: "{{ from_email }}"
     - name: CONTACT_FORM_TO
       value: "{{ to_email }}"
-    - name: CONTACT_FORM_DELIVERY_TO
-      value: "{{ delivery_email }}"
     - name: SMTP_USERNAME
       value: python-contact-form
     - name: MESHAGENT_TOKEN

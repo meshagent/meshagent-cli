@@ -926,9 +926,6 @@ def _print_contact_form_email_guidance(template: CreateTemplate) -> None:
     typer.echo(
         "If deploy reports that the sender mailbox already routes to a different room, choose another room-specific local part."
     )
-    typer.echo(
-        "If CONTACT_FORM_TO is also a private MeshAgent mailbox, use a public destination mailbox or an external delivery alias."
-    )
 
 
 def _print_created_report(

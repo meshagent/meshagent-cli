@@ -562,7 +562,7 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "Before testing a submission, set up the sender mailbox" not in result.output
     assert "meshagent mailbox create" not in result.output
     assert "meshagent mailbox update" not in result.output
-    assert "If CONTACT_FORM_TO is also a private MeshAgent mailbox" in result.output
+    assert "If CONTACT_FORM_TO is also a private MeshAgent mailbox" not in result.output
     assert "CONTACT_FORM_FROM" in result.output
     assert "CONTACT_FORM_TO" in result.output
     assert "./scripts/dev.sh" in result.output
@@ -605,17 +605,22 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "smtplib.SMTP" in server_py
     assert "CONTACT_FORM_FROM" in server_py
     assert "CONTACT_FORM_TO" in server_py
-    assert "CONTACT_FORM_DELIVERY_TO" in server_py
-    assert "to_addrs=[delivery_to]" in server_py
+    assert "CONTACT_FORM_DELIVERY_TO" not in server_py
+    assert "smtp.rcpt(to_address)" in server_py
+    assert "smtp.data(msg.as_bytes(policy=policy.SMTP))" in server_py
+    assert "smtp_delivery_accepted" in server_py
+    assert "contact_form_submit_received" in server_py
+    assert "contact_form_send_failed" in server_py
     assert "SMTP_HOSTNAME" in server_py
     assert "MESHAGENT_MAIL_DOMAIN" in server_py
     assert "smtp_username_from_meshagent_token" in server_py
     assert "base64.urlsafe_b64decode" in server_py
     assert "Unable to send mail: {detail}" in server_py
-    assert "private MeshAgent mailbox" in server_py
-    assert "CONTACT_FORM_DELIVERY_TO to a public" in server_py
-    assert "mailbox or external delivery alias" in server_py
+    assert "SMTPDataError" in server_py
+    assert "PRIVATE_MAILBOX_PERMISSION_ERROR" in server_py
+    assert "from_address=to_address" in server_py
     assert 'app.router.add_get("/health", health)' in server_py
+    assert 'app.router.add_get("/contact", index)' in server_py
     assert 'app.router.add_post("/contact", submit_contact)' in server_py
     assert "asyncio.to_thread" in server_py
     assert "starttls" in server_py
@@ -628,7 +633,11 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "MESHAGENT_ROOM" in server_py
     assert "contact-{room_slug_from_name(room_name)}@mail.meshagent.com" in server_py
     assert "contact@mail.meshagent.com" in server_py
-    assert "you@example.com" in server_py
+    assert 'DEFAULT_TO_ADDRESS = ""' in server_py
+    assert (
+        "Set CONTACT_FORM_TO to the address that should receive submissions"
+        in server_py
+    )
     deploy_spec = _assert_runtime_image_mount_deploy_yaml(
         tmp_path,
         runtime="python",
@@ -658,7 +667,8 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "CONTACT_FORM_FROM" in dev_sh
     assert "mailbox_from_room" not in dev_sh
     assert "CONTACT_FORM_TO" in dev_sh
-    assert "CONTACT_FORM_DELIVERY_TO" in dev_sh
+    assert 'CONTACT_FORM_TO="${CONTACT_FORM_TO:-}"' in dev_sh
+    assert "CONTACT_FORM_DELIVERY_TO" not in dev_sh
     assert "SMTP_HOSTNAME" in dev_sh
     assert "SMTP_USERNAME" in dev_sh
     assert "mail.meshagent.com" in dev_sh
@@ -681,10 +691,8 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert 'if [ -n "$CONTACT_FORM_FROM" ]; then' in deploy_sh
     assert 'set -- "$@" --set "from_email=$CONTACT_FORM_FROM"' in deploy_sh
     assert 'set -- "$@" --set "to_email=$CONTACT_FORM_TO"' in deploy_sh
-    assert 'if [ -n "$CONTACT_FORM_DELIVERY_TO" ]; then' in deploy_sh
-    assert (
-        'set -- "$@" --set "delivery_email=$CONTACT_FORM_DELIVERY_TO"' in deploy_sh
-    )
+    assert "CONTACT_FORM_DELIVERY_TO" not in deploy_sh
+    assert "delivery_email" not in deploy_sh
     assert "mailbox_from_room" not in deploy_sh
     assert '"$@"' in deploy_sh
     assert "If you passed --room and the room does not exist yet" not in deploy_sh
@@ -694,7 +702,7 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "kind: ServiceTemplate" in deploy_yaml
     assert "name: from_email" in deploy_yaml
     assert "name: to_email" in deploy_yaml
-    assert "name: delivery_email" in deploy_yaml
+    assert "name: delivery_email" not in deploy_yaml
     assert "type: email" in deploy_yaml
     to_email_section = deploy_yaml.split("name: to_email", 1)[1].split("container:", 1)[
         0
@@ -707,7 +715,7 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "num: 8000" in deploy_yaml
     assert "CONTACT_FORM_FROM" in deploy_yaml
     assert "CONTACT_FORM_TO" in deploy_yaml
-    assert "CONTACT_FORM_DELIVERY_TO" in deploy_yaml
+    assert "CONTACT_FORM_DELIVERY_TO" not in deploy_yaml
     assert "SMTP_USERNAME" in deploy_yaml
     assert "MESHAGENT_TOKEN" in deploy_yaml
     assert "SMTP_PASSWORD" in deploy_yaml
@@ -762,10 +770,103 @@ def test_python_contact_form_smtp_config_uses_meshagent_token_name(
     assert hostname == "mail.meshagent.example"
     assert (
         module.mail_error_message(Exception("(550, b'5.7.1 Permission denied')"))
-        == "Unable to send mail: permission denied. If CONTACT_FORM_TO is a "
-        "private MeshAgent mailbox, set CONTACT_FORM_DELIVERY_TO to a public "
-        "mailbox or external delivery alias."
+        == "Unable to send mail: (550, b'5.7.1 Permission denied')"
     )
+    assert (
+        module.mail_error_message(
+            ValueError("CONTACT_FORM_TO must be a valid recipient address")
+        )
+        == "Set CONTACT_FORM_TO to the address that should receive submissions before sending."
+    )
+
+
+def test_python_contact_form_retries_private_meshagent_mailbox_delivery(
+    tmp_path, monkeypatch
+) -> None:
+    result = CliRunner().invoke(
+        create_command,
+        [
+            "--language",
+            "python",
+            "--focus",
+            "contact-form",
+            "--no-interactive",
+            str(tmp_path),
+        ],
+    )
+    assert result.exit_code == 0
+
+    module_name = f"generated_contact_form_retry_{id(tmp_path)}"
+    spec = importlib.util.spec_from_file_location(module_name, tmp_path / "server.py")
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+
+    monkeypatch.setenv("CONTACT_FORM_FROM", "contact@mail.meshagent.example")
+    monkeypatch.setenv("CONTACT_FORM_TO", "owner@example.com")
+    monkeypatch.setenv("SMTP_HOSTNAME", "mail.meshagent.example")
+    monkeypatch.setenv("SMTP_STARTTLS", "false")
+    monkeypatch.delenv("SMTP_USERNAME", raising=False)
+    monkeypatch.delenv("SMTP_PASSWORD", raising=False)
+    monkeypatch.delenv("MESHAGENT_TOKEN", raising=False)
+
+    sends: list[tuple[str, str]] = []
+
+    class _FakeSMTP:
+        def __init__(self, *args, **kwargs) -> None:
+            self.from_addr = ""
+            self.to_addr = ""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def starttls(self) -> None:
+            raise AssertionError("STARTTLS should be disabled for this test")
+
+        def login(self, username, password) -> None:
+            raise AssertionError("login should not run without credentials")
+
+        def ehlo(self):
+            return 250, b"hello"
+
+        def mail(self, from_addr):
+            self.from_addr = from_addr
+            return 250, b"sender ok"
+
+        def rcpt(self, to_addr):
+            self.to_addr = to_addr
+            sends.append((self.from_addr, self.to_addr))
+            return 250, b"recipient ok"
+
+        def data(self, message_bytes):
+            if len(sends) == 1:
+                raise module.smtplib.SMTPDataError(550, b"5.7.1 Permission denied")
+            return 250, b"Message accepted for delivery"
+
+    monkeypatch.setattr(module.smtplib, "SMTP", _FakeSMTP)
+    msg = module._build_message(
+        {
+            "name": "Ada",
+            "email": "ada@example.com",
+            "phone": "",
+            "message": "Hello",
+        }
+    )
+
+    module._send_email(msg, submission_id="retry-test")
+
+    assert sends == [
+        ("contact@mail.meshagent.example", "owner@example.com"),
+        ("owner@example.com", "owner@example.com"),
+    ]
+    assert msg["From"] == "contact@mail.meshagent.example"
+    assert msg["To"] == "owner@example.com"
+    assert msg["Message-ID"]
 
 
 def test_init_creates_python_task_queue_dashboard_non_interactively(tmp_path) -> None:
