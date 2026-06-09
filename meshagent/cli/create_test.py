@@ -606,11 +606,11 @@ def test_init_creates_python_contact_form_non_interactively(tmp_path) -> None:
     assert "CONTACT_FORM_FROM" in server_py
     assert "CONTACT_FORM_TO" in server_py
     assert "CONTACT_FORM_DELIVERY_TO" not in server_py
-    assert "smtp.rcpt(to_address)" in server_py
-    assert "smtp.data(msg.as_bytes(policy=policy.SMTP))" in server_py
-    assert "smtp_delivery_accepted" in server_py
+    assert "to_addrs=[to_address]" in server_py
+    assert "smtp_send_succeeded" in server_py
     assert "contact_form_submit_received" in server_py
     assert "contact_form_send_failed" in server_py
+    assert "CONTACT_FORM_LOG_DETAILS" in server_py
     assert "SMTP_HOSTNAME" in server_py
     assert "MESHAGENT_MAIL_DOMAIN" in server_py
     assert "smtp_username_from_meshagent_token" in server_py
@@ -812,12 +812,11 @@ def test_python_contact_form_retries_private_meshagent_mailbox_delivery(
     monkeypatch.delenv("SMTP_PASSWORD", raising=False)
     monkeypatch.delenv("MESHAGENT_TOKEN", raising=False)
 
-    sends: list[tuple[str, str]] = []
+    sends: list[tuple[str, list[str]]] = []
 
     class _FakeSMTP:
         def __init__(self, *args, **kwargs) -> None:
-            self.from_addr = ""
-            self.to_addr = ""
+            pass
 
         def __enter__(self):
             return self
@@ -831,22 +830,10 @@ def test_python_contact_form_retries_private_meshagent_mailbox_delivery(
         def login(self, username, password) -> None:
             raise AssertionError("login should not run without credentials")
 
-        def ehlo(self):
-            return 250, b"hello"
-
-        def mail(self, from_addr):
-            self.from_addr = from_addr
-            return 250, b"sender ok"
-
-        def rcpt(self, to_addr):
-            self.to_addr = to_addr
-            sends.append((self.from_addr, self.to_addr))
-            return 250, b"recipient ok"
-
-        def data(self, message_bytes):
+        def send_message(self, msg, *, from_addr, to_addrs) -> None:
+            sends.append((from_addr, list(to_addrs)))
             if len(sends) == 1:
                 raise module.smtplib.SMTPDataError(550, b"5.7.1 Permission denied")
-            return 250, b"Message accepted for delivery"
 
     monkeypatch.setattr(module.smtplib, "SMTP", _FakeSMTP)
     msg = module._build_message(
@@ -861,8 +848,8 @@ def test_python_contact_form_retries_private_meshagent_mailbox_delivery(
     module._send_email(msg, submission_id="retry-test")
 
     assert sends == [
-        ("contact@mail.meshagent.example", "owner@example.com"),
-        ("owner@example.com", "owner@example.com"),
+        ("contact@mail.meshagent.example", ["owner@example.com"]),
+        ("owner@example.com", ["owner@example.com"]),
     ]
     assert msg["From"] == "contact@mail.meshagent.example"
     assert msg["To"] == "owner@example.com"
