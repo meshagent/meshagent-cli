@@ -2,7 +2,7 @@
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-IMAGE_TAG="${IMAGE_TAG:-meshagent-create-python-task-queue-dashboard:dev}"
+IMAGE_TAG="${IMAGE_TAG:-meshagent-task-queue-dashboard:dev}"
 exec meshagent deploy . \
   "$@" \
   --tag "$IMAGE_TAG" \

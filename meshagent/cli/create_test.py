@@ -962,6 +962,7 @@ def test_init_creates_python_task_queue_dashboard_non_interactively(tmp_path) ->
     assert "TASK_QUEUE_DASHBOARD_LOCAL_URL" in server_py
     assert "TASK_QUEUE_DASHBOARD_OPEN_BROWSER" in server_py
     assert "exec meshagent deploy ." in deploy_sh
+    assert 'IMAGE_TAG="${IMAGE_TAG:-meshagent-task-queue-dashboard:dev}"' in deploy_sh
     assert '  "$@" \\' in deploy_sh
     assert '  --tag "$IMAGE_TAG" \\' in deploy_sh
     assert "  --public \\" in deploy_sh
