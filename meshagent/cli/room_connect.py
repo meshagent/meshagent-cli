@@ -232,13 +232,18 @@ async def _list_connect_rooms(
     *,
     project_id: str,
 ) -> list[Room]:
-    return await account_client.list_rooms(
+    room_grants = await account_client.list_room_grants_by_user(
         project_id=project_id,
+        user_id="me",
         limit=500,
         offset=0,
         order_by="room_name",
         filter=None,
     )
+    rooms_by_id: dict[str, Room] = {}
+    for room_grant in room_grants:
+        rooms_by_id.setdefault(room_grant.room.id, room_grant.room)
+    return list(rooms_by_id.values())
 
 
 async def _run_connect_room_picker_tui(

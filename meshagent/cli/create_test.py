@@ -7,7 +7,7 @@ import json
 import sys
 
 import pytest
-from typer._click.testing import CliRunner
+from meshagent.cli.testing import CliRunner
 
 from meshagent.api.specs.service import ServiceTemplateSpec
 from meshagent.cli import create as create_module

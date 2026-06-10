@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 import typer
-from typer._click.testing import CliRunner
+from meshagent.cli.testing import CliRunner
 
 from meshagent.api import ApiScope, ParticipantToken
 from meshagent.api.client import NotFoundError, Room
@@ -217,16 +217,17 @@ async def test_room_connect_missing_room_prompts_for_existing_room(
     assert resolved_project_id == "project-1"
     assert resolved_room == "dev-room"
     assert account_client.can_create_rooms_calls == ["project-1"]
-    assert account_client.list_rooms_calls == [
+    assert account_client.list_rooms_calls == []
+    assert account_client.list_room_grants_by_user_calls == [
         {
             "project_id": "project-1",
+            "user_id": "me",
             "limit": 500,
             "offset": 0,
             "order_by": "room_name",
             "filter": None,
         }
     ]
-    assert account_client.list_room_grants_by_user_calls == []
     assert account_client.create_room_calls == []
     assert account_client.closed is True
     room_choices = captured_picker["rooms"]
