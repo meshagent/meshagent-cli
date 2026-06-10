@@ -1,6 +1,6 @@
 import asyncio
 
-import click
+from typer import _click as click
 from typer.core import TyperOption
 
 from meshagent.api.specs.service import ContainerSpec, ServiceMetadata, ServiceSpec

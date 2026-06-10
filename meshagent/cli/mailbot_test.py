@@ -1,6 +1,6 @@
 import asyncio
 
-import click
+from typer import _click as click
 
 from meshagent.cli import mailbot
 

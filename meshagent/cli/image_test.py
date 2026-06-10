@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from typer._click.testing import CliRunner
 import pytest
 import typer
 
@@ -31,7 +32,6 @@ from meshagent.api.image_runtime import (
 from meshagent.api.error_codes import ErrorCode
 from meshagent.api.room_ports import ROOM_INTERNAL_API_PORT
 from meshagent.cli import async_typer, cli, image
-from meshagent.cli.testing import CliRunner
 from meshagent.api.room_server_client import (
     PublishedBuildImage,
     RoomException,

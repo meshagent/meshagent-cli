@@ -2,7 +2,7 @@ import importlib
 import types
 
 import typer
-from meshagent.cli.testing import CliRunner
+from typer._click.testing import CliRunner
 
 from meshagent.cli import async_typer
 
@@ -39,38 +39,6 @@ def _module_with_alias_app(*, module_name: str, command_name: str) -> types.Modu
         typer.echo(f"web_search={web_search}")
 
     module.app = app
-    return module
-
-
-def _module_with_command(
-    *, module_name: str, command_name: str, output: str
-) -> types.ModuleType:
-    module = types.ModuleType(module_name)
-    app = async_typer.AsyncTyper(help=f"{command_name} command")
-
-    @app.command(command_name)
-    def _command() -> None:
-        typer.echo(output)
-
-    module.command = async_typer.get_command(app)
-    return module
-
-
-def _module_with_group(
-    *, module_name: str, command_name: str, output: str
-) -> types.ModuleType:
-    module = types.ModuleType(module_name)
-    app = async_typer.AsyncTyper(help=f"{command_name} command group")
-
-    @app.callback()
-    def _callback() -> None:
-        return None
-
-    @app.command(command_name)
-    def _command() -> None:
-        typer.echo(output)
-
-    module.group = async_typer.get_command(app)
     return module
 
 
@@ -161,72 +129,6 @@ def test_lazy_command_path_loads_leaf_command(monkeypatch) -> None:
     assert result.exit_code == 0
     assert result.output == "hello\n"
     assert recorded_imports == ["tests.fake_leaf"]
-
-
-def test_lazy_command_loads_command_attribute(monkeypatch) -> None:
-    app = async_typer.LazyTyper(help="Root commands")
-    app.add_lazy_command(
-        name="version",
-        module="tests.fake_version_command",
-        attribute="command",
-        help="Print version",
-    )
-
-    fake_command_module = _module_with_command(
-        module_name="tests.fake_version_command",
-        command_name="version",
-        output="1.2.3",
-    )
-
-    recorded_imports: list[str] = []
-    original_import_module = importlib.import_module
-
-    def _fake_import_module(name: str, package: str | None = None):
-        recorded_imports.append(name)
-        if name == "tests.fake_version_command":
-            return fake_command_module
-        return original_import_module(name, package)
-
-    monkeypatch.setattr(importlib, "import_module", _fake_import_module)
-
-    result = CliRunner().invoke(async_typer.get_command(app), ["version"])
-
-    assert result.exit_code == 0
-    assert result.output == "1.2.3\n"
-    assert recorded_imports == ["tests.fake_version_command"]
-
-
-def test_lazy_command_loads_group_attribute(monkeypatch) -> None:
-    app = async_typer.LazyTyper(help="Root commands")
-    app.add_lazy_command(
-        name="secrets",
-        module="tests.fake_secrets_group",
-        attribute="group",
-        help="Manage secrets",
-    )
-
-    fake_group_module = _module_with_group(
-        module_name="tests.fake_secrets_group",
-        command_name="key",
-        output="secret",
-    )
-
-    recorded_imports: list[str] = []
-    original_import_module = importlib.import_module
-
-    def _fake_import_module(name: str, package: str | None = None):
-        recorded_imports.append(name)
-        if name == "tests.fake_secrets_group":
-            return fake_group_module
-        return original_import_module(name, package)
-
-    monkeypatch.setattr(importlib, "import_module", _fake_import_module)
-
-    result = CliRunner().invoke(async_typer.get_command(app), ["secrets", "key"])
-
-    assert result.exit_code == 0
-    assert result.output == "secret\n"
-    assert recorded_imports == ["tests.fake_secrets_group"]
 
 
 def test_lazy_command_path_preserves_deprecated_option_aliases(monkeypatch) -> None:

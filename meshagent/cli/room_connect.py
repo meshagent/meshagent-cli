@@ -232,24 +232,13 @@ async def _list_connect_rooms(
     *,
     project_id: str,
 ) -> list[Room]:
-    rooms_by_id: dict[str, Room] = {}
-    limit = 500
-    offset = 0
-    while True:
-        room_grants = await account_client.list_room_grants_by_user(
-            project_id=project_id,
-            user_id="me",
-            limit=limit,
-            offset=offset,
-            order_by="room_name",
-        )
-        for room_grant in room_grants:
-            rooms_by_id.setdefault(room_grant.room.id, room_grant.room)
-        if len(room_grants) < limit:
-            break
-        offset += limit
-
-    return sorted(rooms_by_id.values(), key=lambda room: room.name.lower())
+    return await account_client.list_rooms(
+        project_id=project_id,
+        limit=500,
+        offset=0,
+        order_by="room_name",
+        filter=None,
+    )
 
 
 async def _run_connect_room_picker_tui(
@@ -291,10 +280,11 @@ async def _select_connect_room_interactively(*, project_id: str) -> str:
         )
 
         if len(rooms) == 0 and not can_create_room:
-            raise typer.BadParameter(
-                "No rooms found for this project. Create a room or pass --room "
-                "explicitly."
+            print(
+                "[red]No rooms found for this project. Create a room or pass --room "
+                "explicitly.[/red]"
             )
+            raise SystemExit(1)
 
         from meshagent.cli.tui.deploy_room import DeployRoomChoice
 
@@ -316,10 +306,12 @@ async def _select_connect_room_interactively(*, project_id: str) -> str:
             if result.status == "create" and result.create_room_name is not None:
                 active_user_id = get_active_user_id()
                 if active_user_id is None:
-                    raise typer.BadParameter(
-                        "Unable to determine the active user for the room owner "
+                    print(
+                        "[red]Unable to determine the active user for the room owner "
                         "grant. Run `meshagent auth login` or pass --room explicitly."
+                        "[/red]"
                     )
+                    raise SystemExit(1)
                 try:
                     room = await account_client.create_room(
                         project_id=project_id,
@@ -337,7 +329,7 @@ async def _select_connect_room_interactively(*, project_id: str) -> str:
             if result.status == "completed" and result.selected_room_name is not None:
                 return result.selected_room_name
 
-            raise typer.Exit(130)
+            raise SystemExit(130)
     finally:
         await account_client.close()
 

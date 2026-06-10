@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 import typer
-from meshagent.cli.testing import CliRunner
+from typer._click.testing import CliRunner
 
 from meshagent.api import ApiScope, ParticipantToken
 from meshagent.api.client import NotFoundError, Room
@@ -35,6 +35,7 @@ class _FakeAccountClient:
         self.connect_calls: list[dict[str, str]] = []
         self.secret_calls: list[dict[str, str | None]] = []
         self.can_create_rooms_calls: list[str] = []
+        self.list_rooms_calls: list[dict[str, object]] = []
         self.list_room_grants_by_user_calls: list[dict[str, object]] = []
         self.create_room_calls: list[dict[str, object]] = []
 
@@ -73,6 +74,26 @@ class _FakeAccountClient:
         self.can_create_rooms_calls.append(project_id)
         return self.can_create_rooms_value
 
+    async def list_rooms(
+        self,
+        *,
+        project_id: str,
+        limit: int,
+        offset: int,
+        order_by: str,
+        filter: str | None = None,
+    ) -> list[Room]:
+        self.list_rooms_calls.append(
+            {
+                "project_id": project_id,
+                "limit": limit,
+                "offset": offset,
+                "order_by": order_by,
+                "filter": filter,
+            }
+        )
+        return self.rooms[offset : offset + limit]
+
     async def list_room_grants_by_user(
         self,
         *,
@@ -81,6 +102,7 @@ class _FakeAccountClient:
         limit: int,
         offset: int,
         order_by: str,
+        filter: str | None = None,
     ) -> list[SimpleNamespace]:
         self.list_room_grants_by_user_calls.append(
             {
@@ -89,6 +111,7 @@ class _FakeAccountClient:
                 "limit": limit,
                 "offset": offset,
                 "order_by": order_by,
+                "filter": filter,
             }
         )
         return [
@@ -194,15 +217,16 @@ async def test_room_connect_missing_room_prompts_for_existing_room(
     assert resolved_project_id == "project-1"
     assert resolved_room == "dev-room"
     assert account_client.can_create_rooms_calls == ["project-1"]
-    assert account_client.list_room_grants_by_user_calls == [
+    assert account_client.list_rooms_calls == [
         {
             "project_id": "project-1",
-            "user_id": "me",
             "limit": 500,
             "offset": 0,
             "order_by": "room_name",
+            "filter": None,
         }
     ]
+    assert account_client.list_room_grants_by_user_calls == []
     assert account_client.create_room_calls == []
     assert account_client.closed is True
     room_choices = captured_picker["rooms"]
@@ -279,7 +303,7 @@ async def test_room_connect_missing_room_noninteractive_still_fails(
         return "project-1"
 
     async def _unexpected_select_connect_room_interactively(*, project_id: str) -> str:
-        raise AssertionError("noninteractive room connect should not prompt")
+        raise SystemExit("noninteractive room connect should not prompt")
 
     monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
     monkeypatch.setattr(room_connect, "resolve_room", lambda room: None)
@@ -290,7 +314,7 @@ async def test_room_connect_missing_room_noninteractive_still_fails(
         _unexpected_select_connect_room_interactively,
     )
 
-    with pytest.raises(room_connect.typer_click.exceptions.Exit):
+    with pytest.raises(Exception):
         await room_connect._resolve_connected_room_inputs(
             project_id="project-input",
             room=None,

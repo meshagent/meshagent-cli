@@ -146,10 +146,6 @@ def _is_click_group(command: ClickCommand) -> bool:
 
 
 def _coerce_to_click_command(target: Any) -> ClickCommand:
-    if isinstance(target, TyperGroup):
-        return target
-    if isinstance(target, TyperCommand):
-        return target
     if isinstance(target, typer_click.Command):
         return target
     if isinstance(target, Typer):

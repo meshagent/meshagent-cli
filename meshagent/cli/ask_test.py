@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 import typer
-from meshagent.cli.testing import CliRunner
+from typer._click.testing import CliRunner
 from PIL import Image
 
 from meshagent.agents import AgentSessionContext
