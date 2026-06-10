@@ -3,7 +3,7 @@ import typer
 import json
 import pathlib
 from typing import Optional
-from typer._click.testing import CliRunner
+from meshagent.cli.testing import CliRunner
 
 from meshagent.cli import async_typer, cli, services
 

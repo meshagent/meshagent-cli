@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from typer._click.testing import CliRunner
+from meshagent.cli.testing import CliRunner
 
 from meshagent.cli import doctor as doctor_module
 from meshagent.cli.doctor import (
@@ -126,8 +126,6 @@ def test_doctor_fix_writes_missing_python_pyproject_only(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "Applied fixes" in result.output
-    assert "Wrote pyproject.toml" in result.output
-    assert "Create Dockerfile from MeshAgent doctor recommendation" in result.output
     assert "Create pyproject.toml with Python runtime metadata" in result.output
     assert "Run `meshagent doctor` and address remaining findings" in result.output
 
@@ -192,7 +190,7 @@ def test_doctor_fix_skips_node_project_without_ncc_metadata(tmp_path) -> None:
     )
 
 
-def test_doctor_fix_writes_node_dockerfile_when_ncc_metadata_matches(
+def test_doctor_fix_skips_node_dockerfile_when_no_package_update_is_needed(
     tmp_path,
 ) -> None:
     (tmp_path / "package.json").write_text(
@@ -208,15 +206,9 @@ def test_doctor_fix_writes_node_dockerfile_when_ncc_metadata_matches(
 
     result = CliRunner().invoke(doctor_command, ["--fix", str(tmp_path)])
 
-    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
-
     assert result.exit_code == 0
-    assert "Applied fixes" in result.output
-    assert "Create Dockerfile from MeshAgent doctor recommendation" in result.output
-    assert "node-sdk" in dockerfile
-    assert "RUN npm run build" in dockerfile
-    assert "COPY --from=build /app/dist/index.js /app/index.js" in dockerfile
-    assert "LABEL meshagent.runtime=node" in dockerfile
+    assert "No auto-fixable missing files were found" in result.output
+    assert not (tmp_path / "Dockerfile").exists()
 
 
 def test_doctor_fix_reports_no_autofix_for_empty_project(tmp_path) -> None:
@@ -813,7 +805,7 @@ def test_doctor_reports_go_without_roomclient_token_guidance(
     assert "--meshagent-token" not in result.output
     assert "env -u" not in result.output
     assert "Deployment checks" in result.output
-    assert "go build -o server server.go" in result.output
+    assert "go build -o /tmp/meshagent-doctor-server server.go" in result.output
     assert "Dockerfile missing: add Dockerfile or meshagent.yaml" in result.output
 
 

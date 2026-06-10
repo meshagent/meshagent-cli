@@ -1,4 +1,4 @@
-from typer._click.testing import CliRunner
+from meshagent.cli.testing import CliRunner
 import pytest
 
 from meshagent.cli import async_typer

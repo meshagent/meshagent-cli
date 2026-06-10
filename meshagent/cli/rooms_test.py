@@ -1,7 +1,7 @@
 import json
 
 import pytest
-from typer._click.testing import CliRunner
+from meshagent.cli.testing import CliRunner
 
 from meshagent.api.client import ProjectRoomGrant, Room
 from meshagent.api.participant_token import ApiScope
