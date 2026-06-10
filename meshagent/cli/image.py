@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import posixpath
@@ -2707,6 +2708,31 @@ def _email_has_domain(*, value: str, domain: str) -> bool:
     )
 
 
+def _email_default_slug(*, value: str, fallback: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower())
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    return slug or fallback
+
+
+def _template_email_default_local_part(*, room_name: str, service_name: str) -> str:
+    service_slug = _email_default_slug(value=service_name, fallback="service")
+    room_slug = _email_default_slug(value=room_name, fallback="room")
+    digest = hashlib.sha1(room_name.strip().lower().encode("utf-8")).hexdigest()[:8]
+    component_budget = 64 - len(digest) - 2
+    if len(service_slug) + len(room_slug) > component_budget:
+        room_budget = min(len(room_slug), max(1, component_budget // 2))
+        service_budget = component_budget - room_budget
+        if len(service_slug) <= service_budget:
+            service_budget = len(service_slug)
+            room_budget = component_budget - service_budget
+        elif len(room_slug) <= room_budget:
+            room_budget = len(room_slug)
+            service_budget = component_budget - room_budget
+        service_slug = service_slug[:service_budget].strip("-") or "service"
+        room_slug = room_slug[:room_budget].strip("-") or "room"
+    return f"{service_slug}-{room_slug}-{digest}"
+
+
 def _template_variable_default(
     *,
     config: MeshagentDeploymentConfig,
@@ -2722,8 +2748,9 @@ def _template_variable_default(
             return f"{subdomain}.{pages_domain}"
     if variable.type == "email":
         mail_domain = _configured_mail_domain(config)
-        local_part = re.sub(r"[^a-z0-9._+-]+", "-", service_name.strip().lower()).strip(
-            "-"
+        local_part = _template_email_default_local_part(
+            room_name=room_name,
+            service_name=service_name,
         )
         if mail_domain != "" and local_part != "":
             return f"{local_part}@{mail_domain}"
@@ -2762,9 +2789,70 @@ def _validate_deploy_template_variable_domains(
             )
 
 
+async def _discard_conflicting_saved_route_values(
+    *,
+    account_client: Meshagent,
+    project_id: str,
+    room_name: str,
+    template: ServiceTemplateSpec,
+    values: dict[str, str],
+    saved_values: dict[str, str],
+    explicit_value_names: set[str],
+) -> None:
+    for variable in template.variables or []:
+        if variable.type != "route":
+            continue
+        if variable.name in explicit_value_names:
+            continue
+        value = values.get(variable.name, "").strip()
+        saved_value = saved_values.get(variable.name, "").strip()
+        if value == "" or saved_value == "" or value != saved_value:
+            continue
+        try:
+            existing_route = await account_client.get_route(
+                project_id=project_id,
+                domain=value,
+            )
+        except NotFoundError:
+            continue
+        if existing_route.room_name != "" and existing_route.room_name != room_name:
+            values.pop(variable.name, None)
+
+
+async def _discard_conflicting_saved_email_values(
+    *,
+    account_client: Meshagent,
+    project_id: str,
+    room_name: str,
+    template: ServiceTemplateSpec,
+    values: dict[str, str],
+    saved_values: dict[str, str],
+    explicit_value_names: set[str],
+) -> None:
+    for variable in template.variables or []:
+        if variable.type != "email":
+            continue
+        if variable.name in explicit_value_names:
+            continue
+        value = values.get(variable.name, "").strip().lower()
+        saved_value = saved_values.get(variable.name, "").strip().lower()
+        if value == "" or saved_value == "" or value != saved_value:
+            continue
+        try:
+            existing_mailbox = await account_client.get_mailbox(
+                project_id=project_id,
+                address=value,
+            )
+        except NotFoundError:
+            continue
+        if existing_mailbox.room != "" and existing_mailbox.room != room_name:
+            values.pop(variable.name, None)
+
+
 async def _resolve_deploy_template_values(
     *,
     account_client: Meshagent,
+    project_id: str,
     template: ServiceTemplateSpec,
     room_name: str,
     service_name: str,
@@ -2773,16 +2861,40 @@ async def _resolve_deploy_template_values(
     set_values: list[str],
     image: str,
 ) -> dict[str, str]:
-    values = _load_yaml_string_map(values_file)
+    saved_values = _load_yaml_string_map(values_file)
+    values = dict(saved_values)
+    explicit_value_names: set[str] = set()
     for extra_values_file in extra_values_files:
-        values.update(
-            _load_yaml_string_map(Path(extra_values_file).expanduser().resolve())
+        extra_values = _load_yaml_string_map(
+            Path(extra_values_file).expanduser().resolve()
         )
-    values.setdefault("image", image)
-    values.update(_parse_template_value_overrides(set_values))
+        explicit_value_names.update(extra_values)
+        values.update(extra_values)
+    values["image"] = image
+    parsed_set_values = _parse_template_value_overrides(set_values)
+    explicit_value_names.update(parsed_set_values)
+    values.update(parsed_set_values)
 
     variables = template.variables or []
     config = await account_client.get_config() if variables else _empty_deploy_config()
+    await _discard_conflicting_saved_route_values(
+        account_client=account_client,
+        project_id=project_id,
+        room_name=room_name,
+        template=template,
+        values=values,
+        saved_values=saved_values,
+        explicit_value_names=explicit_value_names,
+    )
+    await _discard_conflicting_saved_email_values(
+        account_client=account_client,
+        project_id=project_id,
+        room_name=room_name,
+        template=template,
+        values=values,
+        saved_values=saved_values,
+        explicit_value_names=explicit_value_names,
+    )
     if _stdio_is_interactive():
         from meshagent.cli.tui.deploy_room import (
             DeployTemplateVariablePrompt,
@@ -4570,6 +4682,7 @@ async def deploy_image(
                 )
                 deploy_template_values = await _resolve_deploy_template_values(
                     account_client=account_client,
+                    project_id=resolved_project_id,
                     template=deploy_template_spec,
                     room_name=resolved_room,
                     service_name=_derive_service_name(parsed_tag=parsed_tag),
