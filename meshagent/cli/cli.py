@@ -75,7 +75,7 @@ app.add_lazy_command(
     name="setup",
     module="meshagent.cli.root_commands",
     attribute="setup_command",
-    help="Perform initial login and project/api key activation.",
+    help="Perform initial login and project activation.",
 )
 app.add_lazy_command(
     name="call",
@@ -94,9 +94,14 @@ app.add_lazy_command(
     help="Manage or activate your meshagent projects",
 )
 app.add_lazy_command(
-    name="api-key",
-    module="meshagent.cli.api_keys",
-    help="Manage or activate api-keys for your project",
+    name="service-account",
+    module="meshagent.cli.service_accounts",
+    help="Manage service accounts for your project",
+)
+app.add_lazy_command(
+    name="iam",
+    module="meshagent.cli.iam",
+    help="Manage IAM policies for project resources",
 )
 app.add_lazy_command(
     name="config",
@@ -136,11 +141,6 @@ app.add_lazy_command(
     name="token",
     module="meshagent.cli.participant_token",
     help="Generate participant tokens (JWTs)",
-)
-app.add_lazy_command(
-    name="webhook",
-    module="meshagent.cli.webhook",
-    help="Manage project webhooks",
 )
 app.add_lazy_command(
     name="service",

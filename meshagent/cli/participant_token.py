@@ -1,9 +1,8 @@
 import typer
 from rich import print
 from typing import Annotated
-from meshagent.api import ParticipantToken
 from meshagent.cli import async_typer
-from meshagent.cli.helper import get_client, resolve_key, resolve_project_id
+from meshagent.cli.helper import mint_participant_token_for_cli, resolve_project_id
 import pathlib
 from typing import Optional
 from meshagent.api.participant_token import ParticipantTokenSpec
@@ -33,31 +32,19 @@ async def generate(
     """Generate a signed participant token (JWT) from a YAML spec."""
 
     project_id = await resolve_project_id(project_id=project_id)
-    key = await resolve_key(project_id=project_id, key=key)
+    with open(str(pathlib.Path(input).expanduser().resolve()), "rb") as f:
+        spec = parse_yaml_raw_as(ParticipantTokenSpec, f.read())
 
-    client = await get_client()
-    try:
-        with open(str(pathlib.Path(input).expanduser().resolve()), "rb") as f:
-            spec = parse_yaml_raw_as(ParticipantTokenSpec, f.read())
+    jwt = await mint_participant_token_for_cli(
+        project_id=project_id,
+        name=spec.identity,
+        room_name=spec.room,
+        role=spec.role,
+        api_scope=spec.api,
+        key=key,
+    )
 
-        token = ParticipantToken(
-            name=spec.identity,
-        )
-
-        if spec.role is not None:
-            token.add_role_grant(role=spec.role)
-        if spec.room is not None:
-            token.add_room_grant(spec.room)
-
-        token.add_api_grant(spec.api)
-
-        if output is None:
-            print(token.to_jwt(api_key=key))
-
-        else:
-            pathlib.Path(output).expanduser().resolve().write_text(
-                token.to_jwt(api_key=key)
-            )
-
-    finally:
-        await client.close()
+    if output is None:
+        print(jwt)
+    else:
+        pathlib.Path(output).expanduser().resolve().write_text(jwt)

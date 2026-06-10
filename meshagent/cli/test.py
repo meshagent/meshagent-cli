@@ -10,7 +10,6 @@ from rich import print
 
 from meshagent.api import (
     ApiScope,
-    ParticipantToken,
     RoomClient,
     RoomException,
     ToolContentSpec,
@@ -28,7 +27,11 @@ from meshagent.api.messaging import (
 )
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
-from meshagent.cli.helper import resolve_key, resolve_project_id, resolve_room
+from meshagent.cli.helper import (
+    mint_participant_token_for_cli,
+    resolve_project_id,
+    resolve_room,
+)
 from meshagent.tools import Toolkit, ContentTool, ToolContext
 from meshagent.tools.hosting import _start_hosted_toolkit
 
@@ -376,8 +379,7 @@ async def stream_tool(
         )
         raise typer.Exit(1) from exc
 
-    key = await resolve_key(project_id=project_id, key=key)
-    await resolve_project_id(project_id=project_id)
+    project_id = await resolve_project_id(project_id=project_id)
     room_name = resolve_room(room)
     if room_name is None:
         print("[red]Room name is required[/red]")
@@ -385,11 +387,14 @@ async def stream_tool(
 
     jwt = os.getenv("MESHAGENT_TOKEN")
     if jwt is None or room_name != os.getenv("MESHAGENT_ROOM"):
-        token = ParticipantToken(name=name)
-        token.add_role_grant(role=role)
-        token.add_room_grant(room_name)
-        token.add_api_grant(ApiScope.full())
-        jwt = token.to_jwt(api_key=key)
+        jwt = await mint_participant_token_for_cli(
+            project_id=project_id,
+            name=name,
+            room_name=room_name,
+            role=role,
+            api_scope=ApiScope.full(),
+            key=key,
+        )
 
     class _StreamToolTextualApp(App[None]):
         CSS = """

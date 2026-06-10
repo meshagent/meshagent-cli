@@ -1,9 +1,9 @@
 import json
 
+from meshagent.cli.testing import CliRunner
 import pytest
-from typer._click.testing import CliRunner
 
-from meshagent.api.client import ProjectRoomGrant, Room
+from meshagent.api.client import Room, RoomsPage
 from meshagent.api.participant_token import ApiScope
 from meshagent.cli import async_typer, cli, rooms
 
@@ -13,65 +13,31 @@ class _FakeRoomsClient:
         self,
         *,
         rooms_result: list[Room],
-        room_grants_result: list[ProjectRoomGrant] | None = None,
     ) -> None:
         self.rooms_result = rooms_result
-        self.room_grants_result = room_grants_result
-        if self.room_grants_result is None:
-            self.room_grants_result = [
-                ProjectRoomGrant(
-                    room=room,
-                    user_id="user-1",
-                    permissions=ApiScope(admin={}),
-                )
-                for room in rooms_result
-            ]
         self.closed = False
-        self.list_rooms_calls: list[dict[str, object]] = []
-        self.list_room_grants_by_user_calls: list[dict[str, object]] = []
+        self.list_rooms_page_calls: list[dict[str, object]] = []
         self.create_room_calls: list[dict[str, object]] = []
 
-    async def list_rooms(
+    async def list_rooms_page(
         self,
         *,
         project_id: str,
-        limit: int,
-        offset: int,
-        order_by: str,
+        page_size: int,
+        continuation_token: str | None = None,
         filter: str | None = None,
-    ) -> list[Room]:
-        self.list_rooms_calls.append(
+        view: str | None = None,
+    ) -> RoomsPage:
+        self.list_rooms_page_calls.append(
             {
                 "project_id": project_id,
-                "limit": limit,
-                "offset": offset,
-                "order_by": order_by,
+                "page_size": page_size,
+                "continuation_token": continuation_token,
                 "filter": filter,
+                "view": view,
             }
         )
-        return self.rooms_result
-
-    async def list_room_grants_by_user(
-        self,
-        *,
-        project_id: str,
-        user_id: str,
-        limit: int,
-        offset: int,
-        order_by: str,
-        filter: str | None = None,
-    ) -> list[ProjectRoomGrant]:
-        self.list_room_grants_by_user_calls.append(
-            {
-                "project_id": project_id,
-                "user_id": user_id,
-                "limit": limit,
-                "offset": offset,
-                "order_by": order_by,
-                "filter": filter,
-            }
-        )
-        return self.room_grants_result
+        return RoomsPage(rooms=self.rooms_result, continuation_token=None)
 
     async def create_room(
         self,
@@ -233,15 +199,13 @@ async def test_room_list_defaults_to_table_output(
 
     await rooms.room_list_command(project_id="project-1")
 
-    assert client.list_rooms_calls == []
-    assert client.list_room_grants_by_user_calls == [
+    assert client.list_rooms_page_calls == [
         {
             "project_id": "resolved-project",
-            "user_id": "me",
-            "limit": 100,
-            "offset": 0,
-            "order_by": "room_name",
+            "page_size": 100,
+            "continuation_token": None,
             "filter": None,
+            "view": "my",
         }
     ]
     assert printed == [
@@ -270,15 +234,13 @@ async def test_room_list_passes_count_and_filter(
 
     await rooms.room_list_command(project_id="project-1", count=25, filter="demo")
 
-    assert client.list_rooms_calls == []
-    assert client.list_room_grants_by_user_calls == [
+    assert client.list_rooms_page_calls == [
         {
             "project_id": "resolved-project",
-            "user_id": "me",
-            "limit": 25,
-            "offset": 0,
-            "order_by": "room_name",
+            "page_size": 25,
+            "continuation_token": None,
             "filter": "demo",
+            "view": "my",
         }
     ]
 
@@ -326,14 +288,13 @@ async def test_room_list_all_uses_project_room_listing(
 
     await rooms.room_list_command(project_id="project-1", show_all=True)
 
-    assert client.list_room_grants_by_user_calls == []
-    assert client.list_rooms_calls == [
+    assert client.list_rooms_page_calls == [
         {
             "project_id": "resolved-project",
-            "limit": 100,
-            "offset": 0,
-            "order_by": "room_name",
+            "page_size": 100,
+            "continuation_token": None,
             "filter": None,
+            "view": "all",
         }
     ]
 

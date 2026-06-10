@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 import typer
-from typer._click.testing import CliRunner
+from meshagent.cli.testing import CliRunner
 
 from meshagent.api import ApiScope, ParticipantToken
 from meshagent.api.client import NotFoundError
@@ -477,18 +477,12 @@ async def test_room_connect_build_env_with_identity_mints_local_token(
         assert project_id == "project-input"
         return "project-1"
 
-    async def _fake_resolve_key(*, project_id: str | None, key: str | None) -> None:
-        assert project_id == "project-1"
-        assert key is None
-        return None
-
     def _fake_resolve_room(room: str | None) -> str | None:
         assert room == "room-input"
         return room
 
     monkeypatch.setattr(room_connect, "get_client", _unexpected_get_client)
     monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
-    monkeypatch.setattr(room_connect, "resolve_key", _fake_resolve_key)
     monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
     monkeypatch.setattr(
         room_connect,
@@ -534,6 +528,67 @@ async def test_room_connect_build_env_with_identity_mints_local_token(
 
 
 @pytest.mark.asyncio
+async def test_room_connect_build_env_with_identity_mints_remote_token_without_local_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mint_calls: list[dict[str, object]] = []
+
+    async def _unexpected_get_client() -> _FakeAccountClient:
+        raise AssertionError("get_client should not be called without --env-secret")
+
+    async def _fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-input"
+        return "project-1"
+
+    async def _fake_mint_token(**kwargs) -> str:
+        mint_calls.append(kwargs)
+        return "router-minted-token"
+
+    def _fake_resolve_room(room: str | None) -> str | None:
+        assert room == "room-input"
+        return room
+
+    monkeypatch.delenv("MESHAGENT_SECRET", raising=False)
+    monkeypatch.delenv("MESHAGENT_API_KEY", raising=False)
+    monkeypatch.setattr(room_connect, "get_client", _unexpected_get_client)
+    monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(
+        room_connect, "mint_participant_token_for_cli", _fake_mint_token
+    )
+    monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
+    monkeypatch.setattr(
+        room_connect,
+        "resolve_api_url",
+        lambda: "https://default.meshagent.test",
+    )
+    monkeypatch.setattr(
+        room_connect,
+        "websocket_room_url",
+        lambda *, room_name: f"wss://room-proxy.meshagent.test/rooms/{room_name}",
+    )
+
+    child_env = await room_connect._build_connected_command_env(
+        project_id="project-input",
+        room="room-input",
+        env=(),
+        env_secret=(),
+        identity="agent-name",
+        meshagent_token=None,
+    )
+
+    assert mint_calls == [
+        {
+            "project_id": "project-1",
+            "name": "agent-name",
+            "room_name": "room-input",
+            "role": "agent",
+            "api_scope": ApiScope.agent_default(),
+        }
+    ]
+    assert child_env["MESHAGENT_TOKEN"] == "router-minted-token"
+
+
+@pytest.mark.asyncio
 async def test_room_connect_build_env_with_identity_mints_requested_role(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -544,18 +599,12 @@ async def test_room_connect_build_env_with_identity_mints_requested_role(
         assert project_id == "project-input"
         return "project-1"
 
-    async def _fake_resolve_key(*, project_id: str | None, key: str | None) -> None:
-        assert project_id == "project-1"
-        assert key is None
-        return None
-
     def _fake_resolve_room(room: str | None) -> str | None:
         assert room == "room-input"
         return room
 
     monkeypatch.setattr(room_connect, "get_client", _unexpected_get_client)
     monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
-    monkeypatch.setattr(room_connect, "resolve_key", _fake_resolve_key)
     monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
     monkeypatch.setattr(
         room_connect,
@@ -599,18 +648,12 @@ async def test_room_connect_build_env_with_identity_and_meshagent_token_mints_lo
         assert project_id == "project-input"
         return "project-1"
 
-    async def _fake_resolve_key(*, project_id: str | None, key: str | None) -> None:
-        assert project_id == "project-1"
-        assert key is None
-        return None
-
     def _fake_resolve_room(room: str | None) -> str | None:
         assert room == "room-input"
         return room
 
     monkeypatch.setattr(room_connect, "get_client", _unexpected_get_client)
     monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
-    monkeypatch.setattr(room_connect, "resolve_key", _fake_resolve_key)
     monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
     monkeypatch.setattr(
         room_connect,
@@ -663,18 +706,12 @@ async def test_room_connect_build_env_with_identity_fetches_secret_without_conne
         assert project_id == "project-input"
         return "project-1"
 
-    async def _fake_resolve_key(*, project_id: str | None, key: str | None) -> None:
-        assert project_id == "project-1"
-        assert key is None
-        return None
-
     def _fake_resolve_room(room: str | None) -> str | None:
         assert room == "room-input"
         return room
 
     monkeypatch.setattr(room_connect, "get_client", _fake_get_client)
     monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
-    monkeypatch.setattr(room_connect, "resolve_key", _fake_resolve_key)
     monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
     monkeypatch.setattr(
         room_connect,

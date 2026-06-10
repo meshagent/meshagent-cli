@@ -5,12 +5,12 @@ from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.api import RoomClient, WebSocketClientProtocol, RoomException
 from meshagent.api.helpers import meshagent_base_url, websocket_room_url
 from meshagent.cli import async_typer
-from meshagent.api import ParticipantToken, ApiScope
+from meshagent.api import ApiScope
 from meshagent.cli.helper import (
     get_client,
+    mint_participant_token_for_cli,
     resolve_project_id,
     resolve_room,
-    resolve_key,
 )
 import os
 from meshagent.api.services import ServiceHost
@@ -41,8 +41,6 @@ async def join(
                     "meshagent.livekit module not found, transcribers are not available"
                 )
 
-    key = await resolve_key(project_id=project_id, key=key)
-
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
@@ -56,16 +54,14 @@ async def join(
                 )
                 raise typer.Exit(1)
 
-            token = ParticipantToken(
+            jwt = await mint_participant_token_for_cli(
+                project_id=project_id,
                 name=agent_name,
+                room_name=room,
+                role="agent",
+                api_scope=ApiScope.agent_default(),
+                key=key,
             )
-
-            token.add_api_grant(ApiScope.agent_default())
-
-            token.add_role_grant(role="agent")
-            token.add_room_grant(room)
-
-            jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
         async with RoomClient(

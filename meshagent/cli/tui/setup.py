@@ -66,8 +66,6 @@ SAMPLE_CREATE_OPTION_ID = "__sample_create__"
 SAMPLE_SKIP_OPTION_ID = "__sample_skip__"
 PROJECT_CREATE_OPTION_ID = "__project_create__"
 PROJECT_EXIT_OPTION_ID = "__project_exit__"
-API_KEY_CREATE_OPTION_ID = "__api_key_create__"
-API_KEY_SKIP_OPTION_ID = "__api_key_skip__"
 ERROR_EXIT_OPTION_ID = "__error_exit__"
 
 
@@ -206,8 +204,6 @@ LoginOperation = Callable[[LoginStatusHandler], Awaitable[None]]
 ListProjectsOperation = Callable[[], Awaitable[Sequence[SetupProject]]]
 CreateProjectOperation = Callable[[str], Awaitable[str]]
 ActivateProjectOperation = Callable[[str], Awaitable[str]]
-HasActiveApiKeyOperation = Callable[[str], Awaitable[bool]]
-CreateApiKeyOperation = Callable[[str, str], Awaitable[None]]
 HasLlmProxyAccessOperation = Callable[[str], Awaitable[bool]]
 ListExistingCodexProfilesOperation = Callable[[], Awaitable[Sequence[str]]]
 RemoveCodexProfileOperation = Callable[[str], Awaitable[None]]
@@ -223,8 +219,6 @@ SetupMode = Literal[
     "login_progress",
     "projects",
     "project_name",
-    "api_key_choice",
-    "api_key_name",
     "codex_choice",
     "claude_choice",
     "sample_choice",
@@ -322,8 +316,6 @@ class SetupWizardApp(App[None]):
         list_projects_operation: ListProjectsOperation,
         create_project_operation: CreateProjectOperation,
         activate_project_operation: ActivateProjectOperation,
-        has_active_api_key_operation: HasActiveApiKeyOperation,
-        create_api_key_operation: CreateApiKeyOperation,
         has_llm_proxy_access_operation: HasLlmProxyAccessOperation | None = None,
         active_project_id: str | None = None,
         has_authenticated_session: bool = False,
@@ -349,8 +341,6 @@ class SetupWizardApp(App[None]):
         self._list_projects_operation = list_projects_operation
         self._create_project_operation = create_project_operation
         self._activate_project_operation = activate_project_operation
-        self._has_active_api_key_operation = has_active_api_key_operation
-        self._create_api_key_operation = create_api_key_operation
         self._has_llm_proxy_access_operation = has_llm_proxy_access_operation
         self._active_project_id = active_project_id
         self._has_authenticated_session = has_authenticated_session
@@ -544,14 +534,6 @@ class SetupWizardApp(App[None]):
             await self._activate_project(selected_id)
             return
 
-        if self._mode == "api_key_choice":
-            if selected_id == API_KEY_SKIP_OPTION_ID:
-                await self._maybe_continue_to_codex_setup()
-                return
-            if selected_id == API_KEY_CREATE_OPTION_ID:
-                self._set_mode_api_key_name()
-                return
-
         if self._mode == "codex_choice":
             if selected_id == CODEX_SKIP_OPTION_ID:
                 await self._maybe_continue_to_claude_setup()
@@ -598,13 +580,6 @@ class SetupWizardApp(App[None]):
 
         if self._mode == "project_name":
             await self._create_project(entered_value)
-            return
-
-        if self._mode == "api_key_name":
-            if self._selected_project_id is None:
-                await self._set_error_mode("No project was selected. Exiting.")
-                return
-            await self._create_api_key(self._selected_project_id, entered_value)
             return
 
     def _show_login_choice(self) -> None:
@@ -786,53 +761,7 @@ class SetupWizardApp(App[None]):
         self._selected_project_id = activated_project_id
         self._can_use_llm_proxy = None
 
-        try:
-            has_active_key = await self._has_active_api_key_operation(
-                activated_project_id
-            )
-        except Exception as ex:
-            await self._set_error_mode(f"Unable to check active API key: {ex}")
-            return
-
-        if has_active_key:
-            await self._maybe_continue_to_codex_setup()
-            return
-
-        self._show_api_key_choice(activated_project_id)
-
-    def _show_api_key_choice(self, project_id: str) -> None:
-        self._mode = "api_key_choice"
-        self._clear_error()
-        self._hide_input()
-        self._hide_status()
-        self._hide_url()
-        self._set_text(
-            title="API Key Setup",
-            message=(
-                f"Project {project_id} has no active API key. "
-                "Create and activate one now?"
-            ),
-            help_text="Use Up/Down and Enter.",
-        )
-        self._set_options(
-            options=[
-                Option("Create and activate API key", id=API_KEY_CREATE_OPTION_ID),
-                Option("Skip for now", id=API_KEY_SKIP_OPTION_ID),
-            ]
-        )
-
-    def _set_mode_api_key_name(self) -> None:
-        self._mode = "api_key_name"
-        self._clear_error()
-        self._hide_options()
-        self._hide_status()
-        self._hide_url()
-        self._set_text(
-            title="API Key Name",
-            message="Enter a unique name for the new API key.",
-            help_text="Press Enter to continue.",
-        )
-        self._show_input(placeholder="my-api-key")
+        await self._maybe_continue_to_codex_setup()
 
     def _show_codex_choice(self) -> None:
         self._mode = "codex_choice"
@@ -1003,20 +932,6 @@ class SetupWizardApp(App[None]):
             ],
             highlighted_id=SAMPLE_CREATE_OPTION_ID,
         )
-
-    async def _create_api_key(self, project_id: str, api_key_name: str) -> None:
-        self._set_busy(
-            title="Creating API Key",
-            message=f"Creating API key '{api_key_name}'...",
-            help_text="Please wait.",
-        )
-        try:
-            await self._create_api_key_operation(project_id, api_key_name)
-        except Exception as ex:
-            await self._set_error_mode(f"Unable to create API key: {ex}")
-            return
-
-        await self._maybe_continue_to_codex_setup()
 
     async def _ensure_llm_proxy_access_checked(self) -> bool:
         if self._can_use_llm_proxy is not None:
@@ -1647,8 +1562,6 @@ async def run_setup_wizard_tui(
     list_projects_operation: ListProjectsOperation,
     create_project_operation: CreateProjectOperation,
     activate_project_operation: ActivateProjectOperation,
-    has_active_api_key_operation: HasActiveApiKeyOperation,
-    create_api_key_operation: CreateApiKeyOperation,
     active_project_id: str | None,
     has_llm_proxy_access_operation: HasLlmProxyAccessOperation | None = None,
     has_authenticated_session: bool = False,
@@ -1674,8 +1587,6 @@ async def run_setup_wizard_tui(
         list_projects_operation=list_projects_operation,
         create_project_operation=create_project_operation,
         activate_project_operation=activate_project_operation,
-        has_active_api_key_operation=has_active_api_key_operation,
-        create_api_key_operation=create_api_key_operation,
         has_llm_proxy_access_operation=has_llm_proxy_access_operation,
         active_project_id=active_project_id,
         has_authenticated_session=has_authenticated_session,

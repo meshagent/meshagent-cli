@@ -1,4 +1,4 @@
-from typer._click.testing import CliRunner
+from meshagent.cli.testing import CliRunner
 from datetime import datetime, timezone
 import json
 import pyarrow as pa
@@ -6,7 +6,6 @@ import pyarrow.parquet as pq
 import pytest
 import zipfile
 
-from meshagent.cli import async_typer
 from meshagent.cli.dataset import (
     _import_source,
     _sql_display_records,
@@ -16,7 +15,7 @@ from meshagent.cli.dataset import (
 
 
 def test_datasets_help_groups_branch_commands() -> None:
-    result = CliRunner().invoke(async_typer.get_command(app), ["--help"])
+    result = CliRunner().invoke(app, ["--help"])
 
     assert result.exit_code == 0
     assert "branch" in result.output
@@ -25,7 +24,7 @@ def test_datasets_help_groups_branch_commands() -> None:
 
 
 def test_datasets_branch_help_lists_branch_subcommands() -> None:
-    result = CliRunner().invoke(async_typer.get_command(app), ["branch", "--help"])
+    result = CliRunner().invoke(app, ["branch", "--help"])
 
     assert result.exit_code == 0
     assert "list" in result.output
@@ -34,7 +33,7 @@ def test_datasets_branch_help_lists_branch_subcommands() -> None:
 
 
 def test_datasets_sql_help_lists_output_format_options() -> None:
-    result = CliRunner().invoke(async_typer.get_command(app), ["sql", "--help"])
+    result = CliRunner().invoke(app, ["sql", "--help"])
 
     assert result.exit_code == 0
     assert "--format" in result.output
@@ -43,7 +42,7 @@ def test_datasets_sql_help_lists_output_format_options() -> None:
 
 
 def test_datasets_import_help_lists_formats_and_modes() -> None:
-    result = CliRunner().invoke(async_typer.get_command(app), ["import", "--help"])
+    result = CliRunner().invoke(app, ["import", "--help"])
 
     assert result.exit_code == 0
     assert "--format" in result.output

@@ -18,7 +18,7 @@ from meshagent.cli import async_typer, auth_async
 from meshagent.cli.helper import (
     CustomMeshagentClient,
     get_client,
-    resolve_key,
+    mint_participant_token_for_cli,
     resolve_project_id,
     resolve_room,
 )
@@ -191,24 +191,13 @@ async def _mint_connected_meshagent_token(
     role: str,
     api_scope: ApiScope,
 ) -> str:
-    key = await resolve_key(project_id=project_id, key=None)
-    if (
-        key is None
-        and os.getenv("MESHAGENT_API_KEY") is None
-        and os.getenv("MESHAGENT_SECRET") is None
-    ):
-        raise typer_click.exceptions.ClickException(
-            "Minting a connected room token locally requires an API key or "
-            "signing secret. Set MESHAGENT_API_KEY, activate an API key for the "
-            "project, or set MESHAGENT_SECRET."
-        )
-
-    token = ParticipantToken(name=identity, project_id=project_id)
-    if role != "user":
-        token.add_role_grant(role)
-    token.add_api_grant(api_scope)
-    token.add_room_grant(room_name)
-    return token.to_jwt(api_key=key)
+    return await mint_participant_token_for_cli(
+        project_id=project_id,
+        name=identity,
+        room_name=room_name,
+        role=role,
+        api_scope=api_scope,
+    )
 
 
 async def _resolve_connected_room_inputs(

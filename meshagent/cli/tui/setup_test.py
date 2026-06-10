@@ -24,14 +24,6 @@ def _new_setup_app(**kwargs) -> SetupWizardApp:
     async def _activate_project_operation(project_id: str) -> str:
         return project_id
 
-    async def _has_active_api_key_operation(project_id: str) -> bool:
-        del project_id
-        return True
-
-    async def _create_api_key_operation(project_id: str, api_key_name: str) -> None:
-        del project_id, api_key_name
-        return None
-
     async def _has_llm_proxy_access_operation(project_id: str) -> bool:
         del project_id
         return True
@@ -65,8 +57,6 @@ def _new_setup_app(**kwargs) -> SetupWizardApp:
         list_projects_operation=_list_projects_operation,
         create_project_operation=_create_project_operation,
         activate_project_operation=_activate_project_operation,
-        has_active_api_key_operation=_has_active_api_key_operation,
-        create_api_key_operation=_create_api_key_operation,
         has_llm_proxy_access_operation=_has_llm_proxy_access_operation,
         list_existing_codex_profiles_operation=_list_existing_codex_profiles_operation,
         remove_codex_profile_operation=_remove_codex_profile_operation,
@@ -208,6 +198,30 @@ def test_show_project_selection_marks_active_project(monkeypatch) -> None:
         ],
         "highlighted_id": None,
     }
+
+
+def test_activate_project_continues_without_api_key_creation(monkeypatch) -> None:
+    app = _new_setup_app()
+    calls: list[tuple[str, str | None]] = []
+
+    async def activate_project(project_id: str) -> str:
+        calls.append(("activate_project", project_id))
+        return "project-123"
+
+    async def continue_setup() -> None:
+        calls.append(("continue_setup", app._selected_project_id))
+
+    monkeypatch.setattr(app, "_activate_project_operation", activate_project)
+    monkeypatch.setattr(app, "_set_busy", lambda **kwargs: None)
+    monkeypatch.setattr(app, "_maybe_continue_to_codex_setup", continue_setup)
+
+    asyncio.run(app._activate_project("project-123"))
+
+    assert app._selected_project_id == "project-123"
+    assert calls == [
+        ("activate_project", "project-123"),
+        ("continue_setup", "project-123"),
+    ]
 
 
 def test_show_codex_choice_renders_options(monkeypatch) -> None:

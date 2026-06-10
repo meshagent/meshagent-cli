@@ -2,7 +2,7 @@ import importlib
 import types
 
 import typer
-from typer._click.testing import CliRunner
+from meshagent.cli.testing import CliRunner
 
 from meshagent.cli import async_typer
 
@@ -59,7 +59,7 @@ def test_lazy_help_does_not_import_subcommands(monkeypatch) -> None:
 
     monkeypatch.setattr(importlib, "import_module", _fake_import_module)
 
-    result = CliRunner().invoke(async_typer.get_command(app), ["--help"])
+    result = CliRunner().invoke(app, ["--help"])
 
     assert result.exit_code == 0
     assert "child" in result.output
@@ -91,7 +91,7 @@ def test_lazy_subcommand_help_imports_only_selected_branch(monkeypatch) -> None:
 
     monkeypatch.setattr(importlib, "import_module", _fake_import_module)
 
-    result = CliRunner().invoke(async_typer.get_command(app), ["child", "--help"])
+    result = CliRunner().invoke(app, ["child", "--help"])
 
     assert result.exit_code == 0
     assert "hello" in result.output
@@ -124,7 +124,7 @@ def test_lazy_command_path_loads_leaf_command(monkeypatch) -> None:
 
     monkeypatch.setattr(importlib, "import_module", _fake_import_module)
 
-    result = CliRunner().invoke(async_typer.get_command(app), ["hello"])
+    result = CliRunner().invoke(app, ["hello"])
 
     assert result.exit_code == 0
     assert result.output == "hello\n"
@@ -157,7 +157,7 @@ def test_lazy_command_path_preserves_deprecated_option_aliases(monkeypatch) -> N
     monkeypatch.setattr(importlib, "import_module", _fake_import_module)
 
     result = CliRunner().invoke(
-        async_typer.get_command(app),
+        app,
         ["hello", "--require-web-search"],
     )
 
@@ -201,7 +201,7 @@ def test_deprecated_option_aliases_are_rewritten_before_parsing() -> None:
         )
 
     result = CliRunner().invoke(
-        async_typer.get_command(app),
+        app,
         ["--toolkit", "weather", "--require-web-search", "--no-require-time"],
     )
 

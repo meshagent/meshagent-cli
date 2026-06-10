@@ -1,19 +1,19 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from typer._click.testing import CliRunner
+from meshagent.cli.testing import CliRunner
 import pytest
 from rich.panel import Panel
 from textual.widgets import TextArea
 import typer
 
-from meshagent.cli import async_typer, cli
+from meshagent.cli import cli
 from meshagent.cli import llm as llm_module
 from meshagent.llm_proxy.usage import RequestActivityEvent, UsageSnapshot
 
 
 def test_llm_help_lists_proxy_and_logger_subcommands() -> None:
-    result = CliRunner().invoke(async_typer.get_command(cli.app), ["llm", "--help"])
+    result = CliRunner().invoke(cli.app, ["llm", "--help"])
 
     assert result.exit_code == 0
     assert "proxy" in result.output
@@ -22,9 +22,7 @@ def test_llm_help_lists_proxy_and_logger_subcommands() -> None:
 
 
 def test_llm_logger_help_exposes_logger_commands() -> None:
-    result = CliRunner().invoke(
-        async_typer.get_command(cli.app), ["llm", "logger", "--help"]
-    )
+    result = CliRunner().invoke(cli.app, ["llm", "logger", "--help"])
 
     assert result.exit_code == 0
     assert "create" in result.output
@@ -33,9 +31,7 @@ def test_llm_logger_help_exposes_logger_commands() -> None:
 
 
 def test_llm_proxy_help_exposes_proxy_options() -> None:
-    result = CliRunner().invoke(
-        async_typer.get_command(cli.app), ["llm", "proxy", "--help"]
-    )
+    result = CliRunner().invoke(cli.app, ["llm", "proxy", "--help"])
 
     assert result.exit_code == 0
     assert "Usage: meshagent llm proxy" in result.output

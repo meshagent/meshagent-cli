@@ -3,11 +3,11 @@ import sys
 import types
 
 import pytest
-from typer._click.testing import CliRunner
 
 from meshagent.api import RoomException
 from meshagent.cli import async_typer
 from meshagent.cli import cli
+from meshagent.cli.testing import CliRunner
 
 
 def test_configure_warning_filters_suppresses_pydantic_serializer_warnings(
@@ -44,14 +44,17 @@ def test_configure_warning_filters_suppresses_pydantic_serializer_warnings(
 def test_root_help_lists_create_and_doctor_but_hides_legacy_command_namespaces() -> (
     None
 ):
-    result = CliRunner().invoke(async_typer.get_command(cli.app), ["--help"])
+    result = CliRunner().invoke(cli.app, ["--help"])
 
     assert result.exit_code == 0
     assert "│ build" in result.output
     assert "│ deploy" in result.output
     assert "│ create" in result.output
     assert "│ doctor" in result.output
+    assert "│ iam" in result.output
+    assert "│ service-account" in result.output
     assert "│ init" not in result.output
+    assert "│ api-key" not in result.output
     assert "│ launch" in result.output
     assert "│ room" in result.output
     assert "│ call" not in result.output
@@ -70,7 +73,12 @@ def test_root_registers_create_and_doctor_as_visible_commands() -> None:
     assert registrations["doctor"].hidden is False
     assert registrations["create"].module == "meshagent.cli.create"
     assert registrations["create"].hidden is False
+    assert registrations["iam"].module == "meshagent.cli.iam"
+    assert registrations["iam"].hidden is False
+    assert registrations["service-account"].module == "meshagent.cli.service_accounts"
+    assert registrations["service-account"].hidden is False
     assert "init" not in registrations
+    assert "api-key" not in registrations
 
 
 def test_lazy_loader_accepts_typer_command_targets() -> None:
@@ -125,30 +133,28 @@ def test_app_prints_room_exception_without_traceback(capsys) -> None:
 
 
 def test_room_help_lists_agents_command() -> None:
-    result = CliRunner().invoke(async_typer.get_command(cli.app), ["room", "--help"])
+    result = CliRunner().invoke(cli.app, ["room", "--help"])
 
     assert result.exit_code == 0
     assert "│ agents" in result.output
 
 
 def test_room_agents_help_lists_call_command() -> None:
-    result = CliRunner().invoke(
-        async_typer.get_command(cli.app), ["room", "agents", "--help"]
-    )
+    result = CliRunner().invoke(cli.app, ["room", "agents", "--help"])
 
     assert result.exit_code == 0
     assert "│ call" in result.output
 
 
 def test_agents_help_lists_use_command() -> None:
-    result = CliRunner().invoke(async_typer.get_command(cli.app), ["agents", "--help"])
+    result = CliRunner().invoke(cli.app, ["agents", "--help"])
 
     assert result.exit_code == 0
     assert "│ use" in result.output
 
 
 def test_agent_help_lists_command_descriptions() -> None:
-    result = CliRunner().invoke(async_typer.get_command(cli.app), ["agent", "--help"])
+    result = CliRunner().invoke(cli.app, ["agent", "--help"])
 
     assert result.exit_code == 0
     assert "│ delete  Delete a managed agent from the project." in result.output
@@ -158,9 +164,7 @@ def test_agent_help_lists_command_descriptions() -> None:
 
 
 def test_room_agents_call_help_lists_call_targets() -> None:
-    result = CliRunner().invoke(
-        async_typer.get_command(cli.app), ["room", "agents", "call", "--help"]
-    )
+    result = CliRunner().invoke(cli.app, ["room", "agents", "call", "--help"])
 
     assert result.exit_code == 0
     assert "│ agent" in result.output
@@ -170,9 +174,7 @@ def test_room_agents_call_help_lists_call_targets() -> None:
 
 
 def test_room_dataset_help_does_not_list_sql_exec() -> None:
-    result = CliRunner().invoke(
-        async_typer.get_command(cli.app), ["room", "dataset", "--help"]
-    )
+    result = CliRunner().invoke(cli.app, ["room", "dataset", "--help"])
 
     assert result.exit_code == 0
     assert "│ sql " in result.output

@@ -30,13 +30,13 @@ from meshagent.cli.helper import (
     DUPLICATE_REQUIRE_OPTION_NAMES,
     get_client,
     merge_option_lists,
+    mint_participant_token_for_cli,
     normalize_required_tool_options,
     parse_shell_tool_mounts,
     parse_memory_selector,
     parse_storage_tool_mounts,
     resolve_dataset_namespace,
     resolve_shell_image,
-    resolve_key,
     resolve_project_id,
     resolve_room,
     strip_command_options,
@@ -45,7 +45,6 @@ from meshagent.cli.helper import (
 )
 
 from meshagent.api import (
-    ParticipantToken,
     RoomClient,
     WebSocketClientProtocol,
     ApiScope,
@@ -954,8 +953,6 @@ async def join(
         namespace=dataset_namespace,
         default_namespace=DEFAULT_DATASET_NAMESPACE,
     )
-    key = await resolve_key(project_id=project_id, key=key)
-
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
@@ -975,12 +972,14 @@ async def join(
                 )
                 raise typer.Exit(1)
 
-            token = ParticipantToken(name=agent_name)
-            token.add_api_grant(ApiScope.agent_default(tunnels=require_computer_use))
-            token.add_role_grant(role=role)
-            token.add_room_grant(room_name)
-
-            jwt = token.to_jwt(api_key=key)
+            jwt = await mint_participant_token_for_cli(
+                project_id=project_id,
+                name=agent_name,
+                room_name=room_name,
+                role=role,
+                api_scope=ApiScope.agent_default(tunnels=require_computer_use),
+                key=key,
+            )
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
         # Plug in your specific worker implementation here:

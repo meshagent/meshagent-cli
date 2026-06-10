@@ -7,7 +7,7 @@ import typer
 from rich import print
 
 from meshagent.api import RoomException
-from meshagent.api.client import ProjectRoomGrant, Room
+from meshagent.api.client import Room
 from meshagent.api.participant_token import ApiScope
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import OutputFormatOption, ProjectIdOption
@@ -79,21 +79,43 @@ async def _list_my_rooms(
     project_id: str,
     limit: int,
     offset: int,
-    order_by: str,
     filter: Optional[str],
 ) -> list[Room]:
-    room_grants: list[ProjectRoomGrant] = await account_client.list_room_grants_by_user(
+    return await _list_rooms_view(
+        account_client,
         project_id=project_id,
-        user_id="me",
+        view="my",
         limit=limit,
         offset=offset,
-        order_by=order_by,
         filter=filter,
     )
-    rooms_by_id: dict[str, Room] = {}
-    for grant in room_grants:
-        rooms_by_id.setdefault(grant.room.id, grant.room)
-    return list(rooms_by_id.values())
+
+
+async def _list_rooms_view(
+    account_client,
+    *,
+    project_id: str,
+    view: str,
+    limit: int,
+    offset: int,
+    filter: Optional[str],
+) -> list[Room]:
+    rooms: list[Room] = []
+    continuation_token: str | None = None
+    while len(rooms) < offset + limit:
+        page = await account_client.list_rooms_page(
+            project_id=project_id,
+            page_size=min(max(offset + limit - len(rooms), 1), 100),
+            continuation_token=continuation_token,
+            filter=filter,
+            view=view,
+        )
+        rooms.extend(page.rooms)
+        continuation_token = page.continuation_token
+        if continuation_token is None:
+            break
+    rooms.sort(key=lambda room: room.name.lower())
+    return rooms[offset : offset + limit]
 
 
 # ---------------------------
@@ -293,11 +315,12 @@ async def room_list_command(
         project_id = await resolve_project_id(project_id=project_id)
         room_limit = limit if limit is not None else count
         if show_all:
-            rooms = await account_client.list_rooms(
+            rooms = await _list_rooms_view(
+                account_client,
                 project_id=project_id,
+                view="all",
                 limit=room_limit,
                 offset=offset,
-                order_by=order_by,
                 filter=filter,
             )
         else:
@@ -306,7 +329,6 @@ async def room_list_command(
                 project_id=project_id,
                 limit=room_limit,
                 offset=offset,
-                order_by=order_by,
                 filter=filter,
             )
         output = [

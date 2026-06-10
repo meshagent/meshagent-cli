@@ -1,7 +1,6 @@
-from typer._click.testing import CliRunner
+from meshagent.cli.testing import CliRunner
 
 from meshagent.cli import cli as root_cli
-from meshagent.cli.async_typer import get_command
 
 
 def test_launch_codex_command_launches_with_forwarded_args(monkeypatch) -> None:
@@ -17,7 +16,7 @@ def test_launch_codex_command_launches_with_forwarded_args(monkeypatch) -> None:
     )
 
     result = CliRunner().invoke(
-        get_command(root_cli.app),
+        root_cli.app,
         [
             "launch",
             "codex",
@@ -55,7 +54,7 @@ def test_launch_claude_command_launches_with_forwarded_args(monkeypatch) -> None
     )
 
     result = CliRunner().invoke(
-        get_command(root_cli.app),
+        root_cli.app,
         [
             "launch",
             "claude",
@@ -86,7 +85,7 @@ def test_launch_codex_command_prints_errors_and_exits(monkeypatch) -> None:
         lambda **kwargs: (_ for _ in ()).throw(RuntimeError("Codex is not installed.")),
     )
 
-    result = CliRunner().invoke(get_command(root_cli.app), ["launch", "codex"])
+    result = CliRunner().invoke(root_cli.app, ["launch", "codex"])
 
     assert result.exit_code == 1
     assert "Codex is not installed." in result.output
@@ -100,7 +99,7 @@ def test_launch_claude_command_prints_errors_and_exits(monkeypatch) -> None:
         ),
     )
 
-    result = CliRunner().invoke(get_command(root_cli.app), ["launch", "claude"])
+    result = CliRunner().invoke(root_cli.app, ["launch", "claude"])
 
     assert result.exit_code == 1
     assert "Claude is not installed." in result.output

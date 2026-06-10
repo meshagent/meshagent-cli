@@ -80,13 +80,12 @@ def _setup_command(
         ),
     ] = None,
 ) -> None:
-    """Perform initial login and project/api key activation."""
+    """Perform initial login and project activation."""
 
     async def runner():
-        from meshagent.cli import api_keys, ask as ask_module, auth_async, projects
+        from meshagent.cli import ask as ask_module, auth_async, projects
         from meshagent.cli.helper import (
             CustomMeshagentClient,
-            get_active_api_key,
             get_active_project,
             get_client,
         )
@@ -171,19 +170,6 @@ def _setup_command(
                 raise RuntimeError("Unable to activate selected project.")
             return activated_project_id
 
-        async def has_active_api_key(project_id: str) -> bool:
-            return await get_active_api_key(project_id=project_id) is not None
-
-        async def create_and_activate_api_key(
-            project_id: str, api_key_name: str
-        ) -> None:
-            await api_keys.create(
-                project_id=project_id,
-                activate=True,
-                silent=True,
-                name=api_key_name,
-            )
-
         async def has_llm_proxy_access(project_id: str) -> bool:
             client = await get_client()
             try:
@@ -253,8 +239,6 @@ def _setup_command(
             list_projects_operation=list_setup_projects,
             create_project_operation=create_project_from_name,
             activate_project_operation=activate_project,
-            has_active_api_key_operation=has_active_api_key,
-            create_api_key_operation=create_and_activate_api_key,
             has_llm_proxy_access_operation=has_llm_proxy_access,
             active_project_id=await get_active_project(),
             has_authenticated_session=has_authenticated_session,

@@ -6,16 +6,15 @@ from meshagent.cli.common_options import ProjectIdOption, RoomOption
 import json
 from meshagent.api import (
     RoomClient,
-    ParticipantToken,
     WebSocketClientProtocol,
-    ParticipantGrant,
     ApiScope,
 )
 from meshagent.api.http import new_client_session
 from meshagent.api.helpers import websocket_room_url
 from meshagent.api.services import send_webhook
 from meshagent.cli import async_typer
-from meshagent.cli.helper import get_client, resolve_project_id, resolve_key
+from meshagent.cli.helper import get_client, mint_participant_token_for_cli
+from meshagent.cli.helper import resolve_project_id
 from meshagent.cli.helper import resolve_room
 from urllib.parse import urlparse
 from pathlib import PurePath
@@ -102,21 +101,19 @@ async def make_call(
 ):
     """Send a `room.call` request to a URL or in-room agent."""
 
-    key = await resolve_key(project_id=project_id, key=key)
-
     if permissions is not None:
         with open(str(pathlib.Path(permissions).expanduser().resolve()), "rb") as f:
             spec = parse_yaml_raw_as(ParticipantTokenSpec, f.read())
-
-            token = ParticipantToken(
-                name=spec.identity,
-            )
-            token.add_role_grant(role=role)
-            token.add_room_grant(room)
-            token.add_api_grant(spec.api)
+            token_name = spec.identity
+            token_grants = [
+                {"name": "role", "scope": role},
+                {"name": "room", "scope": room},
+                {"name": "api", "scope": spec.api.model_dump(mode="json")},
+            ]
 
     else:
-        token = None
+        token_name = None
+        token_grants = None
 
     await _make_call(
         project_id=project_id,
@@ -126,7 +123,8 @@ async def make_call(
         participant_name=participant_name,
         url=url,
         arguments=arguments,
-        token=token,
+        token_name=token_name,
+        token_grants=token_grants,
         key=key,
     )
 
@@ -145,9 +143,10 @@ async def _make_call(
     arguments: Annotated[
         str, typer.Option(..., help="JSON string with arguments for the call")
     ] = {},
-    token: Optional[ParticipantToken] = None,
+    token_name: Optional[str] = None,
+    token_grants: Optional[list[dict]] = None,
     permissions: Optional[ApiScope] = None,
-    key: str,
+    key: str | None,
 ):
     """
     Instruct an agent to 'call' a given URL with specific arguments.
@@ -163,19 +162,26 @@ async def _make_call(
 
         room = resolve_room(room)
 
-        if token is None:
-            jwt = os.getenv("MESHAGENT_TOKEN")
-            if jwt is None:
-                token = ParticipantToken(
-                    name=participant_name,
-                )
-                token.add_api_grant(permissions or ApiScope.agent_default())
-                token.add_role_grant(role=role)
-                token.add_room_grant(room)
-                token.grants.append(ParticipantGrant(name="tunnel_ports", scope="9000"))
-                jwt = token.to_jwt(api_key=key)
-        else:
-            jwt = token.to_jwt(api_key=key)
+        jwt = os.getenv("MESHAGENT_TOKEN")
+        if jwt is None:
+            if token_grants is None:
+                token_grants = [
+                    {
+                        "name": "api",
+                        "scope": (permissions or ApiScope.agent_default()).model_dump(
+                            mode="json"
+                        ),
+                    },
+                    {"name": "role", "scope": role},
+                    {"name": "room", "scope": room},
+                    {"name": "tunnel_ports", "scope": "9000"},
+                ]
+            jwt = await mint_participant_token_for_cli(
+                project_id=project_id,
+                name=token_name or participant_name,
+                grants=token_grants,
+                key=key,
+            )
 
         if local is None:
             local = is_local_url(url)

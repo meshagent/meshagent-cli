@@ -41,6 +41,8 @@ from meshagent.cli.helper import (
 from meshagent.cli.local_settings import get_active_user_id, resolve_pages_domain
 from meshagent.api import ApiScope, RoomClient
 from meshagent.api.client import (
+    AccessResource,
+    AccessSubject,
     ConflictError,
     CreateProjectRepositoryRequest,
     CreateRepositoryTokenRequest,
@@ -49,7 +51,6 @@ from meshagent.api.client import (
     MeshagentDomains,
     NotFoundError,
     PermissionDeniedError,
-    ProjectRoomGrant,
     ProjectRepository,
     Route,
     Room,
@@ -181,16 +182,17 @@ def _stdio_is_interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def _room_grant_is_owner_for_deploy(grant: ProjectRoomGrant) -> bool:
-    return grant.permissions.admin is not None
-
-
 async def _user_can_create_deploy_room(
     account_client: Meshagent,
     *,
     project_id: str,
 ) -> bool:
-    return await account_client.can_create_rooms(project_id)
+    return await account_client.test_access(
+        project_id=project_id,
+        subject=AccessSubject(type="user", id="me"),
+        resource=AccessResource(type="project", id=project_id),
+        relation="room_creator",
+    )
 
 
 async def _list_owner_deploy_rooms(
@@ -205,23 +207,49 @@ async def _list_owner_deploy_rooms(
             "Pass --room explicitly."
         )
 
+    bindings = await account_client.list_access_bindings(
+        project_id=project_id,
+        subject=AccessSubject(type="user", id=user_id),
+    )
     rooms_by_name: dict[str, Room] = {}
-    limit = 500
-    offset = 0
-    while True:
-        room_grants = await account_client.list_room_grants_by_user(
-            project_id=project_id,
-            user_id=user_id,
-            limit=limit,
-            offset=offset,
-            order_by="room_name",
+    for binding in bindings:
+        if binding.resource.type != "room":
+            continue
+        if "admin" not in binding.direct_roles:
+            continue
+        if binding.resource.name is None:
+            continue
+        rooms_by_name.setdefault(
+            binding.resource.name,
+            Room(
+                id=binding.resource.id,
+                name=binding.resource.name,
+                metadata=binding.resource.metadata or {},
+                annotations=binding.resource.annotations or {},
+            ),
         )
-        for room_grant in room_grants:
-            if _room_grant_is_owner_for_deploy(room_grant):
-                rooms_by_name.setdefault(room_grant.room.name, room_grant.room)
-        if len(room_grants) < limit:
-            break
-        offset += limit
+
+    if not rooms_by_name:
+        continuation_token: str | None = None
+        while True:
+            page = await account_client.list_rooms_page(
+                project_id=project_id,
+                page_size=100,
+                continuation_token=continuation_token,
+                view="my",
+            )
+            for room in page.rooms:
+                effective = await account_client.get_effective_access(
+                    project_id=project_id,
+                    resource=AccessResource(type="room", id=room.id),
+                    subject=AccessSubject(type="user", id=user_id),
+                    relations=["admin"],
+                )
+                if "admin" in effective.effective_roles:
+                    rooms_by_name.setdefault(room.name, room)
+            continuation_token = page.continuation_token
+            if continuation_token is None:
+                break
 
     return sorted(rooms_by_name.values(), key=lambda room: room.name.lower())
 

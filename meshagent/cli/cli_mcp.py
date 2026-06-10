@@ -10,15 +10,17 @@ from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.api.helpers import websocket_room_url
 from meshagent.api import RoomClient, WebSocketClientProtocol, RoomException, ApiScope
 from meshagent.cli import async_typer
-from meshagent.cli.helper import resolve_project_id, resolve_room, resolve_key
+from meshagent.cli.helper import (
+    mint_participant_token_for_cli,
+    resolve_project_id,
+    resolve_room,
+)
 
 from meshagent.tools import Toolkit
 from meshagent.tools.hosting import _start_hosted_toolkit
 
 
 from meshagent.api.services import ServiceHost
-
-from meshagent.api import ParticipantToken
 
 
 def _kv_to_dict(
@@ -151,8 +153,6 @@ async def sse(
 
     from meshagent.mcp import MCPToolkit
 
-    key = await resolve_key(project_id=project_id, key=key)
-
     if toolkit_name is None:
         toolkit_name = "mcp"
 
@@ -162,15 +162,14 @@ async def sse(
 
         jwt = os.getenv("MESHAGENT_TOKEN")
         if jwt is None:
-            token = ParticipantToken(
+            jwt = await mint_participant_token_for_cli(
+                project_id=project_id,
                 name=toolkit_name or "mcp",
+                room_name=room,
+                role=role,
+                api_scope=ApiScope.full(),
+                key=key,
             )
-
-            token.add_role_grant(role=role)
-            token.add_room_grant(room)
-            token.add_api_grant(ApiScope.full())
-
-            jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
@@ -263,8 +262,6 @@ async def streamable_http(
 
     from meshagent.mcp import MCPToolkit
 
-    key = await resolve_key(project_id=project_id, key=key)
-
     if toolkit_name is None:
         toolkit_name = "mcp"
 
@@ -274,15 +271,14 @@ async def streamable_http(
 
         jwt = os.getenv("MESHAGENT_TOKEN")
         if jwt is None:
-            token = ParticipantToken(
+            jwt = await mint_participant_token_for_cli(
+                project_id=project_id,
                 name=toolkit_name or "mcp",
+                room_name=room,
+                role=role,
+                api_scope=ApiScope.full(),
+                key=key,
             )
-
-            token.add_role_grant(role=role)
-            token.add_room_grant(room)
-            token.add_api_grant(ApiScope.full())
-
-            jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
@@ -365,8 +361,6 @@ async def stdio(
 
     from meshagent.mcp import MCPToolkit
 
-    key = await resolve_key(project_id=project_id, key=key)
-
     if toolkit_name is None:
         toolkit_name = "mcp"
 
@@ -376,15 +370,14 @@ async def stdio(
 
         jwt = os.getenv("MESHAGENT_TOKEN")
         if jwt is None:
-            token = ParticipantToken(
+            jwt = await mint_participant_token_for_cli(
+                project_id=project_id,
                 name=toolkit_name or "mcp",
+                room_name=room,
+                role=role,
+                api_scope=ApiScope.full(),
+                key=key,
             )
-
-            token.add_role_grant(role=role)
-            token.add_room_grant(room)
-            token.add_api_grant(ApiScope.full())
-
-            jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(

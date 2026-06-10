@@ -1,257 +1,153 @@
-from pathlib import Path
-
 import pytest
-import typer
 
-from meshagent.agents.context import AgentSessionContext
-from meshagent.cli.helper import (
-    DEFAULT_DATASET_NAMESPACE,
-    DEFAULT_SHELL_IMAGE,
-    build_shell_tool,
-    init_context_from_spec,
-    parse_memory_selector,
-    parse_shell_tool_mounts,
-    resolve_dataset_namespace,
-    resolve_shell_image,
-    supports_openai_shell_tool,
-)
-from meshagent.openai.tools.responses_adapter import ShellTool
-from meshagent.tools import ContainerShellTool, ProcessShellTool
+from meshagent.api import ApiScope, ParticipantToken
+from meshagent.api.keys import ApiKey, encode_api_key
+from meshagent.cli import helper
 
 
-def test_parse_memory_selector_name_only() -> None:
-    memory_name, namespace = parse_memory_selector("graph")
-
-    assert memory_name == "graph"
-    assert namespace is None
-
-
-def test_parse_memory_selector_with_namespace() -> None:
-    memory_name, namespace = parse_memory_selector("team/shared/graph")
-
-    assert memory_name == "graph"
-    assert namespace == ["team", "shared"]
-
-
-def test_resolve_dataset_namespace_without_default_returns_none() -> None:
-    assert resolve_dataset_namespace(namespace=None) is None
-
-
-def test_resolve_dataset_namespace_uses_default_when_omitted() -> None:
-    assert resolve_dataset_namespace(
-        namespace=None,
-        default_namespace=DEFAULT_DATASET_NAMESPACE,
-    ) == [".datasets"]
-
-
-def test_resolve_dataset_namespace_splits_namespace_segments() -> None:
-    assert resolve_dataset_namespace(namespace="foo::bar") == ["foo", "bar"]
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        (None, DEFAULT_SHELL_IMAGE),
-        ("", DEFAULT_SHELL_IMAGE),
-        ("  ", DEFAULT_SHELL_IMAGE),
-        ("python:3.12", "python:3.12"),
-        (" none ", None),
-        ("NONE", None),
-    ],
-)
-def test_resolve_shell_image(value: str | None, expected: str | None) -> None:
-    assert resolve_shell_image(value) == expected
-
-
-@pytest.mark.parametrize(
-    ("model", "llm_participant", "expected"),
-    [
-        ("gpt-5", None, True),
-        ("claude-3-7-sonnet", None, False),
-        ("gpt-5", "remote-llm", False),
-    ],
-)
-def test_supports_openai_shell_tool(
-    model: str, llm_participant: str | None, expected: bool
+@pytest.mark.asyncio
+async def test_mint_participant_token_for_cli_signs_with_active_api_key(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert (
-        supports_openai_shell_tool(
-            model=model,
-            llm_participant=llm_participant,
-        )
-        is expected
-    )
+    async def fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-input"
+        return "project-1"
 
-
-@pytest.mark.asyncio
-async def test_build_shell_tool_uses_container_shell_for_non_gpt_model() -> None:
-    tool = build_shell_tool(
-        model="claude-3-7-sonnet",
-        working_dir="/workspace",
-        image=DEFAULT_SHELL_IMAGE,
-    )
-
-    assert isinstance(tool, ContainerShellTool)
-
-
-@pytest.mark.asyncio
-async def test_build_shell_tool_uses_shell_tool_for_gpt_model() -> None:
-    tool = build_shell_tool(
-        model="gpt-5",
-        working_dir="/workspace",
-        image=DEFAULT_SHELL_IMAGE,
-    )
-
-    assert isinstance(tool, ShellTool)
-
-
-@pytest.mark.asyncio
-async def test_build_shell_tool_uses_process_shell_for_non_gpt_model_without_image() -> (
-    None
-):
-    tool = build_shell_tool(
-        model="claude-3-7-sonnet",
-        working_dir="/workspace",
-        image=None,
-    )
-
-    assert isinstance(tool, ProcessShellTool)
-
-
-@pytest.mark.parametrize(
-    "value",
-    [
-        "",
-        " ",
-        "/graph",
-        "team/",
-        "team//graph",
-    ],
-)
-def test_parse_memory_selector_rejects_empty_segments(value: str) -> None:
-    with pytest.raises(typer.BadParameter):
-        parse_memory_selector(value)
-
-
-def test_parse_shell_tool_mounts_parses_empty_dir_mounts() -> None:
-    mounts = parse_shell_tool_mounts(
-        room_paths=[],
-        project_paths=[],
-        empty_dir_paths=["/cache", "/tmp/work:ro"],
-    )
-
-    assert mounts is not None
-    assert mounts.empty_dirs is not None
-    assert [mount.model_dump(mode="json") for mount in mounts.empty_dirs] == [
-        {"path": "/cache", "read_only": False},
-        {"path": "/tmp/work", "read_only": True},
-    ]
-
-
-def test_parse_shell_tool_mounts_parses_config_mounts() -> None:
-    mounts = parse_shell_tool_mounts(
-        room_paths=[],
-        project_paths=[],
-        config_paths=["/var/run/meshagent", "/tmp/meshagent-config"],
-    )
-
-    assert mounts is not None
-    assert mounts.configs is not None
-    assert [mount.model_dump(mode="json") for mount in mounts.configs] == [
-        {"path": "/var/run/meshagent"},
-        {"path": "/tmp/meshagent-config"},
-    ]
-
-
-@pytest.mark.parametrize(
-    "value",
-    [
-        "",
-        " ",
-        "/src:/cache",
-        "/src:/cache:ro",
-    ],
-)
-def test_parse_shell_tool_mounts_rejects_empty_dir_bind_syntax(value: str) -> None:
-    with pytest.raises(typer.BadParameter, match="--shell-tool-empty-dir"):
-        parse_shell_tool_mounts(
-            room_paths=[],
-            project_paths=[],
-            empty_dir_paths=[value],
+    async def fake_get_active_api_key(project_id: str) -> str | None:
+        assert project_id == "project-1"
+        return encode_api_key(
+            ApiKey(
+                id="11111111-1111-1111-1111-111111111111",
+                project_id="22222222-2222-2222-2222-222222222222",
+                secret="test-secret",
+            )
         )
 
+    async def fail_get_client():
+        raise AssertionError("active API key should sign locally")
 
-@pytest.mark.parametrize(
-    "value",
-    [
-        "",
-        " ",
-        "/var/run/meshagent:ro",
-    ],
-)
-def test_parse_shell_tool_mounts_rejects_invalid_config_mounts(value: str) -> None:
-    with pytest.raises(typer.BadParameter, match="--shell-tool-config-mount"):
-        parse_shell_tool_mounts(
-            room_paths=[],
-            project_paths=[],
-            config_paths=[value],
-        )
+    monkeypatch.delenv("MESHAGENT_API_KEY", raising=False)
+    monkeypatch.delenv("MESHAGENT_SECRET", raising=False)
+    monkeypatch.setattr(helper, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(helper, "get_active_api_key", fake_get_active_api_key)
+    monkeypatch.setattr(helper, "get_client", fail_get_client)
+
+    jwt = await helper.mint_participant_token_for_cli(
+        project_id="project-input",
+        name="agent-name",
+        room_name="room-name",
+        role="agent",
+        api_scope=ApiScope.agent_default(),
+    )
+
+    token = ParticipantToken.from_jwt(jwt, validate=False)
+    assert token.project_id == "22222222-2222-2222-2222-222222222222"
+    assert token.name == "agent-name"
+    assert token.role == "agent"
+    assert token.grant_scope("room") == "room-name"
+    assert token.get_api_grant() == ApiScope.agent_default()
 
 
 @pytest.mark.asyncio
-async def test_init_context_from_spec_handles_missing_annotations(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+async def test_mint_participant_token_for_cli_uses_router_without_signing_material(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    spec_path = tmp_path / "meshagent.yaml"
-    spec_path.write_text(
-        "\n".join(
-            [
-                "version: v1",
-                "kind: Service",
-                "metadata:",
-                "  name: chatbot",
-                "  description: Helpful chatbot",
-            ]
-        )
+    calls: list[dict[str, object]] = []
+
+    class FakeClient:
+        async def mint_participant_token(self, project_id: str, **kwargs) -> str:
+            calls.append({"project_id": project_id, **kwargs})
+            return "router-token"
+
+        async def close(self) -> None:
+            calls.append({"closed": True})
+
+    async def fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-input"
+        return "project-1"
+
+    async def fake_get_active_api_key(project_id: str) -> str | None:
+        assert project_id == "project-1"
+        return None
+
+    async def fake_get_client() -> FakeClient:
+        return FakeClient()
+
+    monkeypatch.delenv("MESHAGENT_API_KEY", raising=False)
+    monkeypatch.delenv("MESHAGENT_SECRET", raising=False)
+    monkeypatch.setattr(helper, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(helper, "get_active_api_key", fake_get_active_api_key)
+    monkeypatch.setattr(helper, "get_client", fake_get_client)
+
+    jwt = await helper.mint_participant_token_for_cli(
+        project_id="project-input",
+        name="agent-name",
+        room_name="room-name",
+        role="agent",
+        api_scope=ApiScope.agent_default(),
     )
-    monkeypatch.setenv("MESHAGENT_SPEC_PATH", str(spec_path))
-    context = AgentSessionContext(system_role=None)
 
-    await init_context_from_spec(context)
-
-    assert context.messages == [
+    assert jwt == "router-token"
+    assert calls == [
         {
-            "role": "assistant",
-            "content": "This agent's description:\nHelpful chatbot",
-        }
+            "project_id": "project-1",
+            "name": "agent-name",
+            "room_name": "room-name",
+            "role": "agent",
+            "api": ApiScope.agent_default().model_dump(mode="json"),
+        },
+        {"closed": True},
     ]
 
 
 @pytest.mark.asyncio
-async def test_init_context_from_spec_adds_readme_when_annotation_present(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+async def test_mint_participant_token_for_cli_passes_serialized_grants_to_router(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    spec_path = tmp_path / "meshagent.yaml"
-    spec_path.write_text(
-        "\n".join(
-            [
-                "version: v1",
-                "kind: Service",
-                "metadata:",
-                "  name: chatbot",
-                "  annotations:",
-                '    meshagent.service.readme: "Read me first"',
-            ]
-        )
+    calls: list[dict[str, object]] = []
+    grants = [
+        {"name": "role", "scope": "agent"},
+        {"name": "room", "scope": "room-name"},
+        {"name": "tunnel_ports", "scope": "9000"},
+    ]
+
+    class FakeClient:
+        async def mint_participant_token(self, project_id: str, **kwargs) -> str:
+            calls.append({"project_id": project_id, **kwargs})
+            return "router-token"
+
+        async def close(self) -> None:
+            calls.append({"closed": True})
+
+    async def fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-input"
+        return "project-1"
+
+    async def fake_get_active_api_key(project_id: str) -> str | None:
+        assert project_id == "project-1"
+        return None
+
+    async def fake_get_client() -> FakeClient:
+        return FakeClient()
+
+    monkeypatch.delenv("MESHAGENT_API_KEY", raising=False)
+    monkeypatch.delenv("MESHAGENT_SECRET", raising=False)
+    monkeypatch.setattr(helper, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(helper, "get_active_api_key", fake_get_active_api_key)
+    monkeypatch.setattr(helper, "get_client", fake_get_client)
+
+    jwt = await helper.mint_participant_token_for_cli(
+        project_id="project-input",
+        name="agent-name",
+        grants=grants,
     )
-    monkeypatch.setenv("MESHAGENT_SPEC_PATH", str(spec_path))
-    context = AgentSessionContext(system_role=None)
 
-    await init_context_from_spec(context)
-
-    assert context.messages == [
+    assert jwt == "router-token"
+    assert calls == [
         {
-            "role": "assistant",
-            "content": "This agent's README:\nRead me first",
-        }
+            "project_id": "project-1",
+            "name": "agent-name",
+            "grants": grants,
+        },
+        {"closed": True},
     ]

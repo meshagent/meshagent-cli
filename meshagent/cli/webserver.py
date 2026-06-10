@@ -26,7 +26,6 @@ from typer._click.globals import get_current_context
 
 from meshagent.api import (
     ApiScope,
-    ParticipantToken,
     RoomClient,
     WebSocketClientProtocol,
 )
@@ -48,7 +47,7 @@ from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.cli.helper import (
     cleanup_args,
     get_client,
-    resolve_key,
+    mint_participant_token_for_cli,
     resolve_project_id,
     resolve_room,
     upload_room_bytes_stream,
@@ -1648,7 +1647,6 @@ async def join(
         print("[red]--room is required (or set MESHAGENT_ROOM).[/red]")
         raise typer.Exit(1)
 
-    key = await resolve_key(project_id=project_id, key=key)
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
@@ -1662,11 +1660,14 @@ async def join(
                 )
                 raise typer.Exit(1)
 
-            token = ParticipantToken(name=agent_name)
-            token.add_api_grant(ApiScope.agent_default())
-            token.add_role_grant(role=role)
-            token.add_room_grant(room_name)
-            jwt = token.to_jwt(api_key=key)
+            jwt = await mint_participant_token_for_cli(
+                project_id=project_id,
+                name=agent_name,
+                room_name=room_name,
+                role=role,
+                api_scope=ApiScope.agent_default(),
+                key=key,
+            )
 
         print("[green]Connecting to room...[/green]", flush=True)
 

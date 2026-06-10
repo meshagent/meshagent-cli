@@ -108,11 +108,6 @@ def test_task_runner_join_passes_room_jwt_as_api_key(monkeypatch) -> None:
         del project_id
         return "project-123"
 
-    async def fake_resolve_key(*, project_id=None, key=None):
-        del project_id
-        del key
-        return None
-
     async def fake_build_task_runner(**kwargs):
         build_calls.append(kwargs)
         return type("DummyTaskRunner", (), {})
@@ -120,7 +115,6 @@ def test_task_runner_join_passes_room_jwt_as_api_key(monkeypatch) -> None:
     monkeypatch.setenv("MESHAGENT_TOKEN", "test-token")
     monkeypatch.setattr(task_runner, "get_client", fake_get_client)
     monkeypatch.setattr(task_runner, "resolve_project_id", fake_resolve_project_id)
-    monkeypatch.setattr(task_runner, "resolve_key", fake_resolve_key)
     monkeypatch.setattr(task_runner, "resolve_room", lambda room_name=None: room_name)
     monkeypatch.setattr(task_runner, "build_task_runner", fake_build_task_runner)
     monkeypatch.setattr(task_runner, "get_deferred", lambda: True)

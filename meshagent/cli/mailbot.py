@@ -3,7 +3,6 @@ from meshagent.cli import async_typer
 from rich import print
 import os
 
-from meshagent.api import ParticipantToken
 from typing import Annotated, Optional
 from meshagent.cli.common_options import (
     AllowGotoUrlOption,
@@ -26,11 +25,11 @@ from meshagent.cli.helper import (
     DEPRECATED_REQUIRE_OPTION_ALIASES,
     get_client,
     merge_option_lists,
+    mint_participant_token_for_cli,
     parse_shell_tool_mounts,
     parse_memory_selector,
     parse_storage_tool_mounts,
     resolve_shell_image,
-    resolve_key,
     resolve_project_id,
     resolve_room,
     strip_command_options,
@@ -834,8 +833,6 @@ async def join(
         working_dir=working_dir,
         working_directory=working_directory,
     )
-    key = await resolve_key(project_id=project_id, key=key)
-
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
@@ -856,16 +853,14 @@ async def join(
                 )
                 raise typer.Exit(1)
 
-            token = ParticipantToken(
+            jwt = await mint_participant_token_for_cli(
+                project_id=project_id,
                 name=agent_name,
+                room_name=room,
+                role=role,
+                api_scope=ApiScope.agent_default(tunnels=require_computer_use),
+                key=key,
             )
-
-            token.add_api_grant(ApiScope.agent_default(tunnels=require_computer_use))
-
-            token.add_role_grant(role=role)
-            token.add_room_grant(room)
-
-            jwt = token.to_jwt(api_key=key)
 
         print("[bold green]Connecting to room...[/bold green]", flush=True)
         default_room_storage_mount = bool(require_storage or require_read_only_storage)

@@ -6,7 +6,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from meshagent.api import RoomClient
+from meshagent.api import ApiScope, ParticipantToken, RoomClient
 from meshagent.api.specs.service import (
     ANNOTATION_SERVICE_README,
     ConfigMountSpec,
@@ -376,11 +376,64 @@ async def resolve_key(project_id: str | None, key: str | None):
 
     if key is None and os.getenv("MESHAGENT_TOKEN") is None:
         print(
-            "[red]--key is required if MESHAGENT_API_KEY is not set. You can use meshagent api-key create to create a new api key."
+            "[red]--key is required if MESHAGENT_API_KEY is not set. "
+            "You can use meshagent service-account api-key create to create a new API key.[/red]"
         )
         raise typer.Exit(1)
 
     return key
+
+
+async def mint_participant_token_for_cli(
+    *,
+    project_id: str | None,
+    name: str,
+    room_name: str | None = None,
+    role: str | None = None,
+    api_scope: ApiScope | None = None,
+    grants: list[dict] | None = None,
+    key: str | None = None,
+) -> str:
+    resolved_project_id = await resolve_project_id(project_id=project_id)
+    signing_key = key
+    if signing_key is None:
+        signing_key = await get_active_api_key(resolved_project_id)
+    if signing_key is None:
+        signing_key = os.getenv("MESHAGENT_API_KEY")
+
+    signing_secret = os.getenv("MESHAGENT_SECRET")
+    if signing_key is not None or signing_secret:
+        if grants is not None:
+            token = ParticipantToken.from_json({"name": name, "grants": grants})
+            token.project_id = resolved_project_id
+        else:
+            token = ParticipantToken(name=name, project_id=resolved_project_id)
+            if role is not None and role != "user":
+                token.add_role_grant(role)
+            if api_scope is not None:
+                token.add_api_grant(api_scope)
+            if room_name is not None:
+                token.add_room_grant(room_name)
+        if signing_key is not None:
+            return token.to_jwt(api_key=signing_key)
+        return token.to_jwt(token=signing_secret)
+
+    client = await get_client()
+    try:
+        mint_kwargs = {
+            "name": name,
+            "room_name": room_name,
+            "role": role,
+            "api": api_scope.model_dump(mode="json") if api_scope is not None else None,
+        }
+        if grants is not None:
+            mint_kwargs = {"name": name, "grants": grants}
+        return await client.mint_participant_token(
+            resolved_project_id,
+            **mint_kwargs,
+        )
+    finally:
+        await client.close()
 
 
 async def upload_room_bytes_stream(

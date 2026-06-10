@@ -6,22 +6,25 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from typer._click.testing import CliRunner
+from meshagent.cli.testing import CliRunner
 import pytest
 import typer
 
 from meshagent.api import ApiScope
 from meshagent.api.client import (
+    AccessResource,
+    AccessSubject,
     ConflictError,
     MeshagentDeploymentConfig,
     MeshagentDomains,
     NotFoundError,
     PermissionDeniedError,
     ProjectInfo,
-    ProjectRoomGrant,
     ProjectRepository,
+    RoleGrant,
     Route,
     Room,
+    RoomsPage,
 )
 from meshagent.api.image_runtime import (
     IMAGE_RUNTIME_BASES,
@@ -30,7 +33,7 @@ from meshagent.api.image_runtime import (
 )
 from meshagent.api.error_codes import ErrorCode
 from meshagent.api.room_ports import ROOM_INTERNAL_API_PORT
-from meshagent.cli import async_typer, cli, image
+from meshagent.cli import cli, image
 from meshagent.api.room_server_client import (
     PublishedBuildImage,
     RoomException,
@@ -137,7 +140,7 @@ ports:
     )
 
     result = CliRunner().invoke(
-        async_typer.get_command(cli.app),
+        cli.app,
         ["deploy", "describe", str(tmp_path)],
     )
 
@@ -205,7 +208,7 @@ def _stub_deploy_wait(
 
 
 def test_root_help_lists_build_and_deploy_commands() -> None:
-    result = CliRunner().invoke(async_typer.get_command(cli.app), ["--help"])
+    result = CliRunner().invoke(cli.app, ["--help"])
 
     assert result.exit_code == 0
     assert "│ build" in result.output
@@ -213,7 +216,7 @@ def test_root_help_lists_build_and_deploy_commands() -> None:
 
 
 def test_root_build_help_uses_positional_path() -> None:
-    result = CliRunner().invoke(async_typer.get_command(cli.app), ["build", "--help"])
+    result = CliRunner().invoke(cli.app, ["build", "--help"])
 
     assert result.exit_code == 0
     assert "Usage: meshagent build [OPTIONS] PATH" in result.output
@@ -221,7 +224,7 @@ def test_root_build_help_uses_positional_path() -> None:
 
 
 def test_root_deploy_help_uses_optional_positional_path() -> None:
-    result = CliRunner().invoke(async_typer.get_command(cli.app), ["deploy", "--help"])
+    result = CliRunner().invoke(cli.app, ["deploy", "--help"])
 
     assert result.exit_code == 0
     assert "Usage: meshagent deploy [OPTIONS] [PATH]" in result.output
@@ -229,7 +232,7 @@ def test_root_deploy_help_uses_optional_positional_path() -> None:
 
 
 def test_root_deploy_help_mentions_existing_room_flow() -> None:
-    result = CliRunner().invoke(async_typer.get_command(cli.app), ["deploy", "--help"])
+    result = CliRunner().invoke(cli.app, ["deploy", "--help"])
     normalized_output = re.sub(r"[\s│]+", " ", result.output)
 
     assert result.exit_code == 0
@@ -331,44 +334,37 @@ async def test_list_owner_deploy_rooms_filters_to_active_user_admin_grants(
         def __init__(self) -> None:
             self.calls: list[dict[str, object]] = []
 
-        async def list_room_grants_by_user(
-            self,
-            *,
-            project_id: str,
-            user_id: str,
-            limit: int,
-            offset: int,
-            order_by: str,
-        ) -> list[ProjectRoomGrant]:
+        async def list_access_bindings(
+            self, *, project_id: str, subject: AccessSubject
+        ) -> list[RoleGrant]:
             self.calls.append(
                 {
                     "project_id": project_id,
-                    "user_id": user_id,
-                    "limit": limit,
-                    "offset": offset,
-                    "order_by": order_by,
+                    "subject": subject,
                 }
             )
             return [
-                ProjectRoomGrant(
-                    room=Room(
+                RoleGrant(
+                    resource=AccessResource(
+                        type="room",
                         id="room-member",
                         name="member",
                         metadata={},
                         annotations={},
                     ),
-                    user_id="user-1",
-                    permissions=ApiScope.user_default(),
+                    subject=subject,
+                    direct_roles=["operator", "list"],
                 ),
-                ProjectRoomGrant(
-                    room=Room(
+                RoleGrant(
+                    resource=AccessResource(
+                        type="room",
                         id="room-owner",
                         name="owner",
                         metadata={},
                         annotations={},
                     ),
-                    user_id="user-1",
-                    permissions=ApiScope.full(),
+                    subject=subject,
+                    direct_roles=["admin", "list"],
                 ),
             ]
 
@@ -384,22 +380,33 @@ async def test_list_owner_deploy_rooms_filters_to_active_user_admin_grants(
     assert fake_client.calls == [
         {
             "project_id": "project-1",
-            "user_id": "user-1",
-            "limit": 500,
-            "offset": 0,
-            "order_by": "room_name",
+            "subject": AccessSubject(type="user", id="user-1"),
         }
     ]
 
 
 @pytest.mark.asyncio
-async def test_user_can_create_deploy_room_uses_current_user_role_endpoint() -> None:
+async def test_user_can_create_deploy_room_uses_granular_access_check() -> None:
     class _FakeClient:
         def __init__(self) -> None:
-            self.project_ids: list[str] = []
+            self.calls: list[dict[str, object]] = []
 
-        async def can_create_rooms(self, project_id: str) -> bool:
-            self.project_ids.append(project_id)
+        async def test_access(
+            self,
+            *,
+            project_id: str,
+            subject: AccessSubject,
+            resource: AccessResource,
+            relation: str,
+        ) -> bool:
+            self.calls.append(
+                {
+                    "project_id": project_id,
+                    "subject": subject,
+                    "resource": resource,
+                    "relation": relation,
+                }
+            )
             return True
 
     fake_client = _FakeClient()
@@ -410,7 +417,14 @@ async def test_user_can_create_deploy_room_uses_current_user_role_endpoint() -> 
     )
 
     assert can_create is True
-    assert fake_client.project_ids == ["project-1"]
+    assert fake_client.calls == [
+        {
+            "project_id": "project-1",
+            "subject": AccessSubject(type="user", id="me"),
+            "resource": AccessResource(type="project", id="project-1"),
+            "relation": "room_creator",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -460,20 +474,35 @@ async def test_select_deploy_room_can_create_new_room(
     created_rooms: list[dict[str, object]] = []
 
     class _FakeClient:
-        async def list_room_grants_by_user(
+        async def list_access_bindings(
+            self, *, project_id: str, subject: AccessSubject
+        ) -> list[RoleGrant]:
+            del project_id, subject
+            return []
+
+        async def list_rooms_page(
             self,
             *,
             project_id: str,
-            user_id: str,
-            limit: int,
-            offset: int,
-            order_by: str,
-        ) -> list[ProjectRoomGrant]:
-            del project_id, user_id, limit, offset, order_by
-            return []
+            page_size: int,
+            continuation_token: str | None = None,
+            view: str | None = None,
+        ) -> RoomsPage:
+            del project_id, page_size, continuation_token, view
+            return RoomsPage(rooms=[], continuation_token=None)
 
-        async def can_create_rooms(self, project_id: str) -> bool:
+        async def test_access(
+            self,
+            *,
+            project_id: str,
+            subject: AccessSubject,
+            resource: AccessResource,
+            relation: str,
+        ) -> bool:
             assert project_id == "project-1"
+            assert subject == AccessSubject(type="user", id="me")
+            assert resource == AccessResource(type="project", id="project-1")
+            assert relation == "room_creator"
             return True
 
         async def create_room(
@@ -534,8 +563,18 @@ async def test_select_deploy_room_create_requires_active_user_for_owner_grant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _FakeClient:
-        async def can_create_rooms(self, project_id: str) -> bool:
+        async def test_access(
+            self,
+            *,
+            project_id: str,
+            subject: AccessSubject,
+            resource: AccessResource,
+            relation: str,
+        ) -> bool:
             assert project_id == "project-1"
+            assert subject == AccessSubject(type="user", id="me")
+            assert resource == AccessResource(type="project", id="project-1")
+            assert relation == "room_creator"
             return True
 
         async def create_room(
@@ -588,20 +627,35 @@ async def test_select_deploy_room_prompts_again_when_created_room_name_is_in_use
     created_rooms: list[dict[str, object]] = []
 
     class _FakeClient:
-        async def list_room_grants_by_user(
+        async def list_access_bindings(
+            self, *, project_id: str, subject: AccessSubject
+        ) -> list[RoleGrant]:
+            del project_id, subject
+            return []
+
+        async def list_rooms_page(
             self,
             *,
             project_id: str,
-            user_id: str,
-            limit: int,
-            offset: int,
-            order_by: str,
-        ) -> list[ProjectRoomGrant]:
-            del project_id, user_id, limit, offset, order_by
-            return []
+            page_size: int,
+            continuation_token: str | None = None,
+            view: str | None = None,
+        ) -> RoomsPage:
+            del project_id, page_size, continuation_token, view
+            return RoomsPage(rooms=[], continuation_token=None)
 
-        async def can_create_rooms(self, project_id: str) -> bool:
+        async def test_access(
+            self,
+            *,
+            project_id: str,
+            subject: AccessSubject,
+            resource: AccessResource,
+            relation: str,
+        ) -> bool:
             assert project_id == "project-1"
+            assert subject == AccessSubject(type="user", id="me")
+            assert resource == AccessResource(type="project", id="project-1")
+            assert relation == "room_creator"
             return True
 
         async def create_room(

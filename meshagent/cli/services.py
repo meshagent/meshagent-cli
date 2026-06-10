@@ -31,8 +31,6 @@ from meshagent.api.specs.service import (
     ServiceTemplateSpec,
     TemplateEnvironmentVariable,
 )
-from meshagent.api.keys import parse_api_key
-
 import asyncio
 import shlex
 import uuid
@@ -49,13 +47,8 @@ from meshagent.cli.helper import (
     print_json_table,
     resolve_project_id,
     resolve_room,
-    resolve_key,
 )
-from meshagent.api import (
-    ParticipantToken,
-    ApiScope,
-    RoomException,
-)
+from meshagent.api import RoomException
 from meshagent.api.client import Meshagent, NotFoundError
 from meshagent.api.http import new_client_session
 from meshagent.cli.common_options import OutputFormatOption
@@ -1716,8 +1709,6 @@ async def service_run(
         typer.Option("--key", help="an api key to sign the token with"),
     ] = None,
 ):
-    key = await resolve_key(project_id=project_id, key=key)
-
     if port is None:
         import socket
 
@@ -1739,14 +1730,6 @@ async def service_run(
             raise typer.Exit(1)
 
         try:
-            parsed_key = parse_api_key(key)
-            token = ParticipantToken(
-                name="cli", project_id=project_id, api_key_id=parsed_key.id
-            )
-            token.add_api_grant(ApiScope.agent_default())
-            token.add_role_grant("user")
-            token.add_room_grant(room)
-
             print("[bold green]Connecting to room...[/bold green]")
 
             run_tasks = []

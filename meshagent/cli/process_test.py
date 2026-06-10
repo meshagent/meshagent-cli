@@ -56,7 +56,7 @@ from meshagent.agents.thread_storage import (
     ThreadListEvent,
     ThreadListPage,
 )
-from meshagent.api import Participant, RoomClient
+from meshagent.api import ApiScope, Participant, RoomClient
 from meshagent.api import ParticipantToken
 from meshagent.api.specs.service import ContainerSpec, ServiceMetadata, ServiceSpec
 from meshagent.cli.async_typer import get_command
@@ -1892,6 +1892,107 @@ def test_process_join_passes_supported_builder_kwargs(monkeypatch) -> None:
     assert build_calls[0]["compaction_threshold"] == 90000
     assert build_calls[0]["max_output_tokens"] == 2048
     assert build_calls[0]["reasoning_effort"] == "high"
+
+
+def test_process_join_mints_participant_token_without_active_api_key(
+    monkeypatch,
+) -> None:
+    build_calls: list[dict[str, object]] = []
+    mint_calls: list[dict[str, object]] = []
+
+    class _DummyAccountClient:
+        async def close(self) -> None:
+            return None
+
+    async def fake_get_client():
+        return _DummyAccountClient()
+
+    async def fake_resolve_project_id(*, project_id=None):
+        del project_id
+        return "project-123"
+
+    async def fake_mint_participant_token(**kwargs):
+        mint_calls.append(kwargs)
+        return "router-minted-token"
+
+    async def fail_resolve_key(*, project_id=None, key=None):
+        del project_id
+        del key
+        raise AssertionError("process join should mint remotely without an API key")
+
+    def fake_build_process_agent(**kwargs):
+        build_calls.append(kwargs)
+        return type("DummyProcessAgent", (), {})
+
+    def fail_build_chatbot(**kwargs):
+        del kwargs
+        raise AssertionError("process join should not use chatbot builder")
+
+    monkeypatch.delenv("MESHAGENT_TOKEN", raising=False)
+    monkeypatch.delenv("MESHAGENT_API_KEY", raising=False)
+    monkeypatch.delenv("MESHAGENT_SECRET", raising=False)
+    monkeypatch.setattr(process, "get_client", fake_get_client)
+    monkeypatch.setattr(process, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(process, "resolve_key", fail_resolve_key)
+    monkeypatch.setattr(
+        process, "mint_participant_token_for_cli", fake_mint_participant_token
+    )
+    monkeypatch.setattr(process, "resolve_room", lambda room_name=None: room_name)
+    monkeypatch.setattr(process, "build_process_agent", fake_build_process_agent)
+    monkeypatch.setattr(process, "build_chatbot", fail_build_chatbot)
+    monkeypatch.setattr(process, "get_deferred", lambda: True)
+    monkeypatch.setattr(
+        process.sys,
+        "argv",
+        [
+            "meshagent",
+            "process",
+            "join",
+            "--agent-name",
+            "helper",
+            "--room",
+            "quickstart",
+            "--channel",
+            "chat",
+        ],
+    )
+
+    async def invoke_join() -> None:
+        await process.join(
+            project_id=None,
+            room="quickstart",
+            agent_name="helper",
+            channel=["chat"],
+        )
+
+    root_command = click.Command("meshagent")
+    process_command = click.Command("process")
+    join_command = click.Command("join")
+    with click.Context(root_command, info_name="meshagent") as root_context:
+        with click.Context(
+            process_command,
+            info_name="process",
+            parent=root_context,
+        ) as process_context:
+            with click.Context(
+                join_command,
+                info_name="join",
+                parent=process_context,
+            ):
+                asyncio.run(invoke_join())
+
+    assert len(build_calls) == 1
+    assert build_calls[0]["api_key"] == "router-minted-token"
+    assert mint_calls == [
+        {
+            "project_id": "project-123",
+            "name": "helper",
+            "room_name": "quickstart",
+            "role": "agent",
+            "api_scope": ApiScope.agent_default(tunnels=False),
+            "key": None,
+        }
+    ]
 
 
 def test_process_join_requires_at_least_one_channel(monkeypatch) -> None:
