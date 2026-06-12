@@ -5409,7 +5409,7 @@ def build_process_agent(
     )
     from meshagent.codex.supervisor import CodexBackend
     from meshagent.tools import RoomToolContext, Toolkit
-    from meshagent.tools.hosting import _RemoteToolkitWrapper, _start_hosted_toolkit
+    from meshagent.tools.hosting import _RemoteToolkitWrapper, start_hosted_toolkit
 
     requirements = []
     toolkits = []
@@ -6136,7 +6136,7 @@ def build_process_agent(
                 for toolkit in self._exposed_toolkits:
                     if room is None:
                         continue
-                    hosted_toolkit = await _start_hosted_toolkit(
+                    hosted_toolkit = await start_hosted_toolkit(
                         room=room,
                         toolkit=toolkit,
                     )

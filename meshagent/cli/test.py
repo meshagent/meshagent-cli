@@ -30,7 +30,7 @@ from meshagent.cli import async_typer
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.cli.helper import resolve_key, resolve_project_id, resolve_room
 from meshagent.tools import Toolkit, ContentTool, ToolContext
-from meshagent.tools.hosting import _start_hosted_toolkit
+from meshagent.tools.hosting import start_hosted_toolkit
 
 app = async_typer.AsyncTyper(help="Hidden test tools")
 
@@ -636,7 +636,7 @@ async def stream_tool(
             title="test stream toolkit",
             description="hidden stream-tool testing toolkit",
         )
-        hosted_toolkit = await _start_hosted_toolkit(
+        hosted_toolkit = await start_hosted_toolkit(
             room=client,
             toolkit=toolkit_instance,
         )

@@ -13,7 +13,7 @@ from meshagent.cli import async_typer
 from meshagent.cli.helper import resolve_project_id, resolve_room, resolve_key
 
 from meshagent.tools import Toolkit
-from meshagent.tools.hosting import _start_hosted_toolkit
+from meshagent.tools.hosting import start_hosted_toolkit
 
 
 from meshagent.api.services import ServiceHost
@@ -203,7 +203,7 @@ async def sse(
                         description=toolkit.description,
                     )
 
-                    hosted_toolkit = await _start_hosted_toolkit(
+                    hosted_toolkit = await start_hosted_toolkit(
                         room=client,
                         toolkit=toolkit,
                     )
@@ -320,7 +320,7 @@ async def streamable_http(
                         description=toolkit.description,
                     )
 
-                    hosted_toolkit = await _start_hosted_toolkit(
+                    hosted_toolkit = await start_hosted_toolkit(
                         room=client,
                         toolkit=toolkit,
                     )
@@ -422,7 +422,7 @@ async def stdio(
                         description=toolkit.description,
                     )
 
-                    hosted_toolkit = await _start_hosted_toolkit(
+                    hosted_toolkit = await start_hosted_toolkit(
                         room=client,
                         toolkit=toolkit,
                     )

@@ -9,7 +9,7 @@ import aiofiles
 import aiofiles.os
 from meshagent.api import RoomClient, WebSocketClientProtocol, websocket_room_url
 from meshagent.tools import FunctionTool, Toolkit, ToolContext
-from meshagent.tools.hosting import _start_hosted_toolkit
+from meshagent.tools.hosting import start_hosted_toolkit
 
 
 PROOF_PATH = Path(__file__).with_name("agent-proof.json")
@@ -108,7 +108,7 @@ async def main() -> None:
 
 async def run_agent_toolkit_proof(room: RoomClient) -> None:
     probe = os.environ.get("MESHAGENT_CREATE_DEV_PROBE")
-    hosted_toolkit = await _start_hosted_toolkit(
+    hosted_toolkit = await start_hosted_toolkit(
         room=room,
         toolkit=PythonAgentToolkit(),
     )

@@ -2019,7 +2019,7 @@ def build_process_agent(
     from meshagent.agents.messages import TurnStart, TurnSteer
     from meshagent.agents.process import AgentSupervisor, LLMAgentProcess
     from meshagent.tools import RoomToolContext, Toolkit
-    from meshagent.tools.hosting import _RemoteToolkitWrapper, _start_hosted_toolkit
+    from meshagent.tools.hosting import _RemoteToolkitWrapper, start_hosted_toolkit
 
     requirements = []
     toolkits = []
@@ -2284,7 +2284,7 @@ def build_process_agent(
 
                 self._exposed_toolkits = await self.get_exposed_toolkits()
                 for toolkit in self._exposed_toolkits:
-                    hosted_toolkit = await _start_hosted_toolkit(
+                    hosted_toolkit = await start_hosted_toolkit(
                         room=room,
                         toolkit=toolkit,
                     )

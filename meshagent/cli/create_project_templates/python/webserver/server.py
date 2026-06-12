@@ -12,7 +12,7 @@ import aiofiles.os
 from aiohttp import web
 from meshagent.api import RoomClient, WebSocketClientProtocol, websocket_room_url
 from meshagent.tools import FunctionTool, Toolkit, ToolContext
-from meshagent.tools.hosting import _start_hosted_toolkit
+from meshagent.tools.hosting import start_hosted_toolkit
 
 
 CONTENT_PATH = Path(__file__).with_name("dev-content.json")
@@ -189,7 +189,7 @@ async def run_dev_content_toolkit() -> None:
         token=token,
     )
     async with RoomClient(protocol_factory=protocol.create_factory()) as room:
-        hosted_toolkit = await _start_hosted_toolkit(
+        hosted_toolkit = await start_hosted_toolkit(
             room=room,
             toolkit=PythonContentToolkit(),
         )

@@ -335,7 +335,7 @@ def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> No
     assert 'name="ping"' in server_py
     assert 'name="status"' in server_py
     assert 'name="echo"' in server_py
-    assert "_start_hosted_toolkit" in server_py
+    assert "start_hosted_toolkit" in server_py
     assert "agent-proof.json" in server_py
     assert "ThreadingHTTPServer" not in server_py
     _assert_runtime_image_mount_deploy_yaml(
@@ -501,7 +501,7 @@ def test_init_creates_python_webserver_non_interactively(tmp_path) -> None:
     assert 'name="create"' in server_py
     assert 'name="update"' in server_py
     assert 'name="search"' in server_py
-    assert "_start_hosted_toolkit" in server_py
+    assert "start_hosted_toolkit" in server_py
     assert "dev-content.json" in server_py
     assert "MESHAGENT_CREATE_DEV_PROBE" in server_py
     assert "room.agents.invoke_tool" in server_py
