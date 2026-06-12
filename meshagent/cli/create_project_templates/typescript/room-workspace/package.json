@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "NEXT_TELEMETRY_DISABLED=1 next build",
-    "codex": "meshagent room connect -- meshagent codex join --agent-name codex --channel chat --thread-storage codex",
+    "codex": "meshagent room connect -- meshagent process join --agent-name codex --channel chat --backend codex",
     "predev": "node scripts/ensure-deps.mjs",
     "dev": "NEXT_TELEMETRY_DISABLED=1 meshagent room connect -- node dev-server.mjs",
     "deploy": "meshagent deploy . --tag meshagent-create-typescript-workspace-app:dev --private --validation-mode=cookie --liveness /health --wait",
