@@ -296,6 +296,65 @@ async def test_traces_prints_session_spans_as_tree(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_traces_accepts_session_id_option(monkeypatch) -> None:
+    fake_client = _FakeClient(
+        session_spans=[
+            {
+                "trace_id": "trace-1",
+                "span_id": "root",
+                "span_name": "root span",
+                "created_at": "2026-03-12T00:00:00",
+                "duration": 1_000_000,
+            }
+        ]
+    )
+
+    async def fake_get_client() -> _FakeClient:
+        return fake_client
+
+    async def fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-1"
+        return "resolved-project"
+
+    monkeypatch.setattr(sessions, "get_client", fake_get_client)
+    monkeypatch.setattr(sessions, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(sessions, "_print_tree_line", lambda message: None)
+
+    await sessions.traces(project_id="project-1", session_id="session-explicit")
+
+    assert fake_client.list_recent_sessions_calls == []
+    assert fake_client.list_session_spans_calls == [
+        ("resolved-project", "session-explicit")
+    ]
+    assert fake_client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_traces_rejects_conflicting_session_ids(monkeypatch) -> None:
+    fake_client = _FakeClient()
+
+    async def fake_get_client() -> _FakeClient:
+        return fake_client
+
+    async def fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-1"
+        return "resolved-project"
+
+    monkeypatch.setattr(sessions, "get_client", fake_get_client)
+    monkeypatch.setattr(sessions, "resolve_project_id", fake_resolve_project_id)
+
+    with pytest.raises(Exception, match="must match"):
+        await sessions.traces(
+            project_id="project-1",
+            session_arg="session-arg",
+            session_id="session-option",
+        )
+
+    assert fake_client.list_session_spans_calls == []
+    assert fake_client.closed is True
+
+
+@pytest.mark.asyncio
 async def test_traces_can_filter_and_print_attrs(monkeypatch) -> None:
     fake_client = _FakeClient(
         session_spans=[

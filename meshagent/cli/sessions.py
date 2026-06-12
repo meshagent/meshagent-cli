@@ -266,9 +266,13 @@ async def get(*, project_id: ProjectIdOption, session_id: str):
 async def traces(
     *,
     project_id: ProjectIdOption,
-    session_id: Annotated[
+    session_arg: Annotated[
         Optional[str],
         typer.Argument(help="Session id to inspect"),
+    ] = None,
+    session_id: Annotated[
+        Optional[str],
+        typer.Option("--session-id", help="Session id to inspect"),
     ] = None,
     room_name: Annotated[
         Optional[str],
@@ -297,7 +301,15 @@ async def traces(
     client = await get_client()
     try:
         resolved_project_id = await resolve_project_id(project_id=project_id)
-        resolved_session_id = session_id
+        if (
+            session_arg is not None
+            and session_id is not None
+            and session_arg != session_id
+        ):
+            raise typer.BadParameter(
+                "session argument and --session-id must match when both are provided"
+            )
+        resolved_session_id = session_id or session_arg
 
         if resolved_session_id is None:
             room_id: str | None = None
