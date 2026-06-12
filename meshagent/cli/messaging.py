@@ -1,3 +1,4 @@
+import asyncio
 import typer
 from rich import print
 from typing import Annotated
@@ -17,6 +18,17 @@ from meshagent.cli.helper import (
 )
 
 app = async_typer.AsyncTyper(help="Send and receive messages in a room")
+
+
+async def wait_for_messaging_participants(client: RoomClient, *, timeout: float = 3.0):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        participants = client.messaging.get_participants()
+        if participants:
+            return participants
+        if asyncio.get_running_loop().time() >= deadline:
+            return participants
+        await asyncio.sleep(0.25)
 
 
 @app.async_command("list", help="List messaging-enabled participants")
@@ -47,7 +59,7 @@ async def messaging_list_participants_command(
             # Must enable before we can see who else is enabled
             await client.messaging.enable()
 
-            participants = client.messaging.get_participants()
+            participants = await wait_for_messaging_participants(client)
             output = []
             for p in participants:
                 output.append({"id": p.id, "role": p.role, "attributes": p._attributes})
@@ -94,7 +106,7 @@ async def messaging_send_command(
 
             # Find the participant we want to message
             participant = None
-            for p in client.messaging.get_participants():
+            for p in await wait_for_messaging_participants(client):
                 if p.id == to_participant_id:
                     participant = p
                     break
