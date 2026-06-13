@@ -23,9 +23,14 @@ This template intentionally opens the current room directly. It does not include
    npm run codex
    ```
 
-   This command joins a `codex` agent in the same room with the Codex process
-   backend. New conversations in the Chat tab use the default MeshAgent dataset
-   thread storage, matching the standard process-agent path.
+   This command joins a `codex` agent with `--thread-storage codex`, so new
+   conversations in the Chat tab use Codex's native thread ids instead of room
+   dataset thread documents. Install the Python Codex integration first if your
+   MeshAgent CLI environment does not already include it:
+
+   ```bash
+   pip install meshagent-codex
+   ```
 
 3. Deploy:
 
