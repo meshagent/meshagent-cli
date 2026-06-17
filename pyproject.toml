@@ -22,8 +22,8 @@ dependencies = [
   "xlsxwriter~=3.2",
   "pathspec>=1.0.3,<2",
   "zstandard~=0.25.0",
-  "meshagent-llm-proxy==0.44.11",
-  "meshagent-codex==0.44.11",
+  "meshagent-llm-proxy==0.44.12",
+  "meshagent-codex==0.44.12",
   "rich~=14.3.0",
   "sounddevice~=0.5",
   "textual>=8.2.3,<9.0",
@@ -38,25 +38,25 @@ dynamic = ["version", "readme"]
 [project.optional-dependencies]
 
 all = [
-  "meshagent-agents[all]==0.44.11",
-  "meshagent-api[all]==0.44.11",
-  "meshagent-commoncrawl==0.44.11",
-  "meshagent-scrapy==0.44.11",
-  "meshagent-computers==0.44.11",
-  "meshagent-openai==0.44.11",
-  "meshagent-anthropic==0.44.11",
-  "meshagent-otel==0.44.11",
-  "meshagent-mcp==0.44.11",
-  "meshagent-tools==0.44.11",
+  "meshagent-agents[all]==0.44.12",
+  "meshagent-api[all]==0.44.12",
+  "meshagent-commoncrawl==0.44.12",
+  "meshagent-scrapy==0.44.12",
+  "meshagent-computers==0.44.12",
+  "meshagent-openai==0.44.12",
+  "meshagent-anthropic==0.44.12",
+  "meshagent-otel==0.44.12",
+  "meshagent-mcp==0.44.12",
+  "meshagent-tools==0.44.12",
   "supabase-auth~=2.28.0",
   "prompt-toolkit~=3.0.52"
 ]
 
 mcp-service = [
-    "meshagent-agents[all]==0.44.11",
-    "meshagent-api==0.44.11",
-    "meshagent-mcp==0.44.11",
-    "meshagent-tools==0.44.11",
+    "meshagent-agents[all]==0.44.12",
+    "meshagent-api==0.44.12",
+    "meshagent-mcp==0.44.12",
+    "meshagent-tools==0.44.12",
     "supabase-auth~=2.28.0"
 ]
 
