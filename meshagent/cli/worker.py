@@ -16,8 +16,6 @@ from meshagent.cli.common_options import (
     RoomOption,
     ShellEmptyDirMountLegacyOption,
     ShellEmptyDirMountOption,
-    ShellProjectMountLegacyOption,
-    ShellProjectMountOption,
     ShellRoomMountLegacyOption,
     ShellRoomMountOption,
     StartingUrlOption,
@@ -845,8 +843,6 @@ async def join(
     ] = [],
     shell_room_mount: ShellRoomMountOption = [],
     shell_tool_room_path: ShellRoomMountLegacyOption = [],
-    shell_project_mount: ShellProjectMountOption = [],
-    shell_tool_project_path: ShellProjectMountLegacyOption = [],
     shell_empty_dir_mount: ShellEmptyDirMountOption = [],
     shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
     shell_image_mount: Annotated[
@@ -994,10 +990,6 @@ async def join(
             room_paths=merge_option_lists(
                 shell_room_mount,
                 shell_tool_room_path,
-            ),
-            project_paths=merge_option_lists(
-                shell_project_mount,
-                shell_tool_project_path,
             ),
             empty_dir_paths=merge_option_lists(
                 shell_empty_dir_mount,
@@ -1184,8 +1176,6 @@ async def service(
     ] = None,
     shell_room_mount: ShellRoomMountOption = [],
     shell_tool_room_path: ShellRoomMountLegacyOption = [],
-    shell_project_mount: ShellProjectMountOption = [],
-    shell_tool_project_path: ShellProjectMountLegacyOption = [],
     shell_empty_dir_mount: ShellEmptyDirMountOption = [],
     shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
     shell_image_mount: Annotated[
@@ -1316,10 +1306,6 @@ async def service(
         room_paths=merge_option_lists(
             shell_room_mount,
             shell_tool_room_path,
-        ),
-        project_paths=merge_option_lists(
-            shell_project_mount,
-            shell_tool_project_path,
         ),
         empty_dir_paths=merge_option_lists(
             shell_empty_dir_mount,
@@ -1506,8 +1492,6 @@ async def spec(
     ] = False,
     shell_room_mount: ShellRoomMountOption = [],
     shell_tool_room_path: ShellRoomMountLegacyOption = [],
-    shell_project_mount: ShellProjectMountOption = [],
-    shell_tool_project_path: ShellProjectMountLegacyOption = [],
     shell_empty_dir_mount: ShellEmptyDirMountOption = [],
     shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
     shell_image_mount: Annotated[
@@ -1639,10 +1623,6 @@ async def spec(
         room_paths=merge_option_lists(
             shell_room_mount,
             shell_tool_room_path,
-        ),
-        project_paths=merge_option_lists(
-            shell_project_mount,
-            shell_tool_project_path,
         ),
         empty_dir_paths=merge_option_lists(
             shell_empty_dir_mount,
@@ -1848,8 +1828,6 @@ async def deploy(
     ] = False,
     shell_room_mount: ShellRoomMountOption = [],
     shell_tool_room_path: ShellRoomMountLegacyOption = [],
-    shell_project_mount: ShellProjectMountOption = [],
-    shell_tool_project_path: ShellProjectMountLegacyOption = [],
     shell_empty_dir_mount: ShellEmptyDirMountOption = [],
     shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
     queue: Annotated[str, typer.Option(..., help="the queue to consume")],
@@ -1988,10 +1966,6 @@ async def deploy(
         room_paths=merge_option_lists(
             shell_room_mount,
             shell_tool_room_path,
-        ),
-        project_paths=merge_option_lists(
-            shell_project_mount,
-            shell_tool_project_path,
         ),
         empty_dir_paths=merge_option_lists(
             shell_empty_dir_mount,

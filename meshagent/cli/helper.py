@@ -13,7 +13,6 @@ from meshagent.api.specs.service import (
     ContainerMountSpec,
     EmptyDirMountSpec,
     ImageStorageMountSpec,
-    ProjectStorageMountSpec,
     RoomStorageMountSpec,
     ServiceSpec,
 )
@@ -650,13 +649,14 @@ def parse_storage_tool_mounts(
 def parse_shell_tool_mounts(
     *,
     room_paths: list[str],
-    project_paths: list[str],
+    project_paths: Optional[list[str]] = None,
     image_paths: Optional[list[str]] = None,
     empty_dir_paths: Optional[list[str]] = None,
     config_paths: Optional[list[str]] = None,
 ) -> Optional[ContainerMountSpec]:
+    if project_paths:
+        raise typer.BadParameter("project storage mounts are no longer supported")
     room_mounts: list[RoomStorageMountSpec] = []
-    project_mounts: list[ProjectStorageMountSpec] = []
     image_mounts: list[ImageStorageMountSpec] = []
     empty_dir_mounts: list[EmptyDirMountSpec] = []
     config_mounts: list[ConfigMountSpec] = []
@@ -675,15 +675,6 @@ def parse_shell_tool_mounts(
         subpath = source if source not in {"", ".", "/"} else None
         room_mounts.append(
             RoomStorageMountSpec(path=mount, subpath=subpath, read_only=read_only)
-        )
-
-    for value in project_paths:
-        source, mount, read_only = split_container_mount(
-            value, "--shell-tool-project-path", True
-        )
-        subpath = source if source not in {"", ".", "/"} else None
-        project_mounts.append(
-            ProjectStorageMountSpec(path=mount, subpath=subpath, read_only=read_only)
         )
 
     for value in image_paths:
@@ -715,7 +706,6 @@ def parse_shell_tool_mounts(
 
     if (
         not room_mounts
-        and not project_mounts
         and not image_mounts
         and not empty_dir_mounts
         and not config_mounts
@@ -724,7 +714,6 @@ def parse_shell_tool_mounts(
 
     return ContainerMountSpec(
         room=room_mounts or None,
-        project=project_mounts or None,
         images=image_mounts or None,
         empty_dirs=empty_dir_mounts or None,
         configs=config_mounts or None,

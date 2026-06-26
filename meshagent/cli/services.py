@@ -89,7 +89,6 @@ class _SpecInputError(Exception):
 class _DiscoveredOAuthEndpoints:
     authorization_endpoint: str
     token_endpoint: str
-    registration_endpoint: Optional[str]
     no_pkce: Optional[bool]
 
 
@@ -342,11 +341,6 @@ async def _discover_oauth_endpoints_for_mcp(
             metadata_url=metadata_url,
             value=payload.get("token_endpoint"),
         )
-        registration_endpoint = _normalize_discovered_endpoint(
-            metadata_url=metadata_url,
-            value=payload.get("registration_endpoint"),
-        )
-
         if authorization_endpoint is None or token_endpoint is None:
             continue
 
@@ -366,7 +360,6 @@ async def _discover_oauth_endpoints_for_mcp(
         return _DiscoveredOAuthEndpoints(
             authorization_endpoint=authorization_endpoint,
             token_endpoint=token_endpoint,
-            registration_endpoint=registration_endpoint,
             no_pkce=no_pkce,
         )
 
@@ -474,23 +467,12 @@ async def _load_service_spec(
             oauth=None,
         )
 
-    registration_endpoint = discovered.registration_endpoint
-
-    if (
-        not isinstance(registration_endpoint, str)
-        or registration_endpoint.strip() == ""
-    ):
-        raise typer.BadParameter(
-            "The MCP server does not support OAuth dynamic client registration "
-            "(missing registration_endpoint in discovered metadata)."
-        )
-
     return _build_external_mcp_service_spec(
         mcp_url=normalized_mcp_url,
-        # Keep oauth present but empty so room-side resolution can discover
-        # provider metadata and perform dynamic client registration at runtime.
         oauth=OAuthClientConfig(
-            no_pkce=discovered.no_pkce if discovered.no_pkce is not None else False
+            authorization_endpoint=discovered.authorization_endpoint,
+            token_endpoint=discovered.token_endpoint,
+            no_pkce=discovered.no_pkce if discovered.no_pkce is not None else False,
         ),
     )
 
@@ -519,7 +501,6 @@ def _service_spec_to_template_spec(spec: ServiceSpec) -> ServiceTemplateSpec:
         if spec.container.storage is not None:
             template_storage = ServiceTemplateContainerMountSpec(
                 room=spec.container.storage.room,
-                project=spec.container.storage.project,
                 images=spec.container.storage.images,
                 files=spec.container.storage.files,
                 empty_dirs=spec.container.storage.empty_dirs,
@@ -1045,7 +1026,7 @@ async def service_create(
             "--mcp",
             help=(
                 "MCP server URL. Auto-discovers OAuth metadata and creates an external MCP service "
-                "configured for dynamic client registration."
+                "configured with discovered OAuth endpoints."
             ),
         ),
     ] = None,
@@ -1178,7 +1159,7 @@ async def service_update(
             "--mcp",
             help=(
                 "MCP server URL. Auto-discovers OAuth metadata and builds an external MCP service "
-                "configured for dynamic client registration."
+                "configured with discovered OAuth endpoints."
             ),
         ),
     ] = None,

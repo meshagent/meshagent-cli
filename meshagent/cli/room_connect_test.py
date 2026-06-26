@@ -5,7 +5,7 @@ import typer
 from meshagent.cli.testing import CliRunner
 
 from meshagent.api import ApiScope, ParticipantToken
-from meshagent.api.client import NotFoundError, Room
+from meshagent.api.client import Room
 from meshagent.cli import room_connect
 from meshagent.cli import cli as root_cli
 from meshagent.cli.async_typer import get_command
@@ -20,7 +20,6 @@ class _FakeAccountClient:
         room_token: str = "room-jwt",
         room_name: str = "connected-room",
         room_url: str = "wss://room-proxy.meshagent.test/rooms/connected-room",
-        secret_values: dict[tuple[str | None, str], bytes] | None = None,
         rooms: list[Room] | None = None,
         can_create_rooms: bool = False,
     ) -> None:
@@ -29,14 +28,11 @@ class _FakeAccountClient:
         self.room_token = room_token
         self.room_name = room_name
         self.room_url = room_url
-        self.secret_values = secret_values or {}
         self.rooms = rooms or []
         self.can_create_rooms_value = can_create_rooms
         self.connect_calls: list[dict[str, str]] = []
-        self.secret_calls: list[dict[str, str | None]] = []
         self.can_create_rooms_calls: list[str] = []
         self.list_rooms_calls: list[dict[str, object]] = []
-        self.list_room_grants_by_user_calls: list[dict[str, object]] = []
         self.create_room_calls: list[dict[str, object]] = []
 
     async def connect_room(self, *, project_id: str, room: str) -> SimpleNamespace:
@@ -47,29 +43,6 @@ class _FakeAccountClient:
             room_url=self.room_url,
         )
 
-    async def get_room_secret(
-        self,
-        *,
-        project_id: str,
-        room_name: str,
-        secret_id: str,
-        delegated_to: str | None = None,
-        for_identity: str | None = None,
-    ) -> SimpleNamespace:
-        del delegated_to
-        self.secret_calls.append(
-            {
-                "project_id": project_id,
-                "room_name": room_name,
-                "secret_id": secret_id,
-                "for_identity": for_identity,
-            }
-        )
-        secret_key = (for_identity, secret_id)
-        if secret_key not in self.secret_values:
-            raise NotFoundError(f"missing secret {secret_key}")
-        return SimpleNamespace(data=self.secret_values[secret_key])
-
     async def can_create_rooms(self, project_id: str) -> bool:
         self.can_create_rooms_calls.append(project_id)
         return self.can_create_rooms_value
@@ -78,50 +51,21 @@ class _FakeAccountClient:
         self,
         *,
         project_id: str,
-        limit: int,
-        offset: int,
-        order_by: str,
+        page_size: int,
+        continuation_token: str | None = None,
         filter: str | None = None,
+        view: str | None = None,
     ) -> list[Room]:
         self.list_rooms_calls.append(
             {
                 "project_id": project_id,
-                "limit": limit,
-                "offset": offset,
-                "order_by": order_by,
+                "page_size": page_size,
+                "continuation_token": continuation_token,
                 "filter": filter,
+                "view": view,
             }
         )
-        return self.rooms[offset : offset + limit]
-
-    async def list_room_grants_by_user(
-        self,
-        *,
-        project_id: str,
-        user_id: str,
-        limit: int,
-        offset: int,
-        order_by: str,
-        filter: str | None = None,
-    ) -> list[SimpleNamespace]:
-        self.list_room_grants_by_user_calls.append(
-            {
-                "project_id": project_id,
-                "user_id": user_id,
-                "limit": limit,
-                "offset": offset,
-                "order_by": order_by,
-                "filter": filter,
-            }
-        )
-        return [
-            SimpleNamespace(
-                room=room,
-                user_id=user_id,
-                permissions=ApiScope.full(),
-            )
-            for room in self.rooms[offset : offset + limit]
-        ]
+        return self.rooms[:page_size]
 
     async def create_room(
         self,
@@ -217,15 +161,13 @@ async def test_room_connect_missing_room_prompts_for_existing_room(
     assert resolved_project_id == "project-1"
     assert resolved_room == "dev-room"
     assert account_client.can_create_rooms_calls == ["project-1"]
-    assert account_client.list_rooms_calls == []
-    assert account_client.list_room_grants_by_user_calls == [
+    assert account_client.list_rooms_calls == [
         {
             "project_id": "project-1",
-            "user_id": "me",
-            "limit": 500,
-            "offset": 0,
-            "order_by": "room_name",
+            "page_size": 500,
+            "continuation_token": None,
             "filter": None,
+            "view": "my",
         }
     ]
     assert account_client.create_room_calls == []
@@ -683,7 +625,7 @@ async def test_room_connect_uses_default_api_url_when_env_is_unset(
 
 
 @pytest.mark.asyncio
-async def test_room_connect_build_env_requires_identity_for_secret_env(
+async def test_room_connect_build_env_rejects_secret_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def _fake_resolve_project_id(*, project_id: str | None) -> str:
@@ -697,7 +639,8 @@ async def test_room_connect_build_env_requires_identity_for_secret_env(
     monkeypatch.setattr(room_connect, "resolve_project_id", _fake_resolve_project_id)
     monkeypatch.setattr(room_connect, "resolve_room", _fake_resolve_room)
     with pytest.raises(
-        typer.BadParameter, match="--identity is required when using --env-secret"
+        typer.BadParameter,
+        match="--env-secret is no longer supported by room connect",
     ):
         await room_connect._build_connected_command_env(
             project_id="project-input",
@@ -990,17 +933,11 @@ async def test_room_connect_build_env_with_identity_and_meshagent_token_mints_lo
 
 
 @pytest.mark.asyncio
-async def test_room_connect_build_env_with_identity_fetches_secret_without_connect_room(
+async def test_room_connect_build_env_with_identity_rejects_secret_env_without_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    account_client = _FakeAccountClient(
-        secret_values={
-            ("agent-name", "db-password"): b"topsecret",
-        }
-    )
-
     async def _fake_get_client() -> _FakeAccountClient:
-        return account_client
+        raise AssertionError("get_client should not be called for --env-secret")
 
     async def _fake_resolve_project_id(*, project_id: str | None) -> str:
         assert project_id == "project-input"
@@ -1025,27 +962,18 @@ async def test_room_connect_build_env_with_identity_fetches_secret_without_conne
     )
     monkeypatch.setenv("MESHAGENT_SECRET", _LOCAL_SIGNING_SECRET)
 
-    child_env = await room_connect._build_connected_command_env(
-        project_id="project-input",
-        room="room-input",
-        env=(),
-        env_secret=("DB_PASSWORD=db-password",),
-        identity="agent-name",
-        meshagent_token=None,
-    )
-
-    assert child_env["DB_PASSWORD"] == "topsecret"
-    assert child_env["MESHAGENT_PROJECT_ID"] == "project-1"
-    assert account_client.connect_calls == []
-    assert account_client.secret_calls == [
-        {
-            "project_id": "project-1",
-            "room_name": "room-input",
-            "secret_id": "db-password",
-            "for_identity": "agent-name",
-        }
-    ]
-    assert account_client.closed is True
+    with pytest.raises(
+        typer.BadParameter,
+        match="--env-secret is no longer supported by room connect",
+    ):
+        await room_connect._build_connected_command_env(
+            project_id="project-input",
+            room="room-input",
+            env=(),
+            env_secret=("DB_PASSWORD=db-password",),
+            identity="agent-name",
+            meshagent_token=None,
+        )
 
 
 def test_room_connect_requires_command_after_separator() -> None:

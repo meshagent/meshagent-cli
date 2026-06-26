@@ -1,22 +1,16 @@
 # React/Vite Web App
 
-Minimal React/Vite browser app served as a public route.
+Shows what changes when the thing you deploy is a browser app instead of a server response. MeshAgent serves the UI at a public URL, keeps a health check available, mounts writable storage, and lets a local room toolkit update the page, so beginners can see how agents can drive a frontend.
 
 ## Next Steps
 
-1. Install dependencies:
-
-   ```bash
-   npm install
-   ```
-
-2. Run locally:
+1. Run locally:
 
    ```bash
    npm run dev
    ```
 
-3. Deploy:
+2. Deploy:
 
    ```bash
    npm run deploy

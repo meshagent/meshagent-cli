@@ -1,6 +1,5 @@
 import os
 import shlex
-import string
 
 import typer
 from rich import print
@@ -17,7 +16,7 @@ from meshagent.cli.helper import (
 )
 
 from meshagent.tools import Toolkit
-from meshagent.tools.hosting import _start_hosted_toolkit
+from meshagent.tools.hosting import start_hosted_toolkit
 
 
 from meshagent.api.services import ServiceHost
@@ -39,73 +38,6 @@ def _kv_to_dict(
     return out
 
 
-def _parse_header_secret(value: str) -> tuple[str, str]:
-    if ":" not in value:
-        raise typer.BadParameter(
-            f"'{value}' must be HEADER:FORMAT (e.g. Header:Bearer {{secret}})"
-        )
-    header_name, format_spec = value.split(":", 1)
-    header_name = header_name.strip()
-    format_spec = format_spec.strip()
-    if header_name == "" or format_spec == "":
-        raise typer.BadParameter(
-            f"'{value}' must be HEADER:FORMAT (e.g. Header:Bearer {{secret}})"
-        )
-    return header_name, format_spec
-
-
-async def _resolve_header_secrets(
-    room_client: RoomClient, header_secret: List[str]
-) -> dict[str, str]:
-    if not header_secret:
-        return {}
-
-    secrets = await room_client.secrets.list_secrets()
-    secrets_by_id = {secret.id: secret for secret in secrets}
-    secrets_by_name = {secret.name: secret for secret in secrets}
-
-    resolved: dict[str, str] = {}
-    for item in header_secret:
-        header_name, format_spec = _parse_header_secret(item)
-        placeholder_names = {
-            field_name
-            for _, field_name, _, _ in string.Formatter().parse(format_spec)
-            if field_name
-        }
-        if not placeholder_names:
-            raise typer.BadParameter(
-                f"Header secret format '{format_spec}' must include a placeholder"
-            )
-
-        secrets_values: dict[str, str] = {}
-        for secret_key in placeholder_names:
-            secret = secrets_by_id.get(secret_key) or secrets_by_name.get(secret_key)
-            if secret is None:
-                raise typer.BadParameter(
-                    f"Secret '{secret_key}' not found (use secret id or name)"
-                )
-            secret_response = await room_client.secrets.get_secret(secret_id=secret.id)
-            if secret_response is None:
-                raise typer.BadParameter(f"Secret '{secret_key}' has no data")
-            try:
-                resolved_value = secret_response.data.decode()
-            except UnicodeDecodeError as exc:
-                raise typer.BadParameter(
-                    f"Secret '{secret_key}' is not valid UTF-8 text"
-                ) from exc
-            secrets_values[secret_key] = resolved_value
-
-        try:
-            formatted_value = format_spec.format(**secrets_values)
-        except (KeyError, IndexError, ValueError) as exc:
-            raise typer.BadParameter(
-                f"Header secret format '{format_spec}' is invalid"
-            ) from exc
-        resolved[header_name] = formatted_value
-
-    return resolved
-
-
 app = async_typer.AsyncTyper(help="Bridge MCP servers into MeshAgent rooms")
 
 
@@ -125,16 +57,6 @@ async def sse(
             "--header",
             "-H",
             help="Request header (KEY:VALUE). Repeat for multiple headers",
-        ),
-    ] = [],
-    header_secret: Annotated[
-        List[str],
-        typer.Option(
-            "--header-secret",
-            help=(
-                "Header from secret (HEADER:FORMAT). "
-                "FORMAT uses secret placeholders, e.g. Header:Bearer {my_secret}"
-            ),
         ),
     ] = [],
     toolkit_name: Annotated[
@@ -179,8 +101,6 @@ async def sse(
             ).create_factory()
         ) as client:
             headers = _kv_to_dict(header, separator=":", trim=True) if header else {}
-            secret_headers = await _resolve_header_secrets(client, header_secret)
-            headers = {**headers, **secret_headers}
             if not headers:
                 headers = None
             async with sse_client(url, headers=headers) as (read_stream, write_stream):
@@ -202,7 +122,7 @@ async def sse(
                         description=toolkit.description,
                     )
 
-                    hosted_toolkit = await _start_hosted_toolkit(
+                    hosted_toolkit = await start_hosted_toolkit(
                         room=client,
                         toolkit=toolkit,
                     )
@@ -234,16 +154,6 @@ async def streamable_http(
             "--header",
             "-H",
             help="Request header (KEY:VALUE). Repeat for multiple headers",
-        ),
-    ] = [],
-    header_secret: Annotated[
-        List[str],
-        typer.Option(
-            "--header-secret",
-            help=(
-                "Header from secret (HEADER:FORMAT). "
-                "FORMAT uses secret placeholders, e.g. Header:Bearer {my_secret}"
-            ),
         ),
     ] = [],
     toolkit_name: Annotated[
@@ -288,8 +198,6 @@ async def streamable_http(
             ).create_factory()
         ) as client:
             headers = _kv_to_dict(header, separator=":", trim=True) if header else {}
-            secret_headers = await _resolve_header_secrets(client, header_secret)
-            headers = {**headers, **secret_headers}
             if not headers:
                 headers = None
             async with streamablehttp_client(url, headers=headers) as (
@@ -316,7 +224,7 @@ async def streamable_http(
                         description=toolkit.description,
                     )
 
-                    hosted_toolkit = await _start_hosted_toolkit(
+                    hosted_toolkit = await start_hosted_toolkit(
                         room=client,
                         toolkit=toolkit,
                     )
@@ -415,7 +323,7 @@ async def stdio(
                         description=toolkit.description,
                     )
 
-                    hosted_toolkit = await _start_hosted_toolkit(
+                    hosted_toolkit = await start_hosted_toolkit(
                         room=client,
                         toolkit=toolkit,
                     )

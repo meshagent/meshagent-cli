@@ -1,22 +1,16 @@
 # TypeScript Web App
 
-Minimal TypeScript public HTTP service with a health route.
+Demonstrates how to take a small server you can run on your laptop and make it available at a public MeshAgent URL. You see the deploy command, the health check MeshAgent uses before sending traffic, and a room-connected toolkit that lets agents change what the app shows.
 
 ## Next Steps
 
-1. Install dependencies:
-
-   ```bash
-   npm install
-   ```
-
-2. Run locally:
+1. Run locally:
 
    ```bash
    npm run dev
    ```
 
-3. Deploy:
+2. Deploy:
 
    ```bash
    npm run deploy

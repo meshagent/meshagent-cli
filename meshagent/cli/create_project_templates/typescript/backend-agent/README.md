@@ -1,22 +1,16 @@
 # TypeScript Agent Toolkit
 
-Minimal headless TypeScript service that exposes custom tools to MeshAgent agents.
+Illustrates how to use a Meshagent agent tool: give custom functionality a tool name and description, let MeshAgent route tool call results through the room, and confirm the loop before you replace `echo` with useful work.
 
 ## Next Steps
 
-1. Install dependencies:
-
-   ```bash
-   npm install
-   ```
-
-2. Run locally:
+1. Run locally:
 
    ```bash
    npm run dev
    ```
 
-3. Deploy:
+2. Deploy:
 
    ```bash
    npm run deploy

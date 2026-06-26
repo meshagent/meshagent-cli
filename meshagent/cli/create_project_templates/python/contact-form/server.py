@@ -1,17 +1,34 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import contextlib
 import html
+import json
+import logging
 import os
 import re
 import smtplib
+import time
+import webbrowser
 from email.message import EmailMessage
+from email.utils import make_msgid
+from uuid import uuid4
 
 from aiohttp import web
 
 
+logging.basicConfig(
+    level=os.getenv("CONTACT_FORM_LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+LOGGER = logging.getLogger("contact_form")
+
 DEFAULT_FROM_ADDRESS = "contact@mail.meshagent.com"
-DEFAULT_TO_ADDRESS = "you@example.com"
+DEFAULT_TO_ADDRESS = ""
+PRIVATE_MAILBOX_PERMISSION_ERROR = "5.7.1 Permission denied"
+TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
 
 EMAIL_RE = re.compile(r"^[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,63}$", re.IGNORECASE)
 PHONE_RE = re.compile(r"^\+?[0-9()\-\s]{7,20}$")
@@ -158,6 +175,19 @@ def is_valid_phone(value: str) -> bool:
     return 7 <= len(digits) <= 15
 
 
+def room_slug_from_name(room_name: str) -> str:
+    room_slug = re.sub(r"[^a-z0-9]+", "-", room_name.strip().lower())
+    room_slug = re.sub(r"-+", "-", room_slug).strip("-")[:56]
+    return room_slug or "room"
+
+
+def default_from_address() -> str:
+    room_name = os.getenv("MESHAGENT_ROOM", "").strip()
+    if room_name:
+        return f"contact-{room_slug_from_name(room_name)}@mail.meshagent.com"
+    return DEFAULT_FROM_ADDRESS
+
+
 def render_page(*, flash: str = "", values: dict[str, str] | None = None) -> str:
     values = values or {}
     return (
@@ -167,6 +197,23 @@ def render_page(*, flash: str = "", values: dict[str, str] | None = None) -> str
         .replace("__PHONE__", html.escape(values.get("phone", ""), quote=True))
         .replace("__MESSAGE__", html.escape(values.get("message", "")))
     )
+
+
+def smtp_username_from_meshagent_token() -> str | None:
+    token = os.getenv("MESHAGENT_TOKEN", "").strip()
+    parts = token.split(".")
+    if len(parts) < 2:
+        return None
+    payload = parts[1]
+    payload += "=" * (-len(payload) % 4)
+    try:
+        decoded = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")))
+    except (binascii.Error, TypeError, ValueError):
+        return None
+    username = decoded.get("name")
+    if isinstance(username, str) and username.strip() != "":
+        return username.strip()
+    return None
 
 
 def _smtp_config() -> tuple[str | None, str | None, int, str]:
@@ -185,7 +232,7 @@ def _smtp_config() -> tuple[str | None, str | None, int, str]:
 
     port = int(os.getenv("SMTP_PORT", "587"))
     return (
-        os.getenv("SMTP_USERNAME"),
+        os.getenv("SMTP_USERNAME") or smtp_username_from_meshagent_token(),
         os.getenv("SMTP_PASSWORD") or os.getenv("MESHAGENT_TOKEN"),
         port,
         hostname,
@@ -193,7 +240,7 @@ def _smtp_config() -> tuple[str | None, str | None, int, str]:
 
 
 def _email_config() -> tuple[str, str]:
-    from_address = os.getenv("CONTACT_FORM_FROM", DEFAULT_FROM_ADDRESS).strip()
+    from_address = (os.getenv("CONTACT_FORM_FROM") or default_from_address()).strip()
     to_address = os.getenv("CONTACT_FORM_TO", DEFAULT_TO_ADDRESS).strip()
     if not is_valid_email(from_address):
         raise ValueError("CONTACT_FORM_FROM must be a valid mailbox address")
@@ -206,12 +253,53 @@ def _flash(*, message: str, kind: str) -> str:
     return f'<p class="notice {kind}">{html.escape(message)}</p>'
 
 
+def _log_event(event: str, **fields: object) -> None:
+    payload = {"event": event, **fields}
+    LOGGER.info(json.dumps(payload, sort_keys=True))
+
+
+def _log_details_enabled() -> bool:
+    return os.getenv("CONTACT_FORM_LOG_DETAILS", "").strip().lower() in TRUE_ENV_VALUES
+
+
+def _address_domain(address: str) -> str:
+    if "@" not in address:
+        return ""
+    return address.rsplit("@", 1)[1]
+
+
+def _with_log_details(
+    fields: dict[str, object],
+    details: dict[str, object],
+) -> dict[str, object]:
+    if _log_details_enabled():
+        fields.update(details)
+    return fields
+
+
+def _decode_smtp_response(response: object) -> str:
+    if isinstance(response, bytes):
+        return response.decode("utf-8", errors="replace")
+    return str(response)
+
+
+def mail_error_message(exc: Exception) -> str:
+    detail = str(exc).strip() or type(exc).__name__
+    if "CONTACT_FORM_TO" in detail:
+        return (
+            "Set CONTACT_FORM_TO to the address that should receive submissions "
+            "before sending."
+        )
+    return f"Unable to send mail: {detail}"
+
+
 def _build_message(values: dict[str, str]) -> EmailMessage:
     from_address, to_address = _email_config()
     msg = EmailMessage()
     msg["Subject"] = f"Contact form submission from {values['name']}"
     msg["From"] = from_address
     msg["To"] = to_address
+    msg["Message-ID"] = make_msgid(domain=from_address.rsplit("@", 1)[1])
     if values["email"]:
         msg["Reply-To"] = values["email"]
     msg.set_content(
@@ -224,19 +312,130 @@ def _build_message(values: dict[str, str]) -> EmailMessage:
     return msg
 
 
-def _send_email(msg: EmailMessage) -> None:
-    username, password, port, hostname = _smtp_config()
+def _is_private_mailbox_permission_error(exc: smtplib.SMTPDataError) -> bool:
+    detail = str(exc)
+    smtp_error = exc.smtp_error
+    if isinstance(smtp_error, bytes):
+        detail += " " + smtp_error.decode("utf-8", errors="replace")
+    else:
+        detail += " " + str(smtp_error)
+    return PRIVATE_MAILBOX_PERMISSION_ERROR in detail
+
+
+def _send_message(
+    msg: EmailMessage,
+    *,
+    submission_id: str,
+    attempt: str,
+    username: str | None,
+    password: str | None,
+    port: int,
+    hostname: str,
+    from_address: str,
+    to_address: str,
+) -> None:
     use_starttls = os.getenv("SMTP_STARTTLS", "true").lower() not in {
         "0",
         "false",
         "no",
     }
+    start = time.monotonic()
+    _log_event(
+        "smtp_send_start",
+        **_with_log_details(
+            {
+                "submission_id": submission_id,
+                "attempt": attempt,
+                "hostname": hostname,
+                "port": port,
+                "starttls": use_starttls,
+                "auth_configured": bool(username and password),
+                "from_domain": _address_domain(from_address),
+                "to_domain": _address_domain(to_address),
+                "message_id": str(msg.get("Message-ID", "")),
+            },
+            {
+                "username": username or "",
+                "password_configured": bool(password),
+                "from_address": from_address,
+                "to_address": to_address,
+                "subject": str(msg.get("Subject", "")),
+            },
+        ),
+    )
     with smtplib.SMTP(hostname, port, timeout=20) as smtp:
         if use_starttls:
             smtp.starttls()
         if username and password:
             smtp.login(username, password)
-        smtp.send_message(msg)
+        smtp.send_message(msg, from_addr=from_address, to_addrs=[to_address])
+
+    _log_event(
+        "smtp_send_succeeded",
+        **_with_log_details(
+            {
+                "submission_id": submission_id,
+                "attempt": attempt,
+                "duration_ms": round((time.monotonic() - start) * 1000),
+                "from_domain": _address_domain(from_address),
+                "to_domain": _address_domain(to_address),
+                "message_id": str(msg.get("Message-ID", "")),
+            },
+            {
+                "from_address": from_address,
+                "to_address": to_address,
+            },
+        ),
+    )
+
+
+def _send_email(msg: EmailMessage, *, submission_id: str) -> None:
+    username, password, port, hostname = _smtp_config()
+    from_address, to_address = _email_config()
+    try:
+        _send_message(
+            msg,
+            submission_id=submission_id,
+            attempt="configured",
+            username=username,
+            password=password,
+            port=port,
+            hostname=hostname,
+            from_address=from_address,
+            to_address=to_address,
+        )
+    except smtplib.SMTPDataError as exc:
+        if not _is_private_mailbox_permission_error(exc):
+            raise
+        _log_event(
+            "smtp_private_mailbox_retry",
+            **_with_log_details(
+                {
+                    "submission_id": submission_id,
+                    "from_domain": _address_domain(from_address),
+                    "retry_from_domain": _address_domain(to_address),
+                    "to_domain": _address_domain(to_address),
+                    "smtp_code": exc.smtp_code,
+                },
+                {
+                    "from_address": from_address,
+                    "retry_from_address": to_address,
+                    "to_address": to_address,
+                    "smtp_error": _decode_smtp_response(exc.smtp_error),
+                },
+            ),
+        )
+        _send_message(
+            msg,
+            submission_id=submission_id,
+            attempt="private_mailbox_retry",
+            username=username,
+            password=password,
+            port=port,
+            hostname=hostname,
+            from_address=to_address,
+            to_address=to_address,
+        )
 
 
 async def health(request: web.Request) -> web.Response:
@@ -256,6 +455,7 @@ async def index(request: web.Request) -> web.Response:
 
 
 async def submit_contact(request: web.Request) -> web.Response:
+    submission_id = uuid4().hex[:12]
     data = await request.post()
     values = {
         "name": sanitize_single_line(str(data.get("name", "")), max_len=80),
@@ -263,8 +463,29 @@ async def submit_contact(request: web.Request) -> web.Response:
         "phone": sanitize_single_line(str(data.get("phone", "")), max_len=20),
         "message": sanitize_multiline(str(data.get("message", "")), max_len=4000),
     }
+    _log_event(
+        "contact_form_submit_received",
+        **_with_log_details(
+            {
+                "submission_id": submission_id,
+                "reply_email_provided": bool(values["email"]),
+                "phone_provided": bool(values["phone"]),
+                "message_chars": len(values["message"]),
+            },
+            {
+                "remote": request.remote or "",
+                "name": values["name"],
+                "reply_email": values["email"],
+            },
+        ),
+    )
 
     if not values["name"]:
+        _log_event(
+            "contact_form_validation_failed",
+            submission_id=submission_id,
+            reason="missing_name",
+        )
         return web.Response(
             text=render_page(
                 flash=_flash(message="Name is required.", kind="error"),
@@ -274,6 +495,11 @@ async def submit_contact(request: web.Request) -> web.Response:
             status=400,
         )
     if not values["message"]:
+        _log_event(
+            "contact_form_validation_failed",
+            submission_id=submission_id,
+            reason="missing_message",
+        )
         return web.Response(
             text=render_page(
                 flash=_flash(message="Message is required.", kind="error"),
@@ -283,6 +509,11 @@ async def submit_contact(request: web.Request) -> web.Response:
             status=400,
         )
     if not values["email"] and not values["phone"]:
+        _log_event(
+            "contact_form_validation_failed",
+            submission_id=submission_id,
+            reason="missing_contact_method",
+        )
         return web.Response(
             text=render_page(
                 flash=_flash(
@@ -295,6 +526,11 @@ async def submit_contact(request: web.Request) -> web.Response:
             status=400,
         )
     if values["email"] and not is_valid_email(values["email"]):
+        _log_event(
+            "contact_form_validation_failed",
+            submission_id=submission_id,
+            reason="invalid_email",
+        )
         return web.Response(
             text=render_page(
                 flash=_flash(
@@ -306,6 +542,11 @@ async def submit_contact(request: web.Request) -> web.Response:
             status=400,
         )
     if values["phone"] and not is_valid_phone(values["phone"]):
+        _log_event(
+            "contact_form_validation_failed",
+            submission_id=submission_id,
+            reason="invalid_phone",
+        )
         return web.Response(
             text=render_page(
                 flash=_flash(
@@ -317,14 +558,45 @@ async def submit_contact(request: web.Request) -> web.Response:
             status=400,
         )
 
+    msg = _build_message(values)
+    _log_event(
+        "contact_form_submit_validated",
+        **_with_log_details(
+            {
+                "submission_id": submission_id,
+                "from_domain": _address_domain(str(msg.get("From", ""))),
+                "to_domain": _address_domain(str(msg.get("To", ""))),
+                "reply_to_provided": bool(msg.get("Reply-To")),
+                "message_id": str(msg.get("Message-ID", "")),
+            },
+            {
+                "from_address": str(msg.get("From", "")),
+                "to_address": str(msg.get("To", "")),
+                "reply_to": str(msg.get("Reply-To", "")),
+                "subject": str(msg.get("Subject", "")),
+            },
+        ),
+    )
     try:
-        await asyncio.to_thread(_send_email, _build_message(values))
+        await asyncio.to_thread(_send_email, msg, submission_id=submission_id)
     except Exception as exc:
-        detail = str(exc).strip() or type(exc).__name__
+        failure = {
+            "event": "contact_form_send_failed",
+            "submission_id": submission_id,
+            "error_type": type(exc).__name__,
+        }
+        if isinstance(exc, smtplib.SMTPResponseException):
+            smtp_code = exc.smtp_code
+            failure["smtp_code"] = smtp_code
+        if _log_details_enabled():
+            failure["error"] = str(exc)
+            LOGGER.exception(json.dumps(failure, sort_keys=True))
+        else:
+            LOGGER.error(json.dumps(failure, sort_keys=True))
         return web.Response(
             text=render_page(
                 flash=_flash(
-                    message=f"Unable to send mail: {detail}",
+                    message=mail_error_message(exc),
                     kind="error",
                 ),
                 values=values,
@@ -333,12 +605,27 @@ async def submit_contact(request: web.Request) -> web.Response:
             status=500,
         )
 
+    _log_event(
+        "contact_form_send_succeeded",
+        submission_id=submission_id,
+        message_id=str(msg.get("Message-ID", "")),
+    )
     return web.Response(
         text=render_page(
             flash=_flash(message="Thanks - your message has been sent.", kind="success")
         ),
         content_type="text/html",
     )
+
+
+async def open_local_contact_form() -> None:
+    url = os.getenv("CONTACT_FORM_LOCAL_URL")
+    if not url or os.getenv("CONTACT_FORM_OPEN_BROWSER", "1") == "0":
+        return
+    await asyncio.sleep(0.2)
+    print(f"Opening contact form at {url}", flush=True)
+    with contextlib.suppress(Exception):
+        await asyncio.to_thread(webbrowser.open, url)
 
 
 async def main() -> None:
@@ -348,6 +635,7 @@ async def main() -> None:
     app.router.add_get("/status", status)
     app.router.add_get("/api/ping", ping)
     app.router.add_get("/", index)
+    app.router.add_get("/contact", index)
     app.router.add_post("/contact", submit_contact)
 
     runner = web.AppRunner(app)
@@ -355,6 +643,7 @@ async def main() -> None:
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
     print(f"Serving contact form on 0.0.0.0:{port}", flush=True)
+    await open_local_contact_form()
     try:
         await asyncio.Event().wait()
     finally:

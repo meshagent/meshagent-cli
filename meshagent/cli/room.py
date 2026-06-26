@@ -15,17 +15,6 @@ app.add_lazy_command(
     help="Interact with agents and toolkits",
 )
 app.add_lazy_command(
-    name="secret",
-    module="meshagent.cli.oauth2",
-    help="Manage secrets in a room",
-)
-app.add_lazy_command(
-    name="secrets",
-    module="meshagent.cli.oauth2",
-    help="Manage secrets in a room",
-    hidden=True,
-)
-app.add_lazy_command(
     name="queue",
     module="meshagent.cli.queue",
     help="Use queues in a room",

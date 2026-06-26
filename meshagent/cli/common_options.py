@@ -57,23 +57,6 @@ ShellRoomMountLegacyOption = Annotated[
     ),
 ]
 
-ShellProjectMountOption = Annotated[
-    list[str],
-    typer.Option(
-        "--shell-project-mount",
-        help="Mount project storage as <source>:<mount>[:ro|rw]",
-    ),
-]
-
-ShellProjectMountLegacyOption = Annotated[
-    list[str],
-    typer.Option(
-        "--shell-tool-project-path",
-        help="Mount project storage as <source>:<mount>[:ro|rw]",
-        hidden=True,
-    ),
-]
-
 ShellEmptyDirMountOption = Annotated[
     list[str],
     typer.Option(

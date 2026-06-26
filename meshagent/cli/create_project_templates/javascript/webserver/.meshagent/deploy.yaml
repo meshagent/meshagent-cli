@@ -29,4 +29,5 @@ ports:
   - num: 3000
     type: http
     published: true
+    public: true
     liveness: /health

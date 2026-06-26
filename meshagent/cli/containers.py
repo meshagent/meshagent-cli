@@ -42,7 +42,6 @@ from meshagent.api.room_server_client import (
 from meshagent.api.specs.service import (
     ContainerMountSpec,
     ImageStorageMountSpec,
-    ProjectStorageMountSpec,
     RoomStorageMountSpec,
 )
 
@@ -125,11 +124,9 @@ def _parse_creds(items: List[str]) -> List[DockerSecret]:
 def _parse_image_operation_mounts(
     *,
     mount_room_path: List[str],
-    mount_project_path: List[str],
     mount_image: List[str],
 ) -> ContainerMountSpec:
     room_mounts: list[RoomStorageMountSpec] = []
-    project_mounts: list[ProjectStorageMountSpec] = []
     image_mounts: list[ImageStorageMountSpec] = []
 
     for value in mount_room_path:
@@ -139,15 +136,6 @@ def _parse_image_operation_mounts(
         subpath = source if source not in {"", ".", "/"} else None
         room_mounts.append(
             RoomStorageMountSpec(path=mount, subpath=subpath, read_only=read_only)
-        )
-
-    for value in mount_project_path:
-        source, mount, read_only = split_container_mount(
-            value, "--mount-project-path", True
-        )
-        subpath = source if source not in {"", ".", "/"} else None
-        project_mounts.append(
-            ProjectStorageMountSpec(path=mount, subpath=subpath, read_only=read_only)
         )
 
     for value in mount_image:
@@ -163,16 +151,11 @@ def _parse_image_operation_mounts(
 
     mount_spec = ContainerMountSpec(
         room=room_mounts or None,
-        project=project_mounts or None,
         images=image_mounts or None,
     )
-    if (
-        mount_spec.room is None
-        and mount_spec.project is None
-        and mount_spec.images is None
-    ):
+    if mount_spec.room is None and mount_spec.images is None:
         raise typer.BadParameter(
-            "At least one mount is required. Use --mount-room-path, --mount-project-path, or --mount-image."
+            "At least one mount is required. Use --mount-room-path or --mount-image."
         )
 
     return mount_spec
@@ -1161,16 +1144,6 @@ async def images_save(
             ),
         ),
     ] = [],
-    mount_project_path: Annotated[
-        List[str],
-        typer.Option(
-            "--mount-project-path",
-            help=(
-                "Project storage mount '<source>:<mount>[:ro|rw]'. "
-                "Example '/shared:/project:ro'"
-            ),
-        ),
-    ] = [],
     mount_image: Annotated[
         List[str],
         typer.Option(
@@ -1191,7 +1164,6 @@ async def images_save(
 ):
     mount_spec = _parse_image_operation_mounts(
         mount_room_path=mount_room_path,
-        mount_project_path=mount_project_path,
         mount_image=mount_image,
     )
     if not archive_path.startswith("/"):

@@ -157,6 +157,7 @@ async def list_toolkits_command(
                         "name": tk.name,
                         "title": tk.title,
                         "description": tk.description,
+                        "annotations": tk.annotations,
                         "tools": [
                             {
                                 "name": tool.name,

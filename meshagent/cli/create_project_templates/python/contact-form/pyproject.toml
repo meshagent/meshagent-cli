@@ -7,8 +7,7 @@ name = "meshagent-create-python-contact-form"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
-  "aiohttp[speedups]~=3.13.0",
-  "meshagent-api==__MESHAGENT_CLIENT_VERSION__",
+  "aiohttp~=3.13.0",
 ]
 
 [tool.setuptools]

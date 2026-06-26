@@ -1,0 +1,33 @@
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: python-task-queue-dashboard
+  description: Python task queue dashboard created by meshagent create.
+variables:
+  - name: image
+    title: Container image
+    description: Image tag built and deployed by meshagent deploy.
+    optional: true
+  - name: domain
+    title: Public domain
+    description: Public route domain for the deployed dashboard.
+    type: route
+    optional: true
+container:
+  image: meshagent/python:default
+  template: agent
+  command: python -m server
+  working_dir: /app
+  storage:
+    images:
+      - image: "{{ image }}"
+        path: /app
+        subpath: app
+        read_only: true
+  private: false
+ports:
+  - num: 8000
+    type: http
+    published: true
+    public: true
+    liveness: /health

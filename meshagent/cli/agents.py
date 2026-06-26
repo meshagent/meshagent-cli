@@ -6,7 +6,6 @@ import typer
 from rich import print
 
 from meshagent.api import RoomException
-from meshagent.api.client import NotFoundError
 from meshagent.api.managed_agents import ManagedAgentSpec
 from meshagent.agents.chat_client import ChatThreadSession, WebSocketChatClient
 from meshagent.agents.messages import (
@@ -23,8 +22,6 @@ from meshagent.cli.helper import get_client, print_json_table, resolve_project_i
 app = async_typer.AsyncTyper(
     help="Create, list, and manage managed agents in a project"
 )
-secret_app = async_typer.AsyncTyper(help="Manage secrets for a managed agent")
-app.add_typer(secret_app, name="secret", help="Manage secrets for a managed agent")
 
 
 def _maybe_parse_json_object(label: str, value: Optional[str]) -> Optional[dict]:
@@ -54,11 +51,6 @@ def _maybe_parse_string_dict_json(
             raise RoomException(f"Invalid {label} JSON: all values must be strings")
         output[key] = item
     return output
-
-
-def _parse_secret_data(data: str) -> bytes:
-    parsed = _maybe_parse_json_object("data", data)
-    return json.dumps(parsed, separators=(",", ":")).encode("utf-8")
 
 
 async def _resolve_agent_id_or_fail(
@@ -711,145 +703,6 @@ async def agent_use_command(
             since_turn=since_turn,
             output=o,
         )
-    except RoomException as ex:
-        print(f"[red]{ex}[/red]")
-        raise typer.Exit(1)
-    finally:
-        await account_client.close()
-
-
-@secret_app.async_command("list")
-async def agent_secret_list_command(
-    *,
-    project_id: ProjectIdOption,
-    id: Annotated[Optional[str], typer.Option(help="Agent ID (preferred)")] = None,
-    name: Annotated[Optional[str], typer.Option(help="Agent name")] = None,
-    o: OutputFormatOption = "table",
-):
-    account_client = await get_client()
-    try:
-        project_id = await resolve_project_id(project_id=project_id)
-        agent_id = await _resolve_agent_id_or_fail(
-            account_client, project_id=project_id, agent_id=id, agent_name=name
-        )
-        secrets = await account_client.list_agent_secrets(
-            project_id=project_id, agent_id=agent_id
-        )
-        output = [secret.model_dump(mode="json") for secret in secrets]
-        if o == "json":
-            print(json.dumps(output, indent=2))
-        elif output:
-            print_json_table(output, "id", "name", "type")
-        else:
-            print("No agent secrets found.")
-    except RoomException as ex:
-        print(f"[red]{ex}[/red]")
-        raise typer.Exit(1)
-    finally:
-        await account_client.close()
-
-
-@secret_app.async_command("get")
-async def agent_secret_get_command(
-    secret_id: Annotated[str, typer.Argument(help="Secret ID")],
-    *,
-    project_id: ProjectIdOption,
-    id: Annotated[Optional[str], typer.Option(help="Agent ID (preferred)")] = None,
-    name: Annotated[Optional[str], typer.Option(help="Agent name")] = None,
-    o: OutputFormatOption = "json",
-):
-    account_client = await get_client()
-    try:
-        project_id = await resolve_project_id(project_id=project_id)
-        agent_id = await _resolve_agent_id_or_fail(
-            account_client, project_id=project_id, agent_id=id, agent_name=name
-        )
-        secret = await account_client.get_agent_secret(
-            project_id=project_id, agent_id=agent_id, secret_id=secret_id
-        )
-        payload = secret.model_dump(mode="json")
-        if o == "json":
-            print(json.dumps(payload, indent=2))
-        else:
-            print_json_table([payload], "id", "name", "type")
-    except RoomException as ex:
-        print(f"[red]{ex}[/red]")
-        raise typer.Exit(1)
-    finally:
-        await account_client.close()
-
-
-@secret_app.async_command("set")
-async def agent_secret_set_command(
-    secret_id: Annotated[str, typer.Argument(help="Secret ID")],
-    *,
-    project_id: ProjectIdOption,
-    id: Annotated[Optional[str], typer.Option(help="Agent ID (preferred)")] = None,
-    name: Annotated[Optional[str], typer.Option(help="Agent name")] = None,
-    secret_name: Annotated[
-        Optional[str], typer.Option("--secret-name", help="Display name")
-    ] = None,
-    type: Annotated[str, typer.Option("--type", help="Secret content type")] = "keys",
-    data: Annotated[
-        str,
-        typer.Option(
-            "--data",
-            help='Secret data as a JSON object, for example \'{"OPENAI_API_KEY":"..."}\'',
-        ),
-    ],
-):
-    account_client = await get_client()
-    try:
-        project_id = await resolve_project_id(project_id=project_id)
-        agent_id = await _resolve_agent_id_or_fail(
-            account_client, project_id=project_id, agent_id=id, agent_name=name
-        )
-        secret_data = _parse_secret_data(data)
-        try:
-            await account_client.update_agent_secret(
-                project_id=project_id,
-                agent_id=agent_id,
-                secret_id=secret_id,
-                name=secret_name or secret_id,
-                type=type,
-                data=secret_data,
-            )
-            print(f"[green]Updated agent secret:[/] {secret_id}")
-        except NotFoundError:
-            created_id = await account_client.create_agent_secret(
-                project_id=project_id,
-                agent_id=agent_id,
-                secret_id=secret_id,
-                name=secret_name or secret_id,
-                type=type,
-                data=secret_data,
-            )
-            print(f"[green]Created agent secret:[/] {created_id}")
-    except RoomException as ex:
-        print(f"[red]{ex}[/red]")
-        raise typer.Exit(1)
-    finally:
-        await account_client.close()
-
-
-@secret_app.async_command("delete")
-async def agent_secret_delete_command(
-    secret_id: Annotated[str, typer.Argument(help="Secret ID")],
-    *,
-    project_id: ProjectIdOption,
-    id: Annotated[Optional[str], typer.Option(help="Agent ID (preferred)")] = None,
-    name: Annotated[Optional[str], typer.Option(help="Agent name")] = None,
-):
-    account_client = await get_client()
-    try:
-        project_id = await resolve_project_id(project_id=project_id)
-        agent_id = await _resolve_agent_id_or_fail(
-            account_client, project_id=project_id, agent_id=id, agent_name=name
-        )
-        await account_client.delete_agent_secret(
-            project_id=project_id, agent_id=agent_id, secret_id=secret_id
-        )
-        print("[bold cyan]Agent secret deleted.[/bold cyan]")
     except RoomException as ex:
         print(f"[red]{ex}[/red]")
         raise typer.Exit(1)

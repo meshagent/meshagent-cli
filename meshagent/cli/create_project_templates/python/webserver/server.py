@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
+import webbrowser
 from pathlib import Path
 
 import aiofiles
@@ -10,7 +12,7 @@ import aiofiles.os
 from aiohttp import web
 from meshagent.api import RoomClient, WebSocketClientProtocol, websocket_room_url
 from meshagent.tools import FunctionTool, Toolkit, ToolContext
-from meshagent.tools.hosting import _start_hosted_toolkit
+from meshagent.tools.hosting import start_hosted_toolkit
 
 
 CONTENT_PATH = Path(__file__).with_name("dev-content.json")
@@ -187,7 +189,7 @@ async def run_dev_content_toolkit() -> None:
         token=token,
     )
     async with RoomClient(protocol_factory=protocol.create_factory()) as room:
-        hosted_toolkit = await _start_hosted_toolkit(
+        hosted_toolkit = await start_hosted_toolkit(
             room=room,
             toolkit=PythonContentToolkit(),
         )
@@ -244,6 +246,16 @@ async def run_dev_content_toolkit() -> None:
             await hosted_toolkit.stop()
 
 
+async def open_local_web_app() -> None:
+    url = os.environ.get("PYTHON_WEBSERVER_LOCAL_URL")
+    if not url or os.environ.get("PYTHON_WEBSERVER_OPEN_BROWSER", "1") == "0":
+        return
+    await asyncio.sleep(0.2)
+    print(f"Opening web app at {url}", flush=True)
+    with contextlib.suppress(Exception):
+        await asyncio.to_thread(webbrowser.open, url)
+
+
 async def main() -> None:
     port = int(os.environ.get("PORT", "8000"))
     app = web.Application()
@@ -257,6 +269,7 @@ async def main() -> None:
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
     print(f"Serving on 0.0.0.0:{port}")
+    await open_local_web_app()
     asyncio.create_task(run_dev_content_toolkit())
 
     await asyncio.Event().wait()

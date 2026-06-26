@@ -1,49 +1,25 @@
 # Python Contact Form
 
-Minimal public aiohttp contact form that sends email through room SMTP.
+Shows a realistic app problem: a public form needs configuration, validation, and email delivery. MeshAgent provides the room mailbox path, deploy-time settings, and automatic sender mailbox creation, so beginners can see how real app settings get wired into a deployed service.
 
 ## Next Steps
 
-1. Install dependencies:
+1. Run locally:
 
    ```bash
-   ./scripts/install.sh
+   ./scripts/dev.sh
    ```
 
-2. Create a room:
+2. Deploy:
 
    ```bash
-   meshagent rooms create <room> --if-not-exists
+   CONTACT_FORM_TO=you@example.com ./scripts/deploy.sh
    ```
 
-3. Run locally:
+## Email Setup
 
-   ```bash
-   ./scripts/dev.sh --room <room>
-   ```
+Deploy uses `.meshagent/deploy.yaml` as a service template. The template injects `CONTACT_FORM_FROM` and `CONTACT_FORM_TO` into the service, and deploy creates or updates the public sender mailbox from `CONTACT_FORM_FROM`.
 
-4. Deploy:
+`./scripts/dev.sh` and `./scripts/deploy.sh` use the MeshAgent room picker when you do not pass a room. Set `CONTACT_FORM_TO` to the address that should receive submissions. Set `CONTACT_FORM_FROM` only when you want a specific sender mailbox on the MeshAgent mail domain.
 
-   ```bash
-   CONTACT_FORM_TO=you@example.com ./scripts/deploy.sh --room <room>
-   ```
-
-## Mailbox Setup
-
-Before testing a submission, set up the sender mailbox for that room.
-
-New mailbox:
-
-```bash
-meshagent mailbox create --address contact-<room-slug>@mail.meshagent.com --room <room> --queue contact-<room-slug>@mail.meshagent.com --public
-```
-
-Existing mailbox for that room:
-
-```bash
-meshagent mailbox update contact-<room-slug>@mail.meshagent.com --room <room> --queue contact-<room-slug>@mail.meshagent.com --public
-```
-
-Use that mailbox as `CONTACT_FORM_FROM`. If create returns 409, choose another room-specific local part; do not reuse a mailbox unless it is listed for this room. Set `CONTACT_FORM_TO` to the address that should receive submissions.
-
-If `CONTACT_FORM_TO` is also a private MeshAgent mailbox, use a public destination mailbox or an external delivery alias.
+If deploy reports that the sender mailbox already routes to a different room, choose another room-specific local part.

@@ -1,5 +1,5 @@
 import json
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 
 import typer
 from rich import print
@@ -25,7 +25,16 @@ def _parse_subject_type(value: str) -> AccessSubjectType:
 
 
 def _parse_resource_type(value: str) -> AccessResourceType:
-    allowed = {"project", "room", "agent", "group", "repository", "feed"}
+    allowed = {
+        "project",
+        "room",
+        "agent",
+        "group",
+        "repository",
+        "feed",
+        "secret",
+        "service_account",
+    }
     if value not in allowed:
         raise typer.BadParameter(f"expected one of: {', '.join(sorted(allowed))}")
     return cast(AccessResourceType, value)
@@ -55,12 +64,6 @@ def _parse_roles(values: list[str]) -> list[AccessRole]:
         "api_key_creator",
         "api_key_inventory",
         "api_key_manager",
-        "secret_creator",
-        "secret_inventory",
-        "secret_manager",
-        "external_oauth_client_creator",
-        "external_oauth_client_inventory",
-        "external_oauth_client_manager",
         "service_creator",
         "service_inventory",
         "service_manager",
@@ -94,6 +97,12 @@ def _parse_roles(values: list[str]) -> list[AccessRole]:
         "publisher",
         "manager",
         "list",
+        "use_proxy",
+        "run_service_as",
+        "secret_accessor",
+        "secret_manager",
+        "secret_list",
+        "use_proxy_secrets",
     }
     roles: list[AccessRole] = []
     for value in values:
@@ -108,6 +117,40 @@ def _parse_roles(values: list[str]) -> list[AccessRole]:
                 )
             roles.append(cast(AccessRole, normalized))
     return roles
+
+
+def _access_subject(
+    *,
+    subject_type: AccessSubjectType,
+    subject_id: str,
+    subject_object_type: str | None,
+    subject_relation: str | None,
+) -> AccessSubject:
+    if subject_type != "userset":
+        if subject_object_type is not None or subject_relation is not None:
+            raise typer.BadParameter(
+                "--subject-object-type and --subject-relation are only valid for userset subjects"
+            )
+        return AccessSubject(type=subject_type, id=subject_id)
+    if subject_object_type != "project":
+        raise typer.BadParameter(
+            "userset subjects require --subject-object-type project"
+        )
+    allowed_relations = {"member", "developer", "agent", "service_account"}
+    if subject_relation not in allowed_relations:
+        raise typer.BadParameter(
+            "userset subjects require --subject-relation "
+            f"one of: {', '.join(sorted(allowed_relations))}"
+        )
+    return AccessSubject(
+        type=subject_type,
+        id=subject_id,
+        object_type="project",
+        relation=cast(
+            Literal["member", "developer", "agent", "service_account"],
+            subject_relation,
+        ),
+    )
 
 
 def _grant_rows(grants) -> list[dict[str, object]]:
@@ -203,6 +246,14 @@ async def grant(
         list[str],
         typer.Option("--role", help="role to grant; repeat or comma-separate"),
     ],
+    subject_object_type: Annotated[
+        str | None,
+        typer.Option("--subject-object-type", help="userset object type"),
+    ] = None,
+    subject_relation: Annotated[
+        str | None,
+        typer.Option("--subject-relation", help="userset relation"),
+    ] = None,
     invite_redirect_url: Annotated[
         str | None,
         typer.Option("--invite-redirect-url", help="invite redirect URL for users"),
@@ -221,7 +272,12 @@ async def grant(
             project_id=project_id,
             resource_type=parsed_resource_type,
             resource_id=resource_id,
-            subject=AccessSubject(type=parsed_subject_type, id=subject_id),
+            subject=_access_subject(
+                subject_type=parsed_subject_type,
+                subject_id=subject_id,
+                subject_object_type=subject_object_type,
+                subject_relation=subject_relation,
+            ),
             roles=roles,
             invite_redirect_url=invite_redirect_url,
         )
@@ -249,6 +305,14 @@ async def revoke(
         str,
         typer.Option("--subject-id", help="subject id"),
     ],
+    subject_object_type: Annotated[
+        str | None,
+        typer.Option("--subject-object-type", help="userset object type"),
+    ] = None,
+    subject_relation: Annotated[
+        str | None,
+        typer.Option("--subject-relation", help="userset relation"),
+    ] = None,
 ):
     project_id = await resolve_project_id(project_id=project_id)
     parsed_resource_type = _parse_resource_type(resource_type)
@@ -260,7 +324,12 @@ async def revoke(
             project_id=project_id,
             resource_type=parsed_resource_type,
             resource_id=resource_id,
-            subject=AccessSubject(type=parsed_subject_type, id=subject_id),
+            subject=_access_subject(
+                subject_type=parsed_subject_type,
+                subject_id=subject_id,
+                subject_object_type=subject_object_type,
+                subject_relation=subject_relation,
+            ),
         )
     finally:
         await client.close()

@@ -328,7 +328,6 @@ async def test_deploy_image_missing_room_prints_create_room_guidance(
             tag="repo/web:1",
             domain=None,
             room_mount=[],
-            project_mount=[],
             empty_dir_mount=[],
             image_mount=[],
             env=[],
@@ -2284,6 +2283,41 @@ def test_parse_environment_secret_variables_rejects_invalid_format() -> None:
         image._parse_environment_secret_variables(values=["API_KEY:secret-1"])
 
 
+def test_normalize_service_account_email_option_normalizes_run_as() -> None:
+    assert (
+        image._normalize_service_account_email_option(
+            value=" Service-Account@Example.COM ", option_name="--run-as"
+        )
+        == "service-account@example.com"
+    )
+
+
+def test_normalize_service_account_email_option_requires_email() -> None:
+    with pytest.raises(
+        typer.BadParameter, match="--run-as must be a service account email"
+    ):
+        image._normalize_service_account_email_option(
+            value="service-account", option_name="--run-as"
+        )
+
+
+@pytest.mark.asyncio
+async def test_validate_deploy_environment_secrets_requires_run_as() -> None:
+    with pytest.raises(
+        typer.BadParameter,
+        match="--run-as is required when using SecretValue environment variables",
+    ):
+        await image._validate_deploy_environment_secrets(
+            environment=[
+                EnvironmentVariable(
+                    name="API_KEY",
+                    secret=SecretValue(id="secret-1"),
+                )
+            ],
+            run_as=None,
+        )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status_code", [200, 302, 401, 403])
 async def test_probe_liveness_url_accepts_reachable_statuses(
@@ -2600,7 +2634,6 @@ async def test_deploy_image_waits_by_default(
         tag="repo/web:1",
         domain=None,
         room_mount=[],
-        project_mount=[],
         empty_dir_mount=[],
         image_mount=[],
         env=[],
@@ -2661,7 +2694,6 @@ async def test_deploy_image_no_wait_skips_live_wait(
         tag="repo/web:1",
         domain=None,
         room_mount=[],
-        project_mount=[],
         empty_dir_mount=[],
         image_mount=[],
         env=[],
@@ -2750,7 +2782,6 @@ async def test_deploy_image_normalizes_shorthand_tag_without_build_context(
         tag="test:latest",
         domain=None,
         room_mount=[],
-        project_mount=[],
         empty_dir_mount=[],
         image_mount=[],
         env=[],
@@ -2796,27 +2827,9 @@ async def test_deploy_image_creates_room_service_with_mounts_env_secret_and_toke
                 }
             )
 
-    class _FakeSecrets:
-        async def exists(
-            self,
-            *,
-            secret_id: str,
-            delegated_to: str | None = None,
-            for_identity: str | None = None,
-        ) -> bool:
-            captured.setdefault("secret_checks", []).append(
-                {
-                    "secret_id": secret_id,
-                    "delegated_to": delegated_to,
-                    "for_identity": for_identity,
-                }
-            )
-            return True
-
     class _FakeRoomClient:
         def __init__(self) -> None:
             self.services = _FakeServices()
-            self.secrets = _FakeSecrets()
 
         async def __aexit__(self, exc_type, exc, tb) -> None:
             del exc_type, exc, tb
@@ -2858,11 +2871,11 @@ async def test_deploy_image_creates_room_service_with_mounts_env_secret_and_toke
         tag="repo/web:1",
         domain=None,
         room_mount=["/assets:/srv/assets:ro"],
-        project_mount=["configs:/etc/config:rw"],
         empty_dir_mount=["/tmp/cache"],
         image_mount=["busybox=/opt/base:rw"],
         env=["FOO=bar"],
         env_secret=["APP_SECRET=secret-1"],
+        run_as="service-account@example.com",
         meshagent_token="agentDefault",
         private=True,
     )
@@ -2875,15 +2888,14 @@ async def test_deploy_image_creates_room_service_with_mounts_env_secret_and_toke
     assert service_spec.metadata.name == "repo-web"
     assert service_spec.container is not None
     assert service_spec.container.image == "repo/web:1"
+    assert service_spec.container.run_as is not None
+    assert service_spec.container.run_as.email == "service-account@example.com"
+    assert service_spec.container.run_as.scopes == ["secrets:proxy"]
     assert service_spec.container.storage is not None
     assert service_spec.container.storage.room is not None
     assert service_spec.container.storage.room[0].subpath == "/assets"
     assert service_spec.container.storage.room[0].path == "/srv/assets"
     assert service_spec.container.storage.room[0].read_only is True
-    assert service_spec.container.storage.project is not None
-    assert service_spec.container.storage.project[0].subpath == "configs"
-    assert service_spec.container.storage.project[0].path == "/etc/config"
-    assert service_spec.container.storage.project[0].read_only is False
     assert service_spec.container.storage.images is not None
     assert service_spec.container.storage.images[0].image == "busybox"
     assert service_spec.container.storage.images[0].path == "/opt/base"
@@ -2894,26 +2906,16 @@ async def test_deploy_image_creates_room_service_with_mounts_env_secret_and_toke
         env_var.name: env_var for env_var in (service_spec.container.environment or [])
     }
     assert env_by_name["FOO"].value == "bar"
-    assert env_by_name["APP_SECRET"].secret == SecretValue(
-        identity="repo-web",
-        id="secret-1",
-    )
+    assert env_by_name["APP_SECRET"].secret == SecretValue(id="secret-1")
     assert env_by_name["MESHAGENT_TOKEN"].token is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.identity == "repo-web"
     assert env_by_name["MESHAGENT_TOKEN"].token.api is not None
-    assert env_by_name["MESHAGENT_TOKEN"].token.api.secrets is not None
+    assert env_by_name["MESHAGENT_TOKEN"].token.api.secrets is None
     assert env_by_name["MESHAGENT_TOKEN"].token.api.services is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.role == "agent"
     for env_name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
         assert env_by_name[env_name].token is not None
         assert env_by_name[env_name].token == env_by_name["MESHAGENT_TOKEN"].token
-    assert captured["secret_checks"] == [
-        {
-            "secret_id": "secret-1",
-            "delegated_to": None,
-            "for_identity": "repo-web",
-        }
-    ]
     assert "restarted_service_id" not in captured
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
@@ -2925,27 +2927,7 @@ async def test_deploy_image_identity_overrides_env_secret_and_token_identity(
 ) -> None:
     captured: dict[str, object] = {}
 
-    class _FakeSecrets:
-        async def exists(
-            self,
-            *,
-            secret_id: str,
-            delegated_to: str | None = None,
-            for_identity: str | None = None,
-        ) -> bool:
-            captured.setdefault("secret_checks", []).append(
-                {
-                    "secret_id": secret_id,
-                    "delegated_to": delegated_to,
-                    "for_identity": for_identity,
-                }
-            )
-            return True
-
     class _FakeRoomClient:
-        def __init__(self) -> None:
-            self.secrets = _FakeSecrets()
-
         async def __aexit__(self, exc_type, exc, tb) -> None:
             del exc_type, exc, tb
             captured["room_client_closed"] = True
@@ -2986,12 +2968,12 @@ async def test_deploy_image_identity_overrides_env_secret_and_token_identity(
         tag="repo/web:1",
         domain=None,
         room_mount=[],
-        project_mount=[],
         empty_dir_mount=[],
         image_mount=[],
         env=[],
         env_secret=["APP_SECRET=secret-1"],
         identity="custom-agent",
+        run_as="service-account@example.com",
         meshagent_token="agentDefault",
         private=True,
     )
@@ -3000,51 +2982,28 @@ async def test_deploy_image_identity_overrides_env_secret_and_token_identity(
     assert isinstance(created_service, tuple)
     service_spec = created_service[2]
     assert service_spec.container is not None
+    assert service_spec.container.run_as is not None
+    assert service_spec.container.run_as.email == "service-account@example.com"
     env_by_name = {
         env_var.name: env_var for env_var in (service_spec.container.environment or [])
     }
-    assert env_by_name["APP_SECRET"].secret == SecretValue(
-        identity="custom-agent",
-        id="secret-1",
-    )
+    assert env_by_name["APP_SECRET"].secret == SecretValue(id="secret-1")
     assert env_by_name["MESHAGENT_TOKEN"].token is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.identity == "custom-agent"
     for env_name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
         assert env_by_name[env_name].token is not None
         assert env_by_name[env_name].token == env_by_name["MESHAGENT_TOKEN"].token
-    assert captured["secret_checks"] == [
-        {
-            "secret_id": "secret-1",
-            "delegated_to": None,
-            "for_identity": "custom-agent",
-        }
-    ]
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
 
 
 @pytest.mark.asyncio
-async def test_deploy_image_env_secret_requires_matching_token_identity(
+async def test_deploy_image_env_secret_uses_service_account_secret_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
 
-    class _FakeSecrets:
-        async def exists(
-            self,
-            *,
-            secret_id: str,
-            delegated_to: str | None = None,
-            for_identity: str | None = None,
-        ) -> bool:
-            del secret_id, delegated_to, for_identity
-            captured["exists_called"] = True
-            return True
-
     class _FakeRoomClient:
-        def __init__(self) -> None:
-            self.secrets = _FakeSecrets()
-
         async def __aexit__(self, exc_type, exc, tb) -> None:
             del exc_type, exc, tb
             captured["room_client_closed"] = True
@@ -3059,7 +3018,7 @@ async def test_deploy_image_env_secret_requires_matching_token_identity(
         async def create_room_service(
             self, *, project_id: str, room_name: str, service
         ) -> str:
-            del project_id, room_name, service
+            captured["created_service"] = (project_id, room_name, service)
             captured["create_room_service_called"] = True
             return "service-1"
 
@@ -3080,28 +3039,30 @@ async def test_deploy_image_env_secret_requires_matching_token_identity(
     monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
     monkeypatch.setattr(image, "print", lambda *args, **kwargs: None)
 
-    with pytest.raises(
-        typer.BadParameter,
-        match="no environment token is defined for identity 'other-agent'",
-    ):
-        await image.deploy_image(
-            project_id="project-1",
-            room="room-1",
-            tag="repo/web:1",
-            domain=None,
-            room_mount=[],
-            project_mount=[],
-            empty_dir_mount=[],
-            image_mount=[],
-            env=[],
-            env_secret=["APP_SECRET=secret-1"],
-            identity="other-agent",
-            meshagent_token=None,
-            private=True,
-        )
+    await image.deploy_image(
+        project_id="project-1",
+        room="room-1",
+        tag="repo/web:1",
+        domain=None,
+        room_mount=[],
+        empty_dir_mount=[],
+        image_mount=[],
+        env=[],
+        env_secret=["APP_SECRET=secret-1"],
+        identity="other-agent",
+        run_as="service-account@example.com",
+        meshagent_token=None,
+        private=True,
+    )
 
-    assert "exists_called" not in captured
-    assert "create_room_service_called" not in captured
+    assert captured["create_room_service_called"] is True
+    service_spec = captured["created_service"][2]
+    assert service_spec.container.run_as is not None
+    assert service_spec.container.run_as.email == "service-account@example.com"
+    env_by_name = {
+        env_var.name: env_var for env_var in (service_spec.container.environment or [])
+    }
+    assert env_by_name["APP_SECRET"].secret == SecretValue(id="secret-1")
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
 
@@ -3490,7 +3451,6 @@ async def test_deploy_image_pack_builds_before_deploying(
         cred=["registry,user,password"],
         domain=None,
         room_mount=[],
-        project_mount=[],
         empty_dir_mount=[],
         image_mount=[],
         env=[],
@@ -3541,7 +3501,7 @@ async def test_deploy_image_pack_builds_before_deploying(
 
 
 @pytest.mark.asyncio
-async def test_deploy_image_pack_fails_before_build_when_env_secret_is_missing(
+async def test_deploy_image_pack_uses_service_account_secret_value_before_build(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -3558,24 +3518,12 @@ async def test_deploy_image_pack_fails_before_build_when_env_secret_is_missing(
         captured["build_called"] = True
         return _fake_published_build_image()
 
-    class _FakeSecrets:
-        async def exists(
-            self,
-            *,
-            secret_id: str,
-            delegated_to: str | None = None,
-            for_identity: str | None = None,
-        ) -> bool:
-            captured["secret_check"] = {
-                "secret_id": secret_id,
-                "delegated_to": delegated_to,
-                "for_identity": for_identity,
-            }
-            return False
-
     class _FakeRoomClient:
         def __init__(self) -> None:
-            self.secrets = _FakeSecrets()
+            self.containers = SimpleNamespace(delete_image=self._delete_image)
+
+        async def _delete_image(self, *, image: str) -> None:
+            captured["deleted_image"] = image
 
         async def __aexit__(self, exc_type, exc, tb) -> None:
             del exc_type, exc, tb
@@ -3587,6 +3535,12 @@ async def test_deploy_image_pack_fails_before_build_when_env_secret_is_missing(
                 (project_id, room_name)
             )
             return []
+
+        async def create_room_service(
+            self, *, project_id: str, room_name: str, service
+        ) -> str:
+            captured["created_service"] = (project_id, room_name, service)
+            return "service-1"
 
         async def close(self) -> None:
             captured["account_client_closed"] = True
@@ -3607,34 +3561,33 @@ async def test_deploy_image_pack_fails_before_build_when_env_secret_is_missing(
     monkeypatch.setattr(image, "resolve_project_id", _fake_resolve_project_id)
     monkeypatch.setattr(image, "print", lambda message: printed.append(message))
 
-    with pytest.raises(
-        typer.BadParameter,
-        match="references missing secret 'repo-web/secret-1'",
-    ):
-        await image.deploy_image(
-            project_id="project-1",
-            room="room-1",
-            tag="registry.meshagent.com/repo/web:1",
-            pack=str(source_dir),
-            context_path="/context",
-            dockerfile_path="/context/Dockerfile",
-            optimize=False,
-            domain=None,
-            room_mount=[],
-            project_mount=[],
-            empty_dir_mount=[],
-            image_mount=[],
-            env=[],
-            env_secret=["APP_SECRET=secret-1"],
-            meshagent_token="agentDefault",
-        )
+    await image.deploy_image(
+        project_id="project-1",
+        room="room-1",
+        tag="registry.meshagent.com/repo/web:1",
+        pack=str(source_dir),
+        context_path="/context",
+        dockerfile_path="/context/Dockerfile",
+        optimize=False,
+        domain=None,
+        room_mount=[],
+        empty_dir_mount=[],
+        image_mount=[],
+        env=[],
+        env_secret=["APP_SECRET=secret-1"],
+        run_as="service-account@example.com",
+        meshagent_token="agentDefault",
+    )
 
-    assert captured["secret_check"] == {
-        "secret_id": "secret-1",
-        "delegated_to": None,
-        "for_identity": "repo-web",
+    assert captured["build_called"] is True
+    assert captured["deleted_image"] == _fake_published_build_image().tag
+    service_spec = captured["created_service"][2]
+    assert service_spec.container.run_as is not None
+    assert service_spec.container.run_as.email == "service-account@example.com"
+    env_by_name = {
+        env_var.name: env_var for env_var in (service_spec.container.environment or [])
     }
-    assert "build_called" not in captured
+    assert env_by_name["APP_SECRET"].secret == SecretValue(id="secret-1")
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
 
@@ -3698,7 +3651,6 @@ async def test_deploy_image_pack_requires_matching_volume_mount(
             pack=str(source_dir),
             domain=None,
             room_mount=[],
-            project_mount=[],
             empty_dir_mount=[],
             image_mount=[],
             env=[],
@@ -3780,7 +3732,6 @@ async def test_deploy_image_pack_allows_matching_volume_mount(
         pack=str(source_dir),
         domain=None,
         room_mount=[],
-        project_mount=[],
         empty_dir_mount=["/data"],
         image_mount=[],
         env=[],
@@ -3880,7 +3831,6 @@ CMD ["/app/dist/index.js"]
         optimize=True,
         domain=None,
         room_mount=[],
-        project_mount=[],
         empty_dir_mount=[],
         image_mount=[],
         env=[],
@@ -4440,7 +4390,6 @@ async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
         extra_port=["3001:/messages"],
         validation_mode="cookie",
         room_mount=[],
-        project_mount=[],
         empty_dir_mount=[],
         image_mount=[],
         env=[],
@@ -4810,7 +4759,6 @@ async def test_deploy_image_build_options_require_pack() -> None:
             optimize=True,
             domain=None,
             room_mount=[],
-            project_mount=[],
             empty_dir_mount=[],
             image_mount=[],
             env=[],
@@ -4836,7 +4784,6 @@ async def test_deploy_image_cred_requires_pack() -> None:
             cred=["registry,user,password"],
             domain=None,
             room_mount=[],
-            project_mount=[],
             empty_dir_mount=[],
             image_mount=[],
             env=[],
@@ -4862,7 +4809,6 @@ async def test_deploy_image_latest_requires_pack() -> None:
             latest=True,
             domain=None,
             room_mount=[],
-            project_mount=[],
             empty_dir_mount=[],
             image_mount=[],
             env=[],
@@ -4918,7 +4864,6 @@ async def test_deploy_image_sets_cookie_validation_when_private(
         tag="repo/web:1",
         domain=None,
         room_mount=[],
-        project_mount=[],
         empty_dir_mount=[],
         image_mount=[],
         env=[],
@@ -5052,7 +4997,6 @@ async def test_deploy_image_updates_existing_service_route_and_replaces_environm
         tag="repo/web:2",
         domain="app.meshagent.app",
         room_mount=["/workspace:/srv/work:rw"],
-        project_mount=[],
         empty_dir_mount=[],
         image_mount=[],
         env=["FOO=bar"],
@@ -5199,7 +5143,6 @@ async def test_deploy_image_sets_cookie_validation_on_private_published_ports(
         tag="repo/web:2",
         domain=None,
         room_mount=[],
-        project_mount=[],
         empty_dir_mount=[],
         image_mount=[],
         env=[],
@@ -5318,7 +5261,6 @@ async def test_deploy_image_preserves_existing_liveness_when_default_is_used(
         tag="repo/web:2",
         domain=None,
         room_mount=[],
-        project_mount=[],
         empty_dir_mount=[],
         image_mount=[],
         env=[],
@@ -5422,7 +5364,6 @@ async def test_deploy_image_liveness_flag_overrides_http_ports_only(
         domain=None,
         liveness="/healthz",
         room_mount=[],
-        project_mount=[],
         empty_dir_mount=[],
         image_mount=[],
         env=[],
@@ -5520,7 +5461,6 @@ async def test_deploy_image_domain_requires_exactly_one_published_port(
             tag="repo/web:2",
             domain="app.meshagent.app",
             room_mount=[],
-            project_mount=[],
             empty_dir_mount=[],
             image_mount=[],
             env=[],

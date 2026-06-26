@@ -99,6 +99,11 @@ app.add_lazy_command(
     help="Manage service accounts for your project",
 )
 app.add_lazy_command(
+    name="secret",
+    module="meshagent.cli.secrets",
+    help="Manage user and service account secrets",
+)
+app.add_lazy_command(
     name="iam",
     module="meshagent.cli.iam",
     help="Manage IAM policies for project resources",
@@ -157,11 +162,6 @@ app.add_lazy_command(
     name="mcp",
     module="meshagent.cli.cli_mcp",
     help="Bridge MCP servers into MeshAgent rooms",
-)
-app.add_lazy_command(
-    name="secret",
-    module="meshagent.cli.cli_secrets",
-    help="Manage secrets for your project.",
 )
 app.add_lazy_command(
     name="helper",

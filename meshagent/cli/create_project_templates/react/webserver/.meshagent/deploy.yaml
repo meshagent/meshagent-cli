@@ -17,8 +17,12 @@ container:
   image: "{{ image }}"
   template: none
   private: false
+  storage:
+    empty_dirs:
+      - path: /data
 ports:
   - num: 80
     type: http
     published: true
+    public: true
     liveness: /health

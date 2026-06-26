@@ -266,8 +266,6 @@ async def deploy(
             service_title=service_title,
         )
 
-        spec.container.secrets = []
-
         id = None
         try:
             if id is None:

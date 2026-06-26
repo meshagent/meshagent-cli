@@ -1,3 +1,5 @@
+import builtins
+import json
 from datetime import datetime
 from typing import Annotated, Any, Optional
 
@@ -6,8 +8,8 @@ from rich import print
 from rich.console import Console
 
 from meshagent.cli import async_typer
+from meshagent.cli.common_options import OutputFormatOption, ProjectIdOption
 from meshagent.cli.helper import get_client, print_json_table, resolve_project_id
-from meshagent.cli.common_options import ProjectIdOption
 
 app = async_typer.AsyncTyper(help="Inspect recent sessions and events")
 _tree_console = Console(soft_wrap=True)
@@ -80,6 +82,204 @@ def _span_attributes(span: dict[str, Any]) -> str:
     if not isinstance(attributes, dict) or not attributes:
         return ""
     return ", ".join(f"{key}={value}" for key, value in sorted(attributes.items()))
+
+
+def _format_attributes(attributes: Any) -> str:
+    if not isinstance(attributes, dict) or not attributes:
+        return ""
+    return ", ".join(f"{key}={value}" for key, value in sorted(attributes.items()))
+
+
+def _json_default(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def _print_json(value: Any) -> None:
+    print(json.dumps(value, indent=2, default=_json_default))
+
+
+def _format_number(value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    return str(value)
+
+
+def _format_metric_buckets(metric: dict[str, Any]) -> str:
+    bucket_counts = metric.get("bucket_counts")
+    explicit_bounds = metric.get("explicit_bounds")
+    if not isinstance(bucket_counts, builtins.list) or not bucket_counts:
+        return ""
+    if not isinstance(explicit_bounds, builtins.list):
+        explicit_bounds = []
+
+    bucket_parts: list[str] = []
+    for index, count in enumerate(bucket_counts):
+        if index < len(explicit_bounds):
+            label = f"<={_format_number(explicit_bounds[index])}"
+        else:
+            label = "+Inf"
+        bucket_parts.append(f"{label}:{count}")
+    return ", ".join(bucket_parts)
+
+
+def _format_metric_value(metric: dict[str, Any], *, include_buckets: bool) -> str:
+    kind = metric.get("kind")
+    if kind == "histogram":
+        count = metric.get("count")
+        total = metric.get("sum")
+        parts = [
+            f"count={_format_number(count)}",
+            f"sum={_format_number(total)}",
+        ]
+        if (
+            isinstance(count, int | float)
+            and count > 0
+            and isinstance(total, int | float)
+        ):
+            parts.append(f"avg={_format_number(total / count)}")
+        if metric.get("min") is not None:
+            parts.append(f"min={_format_number(metric.get('min'))}")
+        if metric.get("max") is not None:
+            parts.append(f"max={_format_number(metric.get('max'))}")
+        buckets = _format_metric_buckets(metric)
+        if include_buckets and buckets:
+            parts.append(f"buckets={buckets}")
+        return " ".join(parts)
+    return _format_number(metric.get("value"))
+
+
+def _metric_rows(
+    metrics: list[dict[str, Any]],
+    *,
+    include_attrs: bool = False,
+    include_buckets: bool = False,
+) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for metric in metrics:
+        row = {
+            "time": _format_span_time(
+                metric.get("ended_at") or metric.get("created_at")
+            ),
+            "kind": str(metric.get("kind") or "sum"),
+            "name": str(metric.get("metric_name") or metric.get("name") or "-"),
+            "value": _format_metric_value(metric, include_buckets=include_buckets),
+            "unit": str(metric.get("metric_unit") or metric.get("unit") or ""),
+        }
+        if include_attrs:
+            row["attrs"] = _format_attributes(metric.get("metric_attributes"))
+        rows.append(row)
+    return rows
+
+
+def _event_log_message(event: dict[str, Any]) -> str:
+    data = event.get("data")
+    if not isinstance(data, dict):
+        return "" if data is None else str(data)
+    log = data.get("log")
+    if log is None:
+        log = data.get("message")
+    if log is None:
+        log = data.get("body")
+    return "" if log is None else str(log)
+
+
+def _event_log_severity(event: dict[str, Any]) -> str:
+    data = event.get("data")
+    if not isinstance(data, dict):
+        return str(event.get("type") or "-")
+    severity = data.get("severity_text")
+    if severity is None or severity == "":
+        severity = data.get("severity_number")
+    if severity is None or severity == "":
+        severity = event.get("type")
+    return str(severity or "-")
+
+
+def _event_log_scope(event: dict[str, Any]) -> str:
+    data = event.get("data")
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("scope_name") or "")
+
+
+def _event_log_attrs(event: dict[str, Any]) -> str:
+    data = event.get("data")
+    if not isinstance(data, dict):
+        return ""
+    log_attributes = data.get("log_attributes")
+    resource_attributes = data.get("resource_attributes")
+    parts = [
+        _format_attributes(log_attributes),
+        _format_attributes(resource_attributes),
+    ]
+    return ", ".join(part for part in parts if part)
+
+
+def _log_rows(
+    events: list[dict[str, Any]], *, include_attrs: bool = False
+) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for event in events:
+        row = {
+            "time": _format_span_time(event.get("created_at")),
+            "severity": _event_log_severity(event),
+            "scope": _event_log_scope(event),
+            "message": _event_log_message(event),
+        }
+        if include_attrs:
+            row["attrs"] = _event_log_attrs(event)
+        rows.append(row)
+    return rows
+
+
+async def _resolve_session_id(
+    client: Any,
+    *,
+    project_id: str,
+    session_arg: str | None,
+    session_id: str | None,
+    room_name: str | None,
+) -> str | None:
+    if session_arg is not None and session_id is not None and session_arg != session_id:
+        raise typer.BadParameter(
+            "session argument and --session-id must match when both are provided"
+        )
+    resolved_session_id = session_id or session_arg
+    if resolved_session_id is not None:
+        return resolved_session_id
+
+    room_id: str | None = None
+    resolved_room_name: str | None = None
+    fetch_limit = 25
+    if room_name is not None:
+        room = await client.get_room(project_id=project_id, name=room_name)
+        room_id = room.id
+        resolved_room_name = room.name
+        fetch_limit = 1000
+    recent_sessions = await client.list_recent_sessions(
+        project_id=project_id,
+        limit=fetch_limit,
+        room_id=room_id,
+    )
+    if resolved_room_name is not None:
+        recent_sessions = [
+            session
+            for session in recent_sessions
+            if session.room_name == resolved_room_name
+        ]
+    if not recent_sessions:
+        if resolved_room_name is not None:
+            print(f"No recent sessions found for room {resolved_room_name}")
+        else:
+            print("No recent sessions found")
+        return None
+    return recent_sessions[0].id
 
 
 def _span_tree_rows(
@@ -262,13 +462,179 @@ async def get(*, project_id: ProjectIdOption, session_id: str):
         await client.close()
 
 
+@app.async_command("kill", help="Forcefully kill a running session instance")
+async def kill(
+    *,
+    project_id: ProjectIdOption,
+    session_id: Annotated[
+        str,
+        typer.Argument(help="Session id to kill"),
+    ],
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Skip the confirmation prompt"),
+    ] = False,
+):
+    if not yes and not typer.confirm(
+        f"Forcefully kill session {session_id}?", default=False
+    ):
+        raise typer.Exit(code=0)
+
+    client = await get_client()
+    try:
+        resolved_project_id = await resolve_project_id(project_id=project_id)
+        await client.kill_session(
+            project_id=resolved_project_id,
+            session_id=session_id,
+        )
+        print(f"Kill requested for session {session_id}")
+    finally:
+        await client.close()
+
+
+@app.async_command("logs", help="List logs for a session")
+async def logs(
+    *,
+    project_id: ProjectIdOption,
+    session_arg: Annotated[
+        Optional[str],
+        typer.Argument(help="Session id to inspect"),
+    ] = None,
+    session_id: Annotated[
+        Optional[str],
+        typer.Option("--session-id", help="Session id to inspect"),
+    ] = None,
+    room_name: Annotated[
+        Optional[str],
+        typer.Option("--room", help="Use the most recent session for this room"),
+    ] = None,
+    output: OutputFormatOption = "table",
+    include_attrs: Annotated[
+        bool,
+        typer.Option("--attrs", help="Include log and resource attributes"),
+    ] = False,
+):
+    client = await get_client()
+    try:
+        resolved_project_id = await resolve_project_id(project_id=project_id)
+        resolved_session_id = await _resolve_session_id(
+            client,
+            project_id=resolved_project_id,
+            session_arg=session_arg,
+            session_id=session_id,
+            room_name=room_name,
+        )
+        if resolved_session_id is None:
+            return
+
+        events = await client.list_session_events(
+            project_id=resolved_project_id,
+            session_id=resolved_session_id,
+        )
+        logs = [event for event in events if event.get("type") == "otel.log"]
+        if output == "json":
+            _print_json({"logs": logs})
+            return
+        rows = _log_rows(logs, include_attrs=include_attrs)
+        if not rows:
+            print(f"No logs found for session {resolved_session_id}")
+            return
+        cols = (
+            ("time", "severity", "scope", "message", "attrs")
+            if include_attrs
+            else (
+                "time",
+                "severity",
+                "scope",
+                "message",
+            )
+        )
+        print_json_table(rows, *cols)
+    finally:
+        await client.close()
+
+
+@app.async_command("metrics", help="List metrics for a session")
+async def metrics(
+    *,
+    project_id: ProjectIdOption,
+    session_arg: Annotated[
+        Optional[str],
+        typer.Argument(help="Session id to inspect"),
+    ] = None,
+    session_id: Annotated[
+        Optional[str],
+        typer.Option("--session-id", help="Session id to inspect"),
+    ] = None,
+    room_name: Annotated[
+        Optional[str],
+        typer.Option("--room", help="Use the most recent session for this room"),
+    ] = None,
+    output: OutputFormatOption = "table",
+    include_attrs: Annotated[
+        bool,
+        typer.Option("--attrs", help="Include metric attributes"),
+    ] = False,
+    include_buckets: Annotated[
+        bool,
+        typer.Option("--buckets", help="Include histogram bucket counts"),
+    ] = False,
+):
+    client = await get_client()
+    try:
+        resolved_project_id = await resolve_project_id(project_id=project_id)
+        resolved_session_id = await _resolve_session_id(
+            client,
+            project_id=resolved_project_id,
+            session_arg=session_arg,
+            session_id=session_id,
+            room_name=room_name,
+        )
+        if resolved_session_id is None:
+            return
+
+        session_metrics = await client.list_session_metrics(
+            project_id=resolved_project_id,
+            session_id=resolved_session_id,
+        )
+        if output == "json":
+            _print_json({"metrics": session_metrics})
+            return
+        rows = _metric_rows(
+            session_metrics,
+            include_attrs=include_attrs,
+            include_buckets=include_buckets,
+        )
+        if not rows:
+            print(f"No metrics found for session {resolved_session_id}")
+            return
+        cols = (
+            ("time", "kind", "name", "value", "unit", "attrs")
+            if include_attrs
+            else (
+                "time",
+                "kind",
+                "name",
+                "value",
+                "unit",
+            )
+        )
+        print_json_table(rows, *cols)
+    finally:
+        await client.close()
+
+
 @app.async_command("traces", help="List trace spans for a session as a tree")
 async def traces(
     *,
     project_id: ProjectIdOption,
-    session_id: Annotated[
+    session_arg: Annotated[
         Optional[str],
         typer.Argument(help="Session id to inspect"),
+    ] = None,
+    session_id: Annotated[
+        Optional[str],
+        typer.Option("--session-id", help="Session id to inspect"),
     ] = None,
     room_name: Annotated[
         Optional[str],
@@ -297,37 +663,15 @@ async def traces(
     client = await get_client()
     try:
         resolved_project_id = await resolve_project_id(project_id=project_id)
-        resolved_session_id = session_id
-
+        resolved_session_id = await _resolve_session_id(
+            client,
+            project_id=resolved_project_id,
+            session_arg=session_arg,
+            session_id=session_id,
+            room_name=room_name,
+        )
         if resolved_session_id is None:
-            room_id: str | None = None
-            resolved_room_name: str | None = None
-            fetch_limit = 25
-            if room_name is not None:
-                room = await client.get_room(
-                    project_id=resolved_project_id, name=room_name
-                )
-                room_id = room.id
-                resolved_room_name = room.name
-                fetch_limit = 1000
-            recent_sessions = await client.list_recent_sessions(
-                project_id=resolved_project_id,
-                limit=fetch_limit,
-                room_id=room_id,
-            )
-            if resolved_room_name is not None:
-                recent_sessions = [
-                    session
-                    for session in recent_sessions
-                    if session.room_name == resolved_room_name
-                ]
-            if not recent_sessions:
-                if resolved_room_name is not None:
-                    print(f"No recent sessions found for room {resolved_room_name}")
-                else:
-                    print("No recent sessions found")
-                return
-            resolved_session_id = recent_sessions[0].id
+            return
 
         spans = await client.list_session_spans(
             project_id=resolved_project_id,

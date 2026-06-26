@@ -1042,7 +1042,7 @@ def _deploy_mount_value_path(*, option: str, value: str) -> str:
     if option == "--image-mount":
         _, _, mount_spec = value.partition("=")
         value = mount_spec
-    if option in {"--room-mount", "--project-mount"}:
+    if option == "--room-mount":
         parts = value.split(":")
         if len(parts) < 2:
             return ""
@@ -1061,7 +1061,6 @@ def _deploy_script_mounts_volume_path(deploy_script: str, volume_path: str) -> b
     mount_options = {
         "--empty-dir-mount",
         "--room-mount",
-        "--project-mount",
         "--image-mount",
     }
     index = 0

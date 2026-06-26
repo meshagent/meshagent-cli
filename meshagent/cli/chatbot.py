@@ -35,8 +35,6 @@ from meshagent.cli.common_options import (
     RoomOption,
     ShellEmptyDirMountLegacyOption,
     ShellEmptyDirMountOption,
-    ShellProjectMountLegacyOption,
-    ShellProjectMountOption,
     ShellRoomMountLegacyOption,
     ShellRoomMountOption,
     StartingUrlOption,
@@ -1997,7 +1995,7 @@ def build_process_agent(
     thread_dir: Optional[str] = None,
     context_management: ContextManagementMode = "auto",
     compaction_threshold: Optional[int] = None,
-    max_output_tokens: Optional[int] = 32000,
+    max_output_tokens: Optional[int] = None,
     skill_dirs: Optional[list[str]] = None,
     threading_mode: ThreadingMode = "none",
     shell_image: Optional[str] = None,
@@ -2008,7 +2006,7 @@ def build_process_agent(
     channels: Optional[list[str]] = None,
 ):
     from meshagent.agents import (
-        MeshDocumentThreadStorage,
+        DatasetThreadStorage,
         MessagingChatChannel,
         MailChannel,
         QueueChannel,
@@ -2018,7 +2016,7 @@ def build_process_agent(
     from meshagent.agents.messages import TurnStart, TurnSteer
     from meshagent.agents.process import AgentSupervisor, LLMAgentProcess
     from meshagent.tools import RoomToolContext, Toolkit
-    from meshagent.tools.hosting import _RemoteToolkitWrapper, _start_hosted_toolkit
+    from meshagent.tools.hosting import _RemoteToolkitWrapper, start_hosted_toolkit
 
     requirements = []
     toolkits = []
@@ -2283,7 +2281,7 @@ def build_process_agent(
 
                 self._exposed_toolkits = await self.get_exposed_toolkits()
                 for toolkit in self._exposed_toolkits:
-                    hosted_toolkit = await _start_hosted_toolkit(
+                    hosted_toolkit = await start_hosted_toolkit(
                         room=room,
                         toolkit=toolkit,
                     )
@@ -2768,6 +2766,10 @@ def build_process_agent(
             return None
 
         def create_thread_process(self, thread_id: str) -> LLMAgentProcess:
+            normalized_thread_id = thread_id.strip()
+            if not normalized_thread_id.startswith("dataset://"):
+                normalized_thread_id = f"dataset://{normalized_thread_id.lstrip('/')}"
+
             async def _turn_instructions_provider(
                 participant: Participant | None,
             ) -> str | None:
@@ -2782,9 +2784,9 @@ def build_process_agent(
                 participant=self._agent.room.local_participant,
                 llm_adapter=llm_adapter,
                 toolkits=[*toolkits],
-                thread_storage=MeshDocumentThreadStorage(
+                thread_storage=DatasetThreadStorage(
                     room=self._agent.room,
-                    path=thread_id,
+                    path=normalized_thread_id,
                 ),
                 session_initializer=self._agent.init_session,
                 turn_instructions_provider=_turn_instructions_provider,
@@ -2906,8 +2908,6 @@ async def join(
     ] = [],
     shell_room_mount: ShellRoomMountOption = [],
     shell_tool_room_path: ShellRoomMountLegacyOption = [],
-    shell_project_mount: ShellProjectMountOption = [],
-    shell_tool_project_path: ShellProjectMountLegacyOption = [],
     shell_empty_dir_mount: ShellEmptyDirMountOption = [],
     shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
     shell_tool_config_mount: ShellConfigMountOption = [],
@@ -3038,7 +3038,7 @@ async def join(
     thread_dir: ThreadDirOption = None,
     context_management: ContextManagementOption = "auto",
     compaction_threshold: CompactionThresholdOption = None,
-    max_output_tokens: MaxOutputTokensOption = 32000,
+    max_output_tokens: MaxOutputTokensOption = None,
     channel: ChannelOption = [],
     skill_dir: Annotated[
         list[str],
@@ -3131,10 +3131,6 @@ async def join(
             room_paths=merge_option_lists(
                 shell_room_mount,
                 shell_tool_room_path,
-            ),
-            project_paths=merge_option_lists(
-                shell_project_mount,
-                shell_tool_project_path,
             ),
             empty_dir_paths=merge_option_lists(
                 shell_empty_dir_mount,
@@ -3321,8 +3317,6 @@ async def service(
     ] = [],
     shell_room_mount: ShellRoomMountOption = [],
     shell_tool_room_path: ShellRoomMountLegacyOption = [],
-    shell_project_mount: ShellProjectMountOption = [],
-    shell_tool_project_path: ShellProjectMountLegacyOption = [],
     shell_empty_dir_mount: ShellEmptyDirMountOption = [],
     shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
     shell_tool_config_mount: ShellConfigMountOption = [],
@@ -3448,7 +3442,7 @@ async def service(
     thread_dir: ThreadDirOption = None,
     context_management: ContextManagementOption = "auto",
     compaction_threshold: CompactionThresholdOption = None,
-    max_output_tokens: MaxOutputTokensOption = 32000,
+    max_output_tokens: MaxOutputTokensOption = None,
     channel: ChannelOption = [],
     skill_dir: Annotated[
         list[str],
@@ -3512,10 +3506,6 @@ async def service(
         room_paths=merge_option_lists(
             shell_room_mount,
             shell_tool_room_path,
-        ),
-        project_paths=merge_option_lists(
-            shell_project_mount,
-            shell_tool_project_path,
         ),
         empty_dir_paths=merge_option_lists(
             shell_empty_dir_mount,
@@ -3698,8 +3688,6 @@ async def spec(
     ] = [],
     shell_room_mount: ShellRoomMountOption = [],
     shell_tool_room_path: ShellRoomMountLegacyOption = [],
-    shell_project_mount: ShellProjectMountOption = [],
-    shell_tool_project_path: ShellProjectMountLegacyOption = [],
     shell_empty_dir_mount: ShellEmptyDirMountOption = [],
     shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
     shell_tool_config_mount: ShellConfigMountOption = [],
@@ -3809,7 +3797,7 @@ async def spec(
     thread_dir: ThreadDirOption = None,
     context_management: ContextManagementOption = "auto",
     compaction_threshold: CompactionThresholdOption = None,
-    max_output_tokens: MaxOutputTokensOption = 32000,
+    max_output_tokens: MaxOutputTokensOption = None,
     channel: ChannelOption = [],
     skill_dir: Annotated[
         list[str],
@@ -3874,10 +3862,6 @@ async def spec(
         room_paths=merge_option_lists(
             shell_room_mount,
             shell_tool_room_path,
-        ),
-        project_paths=merge_option_lists(
-            shell_project_mount,
-            shell_tool_project_path,
         ),
         empty_dir_paths=merge_option_lists(
             shell_empty_dir_mount,
@@ -4078,8 +4062,6 @@ async def deploy(
     ] = [],
     shell_room_mount: ShellRoomMountOption = [],
     shell_tool_room_path: ShellRoomMountLegacyOption = [],
-    shell_project_mount: ShellProjectMountOption = [],
-    shell_tool_project_path: ShellProjectMountLegacyOption = [],
     shell_empty_dir_mount: ShellEmptyDirMountOption = [],
     shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
     shell_tool_config_mount: ShellConfigMountOption = [],
@@ -4189,7 +4171,7 @@ async def deploy(
     thread_dir: ThreadDirOption = None,
     context_management: ContextManagementOption = "auto",
     compaction_threshold: CompactionThresholdOption = None,
-    max_output_tokens: MaxOutputTokensOption = 32000,
+    max_output_tokens: MaxOutputTokensOption = None,
     channel: ChannelOption = [],
     skill_dir: Annotated[
         list[str],
@@ -4261,10 +4243,6 @@ async def deploy(
         room_paths=merge_option_lists(
             shell_room_mount,
             shell_tool_room_path,
-        ),
-        project_paths=merge_option_lists(
-            shell_project_mount,
-            shell_tool_project_path,
         ),
         empty_dir_paths=merge_option_lists(
             shell_empty_dir_mount,
@@ -6143,8 +6121,6 @@ async def run(
     ] = [],
     shell_room_mount: ShellRoomMountOption = [],
     shell_tool_room_path: ShellRoomMountLegacyOption = [],
-    shell_project_mount: ShellProjectMountOption = [],
-    shell_tool_project_path: ShellProjectMountLegacyOption = [],
     shell_empty_dir_mount: ShellEmptyDirMountOption = [],
     shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
     shell_tool_config_mount: ShellConfigMountOption = [],
@@ -6259,7 +6235,7 @@ async def run(
     thread_dir: ThreadDirOption = None,
     context_management: ContextManagementOption = "auto",
     compaction_threshold: CompactionThresholdOption = None,
-    max_output_tokens: MaxOutputTokensOption = 32000,
+    max_output_tokens: MaxOutputTokensOption = None,
     channel: ChannelOption = [],
     skill_dir: Annotated[
         list[str],
@@ -6378,10 +6354,6 @@ async def run(
             room_paths=merge_option_lists(
                 shell_room_mount,
                 shell_tool_room_path,
-            ),
-            project_paths=merge_option_lists(
-                shell_project_mount,
-                shell_tool_project_path,
             ),
             empty_dir_paths=merge_option_lists(
                 shell_empty_dir_mount,

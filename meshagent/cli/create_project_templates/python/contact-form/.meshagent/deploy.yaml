@@ -20,6 +20,11 @@ variables:
   - name: to_email
     title: Destination email
     description: Email address that receives contact form submissions.
+agents:
+  - name: python-contact-form
+    email:
+      address: "{{ from_email }}"
+      public: true
 container:
   image: meshagent/python:default
   template: agent
@@ -30,6 +35,16 @@ container:
       value: "{{ from_email }}"
     - name: CONTACT_FORM_TO
       value: "{{ to_email }}"
+    - name: SMTP_USERNAME
+      value: python-contact-form
+    - name: MESHAGENT_TOKEN
+      token:
+        identity: python-contact-form
+        role: agent
+    - name: SMTP_PASSWORD
+      token:
+        identity: python-contact-form
+        role: agent
   storage:
     images:
       - image: "{{ image }}"
@@ -41,4 +56,5 @@ ports:
   - num: 8000
     type: http
     published: true
+    public: true
     liveness: /health

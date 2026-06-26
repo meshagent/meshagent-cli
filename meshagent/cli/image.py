@@ -82,7 +82,6 @@ from meshagent.api.specs.service import (
     EnvironmentVariable,
     ImageStorageMountSpec,
     PortSpec,
-    ProjectStorageMountSpec,
     RouteBackendSpec,
     RouteMetadata,
     RoutePathSpec,
@@ -92,6 +91,7 @@ from meshagent.api.specs.service import (
     SecretValue,
     ServiceMetadata,
     ServiceSpec,
+    ServiceRunAs,
     ServiceTemplateSpec,
     ServiceTemplateVariable,
     TokenValue,
@@ -124,6 +124,8 @@ class _DeployDomainPromptHandler(Protocol):
 
 app = async_typer.AsyncTyper(help="Pack local directories as OCI images")
 _BUILD_CONTEXT_CHUNK_SIZE = 1024 * 1024
+_BUILD_CREATE_TIMEOUT_SECONDS = 120.0
+_BUILD_WAIT_TIMEOUT_SECONDS = 600.0
 _CLIENT_CLOSE_TIMEOUT_SECONDS = 2.0
 _DEFAULT_CONTEXT_MOUNT_PATH = "/context"
 _DEFAULT_REPOSITORY_TOKEN_TTL_SECONDS = 3600
@@ -1547,6 +1549,20 @@ def _normalize_deploy_identity(*, identity: str | None) -> str | None:
     return normalized_identity
 
 
+def _normalize_service_account_email_option(
+    *, value: str | None, option_name: str
+) -> str | None:
+    if value is None:
+        return None
+
+    normalized_value = value.strip().lower()
+    if normalized_value == "":
+        raise typer.BadParameter(f"{option_name} cannot be empty")
+    if "@" not in normalized_value:
+        raise typer.BadParameter(f"{option_name} must be a service account email")
+    return normalized_value
+
+
 def _normalize_deploy_liveness(*, liveness: str | None) -> str | None:
     if liveness is None:
         return None
@@ -1730,10 +1746,11 @@ def _resolve_environment_secret_variables(
     values: list[_ParsedEnvironmentSecretVariable],
     identity: str,
 ) -> list[EnvironmentVariable]:
+    del identity
     return [
         EnvironmentVariable(
             name=value.name,
-            secret=SecretValue(identity=identity, id=value.source),
+            secret=SecretValue(id=value.source),
         )
         for value in values
     ]
@@ -1848,49 +1865,20 @@ def _collect_environment_token_identities(
 
 async def _validate_deploy_environment_secrets(
     *,
-    client: RoomClient,
     environment: list[EnvironmentVariable] | None,
-    resolved_identity: str,
+    run_as: str | ServiceRunAs | None,
 ) -> None:
     _validate_deploy_environment_tokens(environment=environment)
-    token_identities = _collect_environment_token_identities(environment=environment)
-    for env_var in environment or []:
-        secret = env_var.secret
-        if secret is None:
-            continue
-
-        secret_reference = _format_env_secret_reference(env_var=env_var)
-        if "@" in secret.identity:
-            raise typer.BadParameter(
-                f"--env-secret {secret_reference} is invalid because service "
-                "environment secrets must use an agent identity"
-            )
-
-        if secret.identity not in token_identities:
-            if secret.identity == resolved_identity:
-                raise typer.BadParameter(
-                    f"environment variable '{env_var.name}' references secret "
-                    f"'{secret.identity}/{secret.id}' but no environment token is "
-                    f"defined for identity '{secret.identity}'. Add "
-                    "--meshagent-token to inject MESHAGENT_TOKEN for that identity."
-                )
-            raise typer.BadParameter(
-                f"environment variable '{env_var.name}' references secret "
-                f"'{secret.identity}/{secret.id}' but no environment token is "
-                f"defined for identity '{secret.identity}'. Add --identity "
-                f"'{secret.identity}' together with --meshagent-token, or use an "
-                "existing token-backed identity."
-            )
-
-        if not await client.secrets.exists(
-            secret_id=secret.id,
-            for_identity=secret.identity,
-        ):
-            raise typer.BadParameter(
-                f"environment variable '{env_var.name}' references missing secret "
-                f"'{secret.identity}/{secret.id}'. Save the room secret first, then "
-                "retry deploy."
-            )
+    if not any(env_var.secret is not None for env_var in environment or []):
+        return
+    if run_as is None:
+        raise typer.BadParameter(
+            "--run-as is required when using SecretValue environment variables"
+        )
+    if isinstance(run_as, str) and run_as.strip() == "":
+        raise typer.BadParameter(
+            "--run-as is required when using SecretValue environment variables"
+        )
 
 
 def _apply_runtime_image_mount(
@@ -1904,12 +1892,6 @@ def _apply_runtime_image_mount(
                 raise typer.BadParameter(
                     "packed Dockerfile runtime injection requires "
                     f"{runtime_image_mount.path} to be free of room mounts"
-                )
-        for project_mount in storage.project or []:
-            if project_mount.path == runtime_image_mount.path:
-                raise typer.BadParameter(
-                    "packed Dockerfile runtime injection requires "
-                    f"{runtime_image_mount.path} to be free of project mounts"
                 )
         for file_mount in storage.files or []:
             if file_mount.path == runtime_image_mount.path:
@@ -1953,10 +1935,6 @@ def _iter_deploy_storage_mount_paths(
         normalized_path = _normalize_container_path(path=room_mount.path)
         if normalized_path != "" and normalized_path not in mount_paths:
             mount_paths.append(normalized_path)
-    for project_mount in storage.project or []:
-        normalized_path = _normalize_container_path(path=project_mount.path)
-        if normalized_path != "" and normalized_path not in mount_paths:
-            mount_paths.append(normalized_path)
     for image_mount in storage.images or []:
         normalized_path = _normalize_container_path(path=image_mount.path)
         if normalized_path != "" and normalized_path not in mount_paths:
@@ -1988,7 +1966,6 @@ def _build_missing_volume_mount_error(*, missing_volume_paths: tuple[str, ...]) 
         "Add a matching mount for each Dockerfile volume path, for example:\n"
         f"  --empty-dir-mount {example_path}\n"
         f"  --room-mount .:{example_path}\n"
-        f"  --project-mount .:{example_path}:rw\n"
         f"  --image-mount some/image:tag={example_path}:rw\n"
         "Repeat one of those flags for every missing Dockerfile volume path."
     )
@@ -2019,12 +1996,10 @@ def _validate_packed_dockerfile_volume_mounts(
 def _parse_deploy_storage(
     *,
     room_mounts: list[str],
-    project_mounts: list[str],
     image_mounts: list[str],
     empty_dir_mounts: list[str],
 ) -> ContainerMountSpec | None:
     room_specs: list[RoomStorageMountSpec] = []
-    project_specs: list[ProjectStorageMountSpec] = []
     image_specs: list[ImageStorageMountSpec] = []
     empty_dir_specs: list[EmptyDirMountSpec] = []
 
@@ -2033,13 +2008,6 @@ def _parse_deploy_storage(
         subpath = source if source not in {"", ".", "/"} else None
         room_specs.append(
             RoomStorageMountSpec(path=mount, subpath=subpath, read_only=read_only)
-        )
-
-    for value in project_mounts:
-        source, mount, read_only = split_container_mount(value, "--project-mount", True)
-        subpath = source if source not in {"", ".", "/"} else None
-        project_specs.append(
-            ProjectStorageMountSpec(path=mount, subpath=subpath, read_only=read_only)
         )
 
     for value in image_mounts:
@@ -2057,12 +2025,11 @@ def _parse_deploy_storage(
         mount, read_only = split_empty_dir_mount(value, "--empty-dir-mount")
         empty_dir_specs.append(EmptyDirMountSpec(path=mount, read_only=read_only))
 
-    if not room_specs and not project_specs and not image_specs and not empty_dir_specs:
+    if not room_specs and not image_specs and not empty_dir_specs:
         return None
 
     return ContainerMountSpec(
         room=room_specs or None,
-        project=project_specs or None,
         images=image_specs or None,
         empty_dirs=empty_dir_specs or None,
     )
@@ -2073,7 +2040,6 @@ def _merge_deploy_storage(
     existing_storage: ContainerMountSpec | None,
     parsed_storage: ContainerMountSpec | None,
     replace_room_mounts: bool,
-    replace_project_mounts: bool,
     replace_image_mounts: bool,
     replace_empty_dir_mounts: bool,
 ) -> ContainerMountSpec | None:
@@ -2088,13 +2054,6 @@ def _merge_deploy_storage(
             parsed_storage.room
             if replace_room_mounts
             else preserved_storage.room
-            if preserved_storage
-            else None
-        ),
-        project=(
-            parsed_storage.project
-            if replace_project_mounts
-            else preserved_storage.project
             if preserved_storage
             else None
         ),
@@ -2117,7 +2076,6 @@ def _merge_deploy_storage(
 
     if (
         merged_storage.room is None
-        and merged_storage.project is None
         and merged_storage.images is None
         and merged_storage.files is None
         and merged_storage.empty_dirs is None
@@ -2132,7 +2090,6 @@ def _resolve_deploy_storage(
     existing_service: ServiceSpec | None,
     parsed_storage: ContainerMountSpec | None,
     replace_room_mounts: bool,
-    replace_project_mounts: bool,
     replace_image_mounts: bool,
     replace_empty_dir_mounts: bool,
     runtime_container: _RuntimeContainerOverride | None,
@@ -2144,7 +2101,6 @@ def _resolve_deploy_storage(
         existing_storage=existing_container.storage if existing_container else None,
         parsed_storage=parsed_storage,
         replace_room_mounts=replace_room_mounts,
-        replace_project_mounts=replace_project_mounts,
         replace_image_mounts=replace_image_mounts,
         replace_empty_dir_mounts=replace_empty_dir_mounts,
     )
@@ -2165,6 +2121,7 @@ def _build_deploy_service_spec(
     liveness: str | None,
     environment: list[EnvironmentVariable] | None = None,
     storage: ContainerMountSpec | None = None,
+    run_as: str | None = None,
     default_ports: list[PortSpec] | None = None,
     runtime_container: _RuntimeContainerOverride | None = None,
     template: ContainerTemplateOption = "agent",
@@ -2219,6 +2176,8 @@ def _build_deploy_service_spec(
         container = container.model_copy(update={"environment": environment})
     if storage is not None:
         container = container.model_copy(update={"storage": storage})
+    if run_as is not None:
+        container = container.model_copy(update={"run_as": ServiceRunAs(email=run_as)})
     if runtime_container is not None:
         container = container.model_copy(
             update={
@@ -3078,6 +3037,25 @@ def _build_deploy_template_plan(*, service_spec: ServiceSpec) -> _ServiceDeployP
     return _ServiceDeployPlan(spec=service_spec, service_id_annotation=service_id)
 
 
+def _deploy_plan_with_run_as(
+    *, deploy_plan: _ServiceDeployPlan, run_as: str | None
+) -> _ServiceDeployPlan:
+    if run_as is None:
+        return deploy_plan
+    if deploy_plan.spec.container is None:
+        raise typer.BadParameter("--run-as requires a container service")
+    return _ServiceDeployPlan(
+        spec=deploy_plan.spec.model_copy(
+            update={
+                "container": deploy_plan.spec.container.model_copy(
+                    update={"run_as": ServiceRunAs(email=run_as)}
+                )
+            }
+        ),
+        service_id_annotation=deploy_plan.service_id_annotation,
+    )
+
+
 def _find_service_port(
     *,
     service_spec: ServiceSpec,
@@ -3891,24 +3869,36 @@ async def _run_image_pack_stage(
                 )
             },
         )
-        build_id = await client.containers.build(
-            tags=[parsed_tag.value],
-            mount_path=_DEFAULT_CONTEXT_MOUNT_PATH,
-            context_path=_DEFAULT_CONTEXT_MOUNT_PATH,
-            dockerfile_path=_generated_pack_dockerfile_path(
-                mount_path=_DEFAULT_CONTEXT_MOUNT_PATH
-            ),
-            optimize_image=True,
-            private=False,
-            credentials=registry_credentials,
-            builder_name=_default_builder_name(client=client),
-            chunks=_iter_file_chunks(archive_path),
-            size=archive_size,
-        )
-        exit_code = await _stream_build_job_logs_and_wait_for_exit(
-            client=client,
-            build_id=build_id,
-        )
+        try:
+            build_id = await asyncio.wait_for(
+                client.containers.build(
+                    tags=[parsed_tag.value],
+                    mount_path=_DEFAULT_CONTEXT_MOUNT_PATH,
+                    context_path=_DEFAULT_CONTEXT_MOUNT_PATH,
+                    dockerfile_path=_generated_pack_dockerfile_path(
+                        mount_path=_DEFAULT_CONTEXT_MOUNT_PATH
+                    ),
+                    optimize_image=True,
+                    private=False,
+                    credentials=registry_credentials,
+                    builder_name=_default_builder_name(client=client),
+                    chunks=_iter_file_chunks(archive_path),
+                    size=archive_size,
+                ),
+                timeout=_BUILD_CREATE_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as exc:
+            raise RuntimeError("timed out starting image build") from exc
+        try:
+            exit_code = await asyncio.wait_for(
+                _stream_build_job_logs_and_wait_for_exit(
+                    client=client,
+                    build_id=build_id,
+                ),
+                timeout=_BUILD_WAIT_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as exc:
+            raise RuntimeError("timed out waiting for image build") from exc
         if exit_code != 0:
             raise typer.Exit(code=exit_code)
     finally:
@@ -3993,37 +3983,52 @@ async def _run_image_build_stage(
             rich_message=f"[cyan]Uploading build context ({archive_size_text})...[/cyan]",
             plain_message=f"Uploading build context ({archive_size_text})...",
         )
-        build_id = await client.containers.build(
-            tags=tags,
-            mount_path=build_inputs.pack_spec.mount_path,
-            context_path=build_inputs.context_path,
-            dockerfile_path=build_inputs.dockerfile_path,
-            optimize_image=optimize,
-            private=private,
-            credentials=credentials,
-            builder_name=resolved_builder_name,
-            chunks=_iter_file_chunks_with_progress(
-                path=archive_path,
-                size=archive_size,
-                status_handler=status_handler,
-            ),
-            size=archive_size,
-        )
+        try:
+            build_id = await asyncio.wait_for(
+                client.containers.build(
+                    tags=tags,
+                    mount_path=build_inputs.pack_spec.mount_path,
+                    context_path=build_inputs.context_path,
+                    dockerfile_path=build_inputs.dockerfile_path,
+                    optimize_image=optimize,
+                    private=private,
+                    credentials=credentials,
+                    builder_name=resolved_builder_name,
+                    chunks=_iter_file_chunks_with_progress(
+                        path=archive_path,
+                        size=archive_size,
+                        status_handler=status_handler,
+                    ),
+                    size=archive_size,
+                ),
+                timeout=_BUILD_CREATE_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as exc:
+            raise RuntimeError("timed out starting image build") from exc
         await _emit_deploy_status(
             status_handler,
             rich_message="[cyan]Starting image build...[/cyan]",
             plain_message="Starting image build...",
         )
-        if log_handler is None:
-            exit_code = await _stream_build_job_logs_and_wait_for_exit(
-                client=client, build_id=build_id
-            )
-        else:
-            exit_code = await _stream_build_job_logs_and_wait_for_exit_tui(
-                client=client,
-                build_id=build_id,
-                log_handler=log_handler,
-            )
+        try:
+            if log_handler is None:
+                exit_code = await asyncio.wait_for(
+                    _stream_build_job_logs_and_wait_for_exit(
+                        client=client, build_id=build_id
+                    ),
+                    timeout=_BUILD_WAIT_TIMEOUT_SECONDS,
+                )
+            else:
+                exit_code = await asyncio.wait_for(
+                    _stream_build_job_logs_and_wait_for_exit_tui(
+                        client=client,
+                        build_id=build_id,
+                        log_handler=log_handler,
+                    ),
+                    timeout=_BUILD_WAIT_TIMEOUT_SECONDS,
+                )
+        except TimeoutError as exc:
+            raise RuntimeError("timed out waiting for image build") from exc
         if exit_code != 0:
             await _emit_deploy_status(
                 status_handler,
@@ -4458,13 +4463,6 @@ async def deploy_image(
             help="Mount room storage as <source>:<mount>[:ro|rw]",
         ),
     ] = [],
-    project_mount: Annotated[
-        list[str],
-        typer.Option(
-            "--project-mount",
-            help="Mount project storage as <source>:<mount>[:ro|rw]",
-        ),
-    ] = [],
     empty_dir_mount: Annotated[
         list[str],
         typer.Option(
@@ -4491,7 +4489,7 @@ async def deploy_image(
         list[str],
         typer.Option(
             "--env-secret",
-            help="Set environment variable from a room secret as NAME=SECRET_ID",
+            help="Set environment variable from a service account secret as NAME=SECRET_ID",
         ),
     ] = [],
     identity: Annotated[
@@ -4499,8 +4497,18 @@ async def deploy_image(
         typer.Option(
             "--identity",
             help=(
-                "Identity name to use for --meshagent-token and --env-secret. "
-                "Defaults to the current token identity or the derived service name."
+                "Identity name to use for --meshagent-token. Defaults to the "
+                "current token identity or the derived service name."
+            ),
+        ),
+    ] = None,
+    run_as: Annotated[
+        Optional[str],
+        typer.Option(
+            "--run-as",
+            help=(
+                "Service account email the deployed container runs as. Required "
+                "when using --env-secret."
             ),
         ),
     ] = None,
@@ -4551,7 +4559,6 @@ async def deploy_image(
     parsed_secret_environment = _parse_environment_secret_variables(values=env_secret)
     parsed_storage = _parse_deploy_storage(
         room_mounts=room_mount,
-        project_mounts=project_mount,
         image_mounts=image_mount,
         empty_dir_mounts=empty_dir_mount,
     )
@@ -4566,6 +4573,9 @@ async def deploy_image(
         else None
     )
     identity_override = _normalize_deploy_identity(identity=identity)
+    run_as = _normalize_service_account_email_option(
+        value=run_as, option_name="--run-as"
+    )
 
     resolved_project_id = await resolve_project_id(project_id=project_id)
     if pack is not None:
@@ -4706,7 +4716,10 @@ async def deploy_image(
                     room_name=resolved_room,
                     service_name=service_spec.metadata.name,
                 )
-                deploy_plan = _build_deploy_template_plan(service_spec=service_spec)
+                deploy_plan = _deploy_plan_with_run_as(
+                    deploy_plan=_build_deploy_template_plan(service_spec=service_spec),
+                    run_as=run_as,
+                )
                 environment = (
                     deploy_plan.spec.container.environment
                     if deploy_plan.spec.container is not None
@@ -4717,9 +4730,10 @@ async def deploy_image(
                     plain_message="Validating environment secrets...",
                 )
                 await _validate_deploy_environment_secrets(
-                    client=client,
                     environment=environment,
-                    resolved_identity=identity_override or meshagent_token_identity,
+                    run_as=deploy_plan.spec.container.run_as
+                    if deploy_plan.spec.container is not None
+                    else None,
                 )
             else:
                 await _emit_deploy_phase(
@@ -4736,7 +4750,6 @@ async def deploy_image(
                     existing_service=existing_service,
                     parsed_storage=parsed_storage,
                     replace_room_mounts=len(room_mount) > 0,
-                    replace_project_mounts=len(project_mount) > 0,
                     replace_image_mounts=len(image_mount) > 0,
                     replace_empty_dir_mounts=len(empty_dir_mount) > 0,
                     runtime_container=runtime_container,
@@ -4759,15 +4772,6 @@ async def deploy_image(
                     identity_override=identity_override,
                 )
                 environment = resolved_environment.environment
-                await _emit_deploy_phase(
-                    rich_message="[cyan]Validating environment secrets[/]",
-                    plain_message="Validating environment secrets...",
-                )
-                await _validate_deploy_environment_secrets(
-                    client=client,
-                    environment=environment,
-                    resolved_identity=resolved_environment.identity,
-                )
                 deploy_plan = _build_deploy_service_spec(
                     existing_service=existing_service,
                     parsed_tag=parsed_tag,
@@ -4776,9 +4780,20 @@ async def deploy_image(
                     liveness=normalized_liveness,
                     environment=environment,
                     storage=storage,
+                    run_as=run_as,
                     default_ports=packed_default_ports,
                     runtime_container=runtime_container,
                     template=normalized_template,
+                )
+                await _emit_deploy_phase(
+                    rich_message="[cyan]Validating environment secrets[/]",
+                    plain_message="Validating environment secrets...",
+                )
+                await _validate_deploy_environment_secrets(
+                    environment=environment,
+                    run_as=deploy_plan.spec.container.run_as
+                    if deploy_plan.spec.container is not None
+                    else None,
                 )
             previous_runtime_state = (
                 await _get_service_runtime_state(

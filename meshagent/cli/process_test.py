@@ -814,7 +814,7 @@ async def test_process_agent_uses_agent_thread_list_for_multiple_storage_backend
         toolkit=[],
         schema=[],
         threading_mode="default-new",
-        thread_storage=["dataset", "meshdocument"],
+        thread_storage=["dataset", "none"],
         channels=["chat"],
     )
     agent = agent_cls()
@@ -2219,7 +2219,7 @@ async def test_process_run_starts_room_agent_and_uses_ask_tui(
 
     assert captured["runtime"] == "process"
     assert captured["channels"] == ["memory"]
-    assert captured["thread_storage"] == ["dataset", "meshdocument"]
+    assert captured["thread_storage"] == ["dataset"]
     assert room_client.enter_calls == 1
     assert room_client.exit_calls == 1
     assert process_agent.start_calls == 1
@@ -2583,15 +2583,6 @@ def test_process_messages_relative_thread_id_uses_agent_thread_dir() -> None:
             thread_id="abc123",
             agent_name="helper",
             thread_dir=None,
-            thread_storage="meshdocument",
-        )
-        == "/agents/helper/threads/abc123.thread"
-    )
-    assert (
-        process._resolve_process_inspect_thread_path(
-            thread_id="abc123",
-            agent_name="helper",
-            thread_dir=None,
             thread_storage="dataset",
         )
         == "dataset://agents/helper/threads/abc123"
@@ -2664,24 +2655,6 @@ def test_process_run_thread_id_uses_dataset_scheme_for_dataset_storage(
     assert (
         process._process_run_thread_id(
             thread_path=None,
-            thread_storage="meshdocument",
-            agent_name="helper",
-            thread_dir=None,
-        )
-        == ".threads/helper/main.thread"
-    )
-    assert (
-        process._process_run_thread_id(
-            thread_path=None,
-            thread_storage="meshdocument",
-            agent_name="helper",
-            thread_dir="/agents/helper/threads",
-        )
-        == "/agents/helper/threads/main.thread"
-    )
-    assert (
-        process._process_run_thread_id(
-            thread_path=None,
             thread_storage="dataset",
             agent_name="helper",
             thread_dir="threads/custom",
@@ -2719,16 +2692,6 @@ def test_process_run_thread_id_uses_dataset_scheme_for_dataset_storage(
     assert (
         process._process_run_thread_id(
             thread_path=None,
-            thread_storage="meshdocument",
-            agent_name="helper",
-            thread_dir="/agents/helper/threads",
-            threading_mode="default-new",
-        )
-        == "/agents/helper/threads/fixed-id.thread"
-    )
-    assert (
-        process._process_run_thread_id(
-            thread_path=None,
             thread_storage="none",
             agent_name="helper",
             thread_dir="threads/custom",
@@ -2738,41 +2701,17 @@ def test_process_run_thread_id_uses_dataset_scheme_for_dataset_storage(
 
 
 def test_process_thread_storage_options_preserve_first_backend_as_default() -> None:
-    assert process._normalize_thread_storage_backends(
-        ["meshdocument", "dataset", "meshagent"]
-    ) == ["meshdocument", "dataset"]
-
-
-def test_process_thread_storage_defaults_to_dataset_and_meshdocument() -> None:
-    assert process._normalize_thread_storage_backends(None) == [
+    assert process._normalize_thread_storage_backends(["none", "dataset"]) == [
+        "none",
         "dataset",
-        "meshdocument",
     ]
 
 
-def test_process_new_meshdocument_thread_uses_scheme_when_requested(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(process.uuid, "uuid4", lambda: "fixed-id")
-
-    assert (
-        process._new_process_thread_path_for_dir(
-            thread_dir="/agents/helper/threads",
-            thread_storage="meshdocument",
-            use_scheme=True,
-        )
-        == "meshdocument://agents/helper/threads/fixed-id.thread"
-    )
+def test_process_thread_storage_defaults_to_dataset() -> None:
+    assert process._normalize_thread_storage_backends(None) == ["dataset"]
 
 
 def test_process_thread_dir_is_normalized_per_storage_backend() -> None:
-    assert (
-        process._thread_dir_for_storage_backend(
-            thread_dir="dataset://agents/helper/threads",
-            thread_storage="meshdocument",
-        )
-        == "/agents/helper/threads"
-    )
     assert (
         process._thread_dir_for_storage_backend(
             thread_dir="/agents/helper/threads",
@@ -2780,16 +2719,12 @@ def test_process_thread_dir_is_normalized_per_storage_backend() -> None:
         )
         == "dataset://agents/helper/threads"
     )
-
-
-def test_process_unschemed_thread_path_routes_to_meshdocument_when_configured() -> None:
     assert (
-        process._thread_storage_backend_for_thread(
-            thread_id="/agents/helper/threads/legacy.thread",
-            thread_storage_backends=["dataset", "meshdocument"],
-            default_thread_storage="dataset",
+        process._thread_dir_for_storage_backend(
+            thread_dir="/agents/helper/threads",
+            thread_storage="none",
         )
-        == "meshdocument"
+        == "tmp://agents/helper/threads"
     )
 
 
@@ -2846,8 +2781,8 @@ async def test_process_run_tui_reuses_ask_tui(monkeypatch: pytest.MonkeyPatch) -
         bot=bot,
         room=room,
         model=["gpt-realtime", "gpt-5.4"],
-        thread_path="/threads/process-run.thread",
-        thread_storage="meshdocument",
+        thread_path="dataset://threads/process-run",
+        thread_storage="dataset",
         agent_name="helper",
         thread_dir=None,
         threading_mode="none",
@@ -3002,8 +2937,8 @@ async def test_process_run_tui_closes_local_events_after_supervisor_detaches(
     await process._run_process_run_tui(
         bot=bot,
         model="gpt-5.5",
-        thread_path="/threads/process-run.thread",
-        thread_storage="meshdocument",
+        thread_path="dataset://threads/process-run",
+        thread_storage="dataset",
         agent_name="helper",
         thread_dir=None,
         threading_mode="none",
@@ -3192,7 +3127,7 @@ async def test_process_run_tui_loads_existing_thread_messages(
                 Message(
                     data=TurnStart(
                         type=AGENT_MESSAGE_TURN_START,
-                        thread_id="/threads/process-run.thread",
+                        thread_id="dataset://threads/process-run",
                         message_id="existing-1",
                         content=[AgentTextContent(type="text", text="existing prompt")],
                         sender_name="alex",
@@ -3203,7 +3138,7 @@ async def test_process_run_tui_loads_existing_thread_messages(
                 Message(
                     data=AgentTextContentDelta(
                         type=AGENT_EVENT_TEXT_CONTENT_DELTA,
-                        thread_id="/threads/process-run.thread",
+                        thread_id="dataset://threads/process-run",
                         message_id="existing-2",
                         turn_id="turn-existing",
                         item_id="existing-2",
@@ -3238,8 +3173,8 @@ async def test_process_run_tui_loads_existing_thread_messages(
     await process._run_process_run_tui(
         bot=bot,
         model="gpt-5.5",
-        thread_path="/threads/process-run.thread",
-        thread_storage="meshdocument",
+        thread_path="dataset://threads/process-run",
+        thread_storage="dataset",
         agent_name="helper",
         thread_dir=None,
         threading_mode="none",
@@ -3247,24 +3182,22 @@ async def test_process_run_tui_loads_existing_thread_messages(
         working_dir="/tmp",
     )
 
-    assert captured["messages"] == (
-        TurnStart(
-            type=AGENT_MESSAGE_TURN_START,
-            thread_id="/threads/process-run.thread",
-            message_id="existing-1",
-            content=[AgentTextContent(type="text", text="existing prompt")],
-            sender_name="alex",
-        ),
-        AgentTextContentDelta(
-            type=AGENT_EVENT_TEXT_CONTENT_DELTA,
-            thread_id="/threads/process-run.thread",
-            message_id="existing-2",
-            turn_id="turn-existing",
-            item_id="existing-2",
-            text="existing answer",
-            sender_name="helper",
-        ),
-    )
+    assert len(captured["messages"]) == 2
+    turn_start = captured["messages"][0]
+    assert isinstance(turn_start, TurnStart)
+    assert turn_start.thread_id == "dataset://threads/process-run"
+    assert turn_start.message_id == "existing-1"
+    assert turn_start.content == [AgentTextContent(type="text", text="existing prompt")]
+    assert turn_start.sender_name == "alex"
+
+    text_delta = captured["messages"][1]
+    assert isinstance(text_delta, AgentTextContentDelta)
+    assert text_delta.thread_id == "dataset://threads/process-run"
+    assert text_delta.message_id == "existing-2"
+    assert text_delta.turn_id == "turn-existing"
+    assert text_delta.item_id == "existing-2"
+    assert text_delta.text == "existing answer"
+    assert text_delta.sender_name == "helper"
     open_thread = next(
         message.data
         for message in bot._supervisor.sent_messages
@@ -5226,6 +5159,9 @@ class _FakeProcessThreadAdapter:
         del message
         del sender
 
+    def agent_messages(self):
+        return []
+
     def restore_session_context(self, *, context, llm_adapter=None) -> None:
         del context
         del llm_adapter
@@ -6130,11 +6066,6 @@ async def test_build_process_agent_uses_selected_dataset_thread_storage(
 
     monkeypatch.setattr(
         agents_module,
-        "MeshDocumentThreadStorage",
-        _FakeProcessThreadAdapter,
-    )
-    monkeypatch.setattr(
-        agents_module,
         "DatasetThreadStorage",
         _FakeDatasetThreadStorage,
     )
@@ -6180,11 +6111,6 @@ async def test_build_process_agent_enables_verbose_dataset_thread_storage(
 
     monkeypatch.setattr(
         agents_module,
-        "MeshDocumentThreadStorage",
-        _FakeProcessThreadAdapter,
-    )
-    monkeypatch.setattr(
-        agents_module,
         "DatasetThreadStorage",
         _FakeDatasetThreadStorage,
     )
@@ -6222,11 +6148,6 @@ async def test_build_process_agent_can_disable_thread_storage(
 ) -> None:
     import meshagent.agents as agents_module
 
-    monkeypatch.setattr(
-        agents_module,
-        "MeshDocumentThreadStorage",
-        _FakeProcessThreadAdapter,
-    )
     monkeypatch.setattr(
         agents_module,
         "DatasetThreadStorage",
@@ -6278,8 +6199,8 @@ async def test_build_process_agent_forwards_tool_boundary_steering_callback(
     )
     monkeypatch.setattr(
         agents_module,
-        "MeshDocumentThreadStorage",
-        _FakeProcessThreadAdapter,
+        "DatasetThreadStorage",
+        _FakeDatasetThreadStorage,
     )
     agent_cls = chatbot.build_process_agent(
         model="gpt-5.5",

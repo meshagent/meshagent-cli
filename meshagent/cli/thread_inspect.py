@@ -40,9 +40,7 @@ async def load_thread_agent_messages(
 
         storage = DatasetThreadStorage(room=room, path=normalized_path)
     else:
-        from meshagent.agents.process_thread_adapter import MeshDocumentThreadStorage
-
-        storage = MeshDocumentThreadStorage(room=room, path=normalized_path)
+        return []
     await storage.start()
     try:
         await storage.wait_until_ready()

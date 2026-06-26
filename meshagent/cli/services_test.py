@@ -468,7 +468,7 @@ def test_build_external_mcp_service_spec_uses_external_base_and_endpoint_path() 
 
 
 @pytest.mark.asyncio
-async def test_load_service_spec_mcp_requires_dynamic_registration(
+async def test_load_service_spec_mcp_uses_discovered_oauth_without_dynamic_registration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def _fake_discovery(*, server_url: str):
@@ -476,16 +476,22 @@ async def test_load_service_spec_mcp_requires_dynamic_registration(
         return services._DiscoveredOAuthEndpoints(
             authorization_endpoint="https://auth.example.com/authorize",
             token_endpoint="https://auth.example.com/token",
-            registration_endpoint=None,
             no_pkce=False,
         )
 
     monkeypatch.setattr(services, "_discover_oauth_endpoints_for_mcp", _fake_discovery)
 
-    with pytest.raises(typer.BadParameter, match="dynamic client registration"):
-        await services._load_service_spec(
-            file=None, url=None, mcp="https://mcp.example.com/v1/mcp"
-        )
+    spec = await services._load_service_spec(
+        file=None, url=None, mcp="https://mcp.example.com/v1/mcp"
+    )
+
+    assert spec.ports is not None
+    assert spec.ports[0].endpoints[0].mcp is not None
+    oauth = spec.ports[0].endpoints[0].mcp.oauth
+    assert oauth is not None
+    assert oauth.authorization_endpoint == "https://auth.example.com/authorize"
+    assert oauth.token_endpoint == "https://auth.example.com/token"
+    assert oauth.no_pkce is False
 
 
 @pytest.mark.asyncio
@@ -550,7 +556,6 @@ async def test_load_service_spec_mcp_builds_external_service(
         return services._DiscoveredOAuthEndpoints(
             authorization_endpoint="https://auth.example.com/authorize",
             token_endpoint="https://auth.example.com/token",
-            registration_endpoint="https://auth.example.com/register",
             no_pkce=False,
         )
 
@@ -566,8 +571,14 @@ async def test_load_service_spec_mcp_builds_external_service(
     assert spec.ports[0].endpoints[0].mcp is not None
     assert spec.ports[0].endpoints[0].mcp.oauth is not None
     assert spec.ports[0].endpoints[0].mcp.oauth.client_id is None
-    assert spec.ports[0].endpoints[0].mcp.oauth.authorization_endpoint is None
-    assert spec.ports[0].endpoints[0].mcp.oauth.token_endpoint is None
+    assert (
+        spec.ports[0].endpoints[0].mcp.oauth.authorization_endpoint
+        == "https://auth.example.com/authorize"
+    )
+    assert (
+        spec.ports[0].endpoints[0].mcp.oauth.token_endpoint
+        == "https://auth.example.com/token"
+    )
     assert spec.ports[0].endpoints[0].mcp.oauth.no_pkce is False
     assert (
         spec.metadata.annotations[services.ANNOTATION_SERVICE_ID]
@@ -576,7 +587,7 @@ async def test_load_service_spec_mcp_builds_external_service(
 
 
 @pytest.mark.asyncio
-async def test_load_service_spec_mcp_notion_with_dynamic_registration_adds_oauth(
+async def test_load_service_spec_mcp_notion_adds_discovered_oauth(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def _fake_discovery(*, server_url: str):
@@ -584,7 +595,6 @@ async def test_load_service_spec_mcp_notion_with_dynamic_registration_adds_oauth
         return services._DiscoveredOAuthEndpoints(
             authorization_endpoint="https://api.notion.com/v1/oauth/authorize",
             token_endpoint="https://api.notion.com/v1/oauth/token",
-            registration_endpoint="https://api.notion.com/v1/oauth/register",
             no_pkce=False,
         )
 
@@ -603,8 +613,14 @@ async def test_load_service_spec_mcp_notion_with_dynamic_registration_adds_oauth
     assert spec.ports[0].endpoints[0].mcp is not None
     assert spec.ports[0].endpoints[0].mcp.oauth is not None
     assert spec.ports[0].endpoints[0].mcp.oauth.client_id is None
-    assert spec.ports[0].endpoints[0].mcp.oauth.authorization_endpoint is None
-    assert spec.ports[0].endpoints[0].mcp.oauth.token_endpoint is None
+    assert (
+        spec.ports[0].endpoints[0].mcp.oauth.authorization_endpoint
+        == "https://api.notion.com/v1/oauth/authorize"
+    )
+    assert (
+        spec.ports[0].endpoints[0].mcp.oauth.token_endpoint
+        == "https://api.notion.com/v1/oauth/token"
+    )
     assert spec.ports[0].endpoints[0].mcp.oauth.no_pkce is False
     assert (
         spec.metadata.annotations[services.ANNOTATION_SERVICE_ID]

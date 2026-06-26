@@ -58,6 +58,59 @@ async def test_iam_grant_calls_generic_policy_api(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.asyncio
+async def test_iam_grant_accepts_service_account_secret_roles(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[dict[str, object]] = []
+
+    class _FakeClient:
+        async def grant_resource_policy(self, **kwargs) -> None:
+            calls.append(kwargs)
+
+        async def close(self) -> None:
+            pass
+
+    async def fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-1"
+        return "resolved-project"
+
+    async def fake_get_client() -> _FakeClient:
+        return _FakeClient()
+
+    monkeypatch.setattr(iam, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(iam, "get_client", fake_get_client)
+
+    await iam.grant(
+        project_id="project-1",
+        resource_type="service_account",
+        resource_id="service-account-1",
+        subject_type="userset",
+        subject_id="resolved-project",
+        role=["secret_manager,use_proxy_secrets,run_service_as"],
+        subject_object_type="project",
+        subject_relation="service_account",
+        invite_redirect_url=None,
+    )
+
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["project_id"] == "resolved-project"
+    assert call["resource_type"] == "service_account"
+    assert call["resource_id"] == "service-account-1"
+    assert call["roles"] == [
+        "secret_manager",
+        "use_proxy_secrets",
+        "run_service_as",
+    ]
+    assert call["subject"] == AccessSubject(
+        type="userset",
+        id="resolved-project",
+        object_type="project",
+        relation="service_account",
+    )
+
+
+@pytest.mark.asyncio
 async def test_iam_policy_prints_direct_grants(monkeypatch: pytest.MonkeyPatch):
     printed_tables: list[tuple[list[dict[str, object]], tuple[str, ...]]] = []
 

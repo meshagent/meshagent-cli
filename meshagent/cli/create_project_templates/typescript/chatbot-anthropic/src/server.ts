@@ -1,10 +1,57 @@
 // @ts-nocheck
+const { spawn } = require("node:child_process");
 const http = require("node:http");
 
 const port = Number(process.env.PORT || 3000);
 const model = process.env.ANTHROPIC_MODEL || process.env.MESHAGENT_CHATBOT_MODEL || "claude-sonnet-4-6";
 const defaultInstructions = "You are a concise assistant running through the MeshAgent room Anthropic proxy.";
 const anthropicVersion = process.env.ANTHROPIC_VERSION || "2023-06-01";
+
+function browserLaunchSetting() {
+  return String(process.env.MESHAGENT_CREATE_OPEN_BROWSER ?? "").trim().toLowerCase();
+}
+
+function shouldOpenBrowser() {
+  const setting = browserLaunchSetting();
+  if (["0", "false", "no", "off"].includes(setting)) {
+    return false;
+  }
+  if (["1", "true", "yes", "on"].includes(setting)) {
+    return true;
+  }
+  return Boolean(process.stdin.isTTY || process.stdout.isTTY);
+}
+
+function openBrowser(url) {
+  let command;
+  let args;
+  if (process.platform === "darwin") {
+    command = "open";
+    args = [url];
+  } else if (process.platform === "win32") {
+    command = "cmd";
+    args = ["/c", "start", "", url];
+  } else {
+    command = "xdg-open";
+    args = [url];
+  }
+
+  try {
+    const child = spawn(command, args, { stdio: "ignore", detached: true });
+    child.on("error", () => {});
+    child.unref();
+  } catch {
+    // Browser launch is a convenience; the server should keep running if it fails.
+  }
+}
+
+function maybeOpenBrowser(url) {
+  if (!shouldOpenBrowser()) {
+    return;
+  }
+  console.log(`Browser will launch at ${url}`);
+  setTimeout(() => openBrowser(url), 100);
+}
 
 function trimTrailingSlash(value) {
   return value.replace(/\/+$/, "");
@@ -331,5 +378,7 @@ const server = http.createServer(async (request, response) => {
 });
 
 server.listen(port, "0.0.0.0", () => {
-  console.log(`MeshAgent TypeScript Anthropic chatbot listening on http://0.0.0.0:${port}`);
+  const localURL = `http://127.0.0.1:${port}/`;
+  console.log(`MeshAgent TypeScript Anthropic chatbot listening on ${localURL}`);
+  maybeOpenBrowser(localURL);
 });

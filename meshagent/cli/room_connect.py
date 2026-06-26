@@ -12,8 +12,8 @@ from typer import _click as typer_click
 from pydantic import ValidationError
 from rich import print
 
-from meshagent.api import ApiScope, ParticipantToken, RoomException
-from meshagent.api.client import ConflictError, NotFoundError, Room
+from meshagent.api import ApiScope, ParticipantToken
+from meshagent.api.client import ConflictError, Room
 from meshagent.api.helpers import websocket_room_url
 from meshagent.cli import async_typer, auth_async
 from meshagent.cli.helper import (
@@ -172,21 +172,6 @@ def _parse_meshagent_token_scope(*, value: str) -> ApiScope:
         ) from exc
 
 
-def _decode_environment_secret_value(
-    *,
-    env_name: str,
-    secret_id: str,
-    data: bytes,
-) -> str:
-    try:
-        return data.decode()
-    except UnicodeDecodeError as exc:
-        raise typer.BadParameter(
-            f"environment variable '{env_name}' references secret '{secret_id}', "
-            "but room connect env secrets must contain UTF-8 text"
-        ) from exc
-
-
 async def _mint_connected_meshagent_token(
     *,
     project_id: str,
@@ -221,18 +206,11 @@ async def _list_connect_rooms(
     *,
     project_id: str,
 ) -> list[Room]:
-    room_grants = await account_client.list_room_grants_by_user(
+    return await account_client.list_rooms(
         project_id=project_id,
-        user_id="me",
-        limit=500,
-        offset=0,
-        order_by="room_name",
-        filter=None,
+        page_size=500,
+        view="my",
     )
-    rooms_by_id: dict[str, Room] = {}
-    for room_grant in room_grants:
-        rooms_by_id.setdefault(room_grant.room.id, room_grant.room)
-    return list(rooms_by_id.values())
 
 
 async def _run_connect_room_picker_tui(
@@ -456,6 +434,11 @@ async def _build_connected_command_env(
 ) -> dict[str, str]:
     parsed_environment = _parse_environment_variables(values=env)
     parsed_secret_environment = _parse_environment_secret_variables(values=env_secret)
+    if parsed_secret_environment:
+        raise typer.BadParameter(
+            "--env-secret is no longer supported by room connect. Use user or "
+            "service account secrets through the REST API or proxy."
+        )
     normalized_identity = _normalize_connect_identity(identity=identity)
     normalized_role = _normalize_connect_role(role=role)
     normalized_template = _normalize_connect_template(template=template)
@@ -471,27 +454,16 @@ async def _build_connected_command_env(
     account_client: CustomMeshagentClient | None = None
     try:
         connected_token: str
-        resolved_secret_identity: str | None
         uses_local_token = (
             normalized_identity is not None
             or role is not None
             or meshagent_token_scope is not None
-            or len(parsed_secret_environment) > 0
         )
 
         if uses_local_token:
             if normalized_identity is None:
                 if role is not None:
                     raise typer.BadParameter("--identity is required when using --role")
-                if parsed_secret_environment and meshagent_token_scope is not None:
-                    raise typer.BadParameter(
-                        "--identity is required when using --env-secret or "
-                        "--meshagent-token"
-                    )
-                if parsed_secret_environment:
-                    raise typer.BadParameter(
-                        "--identity is required when using --env-secret"
-                    )
                 raise typer.BadParameter(
                     "--identity is required when using --meshagent-token"
                 )
@@ -503,9 +475,6 @@ async def _build_connected_command_env(
                 api_scope=meshagent_token_scope or ApiScope.agent_default(),
             )
             connected_token = room_env.token
-            resolved_secret_identity = normalized_identity
-            if parsed_secret_environment:
-                account_client = await get_client()
         else:
             account_client = await _get_account_client_for_room_connect(
                 room=resolved_room,
@@ -516,7 +485,6 @@ async def _build_connected_command_env(
                 account_client=account_client,
             )
             connected_token = room_env.token
-            resolved_secret_identity = None
 
         child_env = os.environ.copy()
         if normalized_template == "agent":
@@ -534,32 +502,6 @@ async def _build_connected_command_env(
 
         for name, value in parsed_environment:
             child_env[name] = value
-        if parsed_secret_environment:
-            if account_client is None:
-                account_client = await get_client()
-            if resolved_secret_identity is None:
-                raise AssertionError("resolved_secret_identity must be set")
-            for env_var in parsed_secret_environment:
-                try:
-                    secret = await account_client.get_room_secret(
-                        project_id=room_env.project_id,
-                        room_name=room_env.room_name,
-                        secret_id=env_var.source,
-                        for_identity=resolved_secret_identity,
-                    )
-                except NotFoundError as exc:
-                    raise typer.BadParameter(
-                        f"environment variable '{env_var.name}' references missing "
-                        f"secret '{resolved_secret_identity}/{env_var.source}'. Save the "
-                        "room secret first, then retry room connect."
-                    ) from exc
-                except RoomException as exc:
-                    raise typer_click.exceptions.ClickException(str(exc)) from exc
-                child_env[env_var.name] = _decode_environment_secret_value(
-                    env_name=env_var.name,
-                    secret_id=f"{resolved_secret_identity}/{env_var.source}",
-                    data=secret.data,
-                )
 
         return child_env
     finally:
@@ -600,18 +542,13 @@ def _connect_command(
         "-e",
         help="Set environment variable as KEY=VALUE",
     ),
-    env_secret: list[str] | None = typer.Option(
-        None,
-        "--env-secret",
-        help="Set environment variable from a room secret as NAME=SECRET_ID",
-    ),
     identity: str | None = typer.Option(
         None,
         "--identity",
         help=(
-            "Identity name to use for the connected token, --meshagent-token, and "
-            "--env-secret. Required with --role, --meshagent-token, and "
-            "--env-secret. When set, room connect mints a participant token locally."
+            "Identity name to use for the connected token and --meshagent-token. "
+            "Required with --role and --meshagent-token. When set, room connect "
+            "mints a participant token locally."
         ),
     ),
     role: str | None = typer.Option(
@@ -655,7 +592,7 @@ def _connect_command(
             project_id=project_id,
             room=room,
             env=env or (),
-            env_secret=env_secret or (),
+            env_secret=(),
             identity=identity,
             role=role,
             meshagent_token=meshagent_token,

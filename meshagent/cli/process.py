@@ -56,8 +56,6 @@ from meshagent.cli.common_options import (
     RoomOption,
     ShellEmptyDirMountLegacyOption,
     ShellEmptyDirMountOption,
-    ShellProjectMountLegacyOption,
-    ShellProjectMountOption,
     ShellRoomMountLegacyOption,
     ShellRoomMountOption,
     StartingUrlOption,
@@ -558,10 +556,6 @@ def _thread_storage_class_for_backend(thread_storage: "ThreadStorageBackend"):
         from meshagent.agents.dataset_thread_storage import DatasetThreadStorage
 
         return DatasetThreadStorage
-    if thread_storage == "meshdocument":
-        from meshagent.agents.process_thread_adapter import MeshDocumentThreadStorage
-
-        return MeshDocumentThreadStorage
     return None
 
 
@@ -765,9 +759,7 @@ def _thread_storage_class_for_path(*, thread_path: str):
 
         return DatasetThreadStorage
 
-    from meshagent.agents.process_thread_adapter import MeshDocumentThreadStorage
-
-    return MeshDocumentThreadStorage
+    return None
 
 
 async def _load_thread_agent_messages(
@@ -780,6 +772,9 @@ async def _load_thread_agent_messages(
         return []
 
     storage_class = _thread_storage_class_for_path(thread_path=normalized_path)
+    if storage_class is None:
+        return []
+
     storage = storage_class(room=room, path=normalized_path)
     await storage.start()
     try:
@@ -1775,12 +1770,12 @@ def _process_use_thread_sidebar_options(
         return None
     if thread_dir.startswith("tmp://"):
         return None
-    if thread_dir.startswith("dataset://") or (
-        thread_list_path is not None and thread_list_path.startswith("dataset://")
+    if not (
+        thread_dir.startswith("dataset://")
+        or (thread_list_path is not None and thread_list_path.startswith("dataset://"))
     ):
-        storage_class = _thread_storage_class_for_backend("dataset")
-    else:
-        storage_class = _thread_storage_class_for_backend("meshdocument")
+        return None
+    storage_class = _thread_storage_class_for_backend("dataset")
     if storage_class is None:
         return None
     return storage_class, thread_dir
@@ -2175,13 +2170,10 @@ app.add_deprecated_option_aliases(
 )
 
 ThreadingMode = Literal["none", "default-new"]
-ThreadStorageBackend = Literal["meshdocument", "meshagent", "dataset", "none", "codex"]
-NormalizedThreadStorageBackend = Literal["meshdocument", "dataset", "none", "codex"]
+ThreadStorageBackend = Literal["meshagent", "dataset", "none", "codex"]
+NormalizedThreadStorageBackend = Literal["dataset", "none", "codex"]
 ThreadStorageBackends = ThreadStorageBackend | str | list[str] | tuple[str, ...]
-DEFAULT_PROCESS_THREAD_STORAGE_BACKENDS: tuple[str, str] = (
-    "dataset",
-    "meshdocument",
-)
+DEFAULT_PROCESS_THREAD_STORAGE_BACKENDS: tuple[str, ...] = ("dataset",)
 ContextManagementMode = Literal["auto", "standalone", "none"]
 ProcessToolSearchMode = Literal["room", "agent", "none"]
 
@@ -2282,7 +2274,7 @@ ThreadStorageOption = Annotated[
         "--thread-storage",
         help=(
             "Thread storage backend for process agents. Can be repeated; "
-            "the first value is the default. Defaults to dataset then meshdocument."
+            "the first value is the default. Defaults to dataset."
         ),
     ),
 ]
@@ -2292,7 +2284,7 @@ ProcessRunThreadStorageOption = Annotated[
         "--thread-storage",
         help=(
             "Thread storage backend for process agents. Can be repeated; "
-            "the first value is the default. Defaults to dataset then meshdocument "
+            "the first value is the default. Defaults to dataset "
             "with a room, or none with --no-room."
         ),
     ),
@@ -2973,7 +2965,7 @@ def _process_run_room_requirements(
         requirements.append("chatbot runtime")
 
     normalized_thread_storage = _normalize_thread_storage_backend(thread_storage)
-    if normalized_thread_storage in ("dataset", "meshdocument"):
+    if normalized_thread_storage == "dataset":
         requirements.append(f"--thread-storage={thread_storage}")
 
     for channel in channels:
@@ -3110,8 +3102,6 @@ def _thread_dir_for_storage_backend(
     normalized = thread_dir.strip().rstrip("/")
     if normalized.startswith("dataset://"):
         raw_path = normalized[len("dataset://") :].strip("/")
-    elif normalized.startswith("meshdocument://"):
-        raw_path = normalized[len("meshdocument://") :].strip("/")
     elif normalized.startswith("tmp://"):
         raw_path = normalized[len("tmp://") :].strip("/")
     else:
@@ -3153,16 +3143,6 @@ def _process_thread_path_for_dir(
         return _dataset_thread_url_for_path(path=f"{thread_dir}/main")
     if thread_storage == "none" and not thread_dir.startswith("tmp://"):
         return _thread_url_for_path(scheme="tmp", path=f"{thread_dir}/main")
-    if thread_storage == "meshdocument" and (
-        use_scheme or thread_dir.startswith("meshdocument://")
-    ):
-        normalized_thread_dir = thread_dir
-        if normalized_thread_dir.startswith("meshdocument://"):
-            normalized_thread_dir = normalized_thread_dir[len("meshdocument://") :]
-        return _thread_url_for_path(
-            scheme="meshdocument",
-            path=f"{normalized_thread_dir}/main.thread",
-        )
     return _chat_thread_path_for_dir(thread_dir)
 
 
@@ -3181,16 +3161,6 @@ def _new_process_thread_path_for_dir(
         return f"{thread_dir}/{posixpath.basename(path)}"
     if thread_dir.startswith("tmp://"):
         return f"{thread_dir}/{posixpath.basename(path)}"
-    if thread_storage == "meshdocument" and (
-        use_scheme or thread_dir.startswith("meshdocument://")
-    ):
-        normalized_path = path
-        if normalized_path.startswith("meshdocument://"):
-            normalized_path = normalized_path[len("meshdocument://") :]
-        return _thread_url_for_path(
-            scheme="meshdocument",
-            path=f"{normalized_path}.thread",
-        )
     return f"/{path}.thread"
 
 
@@ -3417,9 +3387,7 @@ def _normalize_thread_storage_backend(
     thread_storage: str,
 ) -> NormalizedThreadStorageBackend:
     normalized = thread_storage.strip().casefold()
-    if normalized == "meshagent":
-        return "meshdocument"
-    if normalized in {"meshdocument", "dataset", "none", "codex"}:
+    if normalized in {"dataset", "none", "codex"}:
         return cast(NormalizedThreadStorageBackend, normalized)
     raise ValueError(f"unsupported thread storage backend {thread_storage!r}")
 
@@ -3481,12 +3449,6 @@ def _thread_storage_backend_for_thread(
         return "none"
     if thread_id.startswith("codex://"):
         return "codex"
-    if thread_id.startswith("meshdocument://"):
-        return "meshdocument"
-    if "meshdocument" in thread_storage_backends and (
-        thread_id.startswith("/") or thread_id.endswith(".thread")
-    ):
-        return "meshdocument"
     return default_thread_storage
 
 
@@ -5349,7 +5311,7 @@ def build_process_agent(
     thread_storage: ThreadStorageBackends = DEFAULT_PROCESS_THREAD_STORAGE_BACKENDS,
     context_management: ContextManagementMode = "auto",
     compaction_threshold: Optional[int] = None,
-    max_output_tokens: Optional[int] = 32000,
+    max_output_tokens: Optional[int] = None,
     reasoning_effort: Optional[str] = None,
     tool_search: ProcessToolSearchMode = "none",
     skill_dirs: Optional[list[str]] = None,
@@ -5384,7 +5346,6 @@ def build_process_agent(
     from meshagent.agents import (
         AgentMessageThreadStatusPublisher,
         DatasetThreadStorage,
-        MeshDocumentThreadStorage,
         MessagingChatChannel,
         MailChannel,
         QueueChannel,
@@ -5409,7 +5370,7 @@ def build_process_agent(
     )
     from meshagent.codex.supervisor import CodexBackend
     from meshagent.tools import RoomToolContext, Toolkit
-    from meshagent.tools.hosting import _RemoteToolkitWrapper, _start_hosted_toolkit
+    from meshagent.tools.hosting import _RemoteToolkitWrapper, start_hosted_toolkit
 
     requirements = []
     toolkits = []
@@ -5426,11 +5387,9 @@ def build_process_agent(
         if thread_storage == "dataset"
         else "tmp"
         if thread_storage == "none"
-        else "meshdocument"
-        if thread_storage == "meshdocument" and len(thread_storage_backends) > 1
         else None
     )
-    thread_path_extension = "" if thread_storage in ("dataset", "none") else ".thread"
+    thread_path_extension = ""
     channel_thread_url_kwargs = (
         {
             "thread_url_scheme": thread_url_scheme,
@@ -5480,9 +5439,8 @@ def build_process_agent(
                 persist_deltas=verbose_dataset,
                 persist_audio_input=save_audio_input,
             )
-        return MeshDocumentThreadStorage(
-            room=room,
-            path=thread_id,
+        raise ValueError(
+            f"unsupported thread storage backend {resolved_thread_storage!r}"
         )
 
     for t in toolkit:
@@ -5524,9 +5482,6 @@ def build_process_agent(
     unfiltered_codex_backend = "codex" in selected_backends
     if thread_storage == "codex" and has_llm_backend:
         print("[red]--thread-storage=codex only supports Codex backends[/red]")
-        raise typer.Exit(1)
-    if thread_storage == "meshdocument" and has_codex_backend:
-        print("[red]--thread-storage=meshagent does not support Codex backends[/red]")
         raise typer.Exit(1)
     realtime_input_format = _audio_format_option(
         audio_format=input_audio_format,
@@ -5955,15 +5910,7 @@ def build_process_agent(
                         return _dataset_thread_url_for_path(path=generated_path)
                     if resolved_thread_storage == "none":
                         return _thread_url_for_path(scheme="tmp", path=generated_path)
-                    if (
-                        resolved_thread_storage == "meshdocument"
-                        and len(thread_storage_backends) > 1
-                    ):
-                        return _thread_url_for_path(
-                            scheme="meshdocument",
-                            path=f"{generated_path}.thread",
-                        )
-                    return f"/{generated_path}.thread"
+                    return _dataset_thread_url_for_path(path=generated_path)
 
                 async def create_realtime_connection(
                     thread_id: str,
@@ -6136,7 +6083,7 @@ def build_process_agent(
                 for toolkit in self._exposed_toolkits:
                     if room is None:
                         continue
-                    hosted_toolkit = await _start_hosted_toolkit(
+                    hosted_toolkit = await start_hosted_toolkit(
                         room=room,
                         toolkit=toolkit,
                     )
@@ -6963,8 +6910,6 @@ async def join(
     ] = [],
     shell_room_mount: ShellRoomMountOption = [],
     shell_tool_room_path: ShellRoomMountLegacyOption = [],
-    shell_project_mount: ShellProjectMountOption = [],
-    shell_tool_project_path: ShellProjectMountLegacyOption = [],
     shell_empty_dir_mount: ShellEmptyDirMountOption = [],
     shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
     shell_tool_config_mount: ShellConfigMountOption = [],
@@ -7109,7 +7054,7 @@ async def join(
     thread_storage: ThreadStorageOption = None,
     context_management: ContextManagementOption = "auto",
     compaction_threshold: CompactionThresholdOption = None,
-    max_output_tokens: MaxOutputTokensOption = 32000,
+    max_output_tokens: MaxOutputTokensOption = None,
     reasoning_effort: ReasoningEffortOption = None,
     channel: ChannelOption = [],
     websocket_auth: Annotated[
@@ -7242,10 +7187,6 @@ async def join(
             room_paths=merge_option_lists(
                 shell_room_mount,
                 shell_tool_room_path,
-            ),
-            project_paths=merge_option_lists(
-                shell_project_mount,
-                shell_tool_project_path,
             ),
             empty_dir_paths=merge_option_lists(
                 shell_empty_dir_mount,
@@ -7466,8 +7407,6 @@ async def service(
     ] = [],
     shell_room_mount: ShellRoomMountOption = [],
     shell_tool_room_path: ShellRoomMountLegacyOption = [],
-    shell_project_mount: ShellProjectMountOption = [],
-    shell_tool_project_path: ShellProjectMountLegacyOption = [],
     shell_empty_dir_mount: ShellEmptyDirMountOption = [],
     shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
     shell_tool_config_mount: ShellConfigMountOption = [],
@@ -7607,7 +7546,7 @@ async def service(
     thread_storage: ThreadStorageOption = None,
     context_management: ContextManagementOption = "auto",
     compaction_threshold: CompactionThresholdOption = None,
-    max_output_tokens: MaxOutputTokensOption = 32000,
+    max_output_tokens: MaxOutputTokensOption = None,
     reasoning_effort: ReasoningEffortOption = None,
     channel: ChannelOption = [],
     skill_dir: Annotated[
@@ -7692,10 +7631,6 @@ async def service(
         room_paths=merge_option_lists(
             shell_room_mount,
             shell_tool_room_path,
-        ),
-        project_paths=merge_option_lists(
-            shell_project_mount,
-            shell_tool_project_path,
         ),
         empty_dir_paths=merge_option_lists(
             shell_empty_dir_mount,
@@ -7913,8 +7848,6 @@ async def spec(
     ] = [],
     shell_room_mount: ShellRoomMountOption = [],
     shell_tool_room_path: ShellRoomMountLegacyOption = [],
-    shell_project_mount: ShellProjectMountOption = [],
-    shell_tool_project_path: ShellProjectMountLegacyOption = [],
     shell_empty_dir_mount: ShellEmptyDirMountOption = [],
     shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
     shell_tool_config_mount: ShellConfigMountOption = [],
@@ -8038,7 +7971,7 @@ async def spec(
     thread_storage: ThreadStorageOption = None,
     context_management: ContextManagementOption = "auto",
     compaction_threshold: CompactionThresholdOption = None,
-    max_output_tokens: MaxOutputTokensOption = 32000,
+    max_output_tokens: MaxOutputTokensOption = None,
     reasoning_effort: ReasoningEffortOption = None,
     channel: ChannelOption = [],
     skill_dir: Annotated[
@@ -8110,10 +8043,6 @@ async def spec(
         room_paths=merge_option_lists(
             shell_room_mount,
             shell_tool_room_path,
-        ),
-        project_paths=merge_option_lists(
-            shell_project_mount,
-            shell_tool_project_path,
         ),
         empty_dir_paths=merge_option_lists(
             shell_empty_dir_mount,
@@ -8345,8 +8274,6 @@ async def deploy(
     ] = [],
     shell_room_mount: ShellRoomMountOption = [],
     shell_tool_room_path: ShellRoomMountLegacyOption = [],
-    shell_project_mount: ShellProjectMountOption = [],
-    shell_tool_project_path: ShellProjectMountLegacyOption = [],
     shell_empty_dir_mount: ShellEmptyDirMountOption = [],
     shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
     shell_tool_config_mount: ShellConfigMountOption = [],
@@ -8470,7 +8397,7 @@ async def deploy(
     thread_storage: ThreadStorageOption = None,
     context_management: ContextManagementOption = "auto",
     compaction_threshold: CompactionThresholdOption = None,
-    max_output_tokens: MaxOutputTokensOption = 32000,
+    max_output_tokens: MaxOutputTokensOption = None,
     reasoning_effort: ReasoningEffortOption = None,
     channel: ChannelOption = [],
     skill_dir: Annotated[
@@ -8549,10 +8476,6 @@ async def deploy(
         room_paths=merge_option_lists(
             shell_room_mount,
             shell_tool_room_path,
-        ),
-        project_paths=merge_option_lists(
-            shell_project_mount,
-            shell_tool_project_path,
         ),
         empty_dir_paths=merge_option_lists(
             shell_empty_dir_mount,
@@ -10848,8 +10771,6 @@ async def run(
     ] = [],
     shell_room_mount: ShellRoomMountOption = [],
     shell_tool_room_path: ShellRoomMountLegacyOption = [],
-    shell_project_mount: ShellProjectMountOption = [],
-    shell_tool_project_path: ShellProjectMountLegacyOption = [],
     shell_empty_dir_mount: ShellEmptyDirMountOption = [],
     shell_tool_empty_dir: ShellEmptyDirMountLegacyOption = [],
     shell_tool_config_mount: ShellConfigMountOption = [],
@@ -10978,7 +10899,7 @@ async def run(
     thread_storage: ProcessRunThreadStorageOption = None,
     context_management: ContextManagementOption = "auto",
     compaction_threshold: CompactionThresholdOption = None,
-    max_output_tokens: MaxOutputTokensOption = 32000,
+    max_output_tokens: MaxOutputTokensOption = None,
     reasoning_effort: ReasoningEffortOption = None,
     channel: ChannelOption = [],
     skill_dir: Annotated[
@@ -11221,10 +11142,6 @@ async def run(
             room_paths=merge_option_lists(
                 shell_room_mount,
                 shell_tool_room_path,
-            ),
-            project_paths=merge_option_lists(
-                shell_project_mount,
-                shell_tool_project_path,
             ),
             empty_dir_paths=merge_option_lists(
                 shell_empty_dir_mount,
