@@ -4166,7 +4166,7 @@ async def build_image(
         typer.Option(
             "--optimize/--no-optimize",
             help=(
-                "Whether to optimize room image outputs to eStargz before publishing. "
+                "Whether to optimize room image outputs with Nydus before publishing. "
                 "Enabled by default."
             ),
         ),
@@ -4335,7 +4335,7 @@ async def deploy_image(
         typer.Option(
             "--optimize/--no-optimize",
             help=(
-                "Whether to optimize room image outputs to eStargz during the build "
+                "Whether to optimize room image outputs with Nydus during the build "
                 "stage. Enabled by default. Only used with PATH."
             ),
         ),
@@ -4911,20 +4911,6 @@ async def deploy_image(
                         rich_message="[green]Image build complete[/]",
                         plain_message="Image build complete.",
                     )
-                    await _emit_deploy_status(
-                        status_handler,
-                        rich_message="[cyan]Cleaning up room build cache[/]",
-                        plain_message="Cleaning up room build cache...",
-                    )
-                    await _delete_built_image_from_room_cache(
-                        client=client,
-                        parsed_tag=parsed_tag,
-                    )
-                    await _emit_deploy_status(
-                        status_handler,
-                        rich_message="[green]Room build cache cleaned[/]",
-                        plain_message="Room build cache cleaned.",
-                    )
                 await _emit_deploy_status(
                     status_handler,
                     rich_message="[cyan]Applying service deploy[/]",
@@ -4949,6 +4935,25 @@ async def deploy_image(
                     )
                 except TimeoutError as exc:
                     raise RuntimeError("timed out applying service deploy") from exc
+
+                async def _cleanup_room_build_cache() -> None:
+                    if pack is None:
+                        return
+                    await _emit_deploy_status(
+                        status_handler,
+                        rich_message="[cyan]Cleaning up room build cache[/]",
+                        plain_message="Cleaning up room build cache...",
+                    )
+                    await _delete_built_image_from_room_cache(
+                        client=client,
+                        parsed_tag=parsed_tag,
+                    )
+                    await _emit_deploy_status(
+                        status_handler,
+                        rich_message="[green]Room build cache cleaned[/]",
+                        plain_message="Room build cache cleaned.",
+                    )
+
                 if deploy_template_values is not None:
                     _save_deploy_template_values(
                         values_file=deploy_values_file,
@@ -4979,6 +4984,7 @@ async def deploy_image(
                     )
 
                 if not wait:
+                    await _cleanup_room_build_cache()
                     await _cleanup_replaced_service_images()
                     return deploy_result
                 previous_container_id = (
@@ -5013,6 +5019,7 @@ async def deploy_image(
                         "timed out waiting for deployed service to become live: "
                         f"{deploy_plan.spec.metadata.name} ({deploy_result.service_id})"
                     ) from exc
+                await _cleanup_room_build_cache()
                 await _cleanup_replaced_service_images()
                 return deploy_result
 

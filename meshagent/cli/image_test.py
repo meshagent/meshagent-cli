@@ -3478,7 +3478,7 @@ async def test_deploy_image_pack_builds_before_deploying(
         "pages_domain": "pages.meshagent.example",
     }
     assert captured["deleted_image"] == "registry.meshagent.com/repo/web:1"
-    assert captured["events"] == ["domain_tui", "build", "delete", "create"]
+    assert captured["events"] == ["domain_tui", "build", "create", "delete"]
     created_service = captured["created_service"]
     assert isinstance(created_service, tuple)
     service_spec = created_service[2]
@@ -3746,7 +3746,7 @@ async def test_deploy_image_pack_allows_matching_volume_mount(
     assert service_spec.container.storage.empty_dirs is not None
     assert service_spec.container.storage.empty_dirs[0].path == "/data"
     assert captured["deleted_image"] == "registry.meshagent.com/repo/web:1"
-    assert captured["events"] == ["build", "delete", "create"]
+    assert captured["events"] == ["build", "create", "delete"]
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
 
@@ -3861,7 +3861,7 @@ CMD ["/app/dist/index.js"]
     assert service_spec.ports is not None
     assert service_spec.ports[0].num == 8111
     assert captured["deleted_image"] == "registry.meshagent.com/repo/web:1"
-    assert captured["events"] == ["build", "delete", "create"]
+    assert captured["events"] == ["build", "create", "delete"]
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
 
@@ -4432,7 +4432,7 @@ async def test_deploy_image_pack_domain_uses_inferred_exposed_port(
         "public": True,
         "annotations": {image.ANNOTATION_SERVICE_ID: "repo-web"},
     }
-    assert captured["events"] == ["route", "mailbox", "build", "delete", "create"]
+    assert captured["events"] == ["route", "mailbox", "build", "create", "delete"]
     assert "restarted_service_id" not in captured
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
