@@ -2331,10 +2331,23 @@ def _select_published_build_image(
 ) -> PublishedBuildImage:
     for published_image in published_images:
         if published_image.tag == parsed_tag.value:
-            return published_image
+            return _published_image_with_resolved_digest(published_image)
     if len(published_images) > 0:
-        return published_images[0]
+        return _published_image_with_resolved_digest(published_images[0])
     raise RuntimeError("build completed without a published image digest")
+
+
+def _published_image_with_resolved_digest(
+    published_image: PublishedBuildImage,
+) -> PublishedBuildImage:
+    if "@" in published_image.resolved_ref:
+        return published_image
+    digest = published_image.digest.strip()
+    if ":" not in digest:
+        return published_image
+    return published_image.model_copy(
+        update={"resolved_ref": f"{published_image.resolved_ref}@{digest}"}
+    )
 
 
 async def _resolve_completed_build_image(

@@ -71,11 +71,11 @@ class _FakeParticipant:
 def _fake_published_build_image(
     *,
     tag: str = "registry.meshagent.com/repo/web:1",
-    resolved_ref: str = "registry.meshagent.com/repo/web@sha256:digest",
+    resolved_ref: str = "registry.meshagent.com/repo/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 ) -> PublishedBuildImage:
     return PublishedBuildImage(
         tag=tag,
-        digest="sha256:digest",
+        digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         resolved_ref=resolved_ref,
         optimized=True,
     )
@@ -2034,7 +2034,7 @@ async def test_run_image_build_stage_requests_repository_token_and_prepends_regi
                         _fake_published_build_image(
                             tag="registry.meshagent.com/powerboards/test:latest",
                             resolved_ref=(
-                                "registry.meshagent.com/powerboards/test@sha256:digest"
+                                "registry.meshagent.com/powerboards/test:latest"
                             ),
                         )
                     ],
@@ -2126,7 +2126,7 @@ async def test_run_image_build_stage_requests_repository_token_and_prepends_regi
         _fake_stream_build_job_logs_and_wait_for_exit,
     )
 
-    await image._run_image_build_stage(
+    published_image = await image._run_image_build_stage(
         resolved_project_id="project-1",
         resolved_room="room-1",
         parsed_tag=image._parse_build_tag(
@@ -2165,6 +2165,10 @@ async def test_run_image_build_stage_requests_repository_token_and_prepends_regi
         password="external-pass",
     )
     assert captured["build_id"] == "build-1"
+    assert (
+        published_image.resolved_ref
+        == "registry.meshagent.com/powerboards/test:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    )
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
 
@@ -3484,7 +3488,8 @@ async def test_deploy_image_pack_builds_before_deploying(
     service_spec = created_service[2]
     assert service_spec.container is not None
     assert (
-        service_spec.container.image == "registry.meshagent.com/repo/web@sha256:digest"
+        service_spec.container.image
+        == "registry.meshagent.com/repo/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     )
     assert service_spec.metadata.annotations is not None
     assert image.ANNOTATION_REQUEST_VALIDATION_METHOD not in (
@@ -3679,7 +3684,7 @@ async def test_deploy_image_pack_allows_matching_volume_mount(
         captured["build_kwargs"] = kwargs
         captured["events"].append("build")
         return _fake_published_build_image(
-            resolved_ref="registry.meshagent.com/repo/web:1@sha256:digest"
+            resolved_ref="registry.meshagent.com/repo/web:1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         )
 
     class _FakeRoomClient:
@@ -3850,7 +3855,7 @@ CMD ["/app/dist/index.js"]
     assert service_spec.container.storage.images is not None
     assert service_spec.container.storage.images == [
         ImageStorageMountSpec(
-            image="registry.meshagent.com/repo/web@sha256:digest",
+            image="registry.meshagent.com/repo/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             path=IMAGE_RUNTIME_MOUNT_PATH,
             subpath=IMAGE_RUNTIME_MOUNT_SUBPATH,
             read_only=True,
