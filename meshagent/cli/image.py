@@ -2346,7 +2346,11 @@ def _published_image_with_resolved_digest(
     if ":" not in digest:
         return published_image
     return published_image.model_copy(
-        update={"resolved_ref": f"{published_image.resolved_ref}@{digest}"}
+        update={
+            "resolved_ref": (
+                f"{_image_ref_without_tag(published_image.resolved_ref)}@{digest}"
+            )
+        }
     )
 
 
@@ -2420,11 +2424,16 @@ def _canonical_image_mount_ref(image_ref: str) -> str:
     if ":" not in digest:
         return ref
 
+    return f"{_image_ref_without_tag(name)}@{digest}"
+
+
+def _image_ref_without_tag(image_ref: str) -> str:
+    name = image_ref.strip()
     last_colon = name.rfind(":")
     last_slash = name.rfind("/")
     if last_colon > last_slash:
-        name = name[:last_colon]
-    return f"{name}@{digest}"
+        return name[:last_colon]
+    return name
 
 
 def _format_published_image_summary(published_image: PublishedBuildImage) -> str:

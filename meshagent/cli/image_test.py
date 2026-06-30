@@ -2167,7 +2167,7 @@ async def test_run_image_build_stage_requests_repository_token_and_prepends_regi
     assert captured["build_id"] == "build-1"
     assert (
         published_image.resolved_ref
-        == "registry.meshagent.com/powerboards/test:latest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        == "registry.meshagent.com/powerboards/test@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     )
     assert captured["room_client_closed"] is True
     assert captured["account_client_closed"] is True
@@ -3684,7 +3684,7 @@ async def test_deploy_image_pack_allows_matching_volume_mount(
         captured["build_kwargs"] = kwargs
         captured["events"].append("build")
         return _fake_published_build_image(
-            resolved_ref="registry.meshagent.com/repo/web:1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            resolved_ref="registry.meshagent.com/repo/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         )
 
     class _FakeRoomClient:
