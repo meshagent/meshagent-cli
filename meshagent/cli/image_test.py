@@ -3678,7 +3678,9 @@ async def test_deploy_image_pack_allows_matching_volume_mount(
     async def _fake_run_image_build_stage(**kwargs) -> PublishedBuildImage:
         captured["build_kwargs"] = kwargs
         captured["events"].append("build")
-        return _fake_published_build_image()
+        return _fake_published_build_image(
+            resolved_ref="registry.meshagent.com/repo/web:1@sha256:digest"
+        )
 
     class _FakeRoomClient:
         def __init__(self) -> None:

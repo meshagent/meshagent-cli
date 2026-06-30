@@ -2373,7 +2373,11 @@ def _deploy_plan_with_published_image(
             if image_mount.image == parsed_tag.value:
                 image_mounts.append(
                     image_mount.model_copy(
-                        update={"image": published_image.resolved_ref}
+                        update={
+                            "image": _canonical_image_mount_ref(
+                                published_image.resolved_ref
+                            )
+                        }
                     )
                 )
                 storage_updated = True
@@ -2392,6 +2396,22 @@ def _deploy_plan_with_published_image(
         spec=deploy_plan.spec.model_copy(update={"container": updated_container}),
         service_id_annotation=deploy_plan.service_id_annotation,
     )
+
+
+def _canonical_image_mount_ref(image_ref: str) -> str:
+    ref = image_ref.strip()
+    if "@" not in ref:
+        return ref
+
+    name, digest = ref.rsplit("@", 1)
+    if ":" not in digest:
+        return ref
+
+    last_colon = name.rfind(":")
+    last_slash = name.rfind("/")
+    if last_colon > last_slash:
+        name = name[:last_colon]
+    return f"{name}@{digest}"
 
 
 def _format_published_image_summary(published_image: PublishedBuildImage) -> str:

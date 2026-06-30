@@ -249,7 +249,12 @@ async def test_write_sql_query_output_excel_writes_xlsx(tmp_path) -> None:
     assert "<t>url</t>" in sheet_xml
     assert "<t>images</t>" in sheet_xml
     assert "<t>https://example.com</t>" in sheet_xml
-    assert '<t>[{"alt":"Example","src":"image.jpg"}]</t>' in sheet_xml
+    image_cell = next(
+        cell.split("</t>", 1)[0]
+        for cell in sheet_xml.split("<t>")
+        if "image.jpg" in cell
+    )
+    assert json.loads(image_cell) == [{"src": "image.jpg", "alt": "Example"}]
     assert f"<t>{'x' * 32767}</t>" in sheet_xml
     assert f"<t>{'x' * 32768}</t>" not in sheet_xml
 
