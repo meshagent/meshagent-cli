@@ -350,10 +350,8 @@ def default_pack_architecture() -> str:
 
 
 def _meshagent_default_image_tag(*, image: str) -> str:
-    repository = image.removeprefix("meshagent/").partition(":")[0]
-    if repository.startswith("shell-"):
-        return f"{__version__}-esgz"
-    return __version__
+    del image
+    return f"{__version__}-nydus"
 
 
 def replace_meshagent_image_vars(image: str) -> str:
