@@ -3098,6 +3098,38 @@ def _deploy_plan_with_run_as(
     )
 
 
+def _deploy_plan_with_secret_environment_run_as_scopes(
+    *, deploy_plan: _ServiceDeployPlan
+) -> _ServiceDeployPlan:
+    container = deploy_plan.spec.container
+    if container is None or container.run_as is None:
+        return deploy_plan
+    if not any(env_var.secret is not None for env_var in container.environment or []):
+        return deploy_plan
+
+    scopes = [
+        scope.strip()
+        for scope in container.run_as.scopes
+        if scope is not None and scope.strip() != ""
+    ]
+    for required_scope in ("secrets:proxy", "secrets:read"):
+        if required_scope not in scopes:
+            scopes.append(required_scope)
+
+    return _ServiceDeployPlan(
+        spec=deploy_plan.spec.model_copy(
+            update={
+                "container": container.model_copy(
+                    update={
+                        "run_as": container.run_as.model_copy(update={"scopes": scopes})
+                    }
+                )
+            }
+        ),
+        service_id_annotation=deploy_plan.service_id_annotation,
+    )
+
+
 def _find_service_port(
     *,
     service_spec: ServiceSpec,
@@ -4762,6 +4794,9 @@ async def deploy_image(
                     deploy_plan=_build_deploy_template_plan(service_spec=service_spec),
                     run_as=run_as,
                 )
+                deploy_plan = _deploy_plan_with_secret_environment_run_as_scopes(
+                    deploy_plan=deploy_plan
+                )
                 environment = (
                     deploy_plan.spec.container.environment
                     if deploy_plan.spec.container is not None
@@ -4826,6 +4861,14 @@ async def deploy_image(
                     default_ports=packed_default_ports,
                     runtime_container=runtime_container,
                     template=normalized_template,
+                )
+                deploy_plan = _deploy_plan_with_secret_environment_run_as_scopes(
+                    deploy_plan=deploy_plan
+                )
+                environment = (
+                    deploy_plan.spec.container.environment
+                    if deploy_plan.spec.container is not None
+                    else None
                 )
                 await _emit_deploy_phase(
                     rich_message="[cyan]Validating environment secrets[/]",

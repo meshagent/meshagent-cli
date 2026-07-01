@@ -2894,7 +2894,7 @@ async def test_deploy_image_creates_room_service_with_mounts_env_secret_and_toke
     assert service_spec.container.image == "repo/web:1"
     assert service_spec.container.run_as is not None
     assert service_spec.container.run_as.email == "service-account@example.com"
-    assert service_spec.container.run_as.scopes == ["secrets:proxy"]
+    assert service_spec.container.run_as.scopes == ["secrets:proxy", "secrets:read"]
     assert service_spec.container.storage is not None
     assert service_spec.container.storage.room is not None
     assert service_spec.container.storage.room[0].subpath == "/assets"
