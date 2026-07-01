@@ -1,8 +1,51 @@
 import pytest
+from types import SimpleNamespace
 
 from meshagent.api import ApiScope, ParticipantToken
 from meshagent.api.keys import ApiKey, encode_api_key
 from meshagent.cli import helper
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "relation"),
+    [
+        (
+            lambda client, project_id: client.can_create_rooms(project_id),
+            "room_creator",
+        ),
+        (
+            lambda client, project_id: client.can_use_llm_proxy(project_id),
+            "llm_proxy_user",
+        ),
+    ],
+)
+async def test_custom_client_project_permission_helpers_check_current_user_project_role(
+    method,
+    relation: str,
+) -> None:
+    calls: list[dict[str, object]] = []
+    client = helper.CustomMeshagentClient(base_url="http://example.test", token="token")
+
+    async def fake_test_access(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(allowed=True)
+
+    client.test_access = fake_test_access
+
+    try:
+        assert await method(client, "project-1") is True
+    finally:
+        await client.close()
+
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["project_id"] == "project-1"
+    assert call["relation"] == relation
+    assert call["subject"].type == "user"
+    assert call["subject"].id == "me"
+    assert call["resource"].type == "project"
+    assert call["resource"].id == "project-1"
 
 
 @pytest.mark.asyncio

@@ -164,7 +164,7 @@ async def test_room_connect_missing_room_prompts_for_existing_room(
     assert account_client.list_rooms_calls == [
         {
             "project_id": "project-1",
-            "page_size": 500,
+            "page_size": 100,
             "continuation_token": None,
             "filter": None,
             "view": "my",

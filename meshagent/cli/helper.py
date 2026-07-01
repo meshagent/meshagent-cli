@@ -17,7 +17,12 @@ from meshagent.api.specs.service import (
     ServiceSpec,
 )
 from meshagent.agents.context import AgentSessionContext
-from meshagent.api.client import Meshagent, RoomConnectionInfo
+from meshagent.api.client import (
+    AccessResource,
+    AccessSubject,
+    Meshagent,
+    RoomConnectionInfo,
+)
 from meshagent.cli import async_typer, auth_async
 from meshagent.cli.local_settings import (
     get_active_api_key as get_active_api_key_from_settings,
@@ -260,6 +265,24 @@ app = async_typer.AsyncTyper()
 
 
 class CustomMeshagentClient(Meshagent):
+    async def can_create_rooms(self, project_id: str) -> bool:
+        result = await self.test_access(
+            project_id=project_id,
+            subject=AccessSubject(type="user", id="me"),
+            resource=AccessResource(type="project", id=project_id),
+            relation="room_creator",
+        )
+        return result.allowed
+
+    async def can_use_llm_proxy(self, project_id: str) -> bool:
+        result = await self.test_access(
+            project_id=project_id,
+            subject=AccessSubject(type="user", id="me"),
+            resource=AccessResource(type="project", id=project_id),
+            relation="llm_proxy_user",
+        )
+        return result.allowed
+
     async def connect_room(self, *, project_id: str, room: str) -> RoomConnectionInfo:
         from urllib.parse import quote
 

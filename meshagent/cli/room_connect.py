@@ -208,7 +208,7 @@ async def _list_connect_rooms(
 ) -> list[Room]:
     return await account_client.list_rooms(
         project_id=project_id,
-        page_size=500,
+        page_size=100,
         view="my",
     )
 
