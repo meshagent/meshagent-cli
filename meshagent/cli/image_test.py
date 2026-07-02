@@ -758,7 +758,7 @@ def test_replace_meshagent_image_vars_defaults_to_pkg_dev(monkeypatch) -> None:
 
     assert image.replace_meshagent_image_vars("meshagent/python-sdk-slim:default") == (
         "us-central1-docker.pkg.dev/meshagent-public/images/"
-        f"python-sdk-slim:{image.__version__}-nydus"
+        f"python-sdk-slim:{image.__version__}"
     )
 
 
@@ -768,7 +768,7 @@ def test_replace_meshagent_image_vars_allows_prefix_override(
     monkeypatch.setenv("MESHAGENT_IMAGE_PREFIX", "registry.example.com/custom/")
 
     assert image.replace_meshagent_image_vars("meshagent/python-sdk-slim:default") == (
-        f"registry.example.com/custom/python-sdk-slim:{image.__version__}-nydus"
+        f"registry.example.com/custom/python-sdk-slim:{image.__version__}"
     )
 
 
@@ -781,7 +781,7 @@ def test_replace_meshagent_image_vars_uses_dev_prefix(monkeypatch) -> None:
 
     assert image.replace_meshagent_image_vars("meshagent/node-sdk:default") == (
         "us-central1-docker.pkg.dev/meshagent-life/meshagent-public/"
-        f"node-sdk:{image.__version__}-nydus"
+        f"node-sdk:{image.__version__}"
     )
     assert image.replace_meshagent_image_vars("meshagent/buildkit:default") == (
         "us-central1-docker.pkg.dev/meshagent-life/meshagent-public/"
@@ -789,7 +789,7 @@ def test_replace_meshagent_image_vars_uses_dev_prefix(monkeypatch) -> None:
     )
 
 
-def test_replace_meshagent_image_vars_uses_nydus_for_shell_images(
+def test_replace_meshagent_image_vars_uses_nydus_only_for_cli_default(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
@@ -798,9 +798,13 @@ def test_replace_meshagent_image_vars_uses_nydus_for_shell_images(
         lambda: image._DEFAULT_MESHAGENT_IMAGE_PREFIX,
     )
 
+    assert image.replace_meshagent_image_vars("meshagent/cli:default") == (
+        "us-central1-docker.pkg.dev/meshagent-public/images/"
+        f"cli:{image.__version__}-nydus"
+    )
     assert image.replace_meshagent_image_vars("meshagent/shell-codex:default") == (
         "us-central1-docker.pkg.dev/meshagent-public/images/"
-        f"shell-codex:{image.__version__}-nydus"
+        f"shell-codex:{image.__version__}"
     )
 
 
