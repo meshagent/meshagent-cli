@@ -783,6 +783,10 @@ def test_replace_meshagent_image_vars_uses_dev_prefix(monkeypatch) -> None:
         "us-central1-docker.pkg.dev/meshagent-life/meshagent-public/"
         f"node-sdk:{image.__version__}-nydus"
     )
+    assert image.replace_meshagent_image_vars("meshagent/buildkit:default") == (
+        "us-central1-docker.pkg.dev/meshagent-life/meshagent-public/"
+        f"buildkit:{image.__version__}"
+    )
 
 
 def test_replace_meshagent_image_vars_uses_nydus_for_shell_images(

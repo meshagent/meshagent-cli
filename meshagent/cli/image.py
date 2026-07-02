@@ -350,7 +350,8 @@ def default_pack_architecture() -> str:
 
 
 def _meshagent_default_image_tag(*, image: str) -> str:
-    del image
+    if image == "meshagent/buildkit:default":
+        return __version__
     return f"{__version__}-nydus"
 
 
