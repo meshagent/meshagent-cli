@@ -787,9 +787,13 @@ def test_replace_meshagent_image_vars_uses_dev_prefix(monkeypatch) -> None:
         "us-central1-docker.pkg.dev/meshagent-life/meshagent-public/"
         f"buildkit:{image.__version__}"
     )
+    assert image.replace_meshagent_image_vars("meshagent/playwright:default") == (
+        "us-central1-docker.pkg.dev/meshagent-life/meshagent-public/"
+        f"playwright:{image.__version__}"
+    )
 
 
-def test_replace_meshagent_image_vars_uses_nydus_for_non_buildkit_defaults(
+def test_replace_meshagent_image_vars_uses_nydus_for_non_exception_defaults(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
