@@ -525,6 +525,7 @@ async def test_images_inspect_renders_detail_tables(
 async def test_with_client_uses_configured_websocket_room_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("MESHAGENT_ROOM_URL", raising=False)
     connection = SimpleNamespace(
         jwt="jwt-token",
         room_url="wss://room-router.meshagent.dev/custom/room-endpoint",
@@ -560,11 +561,6 @@ async def test_with_client_uses_configured_websocket_room_url(
     monkeypatch.setattr(containers, "get_client", _fake_get_client)
     monkeypatch.setattr(containers, "resolve_project_id", _fake_resolve_project_id)
     monkeypatch.setattr(containers, "resolve_room", lambda room: f"{room}-resolved")
-    monkeypatch.setattr(
-        containers,
-        "websocket_room_url",
-        lambda room_name: f"wss://configured-router/{room_name}",
-    )
     monkeypatch.setattr(containers, "WebSocketClientProtocol", _FakeProtocol)
     monkeypatch.setattr(containers, "RoomClient", _FakeRoomClient)
 
@@ -579,7 +575,63 @@ async def test_with_client_uses_configured_websocket_room_url(
     ]
     assert protocol_calls == [
         {
-            "url": "wss://configured-router/room-1-resolved",
+            "url": "wss://room-router.meshagent.dev/custom/room-endpoint",
+            "token": "jwt-token",
+        }
+    ]
+    assert isinstance(client, _FakeRoomClient)
+    assert client.enter_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_with_client_allows_environment_room_url_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MESHAGENT_ROOM_URL", "wss://override.meshagent.test")
+    connection = SimpleNamespace(
+        jwt="jwt-token",
+        room_url="wss://room-router.meshagent.dev/custom/room-endpoint",
+    )
+    account_client = _FakeConnectAccountClient(connection=connection)
+    protocol_calls: list[dict[str, str]] = []
+
+    class _FakeProtocol:
+        def __init__(self, *, url: str, token: str) -> None:
+            protocol_calls.append({"url": url, "token": token})
+
+        def create_factory(self):
+            return lambda: self
+
+    class _FakeRoomClient:
+        def __init__(self, *, protocol_factory) -> None:
+            self.protocol = protocol_factory()
+            self.enter_calls = 0
+
+        async def __aenter__(self) -> "_FakeRoomClient":
+            self.enter_calls += 1
+            return self
+
+    async def _fake_get_client() -> _FakeConnectAccountClient:
+        return account_client
+
+    async def _fake_resolve_project_id(*, project_id):
+        return project_id
+
+    monkeypatch.setattr(containers, "get_client", _fake_get_client)
+    monkeypatch.setattr(containers, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(containers, "resolve_room", lambda room: room)
+    monkeypatch.setattr(containers, "WebSocketClientProtocol", _FakeProtocol)
+    monkeypatch.setattr(containers, "RoomClient", _FakeRoomClient)
+
+    returned_account_client, client = await containers._with_client(
+        project_id="project-1",
+        room="room-1",
+    )
+
+    assert returned_account_client is account_client
+    assert protocol_calls == [
+        {
+            "url": "wss://override.meshagent.test/rooms/room-1",
             "token": "jwt-token",
         }
     ]

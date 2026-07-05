@@ -9,7 +9,12 @@ from meshagent.cli.helper import (
 )
 from meshagent.api import RoomClient, WebSocketClientProtocol
 from meshagent.api.helpers import websocket_room_url
-from meshagent.api.room_server_client import ServicesClient, ListServicesResult
+from meshagent.api.room_server_client import (
+    ListServicesResult,
+    ServicePortRuntimeState,
+    ServiceRuntimeState,
+    ServicesClient,
+)
 from meshagent.api.specs.service import ServiceSpec
 from datetime import datetime
 from typing import Annotated, Any, Optional
@@ -23,6 +28,22 @@ def _format_unix_timestamp(value: float | None) -> str | None:
     if value is None:
         return None
     return datetime.fromtimestamp(value).isoformat()
+
+
+def _format_port_status(port: ServicePortRuntimeState) -> str:
+    if port.liveness_status == "not_configured":
+        status = "no liveness"
+    elif port.liveness_status == "ready":
+        status = "ready"
+    else:
+        status = "not ready"
+    return f"{port.num}: {status}"
+
+
+def _format_service_ports(state: ServiceRuntimeState | None) -> str | None:
+    if state is None:
+        return None
+    return ", ".join(_format_port_status(port) for port in state.status.ports)
 
 
 async def _connect_services_client(
@@ -86,6 +107,7 @@ async def room_services_list_command(
                     "name": svc.metadata.name,
                     "image": svc.container.image if svc.container is not None else None,
                     "state": state.state if state is not None else None,
+                    "ports": _format_service_ports(state),
                     "container_id": state.container_id if state is not None else None,
                     "restart_scheduled_at": _format_unix_timestamp(
                         state.restart_scheduled_at if state is not None else None
@@ -121,6 +143,7 @@ async def room_services_list_command(
                 "name",
                 "image",
                 "state",
+                "ports",
                 "container_id",
                 "started_at",
                 "restart_scheduled_at",

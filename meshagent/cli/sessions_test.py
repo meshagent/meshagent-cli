@@ -178,6 +178,55 @@ async def test_list_passes_limit_and_room_name(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_can_print_recent_sessions_as_json(monkeypatch) -> None:
+    fake_client = _FakeClient(
+        recent_sessions=[
+            RoomSession(
+                id="session-1",
+                room_id="room-1",
+                room_name="demo",
+                created_at=datetime(2026, 3, 12, tzinfo=timezone.utc),
+                is_active=True,
+            )
+        ]
+    )
+    printed: list[dict] = []
+
+    async def fake_get_client() -> _FakeClient:
+        return fake_client
+
+    async def fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-1"
+        return "resolved-project"
+
+    monkeypatch.setattr(sessions, "get_client", fake_get_client)
+    monkeypatch.setattr(sessions, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(sessions, "_print_json", printed.append)
+
+    await sessions.list(project_id="project-1", output="json")
+
+    assert fake_client.list_recent_sessions_calls == [("resolved-project", 25, None)]
+    assert fake_client.closed is True
+    assert printed == [
+        {
+            "sessions": [
+                {
+                    "id": "session-1",
+                    "room_id": "room-1",
+                    "room_name": "demo",
+                    "kind": "room",
+                    "agent_id": None,
+                    "agent_name": None,
+                    "created_at": "2026-03-12T00:00:00Z",
+                    "is_active": True,
+                    "participants": None,
+                }
+            ]
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_get_prints_session_events(monkeypatch) -> None:
     fake_client = _FakeClient(
         session_events=[
@@ -553,6 +602,40 @@ async def test_traces_prints_session_spans_as_tree(monkeypatch) -> None:
         "name       time                 duration",
         "root span  2026-03-12 00:00:00  1.0ms",
     ]
+
+
+@pytest.mark.asyncio
+async def test_traces_can_print_session_spans_as_json(monkeypatch) -> None:
+    span = {
+        "trace_id": "trace-1",
+        "span_id": "root",
+        "span_name": "root span",
+        "created_at": "2026-03-12T00:00:00",
+        "duration": 1_000_000,
+    }
+    fake_client = _FakeClient(session_spans=[span])
+    printed: list[dict] = []
+
+    async def fake_get_client() -> _FakeClient:
+        return fake_client
+
+    async def fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-1"
+        return "resolved-project"
+
+    monkeypatch.setattr(sessions, "get_client", fake_get_client)
+    monkeypatch.setattr(sessions, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(sessions, "_print_json", printed.append)
+
+    await sessions.traces(
+        project_id="project-1",
+        session_id="session-1",
+        output="json",
+    )
+
+    assert fake_client.list_session_spans_calls == [("resolved-project", "session-1")]
+    assert fake_client.closed is True
+    assert printed == [{"spans": [span]}]
 
 
 @pytest.mark.asyncio

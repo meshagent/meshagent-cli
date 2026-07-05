@@ -415,6 +415,7 @@ async def list(
         Optional[str],
         typer.Option("--room", help="Only include sessions for the given room name"),
     ] = None,
+    output: OutputFormatOption = "table",
 ):
     client = await get_client()
     try:
@@ -444,7 +445,11 @@ async def list(
         if not sessions and resolved_room_name is not None:
             print(f"No recent sessions found for room {resolved_room_name}")
             return
-        print_json_table([session.model_dump(mode="json") for session in sessions])
+        session_rows = [session.model_dump(mode="json") for session in sessions]
+        if output == "json":
+            _print_json({"sessions": session_rows})
+            return
+        print_json_table(session_rows)
     finally:
         await client.close()
 
@@ -659,6 +664,7 @@ async def traces(
         bool,
         typer.Option("--attrs", help="Include span attributes"),
     ] = False,
+    output: OutputFormatOption = "table",
 ):
     client = await get_client()
     try:
@@ -677,6 +683,9 @@ async def traces(
             project_id=resolved_project_id,
             session_id=resolved_session_id,
         )
+        if output == "json":
+            _print_json({"spans": spans})
+            return
         lines = _span_tree_lines(
             spans,
             trace_id=trace_id,

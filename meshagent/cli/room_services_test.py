@@ -2,10 +2,17 @@ import pytest
 
 from meshagent.api.room_server_client import (
     ListServicesResult,
+    ServicePortRuntimeState,
     ServiceRuntimeEvent,
+    ServiceRuntimeStatus,
     ServiceRuntimeState,
 )
-from meshagent.api.specs.service import ContainerSpec, ServiceMetadata, ServiceSpec
+from meshagent.api.specs.service import (
+    ContainerSpec,
+    PortSpec,
+    ServiceMetadata,
+    ServiceSpec,
+)
 from meshagent.cli import room_services
 
 
@@ -19,6 +26,10 @@ class _FakeServicesClient:
                     id="svc-1",
                     metadata=ServiceMetadata(name="whoami"),
                     container=ContainerSpec(image="meshagent/cli:default"),
+                    ports=[
+                        PortSpec(num=8080, liveness="/health"),
+                        PortSpec(num=9090),
+                    ],
                 )
             ],
             service_states={
@@ -30,6 +41,19 @@ class _FakeServicesClient:
                         "container.environment.token.identity is required"
                     ),
                     last_start_error_at=124.0,
+                    status=ServiceRuntimeStatus(
+                        ports=[
+                            ServicePortRuntimeState(
+                                num=8080,
+                                liveness="/health",
+                                liveness_status="not_ready",
+                            ),
+                            ServicePortRuntimeState(
+                                num=9090,
+                                liveness_status="not_configured",
+                            ),
+                        ]
+                    ),
                     events=[
                         ServiceRuntimeEvent(
                             type="Warning",
@@ -46,6 +70,42 @@ class _FakeServicesClient:
                 )
             },
         )
+
+
+@pytest.mark.asyncio
+async def test_room_services_list_shows_port_statuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_tables: list[tuple[list[dict[str, object]], tuple[str, ...]]] = []
+
+    async def fake_connect_services_client(*, project_id: str | None, room: str | None):
+        assert project_id == "project-1"
+        assert room == "room-1"
+        return object(), object(), _FakeServicesClient()
+
+    async def fake_close_services_client(account_client, room_client) -> None:
+        del account_client, room_client
+
+    def fake_print_json_table(rows, *columns):
+        captured_tables.append((rows, columns))
+
+    monkeypatch.setattr(
+        room_services, "_connect_services_client", fake_connect_services_client
+    )
+    monkeypatch.setattr(
+        room_services, "_close_services_client", fake_close_services_client
+    )
+    monkeypatch.setattr(room_services, "print_json_table", fake_print_json_table)
+    monkeypatch.setattr(room_services, "print", lambda *args, **kwargs: None)
+
+    await room_services.room_services_list_command(
+        project_id="project-1",
+        room="room-1",
+    )
+
+    rows, columns = captured_tables[0]
+    assert "ports" in columns
+    assert rows[0]["ports"] == "8080: not ready, 9090: no liveness"
 
 
 @pytest.mark.asyncio

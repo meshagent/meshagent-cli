@@ -538,8 +538,12 @@ async def _with_client(
 
         connection = await account_client.connect_room(project_id=project_id, room=room)
 
+        room_url = connection.room_url
+        if os.getenv("MESHAGENT_ROOM_URL"):
+            room_url = websocket_room_url(room_name=room)
+
         proto = WebSocketClientProtocol(
-            url=websocket_room_url(room_name=room),
+            url=room_url,
             token=connection.jwt,
         )
         client_cm = RoomClient(protocol_factory=proto.create_factory())
