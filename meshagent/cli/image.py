@@ -15,14 +15,12 @@ from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal, Optional, Protocol, TYPE_CHECKING
 from urllib.parse import urlparse
 
-from aiohttp import ClientTimeout
 import typer
 from pydantic import ValidationError
 from pydantic_yaml import parse_yaml_raw_as
 from rich import print
 import yaml
 
-from meshagent.api.http import new_client_session
 from meshagent.cli import async_typer
 from meshagent.cli.containers import (
     _drain_stream_plain,
@@ -70,6 +68,7 @@ from meshagent.api.room_server_client import (
     LogStream,
     PublishedBuildImage,
     RoomException,
+    ServicePortRuntimeState,
     ServiceRuntimeState,
 )
 from meshagent.api.room_ports import RESERVED_ROOM_SERVICE_PORTS
@@ -129,7 +128,6 @@ _CLIENT_CLOSE_TIMEOUT_SECONDS = 2.0
 _DEFAULT_CONTEXT_MOUNT_PATH = "/context"
 _DEFAULT_REPOSITORY_TOKEN_TTL_SECONDS = 3600
 _DEPLOY_CACHE_CLEANUP_TIMEOUT_SECONDS = 30.0
-_DEPLOY_LIVENESS_REQUEST_TIMEOUT_SECONDS = 2.0
 _DEPLOY_SERVICE_APPLY_TIMEOUT_SECONDS = 60.0
 _DEPLOY_SERVICE_RESTART_TIMEOUT_SECONDS = 60.0
 _DEPLOY_WAIT_TIMEOUT_SECONDS = 300.0
@@ -3216,37 +3214,6 @@ def _resolve_domain_liveness_path(
     return service_port.liveness
 
 
-def _build_domain_liveness_url(*, domain: str, liveness_path: str) -> str:
-    parsed = urlparse(domain if "://" in domain else f"https://{domain}")
-    scheme = parsed.scheme or "https"
-    netloc = parsed.netloc
-    base_path = parsed.path
-    if netloc == "":
-        netloc = parsed.path
-        base_path = ""
-    if base_path != "/" and base_path.endswith("/"):
-        base_path = base_path.rstrip("/")
-    return f"{scheme}://{netloc}{base_path}{liveness_path}"
-
-
-async def _probe_liveness_url(*, url: str) -> bool:
-    try:
-        async with new_client_session(
-            timeout=ClientTimeout(total=_DEPLOY_LIVENESS_REQUEST_TIMEOUT_SECONDS)
-        ) as session:
-            async with session.get(
-                url,
-                headers={
-                    "Accept": "*/*",
-                    "User-Agent": f"meshagent-cli/{__version__}",
-                },
-            ) as resp:
-                status_code = resp.status
-    except Exception:
-        return False
-    return 200 <= status_code < 400 or status_code in {401, 403}
-
-
 async def _find_room_service_by_name(
     *,
     account_client,
@@ -3580,8 +3547,21 @@ async def _get_service_runtime_state(
     client: RoomClient,
     service_id: str,
 ) -> ServiceRuntimeState | None:
-    service_list = await client.services.list_with_state()
+    service_list = await client.services.list()
     return service_list.service_states.get(service_id)
+
+
+def _find_service_liveness_port(
+    *,
+    state: ServiceRuntimeState,
+    liveness_path: str | None,
+) -> ServicePortRuntimeState | None:
+    if liveness_path is None:
+        return None
+    for port in state.status.ports:
+        if port.liveness == liveness_path:
+            return port
+    return None
 
 
 async def _drain_deploy_log_stream_tui(
@@ -3699,33 +3679,28 @@ async def _wait_for_deployed_service_live(
     log_handler: Callable[[str], Awaitable[None]] | None = None,
 ) -> None:
     active_logs: _ActiveDeployLogStream | None = None
-    liveness_url = (
-        _build_domain_liveness_url(domain=domain, liveness_path=liveness_path)
-        if domain is not None and liveness_path is not None
-        else None
-    )
 
     await _emit_deploy_status(
         status_handler,
         rich_message=f"[cyan]Waiting for service to go live:[/] {service_name} ({service_id})",
         plain_message=f"Waiting for service to go live: {service_name} ({service_id})",
     )
-    if domain is not None and liveness_url is not None:
+    if liveness_path is not None:
         await _emit_deploy_status(
             status_handler,
-            rich_message=f"[cyan]Waiting for liveness URL:[/] {liveness_url}",
-            plain_message=f"Waiting for liveness URL: {liveness_url}",
+            rich_message=f"[cyan]Waiting for service liveness:[/] {liveness_path}",
+            plain_message=f"Waiting for service liveness: {liveness_path}",
         )
     elif domain is not None:
         await _emit_deploy_status(
             status_handler,
             rich_message=(
                 f"[yellow]Route created for {domain}, but the service has no HTTP "
-                "liveness path to probe.[/]"
+                "liveness path to check.[/]"
             ),
             plain_message=(
                 f"Route created for {domain}, but the service has no HTTP "
-                "liveness path to probe."
+                "liveness path to check."
             ),
         )
 
@@ -3803,7 +3778,7 @@ async def _wait_for_deployed_service_live(
                 await asyncio.sleep(_DEPLOY_WAIT_POLL_INTERVAL_SECONDS)
                 continue
 
-            if liveness_url is None:
+            if liveness_path is None:
                 await _emit_deploy_status(
                     status_handler,
                     rich_message=f"[green]Service is live:[/] {service_name} ({service_id})",
@@ -3811,11 +3786,15 @@ async def _wait_for_deployed_service_live(
                 )
                 return
 
-            if await _probe_liveness_url(url=liveness_url):
+            liveness_port = _find_service_liveness_port(
+                state=state,
+                liveness_path=liveness_path,
+            )
+            if liveness_port is not None and liveness_port.liveness_status == "ready":
                 await _emit_deploy_status(
                     status_handler,
-                    rich_message=f"[green]Liveness URL responded:[/] {liveness_url}",
-                    plain_message=f"Liveness URL responded: {liveness_url}",
+                    rich_message=f"[green]Service liveness is ready:[/] {liveness_path}",
+                    plain_message=f"Service liveness is ready: {liveness_path}",
                 )
                 return
 

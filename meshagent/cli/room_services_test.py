@@ -17,7 +17,7 @@ from meshagent.cli import room_services
 
 
 class _FakeServicesClient:
-    async def list_with_state(self) -> ListServicesResult:
+    async def list(self) -> ListServicesResult:
         return ListServicesResult(
             services=[
                 ServiceSpec(

@@ -38,6 +38,8 @@ from meshagent.cli import cli, image
 from meshagent.api.room_server_client import (
     PublishedBuildImage,
     RoomException,
+    ServicePortRuntimeState,
+    ServiceRuntimeStatus,
     ServiceRuntimeState,
 )
 from meshagent.api.specs.service import (
@@ -2274,7 +2276,7 @@ def test_parse_meshagent_token_scope_supports_presets_and_json() -> None:
     user_default = image._parse_meshagent_token_scope(value="userDefault")
     custom = image._parse_meshagent_token_scope(value='{"queues":{"send":["jobs"]}}')
 
-    assert user_default.secrets is not None
+    assert user_default.secrets is None
     assert user_default.admin is None
     assert custom.queues is not None
     assert custom.queues.send == ["jobs"]
@@ -2335,71 +2337,7 @@ async def test_validate_deploy_environment_secrets_requires_run_as() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status_code", [200, 302, 401, 403])
-async def test_probe_liveness_url_accepts_reachable_statuses(
-    monkeypatch: pytest.MonkeyPatch,
-    status_code: int,
-) -> None:
-    class _FakeResponse:
-        status = status_code
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb) -> None:
-            del exc_type, exc, tb
-
-    class _FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb) -> None:
-            del exc_type, exc, tb
-
-        def get(self, *args, **kwargs):
-            del args, kwargs
-            return _FakeResponse()
-
-    monkeypatch.setattr(
-        image, "new_client_session", lambda *args, **kwargs: _FakeSession()
-    )
-
-    assert await image._probe_liveness_url(url="https://sheets.meshagent.dev/") is True
-
-
-@pytest.mark.asyncio
-async def test_probe_liveness_url_rejects_server_errors(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _FakeResponse:
-        status = 502
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb) -> None:
-            del exc_type, exc, tb
-
-    class _FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb) -> None:
-            del exc_type, exc, tb
-
-        def get(self, *args, **kwargs):
-            del args, kwargs
-            return _FakeResponse()
-
-    monkeypatch.setattr(
-        image, "new_client_session", lambda *args, **kwargs: _FakeSession()
-    )
-
-    assert await image._probe_liveness_url(url="https://sheets.meshagent.dev/") is False
-
-
-@pytest.mark.asyncio
-async def test_wait_for_deployed_service_live_streams_logs_and_checks_liveness(
+async def test_wait_for_deployed_service_live_streams_logs_and_checks_service_liveness(
     monkeypatch: pytest.MonkeyPatch,
     _stub_deploy_wait: dict[str, object],
 ) -> None:
@@ -2407,7 +2345,6 @@ async def test_wait_for_deployed_service_live_streams_logs_and_checks_liveness(
         "prints": [],
         "started_logs": [],
         "stopped_logs": [],
-        "probe_urls": [],
     }
     states = [
         ServiceRuntimeState(service_id="service-1", state="starting"),
@@ -2420,11 +2357,29 @@ async def test_wait_for_deployed_service_live_streams_logs_and_checks_liveness(
             service_id="service-1",
             state="running",
             container_id="container-1",
+            status=ServiceRuntimeStatus(
+                ports=[
+                    ServicePortRuntimeState(
+                        num=8000,
+                        liveness="/ready",
+                        liveness_status="not_ready",
+                    )
+                ]
+            ),
         ),
         ServiceRuntimeState(
             service_id="service-1",
             state="running",
             container_id="container-1",
+            status=ServiceRuntimeStatus(
+                ports=[
+                    ServicePortRuntimeState(
+                        num=8000,
+                        liveness="/ready",
+                        liveness_status="ready",
+                    )
+                ]
+            ),
         ),
     ]
     fake_active_logs = SimpleNamespace(container_id="container-1")
@@ -2434,7 +2389,7 @@ async def test_wait_for_deployed_service_live_streams_logs_and_checks_liveness(
             self._runtime_states = runtime_states
             self._index = 0
 
-        async def list_with_state(self):
+        async def list(self):
             state = self._runtime_states[
                 min(self._index, len(self._runtime_states) - 1)
             ]
@@ -2454,19 +2409,12 @@ async def test_wait_for_deployed_service_live_streams_logs_and_checks_liveness(
     async def _fake_stop_deploy_log_stream(*, active_logs) -> None:
         captured["stopped_logs"].append(active_logs)
 
-    probe_results = iter([False, True])
-
-    async def _fake_probe_liveness_url(*, url: str) -> bool:
-        captured["probe_urls"].append(url)
-        return next(probe_results)
-
     monkeypatch.setattr(image.asyncio, "to_thread", _fake_to_thread)
     monkeypatch.setattr(image, "_DEPLOY_WAIT_POLL_INTERVAL_SECONDS", 0)
     monkeypatch.setattr(
         image, "_start_deploy_log_stream", _fake_start_deploy_log_stream
     )
     monkeypatch.setattr(image, "_stop_deploy_log_stream", _fake_stop_deploy_log_stream)
-    monkeypatch.setattr(image, "_probe_liveness_url", _fake_probe_liveness_url)
     monkeypatch.setattr(
         image,
         "print",
@@ -2487,11 +2435,7 @@ async def test_wait_for_deployed_service_live_streams_logs_and_checks_liveness(
 
     assert captured["started_logs"] == ["container-1"]
     assert captured["stopped_logs"] == [fake_active_logs]
-    assert captured["probe_urls"] == [
-        "https://app.meshagent.app/ready",
-        "https://app.meshagent.app/ready",
-    ]
-    assert any("Liveness URL responded" in message for message in captured["prints"])
+    assert any("Service liveness is ready" in message for message in captured["prints"])
 
 
 @pytest.mark.asyncio
@@ -2525,7 +2469,7 @@ async def test_wait_for_deployed_service_live_exits_when_container_restarts(
             self._runtime_states = runtime_states
             self._index = 0
 
-        async def list_with_state(self):
+        async def list(self):
             state = self._runtime_states[
                 min(self._index, len(self._runtime_states) - 1)
             ]
@@ -2832,7 +2776,7 @@ async def test_deploy_image_creates_room_service_with_mounts_env_secret_and_toke
         async def restart(self, *, service_id: str) -> None:
             captured["restarted_service_id"] = service_id
 
-        async def list_with_state(self):
+        async def list(self):
             return SimpleNamespace(
                 service_states={
                     "service-1": ServiceRuntimeState(
@@ -4944,7 +4888,7 @@ async def test_deploy_image_updates_existing_service_route_and_replaces_environm
         async def restart(self, *, service_id: str) -> None:
             captured["restarted_service_id"] = service_id
 
-        async def list_with_state(self):
+        async def list(self):
             return SimpleNamespace(
                 service_states={
                     "service-1": ServiceRuntimeState(
@@ -5048,7 +4992,7 @@ async def test_deploy_image_updates_existing_service_route_and_replaces_environm
     assert env_by_name["MESHAGENT_TOKEN"].token.role == "agent"
     assert env_by_name["MESHAGENT_TOKEN"].token.api is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.api.admin is not None
-    assert env_by_name["MESHAGENT_TOKEN"].token.api.secrets is not None
+    assert env_by_name["MESHAGENT_TOKEN"].token.api.secrets is None
     assert env_by_name["MESHAGENT_TOKEN"].token.api.tunnels is not None
     for env_name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
         assert env_by_name[env_name].token is not None
@@ -5098,7 +5042,7 @@ async def test_deploy_image_sets_cookie_validation_on_private_published_ports(
         async def restart(self, *, service_id: str) -> None:
             captured["restarted_service_id"] = service_id
 
-        async def list_with_state(self):
+        async def list(self):
             return SimpleNamespace(
                 service_states={
                     "service-1": ServiceRuntimeState(
@@ -5223,7 +5167,7 @@ async def test_deploy_image_preserves_existing_liveness_when_default_is_used(
         async def restart(self, *, service_id: str) -> None:
             captured["restarted_service_id"] = service_id
 
-        async def list_with_state(self):
+        async def list(self):
             return SimpleNamespace(
                 service_states={
                     "service-1": ServiceRuntimeState(
@@ -5325,7 +5269,7 @@ async def test_deploy_image_liveness_flag_overrides_http_ports_only(
         async def restart(self, *, service_id: str) -> None:
             captured["restarted_service_id"] = service_id
 
-        async def list_with_state(self):
+        async def list(self):
             return SimpleNamespace(
                 service_states={
                     "service-1": ServiceRuntimeState(
@@ -5417,7 +5361,7 @@ async def test_deploy_image_domain_requires_exactly_one_published_port(
     )
 
     class _FakeServices:
-        async def list_with_state(self):
+        async def list(self):
             return SimpleNamespace(
                 service_states={
                     "service-1": ServiceRuntimeState(

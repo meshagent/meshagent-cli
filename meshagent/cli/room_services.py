@@ -95,7 +95,7 @@ async def room_services_list_command(
     )
     try:
         print("[bold green]Fetching services...[/bold green]")
-        result: ListServicesResult = await services_client.list_with_state()
+        result: ListServicesResult = await services_client.list()
         services: list[ServiceSpec] = result.services
 
         rows = []
@@ -180,7 +180,7 @@ async def room_services_describe_command(
         project_id=project_id, room=room
     )
     try:
-        result: ListServicesResult = await services_client.list_with_state()
+        result: ListServicesResult = await services_client.list()
         service = _find_service(
             services=result.services, service_id=service_id, name=name
         )
@@ -305,7 +305,7 @@ async def room_services_restart_command(
             ).create_factory()
         ) as client:
             services_client = ServicesClient(room=client)
-            result: ListServicesResult = await services_client.list_with_state()
+            result: ListServicesResult = await services_client.list()
             services: list[ServiceSpec] = result.services
 
             service: ServiceSpec | None = None
