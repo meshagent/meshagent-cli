@@ -74,6 +74,30 @@ def _warn_if_non_meshagent_app_domain(domain: str) -> None:
     )
 
 
+async def _list_routes_view(
+    client,
+    *,
+    project_id: str,
+    count: int,
+    offset: int,
+    filter: str | None,
+):
+    routes = []
+    continuation_token: str | None = None
+    while len(routes) < offset + count:
+        page = await client.list_routes_page(
+            project_id=project_id,
+            page_size=min(max(offset + count - len(routes), 1), 100),
+            continuation_token=continuation_token,
+            filter=filter,
+        )
+        routes.extend(page.routes)
+        continuation_token = page.continuation_token
+        if continuation_token is None:
+            break
+    return routes[offset : offset + count]
+
+
 @app.async_command("create")
 async def route_create(
     *,
@@ -317,7 +341,8 @@ async def route_list(
                 filter=filter,
             )
         else:
-            routes = await client.list_routes(
+            routes = await _list_routes_view(
+                client,
                 project_id=project_id,
                 count=count,
                 offset=offset,
