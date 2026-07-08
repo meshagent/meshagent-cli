@@ -51,11 +51,9 @@ app.add_lazy_command(
     help="Manage dataset tables in a room",
 )
 app.add_lazy_command(
-    name="database",
-    module="meshagent.cli.dataset",
-    help="Manage dataset tables in a room",
-    hidden=True,
-    deprecated=True,
+    name="sqlite",
+    module="meshagent.cli.sqlite",
+    help="Manage SQLite databases and tables in a room",
 )
 app.add_lazy_command(
     name="memory",

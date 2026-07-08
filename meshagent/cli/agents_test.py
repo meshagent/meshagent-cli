@@ -64,17 +64,13 @@ class _FakeAgentClient:
         self,
         *,
         project_id: str,
-        limit: int,
-        offset: int,
-        order_by: str,
+        page_size: int,
         filter: str | None = None,
     ) -> list[ManagedAgent]:
         self.list_agents_calls.append(
             {
                 "project_id": project_id,
-                "limit": limit,
-                "offset": offset,
-                "order_by": order_by,
+                "page_size": page_size,
                 "filter": filter,
             }
         )
@@ -269,6 +265,13 @@ async def test_agent_list_command_outputs_current_agent_shape(
 
     await agents.agent_list_command(project_id="project-1")
 
+    assert client.list_agents_calls == [
+        {
+            "project_id": "resolved-project",
+            "page_size": 100,
+            "filter": None,
+        }
+    ]
     assert printed == [
         (
             [

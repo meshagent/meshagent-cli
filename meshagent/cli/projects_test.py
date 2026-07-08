@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from meshagent.api.client import NotFoundError
+from meshagent.api.client import ProjectInfo, ProjectsPage
 from meshagent.cli import projects
 
 
@@ -18,22 +19,26 @@ class _FakeClient:
         self.created_project_names: list[str] = []
         self.closed = False
 
-    async def list_projects(self) -> dict[str, list[dict[str, str]]]:
-        return {"projects": self._project_rows}
+    async def list_projects(self) -> ProjectsPage:
+        return ProjectsPage(
+            projects=[
+                ProjectInfo.model_validate(project) for project in self._project_rows
+            ]
+        )
 
-    async def get_project(self, project_id: str) -> dict[str, str]:
+    async def get_project(self, project_id: str) -> ProjectInfo:
         for project in self._project_rows:
             if project["id"] == project_id:
-                return project
+                return ProjectInfo.model_validate(project)
         raise NotFoundError("not found")
 
-    async def get_project_by_key(self, project_key: str) -> dict[str, str]:
+    async def get_project_by_key(self, project_key: str) -> ProjectInfo:
         for project in self._project_rows:
             if project.get("project_key") == project_key:
-                return project
+                return ProjectInfo.model_validate(project)
         raise NotFoundError("not found")
 
-    async def create_project(self, name: str) -> dict[str, str]:
+    async def create_project(self, name: str) -> ProjectInfo:
         self.created_project_names.append(name)
         created_row = {
             "id": self._created_project_id,
@@ -41,7 +46,7 @@ class _FakeClient:
             "project_key": name.lower().replace(" ", "-"),
         }
         self._project_rows.append(created_row)
-        return created_row
+        return ProjectInfo.model_validate(created_row)
 
     async def close(self) -> None:
         self.closed = True

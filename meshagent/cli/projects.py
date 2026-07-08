@@ -1,4 +1,3 @@
-import builtins
 import sys
 from dataclasses import dataclass
 from typing import Annotated
@@ -6,7 +5,7 @@ from typing import Annotated
 import typer
 from rich import print
 
-from meshagent.api.client import Meshagent, NotFoundError
+from meshagent.api.client import Meshagent, NotFoundError, ProjectInfo, ProjectsPage
 from meshagent.cli import async_typer
 from meshagent.cli.helper import (
     get_client,
@@ -27,35 +26,17 @@ class ListedProject:
 
 
 def _parse_listed_projects(
-    response: object,
+    response: ProjectsPage,
     *,
     active_project_id: str | None,
 ) -> list[ListedProject]:
-    if not isinstance(response, dict):
-        return []
-
-    project_rows = response.get("projects")
-    if not isinstance(project_rows, builtins.list):
-        return []
-
     selectable_projects: list[ListedProject] = []
-    for row in project_rows:
-        if not isinstance(row, dict):
-            continue
-
-        project_id = row.get("id")
-        if not isinstance(project_id, str):
-            continue
-        resolved_project_id = project_id.strip()
+    for row in response.projects:
+        resolved_project_id = row.id.strip()
         if resolved_project_id == "":
             continue
 
-        project_name = row.get("name")
-        resolved_project_name = (
-            project_name.strip()
-            if isinstance(project_name, str) and project_name.strip() != ""
-            else resolved_project_id
-        )
+        resolved_project_name = row.name.strip() or resolved_project_id
 
         selectable_projects.append(
             ListedProject(
@@ -85,25 +66,18 @@ async def _create_project_id(
     project_name: str,
 ) -> str:
     created = await client.create_project(project_name)
-    if not isinstance(created, dict):
-        raise RuntimeError("Project creation did not return a valid id.")
-
-    created_project_id = created.get("id")
-    if not isinstance(created_project_id, str):
-        raise RuntimeError("Project creation did not return a valid id.")
-
-    resolved_project_id = created_project_id.strip()
+    resolved_project_id = created.id.strip()
     if resolved_project_id == "":
         raise RuntimeError("Project creation did not return a valid id.")
 
     return resolved_project_id
 
 
-def _project_id_from_payload(project: dict[str, object]) -> str:
-    project_id = project.get("id")
-    if not isinstance(project_id, str) or project_id.strip() == "":
+def _project_id_from_payload(project: ProjectInfo) -> str:
+    project_id = project.id.strip()
+    if project_id == "":
         raise RuntimeError("Project lookup did not return a valid id.")
-    return project_id.strip()
+    return project_id
 
 
 async def _resolve_project_id_or_key(client: Meshagent, selector: str) -> str:
@@ -186,7 +160,7 @@ async def create(name: str):
     client = await get_client()
     try:
         result = await client.create_project(name)
-        print(f"[green]Project created:[/] {result['id']}")
+        print(f"[green]Project created:[/] {result.id}")
     finally:
         await client.close()
 
@@ -198,14 +172,18 @@ async def list(
     client = await get_client()
     projects = await client.list_projects()
     active_project = await get_active_project()
-    for project in projects["projects"]:
+    output = [
+        project.model_dump(mode="json", exclude_none=True)
+        for project in projects.projects
+    ]
+    for project in output:
         if project["id"] == active_project:
-            project["name"] = "*" + project["name"]
+            project["name"] = "*" + str(project["name"])
 
     if o == "json":
-        print(projects)
+        print({"projects": output})
     else:
-        print_json_table(projects["projects"], "id", "name", "project_key")
+        print_json_table(output, "id", "name", "project_key")
     await client.close()
 
 
@@ -219,9 +197,14 @@ async def get(
         project_id = await _resolve_project_id_or_key(client, project)
         project_info = await client.get_project(project_id)
         if o == "json":
-            print(project_info)
+            print(project_info.model_dump(mode="json", exclude_none=True))
         else:
-            print_json_table([project_info], "id", "name", "project_key")
+            print_json_table(
+                [project_info.model_dump(mode="json", exclude_none=True)],
+                "id",
+                "name",
+                "project_key",
+            )
     finally:
         await client.close()
 

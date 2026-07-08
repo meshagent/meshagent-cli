@@ -609,9 +609,7 @@ async def agent_list_command(
         project_id = await resolve_project_id(project_id=project_id)
         agents = await account_client.list_agents(
             project_id=project_id,
-            limit=limit if limit is not None else count,
-            offset=offset,
-            order_by=order_by,
+            page_size=limit if limit is not None else count,
             filter=filter,
         )
         output = [
