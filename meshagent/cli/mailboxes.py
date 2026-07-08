@@ -265,8 +265,7 @@ async def mailbox_list(
         else:
             mailboxes = await client.list_mailboxes(
                 project_id=project_id,
-                count=count,
-                offset=offset,
+                page_size=count,
                 filter=filter,
             )
 

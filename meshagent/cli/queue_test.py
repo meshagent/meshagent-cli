@@ -35,8 +35,8 @@ class _FakeRoomClient:
     last_instance: "_FakeRoomClient | None" = None
     default_queues: list[_FakeQueue] = []
 
-    def __init__(self, *, protocol) -> None:
-        self.protocol = protocol
+    def __init__(self, *, protocol_factory) -> None:
+        self.protocol = protocol_factory()
         self.queues = _FakeQueuesClient()
         self.queues.queues = list(type(self).default_queues)
         type(self).last_instance = self
@@ -194,6 +194,50 @@ async def _run_queue_list(
     return account_client, printed, table_calls
 
 
+async def _run_send(
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    room_name: str,
+    queue_name: str,
+    json: str | None,
+    file: str | None,
+) -> tuple[_FakeAccountClient, list[str], "_FakeRoomClient"]:
+    account_client = _FakeAccountClient()
+    printed: list[str] = []
+
+    async def _fake_get_client() -> _FakeAccountClient:
+        return account_client
+
+    async def _fake_resolve_project_id(*, project_id):
+        del project_id
+        return "project-1"
+
+    def _fake_resolve_room(room: str) -> str:
+        return room
+
+    def _fake_print(*args, **kwargs) -> None:
+        del kwargs
+        printed.append(" ".join(str(arg) for arg in args))
+
+    monkeypatch.setattr(queue, "get_client", _fake_get_client)
+    monkeypatch.setattr(queue, "resolve_project_id", _fake_resolve_project_id)
+    monkeypatch.setattr(queue, "resolve_room", _fake_resolve_room)
+    monkeypatch.setattr(queue, "RoomClient", _FakeRoomClient)
+    monkeypatch.setattr(queue, "print", _fake_print)
+
+    await queue.send(
+        project_id=None,
+        room=room_name,
+        queue=queue_name,
+        json=json,
+        file=file,
+    )
+
+    room_client = _FakeRoomClient.last_instance
+    assert room_client is not None
+    return account_client, printed, room_client
+
+
 @pytest.mark.asyncio
 async def test_send_mail_queues_base64_email_payload(
     monkeypatch: pytest.MonkeyPatch,
@@ -242,6 +286,30 @@ async def test_send_mail_queues_base64_email_payload(
     assert len(attachments) == 1
     assert attachments[0].get_filename() == "note.txt"
     assert attachments[0].get_content().strip() == "hello attachment"
+
+
+@pytest.mark.asyncio
+async def test_send_file_reads_json_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    message_path = tmp_path / "message.json"
+    message_path.write_text('{"from_file": true}', encoding="utf-8")
+
+    account_client, printed, room_client = await _run_send(
+        monkeypatch=monkeypatch,
+        room_name="demo-room",
+        queue_name="jobs",
+        json=None,
+        file=str(message_path),
+    )
+
+    assert account_client.connect_calls == [
+        {"project_id": "project-1", "room": "demo-room"}
+    ]
+    assert account_client.closed is True
+    assert printed == ["[bold green]Connecting to room...[/bold green]"]
+    assert room_client.queues.sent == [{"name": "jobs", "message": {"from_file": True}}]
 
 
 @pytest.mark.asyncio

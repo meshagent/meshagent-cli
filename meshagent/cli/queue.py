@@ -97,8 +97,8 @@ async def send(
             ).create_factory()
         ) as client:
             if file is not None:
-                with open(file, "rb") as f:
-                    message = f.read()
+                with open(file, "r", encoding="utf-8") as f:
+                    message = _json.load(f)
             else:
                 message = _json.loads(json)
 
