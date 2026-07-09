@@ -61,7 +61,7 @@ class _PromptSendSession:
 
 class _FakeAskAdapter(LLMAdapter[object]):
     def default_model(self) -> str:
-        return "gpt-5.5"
+        return "gpt-5.6-sol"
 
     def create_session(self, *, usage_callback=None) -> AgentSessionContext:
         return AgentSessionContext()
@@ -87,7 +87,7 @@ class _FakeAskAdapter(LLMAdapter[object]):
         del on_behalf_of
         del tool_choice
         del options
-        assert model == "gpt-5.5"
+        assert model == "gpt-5.6-sol"
         thread_id = str(context.metadata["thread_id"])
         turn_id = str(context.metadata["turn_id"])
         assert event_handler is not None
@@ -259,7 +259,7 @@ async def test_build_ask_toolkits_mounts_create_samples_read_only(tmp_path) -> N
     sample_file.write_text("print('hello from sample')\n", encoding="utf-8")
 
     toolkits = ask_module._build_ask_toolkits(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         current_working_directory=str(project_dir),
         create_samples_path=str(samples_dir),
     )
@@ -464,7 +464,7 @@ def test_format_ask_tool_call_entry_hides_traceback_logs_for_failed_tools() -> N
 async def test_run_ask_process_returns_text_output() -> None:
     result = await ask_module._run_ask_process(
         prompt="hi",
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         llm_adapter=_FakeAskAdapter(),
     )
 
@@ -481,7 +481,7 @@ async def test_run_ask_process_streams_text_deltas() -> None:
 
     result = await ask_module._run_ask_process(
         prompt="hi",
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         llm_adapter=_FakeAskAdapter(),
         on_message=_on_message,
     )
@@ -500,7 +500,7 @@ async def test_run_ask_process_awaits_async_text_delta_callback() -> None:
 
     result = await ask_module._run_ask_process(
         prompt="hi",
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         llm_adapter=_FakeAskAdapter(),
         on_message=_on_message,
     )
@@ -512,7 +512,7 @@ async def test_run_ask_process_awaits_async_text_delta_callback() -> None:
 @pytest.mark.asyncio
 async def test_ask_session_reuses_process_for_multiple_prompts() -> None:
     async with ask_module._AskSession(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         llm_adapter=_FakeAskAdapter(),
     ) as session:
         first = await session.ask(prompt="first")
@@ -527,7 +527,7 @@ async def test_ask_session_emits_custom_event_status_messages() -> None:
     statuses: list[str | None] = []
 
     async with ask_module._AskSession(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         llm_adapter=_FakeStatusAskAdapter(),
     ) as session:
         result = await session.ask(
@@ -1559,7 +1559,7 @@ def test_agent_file_content_delta_preserves_pdf_uri_for_tui_hydration() -> None:
 @pytest.mark.asyncio
 async def test_ask_session_adds_cwd_storage_and_builtin_tools() -> None:
     session = ask_module._AskSession(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         llm_adapter=_FakeAskAdapter(),
         current_working_directory="/tmp/ask-project",
     )
@@ -1585,7 +1585,7 @@ async def test_ask_session_adds_cwd_storage_and_builtin_tools() -> None:
 @pytest.mark.asyncio
 async def test_ask_session_adds_noninteractive_instruction_for_non_tty_mode() -> None:
     session = ask_module._AskSession(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         llm_adapter=_FakeAskAdapter(),
         current_working_directory="/tmp/ask-project",
         interactive=False,
@@ -1636,7 +1636,7 @@ def test_suppress_ask_process_logs_restores_logger_state() -> None:
 
 def test_build_ask_adapter_uses_websocket_mode_for_openai() -> None:
     adapter = ask_module._build_ask_adapter(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         project_id="project-123",
         access_token="oauth-token",
     )
@@ -1735,11 +1735,11 @@ async def test_ask_command_uses_oauth_token_and_renders_markdown_by_default(
     await ask_module.ask(
         project_id="project-123",
         message="hello",
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
     )
 
     assert captured == {
-        "model": "gpt-5.5",
+        "model": "gpt-5.6-sol",
         "project_id": "project-123",
         "access_token": "oauth-token",
     }
@@ -1782,7 +1782,7 @@ def test_meshagent_ask_cli_invocation_prints_streamed_response(
             "--format",
             "text",
             "--model",
-            "gpt-5.5",
+            "gpt-5.6-sol",
         ],
     )
 
@@ -1790,7 +1790,7 @@ def test_meshagent_ask_cli_invocation_prints_streamed_response(
     captured_stdout = result.output or capsys.readouterr().out
     assert captured_stdout == "hello world\n"
     assert captured == {
-        "model": "gpt-5.5",
+        "model": "gpt-5.6-sol",
         "project_id": "project-123",
         "access_token": "cli-token",
     }
@@ -1914,11 +1914,11 @@ async def test_ask_command_prints_markdown_without_streaming(monkeypatch) -> Non
         project_id="project-123",
         message="hello",
         format="markdown",
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
     )
 
     assert captured == {
-        "model": "gpt-5.5",
+        "model": "gpt-5.6-sol",
         "project_id": "project-123",
         "access_token": "oauth-token",
     }
@@ -1966,13 +1966,13 @@ async def test_ask_command_launches_tui_when_prompt_missing_in_tty(monkeypatch) 
     await ask_module.ask(
         project_id="project-123",
         message=None,
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
     )
 
-    assert captured["model"] == "gpt-5.5"
+    assert captured["model"] == "gpt-5.6-sol"
     assert captured["project_id"] == "project-123"
     assert captured["access_token"] == "oauth-token"
-    assert captured["tui_model"] == "gpt-5.5"
+    assert captured["tui_model"] == "gpt-5.6-sol"
     assert captured["preamble_rule"] is True
 
 
@@ -1998,7 +1998,7 @@ async def test_ask_command_requires_message_when_not_tty(monkeypatch) -> None:
         await ask_module.ask(
             project_id="project-123",
             message=None,
-            model="gpt-5.5",
+            model="gpt-5.6-sol",
         )
 
     assert exc.value.exit_code == 1
@@ -2027,7 +2027,7 @@ async def test_ask_command_requires_oauth_access_token(monkeypatch) -> None:
         await ask_module.ask(
             project_id="project-123",
             message="hello",
-            model="gpt-5.5",
+            model="gpt-5.6-sol",
         )
 
     assert exc.value.exit_code == 1
@@ -2076,11 +2076,11 @@ async def test_ask_command_prefers_meshagent_token_over_oauth(monkeypatch) -> No
         project_id="project-123",
         message="hello",
         format="text",
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
     )
 
     assert captured == {
-        "model": "gpt-5.5",
+        "model": "gpt-5.6-sol",
         "project_id": "project-123",
         "access_token": "room-token",
     }

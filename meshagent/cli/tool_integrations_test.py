@@ -30,7 +30,7 @@ def test_configure_codex_default_integration_writes_default_provider(
     assert result.config_path == config_path
     assert config_path.read_text() == (
         'model_provider = "meshagent"\n'
-        'model = "gpt-5.5"\n'
+        'model = "gpt-5.6-sol"\n'
         "\n"
         "[model_providers.meshagent]\n"
         'name = "MeshAgent"\n'
@@ -70,19 +70,19 @@ def test_find_existing_codex_profiles_returns_matching_profiles(
         "\n"
         "[profiles.default]\n"
         'model_provider = "openai"\n'
-        'model = "gpt-5.5"\n'
+        'model = "gpt-5.6-sol"\n'
         "\n"
         "[profiles.router]\n"
         'model_provider = "openrouter"\n'
-        'model = "openai/gpt-5.5"\n'
+        'model = "openai/gpt-5.6-sol"\n'
         "\n"
         "[profiles.meshagent-work]\n"
         'model_provider = "meshagent-work"\n'
-        'model = "gpt-5.5"\n'
+        'model = "gpt-5.6-sol"\n'
         "\n"
         "[profiles.meshagent]\n"
         'model_provider = "meshagent-work"\n'
-        'model = "gpt-5.5"\n'
+        'model = "gpt-5.6-sol"\n'
     )
 
     # Only MeshAgent-managed profiles are surfaced (openai/openrouter excluded).
@@ -99,7 +99,7 @@ def test_find_existing_codex_profiles_includes_stale_default_with_different_api_
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         'model_provider = "meshagent"\n'
-        'model = "gpt-5.5"\n'
+        'model = "gpt-5.6-sol"\n'
         "\n"
         "[model_providers.meshagent]\n"
         'name = "MeshAgent"\n'
@@ -119,7 +119,7 @@ def test_find_existing_codex_profiles_includes_stale_default_with_different_proj
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         'model_provider = "meshagent"\n'
-        'model = "gpt-5.5"\n'
+        'model = "gpt-5.6-sol"\n'
         "\n"
         "[model_providers.meshagent]\n"
         'name = "MeshAgent"\n'
@@ -159,7 +159,7 @@ def test_find_existing_codex_profiles_does_not_require_active_project(
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         'model_provider = "meshagent"\n'
-        'model = "gpt-5.5"\n'
+        'model = "gpt-5.6-sol"\n'
         "\n"
         "[model_providers.meshagent]\n"
         'name = "MeshAgent"\n'
@@ -189,7 +189,7 @@ def test_find_current_codex_default_profile_returns_matching_profile(
         "\n"
         "[profiles.meshagent-work]\n"
         'model_provider = "meshagent-work"\n'
-        'model = "gpt-5.5"\n'
+        'model = "gpt-5.6-sol"\n'
     )
 
     monkeypatch.setattr(
@@ -222,7 +222,7 @@ def test_clear_codex_default_profile_if_meshagent_project_removes_profile(
         "\n"
         "[profiles.meshagent]\n"
         'model_provider = "meshagent"\n'
-        'model = "gpt-5.5"\n'
+        'model = "gpt-5.6-sol"\n'
     )
 
     monkeypatch.setattr(
@@ -257,11 +257,11 @@ def test_remove_codex_integration_keeps_shared_provider_for_other_profiles(
         "\n"
         "[profiles.meshagent]\n"
         'model_provider = "meshagent"\n'
-        'model = "gpt-5.5"\n'
+        'model = "gpt-5.6-sol"\n'
         "\n"
         "[profiles.meshagent-work]\n"
         'model_provider = "meshagent"\n'
-        'model = "gpt-5.5"\n'
+        'model = "gpt-5.6-sol"\n'
     )
 
     assert (
@@ -280,7 +280,7 @@ def test_remove_codex_integration_keeps_shared_provider_for_other_profiles(
         "\n"
         "[profiles.meshagent-work]\n"
         'model_provider = "meshagent"\n'
-        'model = "gpt-5.5"\n'
+        'model = "gpt-5.6-sol"\n'
     )
 
 
@@ -296,10 +296,10 @@ def test_remove_codex_integration_resets_default_and_removes_matching_profile_fi
         'http_headers = {"Meshagent-Project-Id"="project-life"}\n'
     )
     config_path.write_text(
-        f'model_provider = "meshagent"\nmodel = "gpt-5.5"\n\n{provider_block}'
+        f'model_provider = "meshagent"\nmodel = "gpt-5.6-sol"\n\n{provider_block}'
     )
     profile_path.write_text(
-        f'model_provider = "meshagent"\nmodel = "gpt-5.5"\n\n{provider_block}'
+        f'model_provider = "meshagent"\nmodel = "gpt-5.6-sol"\n\n{provider_block}'
     )
 
     assert (
@@ -323,7 +323,7 @@ def test_remove_codex_integration_removes_stale_default_with_different_api_url(
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         'model_provider = "meshagent"\n'
-        'model = "gpt-5.5"\n'
+        'model = "gpt-5.6-sol"\n'
         "\n"
         "[model_providers.meshagent]\n"
         'name = "MeshAgent"\n'
@@ -360,7 +360,7 @@ def test_remove_codex_integration_removes_stale_default_with_nondefault_provider
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         'model_provider = "meshagent-old"\n'
-        'model = "gpt-5.5"\n'
+        'model = "gpt-5.6-sol"\n'
         "\n"
         "[model_providers.meshagent-old]\n"
         'name = "MeshAgent"\n'
@@ -404,7 +404,7 @@ def test_build_codex_launch_command_sets_profile_overrides() -> None:
         "-c",
         'model_provider="meshagent"',
         "-c",
-        'model="gpt-5.5"',
+        'model="gpt-5.6-sol"',
         "-c",
         'model_providers.meshagent.name="MeshAgent"',
         "-c",
@@ -457,7 +457,7 @@ def test_launch_codex_runs_subprocess() -> None:
         "-c",
         'model_provider="meshagent"',
         "-c",
-        'model="gpt-5.5"',
+        'model="gpt-5.6-sol"',
         "-c",
         'model_providers.meshagent.name="MeshAgent"',
         "-c",

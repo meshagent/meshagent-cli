@@ -658,7 +658,7 @@ async def test_process_agent_passes_threading_mode_to_queue_channel(
     monkeypatch.setattr(meshagent.agents, "QueueChannel", _RecordingQueueChannel)
 
     agent_cls = process.build_process_agent(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         rule=[],
         toolkit=[],
         schema=[],
@@ -736,7 +736,7 @@ async def test_process_agent_passes_threading_mode_to_mail_channel(
     monkeypatch.setattr(meshagent.agents, "MailChannel", _RecordingMailChannel)
 
     agent_cls = process.build_process_agent(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         rule=[],
         toolkit=[],
         schema=[],
@@ -810,7 +810,7 @@ async def test_process_agent_uses_agent_thread_list_for_multiple_storage_backend
     monkeypatch.setattr(meshagent.agents, "MessagingChatChannel", _RecordingChatChannel)
 
     agent_cls = process.build_process_agent(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         rule=[],
         toolkit=[],
         schema=[],
@@ -961,7 +961,7 @@ async def test_process_agent_uses_shared_decision_adapter_for_threaded_channels(
     monkeypatch.setattr(meshagent.agents, "MailChannel", _RecordingMailChannel)
 
     agent_cls = chatbot.build_process_agent(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         rule=[],
         toolkit=[],
         schema=[],
@@ -984,7 +984,7 @@ async def test_process_agent_uses_shared_decision_adapter_for_threaded_channels(
         channel_adapter = created_adapters[0]
         main_adapter = created_adapters[1]
         assert channel_adapter.default_model() == "gpt-5.4-mini"
-        assert main_adapter.default_model() == "gpt-5.5"
+        assert main_adapter.default_model() == "gpt-5.6-sol"
         assert main_adapter.context_management == "standalone"
         assert main_adapter.compaction_threshold == 120000
         assert main_adapter.max_output_tokens == 4096
@@ -1020,7 +1020,7 @@ def test_resolve_openai_realtime_model_accepts_aliases_and_model_names(
     assert process._resolve_openai_realtime_model(model="gpt-realtime-2") == (
         "gpt-realtime-2"
     )
-    assert process._resolve_openai_realtime_model(model="gpt-5.5") is None
+    assert process._resolve_openai_realtime_model(model="gpt-5.6-sol") is None
 
     monkeypatch.setenv("OPENAI_REALTIME_MODEL", "gpt-realtime-preview")
     assert process._resolve_openai_realtime_model(model="openai realtime") == (
@@ -1123,15 +1123,15 @@ def test_configured_realtime_models_use_output_modality_filter() -> None:
 
 def test_configured_process_models_include_backend_in_provider_identity() -> None:
     selected = process._agent_model_changed_for_model(
-        model="openai/gpt-5.5",
+        model="openai/gpt-5.6-sol",
         thread_id="/threads/test.thread",
     )
     assert selected.backend == "llm"
     assert selected.provider == "openai"
-    assert selected.model == "gpt-5.5"
+    assert selected.model == "gpt-5.6-sol"
 
     response = process._configured_models_response(
-        models=["gpt-5.5", "openai/gpt-5.6", "codex/gpt-5.5"],
+        models=["gpt-5.6-sol", "openai/gpt-5.6", "codex/gpt-5.6-sol"],
         current_model=None,
     )
 
@@ -1143,15 +1143,15 @@ def test_configured_process_models_include_backend_in_provider_identity() -> Non
         ("codex", "openai"),
     ]
     assert [model.name for model in response.providers[0].models] == [
-        "gpt-5.5",
+        "gpt-5.6-sol",
         "gpt-5.6",
     ]
-    assert [model.name for model in response.providers[1].models] == ["gpt-5.5"]
-    assert "llm/openai/gpt-5.5" in process._format_model_list(
+    assert [model.name for model in response.providers[1].models] == ["gpt-5.6-sol"]
+    assert "llm/openai/gpt-5.6-sol" in process._format_model_list(
         providers=response.providers,
         current_model=None,
     )
-    assert "codex/openai/gpt-5.5" in process._format_model_list(
+    assert "codex/openai/gpt-5.6-sol" in process._format_model_list(
         providers=response.providers,
         current_model=None,
     )
@@ -1164,13 +1164,13 @@ def test_process_backend_options_expand_to_unfiltered_backend_defaults() -> None
 
     assert selected_backends == ["chat", "llm", "codex"]
     assert process._process_models_for_backend_option(
-        model=["openai/gpt-5.5"],
+        model=["openai/gpt-5.6-sol"],
         backend=selected_backends,
     ) == [
         "chat/none",
         "llm/openai/gpt-5.2",
         "llm/anthropic/claude-3-5-sonnet-latest",
-        "codex/gpt-5.5",
+        "codex/gpt-5.6-sol",
     ]
     assert process._normalize_process_model_specs(["chat/none"])[0].backend == "chat"
 
@@ -1187,7 +1187,7 @@ def test_models_response_is_filtered_to_configured_process_models() -> None:
                 default_model="gpt-5.4",
                 models=[
                     AgentModelInfo(name="gpt-5.4"),
-                    AgentModelInfo(name="gpt-5.5", active=True),
+                    AgentModelInfo(name="gpt-5.6-sol", active=True),
                     AgentModelInfo(name="gpt-5.6"),
                 ],
             ),
@@ -1198,7 +1198,7 @@ def test_models_response_is_filtered_to_configured_process_models() -> None:
                 default_model="gpt-5.4",
                 models=[
                     AgentModelInfo(name="gpt-5.4"),
-                    AgentModelInfo(name="gpt-5.5"),
+                    AgentModelInfo(name="gpt-5.6-sol"),
                 ],
             ),
         ],
@@ -1207,7 +1207,7 @@ def test_models_response_is_filtered_to_configured_process_models() -> None:
     filtered = process._filter_models_response_to_configured_models(
         response,
         model_specs=process._normalize_process_model_specs(
-            ["openai/gpt-5.5", "codex/gpt-5.5"]
+            ["openai/gpt-5.6-sol", "codex/gpt-5.6-sol"]
         ),
     )
 
@@ -1215,8 +1215,8 @@ def test_models_response_is_filtered_to_configured_process_models() -> None:
         (provider.backend, provider.name, [model.name for model in provider.models])
         for provider in filtered.providers
     ] == [
-        ("llm", "openai", ["gpt-5.5"]),
-        ("codex", "openai", ["gpt-5.5"]),
+        ("llm", "openai", ["gpt-5.6-sol"]),
+        ("codex", "openai", ["gpt-5.6-sol"]),
     ]
     assert filtered.providers[0].models[0].active is True
 
@@ -1238,17 +1238,17 @@ def test_models_response_filter_keeps_configured_models_not_advertised() -> None
 
     filtered = process._filter_models_response_to_configured_models(
         response,
-        model_specs=process._normalize_process_model_specs(["openai/gpt-5.5"]),
+        model_specs=process._normalize_process_model_specs(["openai/gpt-5.6-sol"]),
     )
 
     assert len(filtered.providers) == 1
-    assert filtered.providers[0].default_model == "gpt-5.5"
-    assert [model.name for model in filtered.providers[0].models] == ["gpt-5.5"]
+    assert filtered.providers[0].default_model == "gpt-5.6-sol"
+    assert [model.name for model in filtered.providers[0].models] == ["gpt-5.6-sol"]
 
 
 def test_selecting_model_can_disambiguate_backend_provider_model() -> None:
     response = process._configured_models_response(
-        models=["gpt-5.5", "codex/gpt-5.5"],
+        models=["gpt-5.6-sol", "codex/gpt-5.6-sol"],
         current_model=None,
     )
 
@@ -1257,19 +1257,19 @@ def test_selecting_model_can_disambiguate_backend_provider_model() -> None:
         thread_id="/threads/test.thread",
         backend="codex",
         provider="openai",
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
     )
 
     assert changed is not None
     assert changed.backend == "codex"
     assert changed.provider == "openai"
-    assert changed.model == "gpt-5.5"
+    assert changed.model == "gpt-5.6-sol"
 
 
 def test_build_process_agent_rejects_incompatible_codex_thread_storage() -> None:
     with pytest.raises(typer.Exit):
         process.build_process_agent(
-            model=["gpt-5.5", "codex/gpt-5.5"],
+            model=["gpt-5.6-sol", "codex/gpt-5.6-sol"],
             rule=[],
             toolkit=[],
             schema=[],
@@ -1281,7 +1281,7 @@ def test_build_process_agent_rejects_incompatible_codex_thread_storage() -> None
 
     with pytest.raises(typer.Exit):
         process.build_process_agent(
-            model="codex/gpt-5.5",
+            model="codex/gpt-5.6-sol",
             rule=[],
             toolkit=[],
             schema=[],
@@ -1294,7 +1294,7 @@ def test_build_process_agent_rejects_incompatible_codex_thread_storage() -> None
 
 def test_build_process_agent_accepts_codex_storage_for_codex_backend() -> None:
     agent_cls = process.build_process_agent(
-        model="codex/gpt-5.5",
+        model="codex/gpt-5.6-sol",
         rule=[],
         toolkit=[],
         schema=[],
@@ -1451,7 +1451,7 @@ def test_build_process_agent_groups_repeated_models_by_provider(
     )
 
     agent_cls = process.build_process_agent(
-        model=["gpt-5.5", "gpt-5.4", "claude-opus-4-7", "gpt-realtime"],
+        model=["gpt-5.6-sol", "gpt-5.4", "claude-opus-4-7", "gpt-realtime"],
         rule=[],
         toolkit=[],
         schema=[],
@@ -1464,8 +1464,8 @@ def test_build_process_agent_groups_repeated_models_by_provider(
     assert created_adapters[1:] == [
         {
             "provider": "openai",
-            "model": "gpt-5.5",
-            "allowed_models": ["gpt-5.5", "gpt-5.4"],
+            "model": "gpt-5.6-sol",
+            "allowed_models": ["gpt-5.6-sol", "gpt-5.4"],
         },
         {
             "provider": "openai-realtime",
@@ -1505,7 +1505,7 @@ def test_build_process_agent_passes_project_header_client_to_openai_adapters(
     monkeypatch.setattr(process, "_openai_proxy_client", fake_openai_proxy_client)
 
     agent_cls = process.build_process_agent(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         api_key="oauth-token",
         meshagent_project_id="project-123",
         rule=[],
@@ -1539,7 +1539,7 @@ def test_build_process_agent_enables_server_tool_search_for_openai_adapter(
     monkeypatch.setattr(process, "OpenAIResponsesAdapter", _FakeOpenAIAdapter)
 
     agent_cls = process.build_process_agent(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         rule=[],
         toolkit=["RequiredAssistant"],
         schema=[],
@@ -1889,7 +1889,7 @@ def test_process_spec_reports_invalid_model_as_usage_error() -> None:
         await process.spec(
             agent_name="helper",
             channel=["chat"],
-            model=["chat/gpt-5.5"],
+            model=["chat/gpt-5.6-sol"],
         )
 
     with pytest.raises(typer.BadParameter) as exc_info:
@@ -2438,7 +2438,7 @@ async def test_process_run_starts_room_agent_and_uses_ask_tui(
     assert captured["process_tui_kwargs"] == {
         "bot": process_agent,
         "room": room_client,
-        "model": ["gpt-5.5"],
+        "model": ["gpt-5.6-sol"],
         "thread_path": None,
         "thread_storage": "dataset",
         "agent_name": "helper",
@@ -2520,7 +2520,7 @@ async def test_process_run_no_room_starts_local_agent_and_uses_oauth_token(
         project_id=None,
         room=None,
         no_room=True,
-        model=["openai/gpt-5.5"],
+        model=["openai/gpt-5.6-sol"],
         thread_storage="none",
         agent_name="helper",
         channel=["chat"],
@@ -2539,7 +2539,7 @@ async def test_process_run_no_room_starts_local_agent_and_uses_oauth_token(
     assert captured["process_tui_kwargs"] == {
         "bot": process_agent,
         "room": None,
-        "model": ["openai/gpt-5.5"],
+        "model": ["openai/gpt-5.6-sol"],
         "thread_path": None,
         "thread_storage": "none",
         "agent_name": "helper",
@@ -2594,7 +2594,7 @@ async def test_process_run_no_room_defaults_to_memory_channel_and_ephemeral_stor
         project_id=None,
         room=None,
         no_room=True,
-        model=["openai/gpt-5.5"],
+        model=["openai/gpt-5.6-sol"],
         agent_name="helper",
     )
 
@@ -2645,7 +2645,7 @@ async def test_process_run_no_room_allows_codex_storage_without_token(
         project_id=None,
         room=None,
         no_room=True,
-        model=["codex/gpt-5.5"],
+        model=["codex/gpt-5.6-sol"],
         thread_storage="codex",
         agent_name="helper",
         channel=["chat"],
@@ -2681,7 +2681,7 @@ async def test_process_run_no_room_rejects_room_storage(
             project_id=None,
             room=None,
             no_room=True,
-            model=["codex/gpt-5.5"],
+            model=["codex/gpt-5.6-sol"],
             thread_storage="dataset",
             agent_name="helper",
             channel=["chat"],
@@ -2816,7 +2816,7 @@ async def test_process_run_no_room_rejects_room_tools(
             project_id=None,
             room=None,
             no_room=True,
-            model=["codex/gpt-5.5"],
+            model=["codex/gpt-5.6-sol"],
             thread_storage="codex",
             agent_name="helper",
             channel=["chat"],
@@ -3067,7 +3067,7 @@ async def test_process_run_tui_sends_selected_backend_for_mixed_backends(
             self._supervisor = _DummySupervisor()
 
     async def fake_run_ask_tui(**kwargs):
-        assert kwargs["model"] == "llm/openai/gpt-5.5"
+        assert kwargs["model"] == "llm/openai/gpt-5.6-sol"
         await kwargs["session"].send_text(text="hi")
 
     bot = _DummyBot()
@@ -3076,7 +3076,7 @@ async def test_process_run_tui_sends_selected_backend_for_mixed_backends(
     await process._run_process_run_tui(
         bot=bot,
         room=None,
-        model=["openai/gpt-5.5", "codex/gpt-5.5"],
+        model=["openai/gpt-5.6-sol", "codex/gpt-5.6-sol"],
         thread_path="/threads/process-run.thread",
         thread_storage="dataset",
         agent_name="helper",
@@ -3093,7 +3093,7 @@ async def test_process_run_tui_sends_selected_backend_for_mixed_backends(
     )
     assert turn_start.backend == "llm"
     assert turn_start.provider == "openai"
-    assert turn_start.model == "gpt-5.5"
+    assert turn_start.model == "gpt-5.6-sol"
 
 
 @pytest.mark.asyncio
@@ -3146,7 +3146,7 @@ async def test_process_run_tui_closes_local_events_after_supervisor_detaches(
 
     await process._run_process_run_tui(
         bot=bot,
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         thread_path="dataset://threads/process-run",
         thread_storage="dataset",
         agent_name="helper",
@@ -3204,7 +3204,7 @@ async def test_process_model_command_lists_and_changes_models() -> None:
                         default_model="gpt-5.4",
                         models=[
                             AgentModelInfo(name="gpt-5.4"),
-                            AgentModelInfo(name="gpt-5.5"),
+                            AgentModelInfo(name="gpt-5.6-sol"),
                         ],
                     ),
                 ],
@@ -3382,7 +3382,7 @@ async def test_process_run_tui_loads_existing_thread_messages(
     bot = _DummyBot()
     await process._run_process_run_tui(
         bot=bot,
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         thread_path="dataset://threads/process-run",
         thread_storage="dataset",
         agent_name="helper",
@@ -3454,7 +3454,7 @@ async def test_process_run_tui_default_new_does_not_open_implicit_thread_on_star
 
     await process._run_process_run_tui(
         bot=bot,
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         thread_path=None,
         thread_storage="dataset",
         agent_name="helper",
@@ -5436,7 +5436,7 @@ class _SteeringRecordingAdapter:
         self.tool_call_approval_handler = None
 
     def default_model(self) -> str:
-        return "gpt-5.5"
+        return "gpt-5.6-sol"
 
     def provider_name(self) -> str:
         return "openai"
@@ -5584,7 +5584,7 @@ async def test_process_agent_thread_control_messages_mutate_thread_storage(
             del kwargs
 
         def default_model(self) -> str:
-            return "gpt-5.5"
+            return "gpt-5.6-sol"
 
         def create_session(self, *, usage_callback=None) -> AgentSessionContext:
             del usage_callback
@@ -5653,7 +5653,7 @@ async def test_process_agent_thread_control_messages_mutate_thread_storage(
     )
 
     agent_cls = process.build_process_agent(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         rule=[],
         toolkit=[],
         schema=[],
@@ -5738,7 +5738,7 @@ async def test_process_run_direct_session_lists_threads_through_local_protocol(
             del kwargs
 
         def default_model(self) -> str:
-            return "gpt-5.5"
+            return "gpt-5.6-sol"
 
         def create_session(self, *, usage_callback=None) -> AgentSessionContext:
             del usage_callback
@@ -5805,7 +5805,7 @@ async def test_process_run_direct_session_lists_threads_through_local_protocol(
     )
 
     agent_cls = process.build_process_agent(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         rule=[],
         toolkit=[],
         schema=[],
@@ -6032,7 +6032,7 @@ async def test_process_turn_toolkits_keep_computer_toolkit_top_level(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent_cls = process.build_process_agent(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         rule=[],
         toolkit=[],
         schema=[],
@@ -6052,7 +6052,7 @@ async def test_process_turn_toolkits_keep_computer_toolkit_top_level(
     combined_toolkits = await agent.get_process_turn_toolkits(
         process=_FakeProcessState(),
         sender=None,
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         turns=[
             TurnStart(
                 type="meshagent.agent.turn.start",
@@ -6080,7 +6080,7 @@ async def test_process_turn_toolkits_preserve_required_toolkit_names(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent_cls = chatbot.build_process_agent(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         rule=[],
         toolkit=[],
         schema=[],
@@ -6103,7 +6103,7 @@ async def test_process_turn_toolkits_preserve_required_toolkit_names(
     combined_toolkits = await agent.get_process_turn_toolkits(
         process=_FakeProcessState(),
         sender=None,
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         turns=[
             TurnStart(
                 type="meshagent.agent.turn.start",
@@ -6127,7 +6127,7 @@ async def test_process_turn_toolkits_pass_room_context_to_required_toolkits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent_cls = chatbot.build_process_agent(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         rule=[],
         toolkit=[],
         schema=[],
@@ -6148,7 +6148,7 @@ async def test_process_turn_toolkits_pass_room_context_to_required_toolkits(
     await agent.get_process_turn_toolkits(
         process=_FakeProcessState(),
         sender=None,
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         turns=[
             TurnStart(
                 type="meshagent.agent.turn.start",
@@ -6168,7 +6168,7 @@ async def test_process_turn_toolkits_agent_tool_search_uses_static_agent_toolkit
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent_cls = process.build_process_agent(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         rule=[],
         toolkit=["RequiredAssistant"],
         schema=[],
@@ -6193,7 +6193,7 @@ async def test_process_turn_toolkits_agent_tool_search_uses_static_agent_toolkit
     combined_toolkits = await agent.get_process_turn_toolkits(
         process=_FakeProcessState(),
         sender=None,
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         turns=[
             TurnStart(
                 type="meshagent.agent.turn.start",
@@ -6215,7 +6215,7 @@ async def test_process_turn_toolkits_room_tool_search_adds_annotated_room_toolki
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent_cls = process.build_process_agent(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         rule=[],
         toolkit=["RequiredAssistant"],
         schema=[],
@@ -6250,7 +6250,7 @@ async def test_process_turn_toolkits_room_tool_search_adds_annotated_room_toolki
     combined_toolkits = await agent.get_process_turn_toolkits(
         process=_FakeProcessState(),
         sender=None,
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         turns=[
             TurnStart(
                 type="meshagent.agent.turn.start",
@@ -6280,7 +6280,7 @@ async def test_build_process_agent_uses_selected_dataset_thread_storage(
         _FakeDatasetThreadStorage,
     )
     agent_cls = process.build_process_agent(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         rule=[],
         toolkit=[],
         schema=[],
@@ -6325,7 +6325,7 @@ async def test_build_process_agent_enables_verbose_dataset_thread_storage(
         _FakeDatasetThreadStorage,
     )
     agent_cls = process.build_process_agent(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         rule=[],
         toolkit=[],
         schema=[],
@@ -6364,7 +6364,7 @@ async def test_build_process_agent_can_disable_thread_storage(
         _FakeDatasetThreadStorage,
     )
     agent_cls = process.build_process_agent(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         rule=[],
         toolkit=[],
         schema=[],
@@ -6413,7 +6413,7 @@ async def test_build_process_agent_forwards_tool_boundary_steering_callback(
         _FakeDatasetThreadStorage,
     )
     agent_cls = chatbot.build_process_agent(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         rule=[],
         toolkit=[],
         schema=[],
@@ -6899,7 +6899,7 @@ async def test_chatbot_require_advanced_shell_uses_container_toolkit_with_shell_
 ) -> None:
     monkeypatch.setenv("COPIED_ENV", "copied")
     custom_chatbot = chatbot.build_chatbot(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         rule=[],
         toolkit=[],
         schema=[],
@@ -6940,7 +6940,7 @@ async def test_process_agent_require_advanced_shell_uses_container_toolkit_with_
 
     monkeypatch.setenv("COPIED_ENV", "copied")
     custom_process_agent = chatbot.build_process_agent(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         rule=[],
         toolkit=[],
         schema=[],
@@ -6990,7 +6990,7 @@ async def test_process_agent_require_advanced_shell_reuses_container_toolkit_acr
     import meshagent.agents.process as process_module
 
     custom_process_agent = chatbot.build_process_agent(
-        model="gpt-5.5",
+        model="gpt-5.6-sol",
         rule=[],
         toolkit=[],
         schema=[],
@@ -7034,13 +7034,13 @@ async def test_process_agent_require_advanced_shell_reuses_container_toolkit_acr
         first_toolkits = await agent.get_process_turn_toolkits(
             process=_FakeProcessState(),
             sender=None,
-            model="gpt-5.5",
+            model="gpt-5.6-sol",
             turns=turns,
         )
         second_toolkits = await agent.get_process_turn_toolkits(
             process=_FakeProcessState(),
             sender=None,
-            model="gpt-5.5",
+            model="gpt-5.6-sol",
             turns=turns,
         )
 

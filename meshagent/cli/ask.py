@@ -151,7 +151,7 @@ from meshagent.tools.storage import StorageToolLocalMount, StorageToolkit
 
 _MESHAGENT_PROJECT_ID_HEADER = "Meshagent-Project-Id"
 _MESHAGENT_TOKEN_ENV = "MESHAGENT_TOKEN"
-_DEFAULT_ASK_MODEL = "gpt-5.5"
+_DEFAULT_ASK_MODEL = "gpt-5.6-sol"
 _ASK_ACTIVE_STATUS_STATES = {"queued", "in_progress", "running", "pending"}
 _ASK_TERMINAL_STATUS_STATES = {
     "completed",
