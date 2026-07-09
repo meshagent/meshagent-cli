@@ -9,6 +9,7 @@ from typer import _click as click
 from typer.core import TyperOption
 import aiohttp
 import pytest
+import yaml
 
 from meshagent.agents.context import AgentSessionContext
 from meshagent.agents.messages import (
@@ -1613,6 +1614,17 @@ def test_process_agent_annotations_use_tmp_thread_dir_without_storage() -> None:
         "meshagent.chatbot.thread-dir": "tmp://agents/helper/threads",
         "meshagent.chatbot.thread-list": "/agents/helper/threads/index.threadl",
     }
+    assert process._process_agent_annotations(
+        threading_mode="default-new",
+        thread_dir="tmp://agents/helper/threads",
+        thread_storage="none",
+        channel=["chat"],
+    ) == {
+        "meshagent.agent.type": "ChatBot",
+        "meshagent.chatbot.threading": "default-new",
+        "meshagent.chatbot.thread-dir": "tmp://agents/helper/threads",
+        "meshagent.chatbot.thread-list": "tmp://agents/helper/threads/index.threadl",
+    }
 
 
 def test_process_spec_uses_process_runtime_and_chat_channel(monkeypatch) -> None:
@@ -1620,7 +1632,7 @@ def test_process_spec_uses_process_runtime_and_chat_channel(monkeypatch) -> None
     build_calls: list[dict[str, object]] = []
     printed: list[str] = []
     allowed_build_kwargs = set(
-        inspect.signature(chatbot.build_process_agent).parameters
+        inspect.signature(process.build_process_agent).parameters
     )
 
     def fake_get_service(*, host, port):
@@ -1640,15 +1652,15 @@ def test_process_spec_uses_process_runtime_and_chat_channel(monkeypatch) -> None
         del kwargs
         printed.append(" ".join(str(arg) for arg in args))
 
-    monkeypatch.setattr(chatbot, "get_service", fake_get_service)
+    monkeypatch.setattr(process, "get_service", fake_get_service)
     monkeypatch.setattr(
-        chatbot, "service_specs", lambda token_identity=None: [_service_spec()]
+        process, "service_specs", lambda token_identity=None: [_service_spec()]
     )
-    monkeypatch.setattr(chatbot, "build_process_agent", fake_build_process_agent)
-    monkeypatch.setattr(chatbot, "build_chatbot", fail_build_chatbot)
-    monkeypatch.setattr(chatbot, "print", capture_print)
+    monkeypatch.setattr(process, "build_process_agent", fake_build_process_agent)
+    monkeypatch.setattr(process, "build_chatbot", fail_build_chatbot)
+    monkeypatch.setattr(process, "print", capture_print)
     monkeypatch.setattr(
-        chatbot.sys,
+        process.sys,
         "argv",
         [
             "meshagent",
@@ -1672,7 +1684,7 @@ def test_process_spec_uses_process_runtime_and_chat_channel(monkeypatch) -> None
     )
 
     async def invoke_spec() -> None:
-        await chatbot.spec(
+        await process.spec(
             agent_name="helper",
             decision_model="gpt-5.4-nano",
             channel=["chat"],
@@ -1681,21 +1693,7 @@ def test_process_spec_uses_process_runtime_and_chat_channel(monkeypatch) -> None
             max_output_tokens=4096,
         )
 
-    root_command = click.Command("meshagent")
-    process_command = click.Command("process")
-    spec_command = click.Command("spec")
-    with click.Context(root_command, info_name="meshagent") as root_context:
-        with click.Context(
-            process_command,
-            info_name="process",
-            parent=root_context,
-        ) as process_context:
-            with click.Context(
-                spec_command,
-                info_name="spec",
-                parent=process_context,
-            ):
-                asyncio.run(invoke_spec())
+    asyncio.run(invoke_spec())
 
     assert len(build_calls) == 1
     _assert_builder_kwargs_match_signature(
@@ -1713,9 +1711,221 @@ def test_process_spec_uses_process_runtime_and_chat_channel(monkeypatch) -> None
     assert len(fake_service.agents) == 1
     assert fake_service.agents[0].annotations == {
         "meshagent.agent.type": "ChatBot",
+        "meshagent.chatbot.threading": "default-new",
+        "meshagent.chatbot.thread-dir": "dataset://agents/helper/threads",
+        "meshagent.chatbot.thread-list": "dataset://agents/helper/threads/index",
     }
     assert len(printed) == 1
     assert "meshagent process join --agent-name helper" in printed[0]
+
+
+def test_process_spec_yaml_keeps_long_command_parseable(monkeypatch) -> None:
+    fake_service = _FakeService()
+    printed: list[str] = []
+
+    def fake_get_service(*, host, port):
+        del host
+        del port
+        return fake_service
+
+    def fake_build_process_agent(**kwargs):
+        del kwargs
+        return type("DummyProcessAgent", (), {})
+
+    def capture_print(*args, **kwargs):
+        del kwargs
+        printed.append(" ".join(str(arg) for arg in args))
+
+    monkeypatch.setattr(process, "get_service", fake_get_service)
+    monkeypatch.setattr(
+        process, "service_specs", lambda token_identity=None: [_service_spec()]
+    )
+    monkeypatch.setattr(process, "build_process_agent", fake_build_process_agent)
+    monkeypatch.setattr(process, "print", capture_print)
+    monkeypatch.setattr(
+        process.sys,
+        "argv",
+        [
+            "meshagent",
+            "process",
+            "spec",
+            "--agent-name",
+            "helper",
+            "--channel",
+            "chat",
+            "--working-dir",
+            "/workspace",
+        ],
+    )
+
+    async def invoke_spec() -> None:
+        await process.spec(
+            agent_name="helper",
+            channel=["chat"],
+            working_dir="/workspace",
+        )
+
+    asyncio.run(invoke_spec())
+
+    assert len(printed) == 1
+    spec = yaml.safe_load(printed[0])
+    assert (
+        spec["container"]["command"]
+        == "meshagent process join --agent-name helper --channel chat --working-dir /workspace"
+    )
+
+
+def test_process_spec_uses_require_document_authoring_flag(monkeypatch) -> None:
+    fake_service = _FakeService()
+    printed: list[str] = []
+
+    def fake_get_service(*, host, port):
+        del host
+        del port
+        return fake_service
+
+    def fake_build_process_agent(**kwargs):
+        del kwargs
+        return type("DummyProcessAgent", (), {})
+
+    def capture_print(*args, **kwargs):
+        del kwargs
+        printed.append(" ".join(str(arg) for arg in args))
+
+    monkeypatch.setattr(process, "get_service", fake_get_service)
+    monkeypatch.setattr(
+        process, "service_specs", lambda token_identity=None: [_service_spec()]
+    )
+    monkeypatch.setattr(process, "build_process_agent", fake_build_process_agent)
+    monkeypatch.setattr(process, "print", capture_print)
+    monkeypatch.setattr(
+        process.sys,
+        "argv",
+        [
+            "meshagent",
+            "process",
+            "spec",
+            "--agent-name",
+            "helper",
+            "--channel",
+            "chat",
+            "--require-document-authoring",
+        ],
+    )
+
+    async def invoke_spec() -> None:
+        await process.spec(
+            agent_name="helper",
+            channel=["chat"],
+            require_document_authoring=True,
+        )
+
+    asyncio.run(invoke_spec())
+
+    assert len(printed) == 1
+    spec = yaml.safe_load(printed[0])
+    assert (
+        spec["container"]["command"]
+        == "meshagent process join --agent-name helper --channel chat --require-document-authoring"
+    )
+
+
+def test_process_spec_none_thread_storage_uses_single_tmp_scheme(monkeypatch) -> None:
+    fake_service = _FakeService()
+    printed: list[str] = []
+
+    def fake_get_service(*, host, port):
+        del host
+        del port
+        return fake_service
+
+    def fake_build_process_agent(**kwargs):
+        del kwargs
+        return type("DummyProcessAgent", (), {})
+
+    def capture_print(*args, **kwargs):
+        del kwargs
+        printed.append(" ".join(str(arg) for arg in args))
+
+    monkeypatch.setattr(process, "get_service", fake_get_service)
+    monkeypatch.setattr(
+        process, "service_specs", lambda token_identity=None: [_service_spec()]
+    )
+    monkeypatch.setattr(process, "build_process_agent", fake_build_process_agent)
+    monkeypatch.setattr(process, "print", capture_print)
+    monkeypatch.setattr(
+        process.sys,
+        "argv",
+        [
+            "meshagent",
+            "process",
+            "spec",
+            "--agent-name",
+            "helper",
+            "--channel",
+            "chat",
+            "--thread-storage",
+            "none",
+        ],
+    )
+
+    async def invoke_spec() -> None:
+        await process.spec(
+            agent_name="helper",
+            channel=["chat"],
+            thread_storage=["none"],
+        )
+
+    asyncio.run(invoke_spec())
+
+    assert len(fake_service.agents) == 1
+    assert fake_service.agents[0].annotations["meshagent.chatbot.thread-dir"] == (
+        "tmp://agents/helper/threads"
+    )
+
+
+def test_process_spec_reports_invalid_model_as_usage_error() -> None:
+    async def invoke_spec() -> None:
+        await process.spec(
+            agent_name="helper",
+            channel=["chat"],
+            model=["chat/gpt-5.5"],
+        )
+
+    with pytest.raises(typer.BadParameter) as exc_info:
+        asyncio.run(invoke_spec())
+
+    assert str(exc_info.value) == "chat backend only supports model 'none'"
+
+
+def test_process_spec_reports_invalid_backend_as_usage_error() -> None:
+    async def invoke_spec() -> None:
+        await process.spec(
+            agent_name="helper",
+            channel=["chat"],
+            backend=["unknown"],
+        )
+
+    with pytest.raises(typer.BadParameter) as exc_info:
+        asyncio.run(invoke_spec())
+
+    assert (
+        str(exc_info.value) == "unknown backend 'unknown'; supported: llm, codex, chat"
+    )
+
+
+def test_process_spec_reports_invalid_thread_storage_as_usage_error() -> None:
+    async def invoke_spec() -> None:
+        await process.spec(
+            agent_name="helper",
+            channel=["chat"],
+            thread_storage=[""],
+        )
+
+    with pytest.raises(typer.BadParameter) as exc_info:
+        asyncio.run(invoke_spec())
+
+    assert str(exc_info.value) == "unsupported thread storage backend ''"
 
 
 def test_chatbot_spec_defaults_dataset_namespace(monkeypatch) -> None:

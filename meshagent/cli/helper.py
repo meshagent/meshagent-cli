@@ -87,7 +87,6 @@ DEPRECATED_REQUIRE_OPTION_ALIASES = {
     "--require-uuid": "--uuid",
     "--require-table-read": "--table-read",
     "--require-table-write": "--table-write",
-    "--require-document-authoring": "--document-authoring",
     "--require-discovery": "--discovery",
 }
 

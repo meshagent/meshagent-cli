@@ -2474,6 +2474,29 @@ def _current_command_runtime() -> Literal["process"]:
     return "process"
 
 
+class _ProcessSpecYamlDumper(yaml.SafeDumper):
+    pass
+
+
+def _represent_process_spec_string(
+    dumper: yaml.SafeDumper, value: str
+) -> yaml.nodes.ScalarNode:
+    style = '"' if value.startswith("meshagent process join ") else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
+
+
+_ProcessSpecYamlDumper.add_representer(str, _represent_process_spec_string)
+
+
+def _dump_process_service_spec_yaml(spec) -> str:
+    return yaml.dump(
+        spec.model_dump(mode="json", exclude_none=True),
+        Dumper=_ProcessSpecYamlDumper,
+        sort_keys=False,
+        width=4096,
+    )
+
+
 def _resolved_dataset_namespace(
     *,
     runtime: Literal["chatbot", "process"],
@@ -2526,6 +2549,24 @@ def _resolve_process_threading_options(
         )
 
     return threading_mode, default_thread_dir
+
+
+def _resolve_process_threading_options_for_cli(
+    *,
+    agent_name: str | None,
+    threading_mode: ThreadingMode,
+    thread_dir: str | None,
+    thread_storage: ThreadStorageBackends = DEFAULT_PROCESS_THREAD_STORAGE_BACKENDS,
+) -> tuple[ThreadingMode, str | None]:
+    try:
+        return _resolve_process_threading_options(
+            agent_name=agent_name,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
+            thread_storage=thread_storage,
+        )
+    except ValueError as error:
+        raise typer.BadParameter(str(error)) from error
 
 
 def _resolved_channels(
@@ -2998,7 +3039,7 @@ def _process_run_room_requirements(
     if use_memory:
         requirements.append("--memory")
     if require_document_authoring:
-        requirements.append("--document-authoring")
+        requirements.append("--require-document-authoring")
     if require_discovery:
         requirements.append("--discovery")
     if normalized_tool_options["require_computer_use"]:
@@ -3418,6 +3459,17 @@ def _normalize_thread_storage_backends(
     return normalized
 
 
+def _normalize_thread_storage_backends_for_cli(
+    thread_storage: ThreadStorageBackends | None,
+    *,
+    default: ThreadStorageBackends = DEFAULT_PROCESS_THREAD_STORAGE_BACKENDS,
+) -> list[NormalizedThreadStorageBackend]:
+    try:
+        return _normalize_thread_storage_backends(thread_storage, default=default)
+    except ValueError as error:
+        raise typer.BadParameter(str(error)) from error
+
+
 def _default_thread_storage_backend(
     thread_storage: ThreadStorageBackends | None,
     *,
@@ -3559,6 +3611,23 @@ def _normalize_process_backend_options(
         if backend_name not in normalized:
             normalized.append(backend_name)
     return normalized
+
+
+def _resolve_process_models_for_cli(
+    *,
+    model: str | list[str],
+    backend: list[str] | None,
+) -> tuple[list[ProcessBackendOptionName], list[str], list[_ProcessModelSpec]]:
+    try:
+        selected_backends = _normalize_process_backend_options(backend)
+        resolved_process_models = _process_models_for_backend_option(
+            model=model,
+            backend=selected_backends,
+        )
+        selected_model_specs = _normalize_process_model_specs(resolved_process_models)
+    except ValueError as error:
+        raise typer.BadParameter(str(error)) from error
+    return selected_backends, resolved_process_models, selected_model_specs
 
 
 def _provider_model_display_name(
@@ -4327,14 +4396,18 @@ def _process_agent_annotations(
         normalized_thread_dir = _normalized_thread_dir(thread_dir=thread_dir)
         if normalized_thread_dir is not None:
             if threading_mode == "none":
-                annotations["meshagent.chatbot.thread-path"] = _thread_url_for_path(
-                    scheme="tmp",
-                    path=f"{normalized_thread_dir}/main",
+                annotations["meshagent.chatbot.thread-path"] = (
+                    _process_thread_path_for_dir(
+                        thread_dir=normalized_thread_dir,
+                        thread_storage=thread_storage,
+                    )
                 )
             else:
-                annotations["meshagent.chatbot.thread-dir"] = _thread_url_for_path(
-                    scheme="tmp",
-                    path=normalized_thread_dir,
+                annotations["meshagent.chatbot.thread-dir"] = (
+                    _thread_dir_for_storage_backend(
+                        thread_dir=normalized_thread_dir,
+                        thread_storage=thread_storage,
+                    )
                 )
     return annotations
 
@@ -5465,9 +5538,9 @@ def build_process_agent(
             except FileNotFoundError:
                 print(f"[yellow]rules file not found at {rules_path}[/yellow]")
 
-    selected_backends = _normalize_process_backend_options(backend)
-    selected_model_specs = _normalize_process_model_specs(
-        _process_models_for_backend_option(model=model, backend=selected_backends)
+    selected_backends, _, selected_model_specs = _resolve_process_models_for_cli(
+        model=model,
+        backend=backend,
     )
     filter_model_specs = [] if len(selected_backends) > 0 else selected_model_specs
     llm_model_specs = [spec for spec in selected_model_specs if spec.backend == "llm"]
@@ -7118,11 +7191,13 @@ async def join(
         runtime=runtime,
         dataset_namespace=dataset_namespace,
     )
-    resolved_threading_mode, resolved_thread_dir = _resolve_process_threading_options(
-        agent_name=agent_name,
-        threading_mode=threading_mode,
-        thread_dir=thread_dir,
-        thread_storage=thread_storage,
+    resolved_threading_mode, resolved_thread_dir = (
+        _resolve_process_threading_options_for_cli(
+            agent_name=agent_name,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
+            thread_storage=thread_storage,
+        )
     )
     normalized_tool_options = normalize_required_tool_options(
         toolkit=toolkit,
@@ -7593,11 +7668,13 @@ async def service(
         runtime=runtime,
         dataset_namespace=dataset_namespace,
     )
-    resolved_threading_mode, resolved_thread_dir = _resolve_process_threading_options(
-        agent_name=agent_name,
-        threading_mode=threading_mode,
-        thread_dir=thread_dir,
-        thread_storage=thread_storage,
+    resolved_threading_mode, resolved_thread_dir = (
+        _resolve_process_threading_options_for_cli(
+            agent_name=agent_name,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
+            thread_storage=thread_storage,
+        )
     )
     normalized_tool_options = normalize_required_tool_options(
         toolkit=toolkit,
@@ -8005,11 +8082,13 @@ async def spec(
         runtime=runtime,
         dataset_namespace=dataset_namespace,
     )
-    resolved_threading_mode, resolved_thread_dir = _resolve_process_threading_options(
-        agent_name=agent_name,
-        threading_mode=threading_mode,
-        thread_dir=thread_dir,
-        thread_storage=thread_storage,
+    resolved_threading_mode, resolved_thread_dir = (
+        _resolve_process_threading_options_for_cli(
+            agent_name=agent_name,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
+            thread_storage=thread_storage,
+        )
     )
     normalized_tool_options = normalize_required_tool_options(
         toolkit=toolkit,
@@ -8033,6 +8112,10 @@ async def spec(
         require_mcp=require_mcp,
         storage=storage,
         require_storage=require_storage,
+    )
+    selected_backends, _, _ = _resolve_process_models_for_cli(
+        model=model,
+        backend=backend,
     )
 
     service = get_service(host=None, port=None)
@@ -8078,7 +8161,7 @@ async def spec(
             runtime=runtime,
             normalized_tool_options=normalized_tool_options,
             model=model,
-            backend=backend,
+            backend=selected_backends,
             rule=rule,
             rules_file=rules_file,
             instructions=instructions,
@@ -8155,7 +8238,7 @@ async def spec(
         ]
     )
 
-    print(yaml.dump(spec.model_dump(mode="json", exclude_none=True), sort_keys=False))
+    print(_dump_process_service_spec_yaml(spec))
 
 
 @app.async_command("deploy", help="Deploy a process-backed agent service.")
@@ -8438,11 +8521,13 @@ async def deploy(
         runtime=runtime,
         dataset_namespace=dataset_namespace,
     )
-    resolved_threading_mode, resolved_thread_dir = _resolve_process_threading_options(
-        agent_name=agent_name,
-        threading_mode=threading_mode,
-        thread_dir=thread_dir,
-        thread_storage=thread_storage,
+    resolved_threading_mode, resolved_thread_dir = (
+        _resolve_process_threading_options_for_cli(
+            agent_name=agent_name,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
+            thread_storage=thread_storage,
+        )
     )
     normalized_tool_options = normalize_required_tool_options(
         toolkit=toolkit,
@@ -11025,16 +11110,18 @@ async def run(
         runtime=runtime,
         dataset_namespace=dataset_namespace,
     )
-    resolved_thread_storage_backends = _normalize_thread_storage_backends(
+    resolved_thread_storage_backends = _normalize_thread_storage_backends_for_cli(
         thread_storage,
         default="none" if no_room else DEFAULT_PROCESS_THREAD_STORAGE_BACKENDS,
     )
     resolved_thread_storage = resolved_thread_storage_backends[0]
-    resolved_threading_mode, resolved_thread_dir = _resolve_process_threading_options(
-        agent_name=agent_name,
-        threading_mode=threading_mode,
-        thread_dir=thread_dir,
-        thread_storage=resolved_thread_storage_backends,
+    resolved_threading_mode, resolved_thread_dir = (
+        _resolve_process_threading_options_for_cli(
+            agent_name=agent_name,
+            threading_mode=threading_mode,
+            thread_dir=thread_dir,
+            thread_storage=resolved_thread_storage_backends,
+        )
     )
     normalized_tool_options = normalize_required_tool_options(
         toolkit=toolkit,
@@ -11090,12 +11177,14 @@ async def run(
     else:
         room_name = _require_resolved_room(resolve_room(room))
 
-    selected_backends = _normalize_process_backend_options(backend)
-    resolved_process_models = _process_models_for_backend_option(
+    (
+        selected_backends,
+        resolved_process_models,
+        selected_model_specs,
+    ) = _resolve_process_models_for_cli(
         model=model,
-        backend=selected_backends,
+        backend=backend,
     )
-    selected_model_specs = _normalize_process_model_specs(resolved_process_models)
     has_llm_backend = any(spec.backend == "llm" for spec in selected_model_specs)
 
     account_client = None if no_room else await get_client()
@@ -11371,7 +11460,7 @@ async def list_threads_command(
         ),
     ] = "text",
 ):
-    thread_storage_backends = _normalize_thread_storage_backends(thread_storage)
+    thread_storage_backends = _normalize_thread_storage_backends_for_cli(thread_storage)
     default_thread_storage = thread_storage_backends[0]
     runtime = _current_command_runtime()
     if runtime != "process":
@@ -11397,11 +11486,13 @@ async def list_threads_command(
             )
         return
 
-    resolved_threading_mode, resolved_thread_dir = _resolve_process_threading_options(
-        agent_name=agent_name,
-        threading_mode="default-new",
-        thread_dir=thread_dir,
-        thread_storage=thread_storage_backends,
+    resolved_threading_mode, resolved_thread_dir = (
+        _resolve_process_threading_options_for_cli(
+            agent_name=agent_name,
+            threading_mode="default-new",
+            thread_dir=thread_dir,
+            thread_storage=thread_storage_backends,
+        )
     )
     del resolved_threading_mode
     if resolved_thread_dir is None:
