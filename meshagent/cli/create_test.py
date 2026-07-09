@@ -1976,6 +1976,15 @@ def test_init_creates_flutter_webserver_non_interactively(tmp_path) -> None:
     dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     _assert_template_dockerfile(tmp_path)
+    dockerfile = (tmp_path / "Dockerfile").read_text(encoding="utf-8")
+    assert "ghcr.io/cirruslabs/flutter" not in dockerfile
+    assert (
+        "FROM --platform=${FLUTTER_IMAGE_PLATFORM} ubuntu:24.04 AS build" in dockerfile
+    )
+    assert "ARG FLUTTER_VERSION=3.44.6" in dockerfile
+    assert (
+        "a6320fd72e9a2690c08e2a6a70874a30cb120dee7c78f49d2c628bd7c9e20525" in dockerfile
+    )
     assert 'PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"' in install_sh
     assert "command -v flutter" in install_sh
     assert "command -v docker" not in install_sh
