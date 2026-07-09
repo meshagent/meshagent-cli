@@ -299,17 +299,18 @@ class CustomMeshagentClient(Meshagent):
         return await super().connect_room(project_id=project_id, room=room)
 
 
-async def get_client():
+async def get_client(*, api_url: str | None = None):
+    resolved_api_url = resolve_api_url(api_url=api_url)
     key = os.getenv("MESHAGENT_API_KEY") or os.getenv("MESHAGENT_TOKEN")
     if key is not None or os.getenv("MESHAGENT_SESSION_ID") is not None:
         return CustomMeshagentClient(
-            base_url=resolve_api_url(),
+            base_url=resolved_api_url,
             token=key,
         )
     else:
         access_token = await auth_async.get_access_token()
         return CustomMeshagentClient(
-            base_url=resolve_api_url(),
+            base_url=resolved_api_url,
             token=access_token,
         )
 

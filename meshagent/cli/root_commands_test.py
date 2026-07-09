@@ -1,9 +1,14 @@
 import asyncio
 from types import SimpleNamespace
 
+from meshagent.api.client import ProjectInfo, ProjectsPage
 from meshagent.cli import root_commands
 from meshagent.cli.local_settings import StoredUserProfile
-from meshagent.cli.tui.setup import SetupClaudeConfiguration, SetupWizardResult
+from meshagent.cli.tui.setup import (
+    SetupClaudeConfiguration,
+    SetupProject,
+    SetupWizardResult,
+)
 
 
 def test_version_command_prints_client_and_server_versions(
@@ -695,6 +700,122 @@ def test_setup_command_passes_api_url_to_login_operation(monkeypatch) -> None:
     callback(api_url="https://override.meshagent.test")
 
     assert captured == {"api_url": "https://override.meshagent.test"}
+
+
+def test_setup_command_project_operations_use_setup_api_url(monkeypatch) -> None:
+    client_api_urls: list[str | None] = []
+    active_project_ids: list[str | None] = []
+
+    class _FakeClient:
+        async def list_projects(self):
+            return ProjectsPage(
+                projects=[
+                    ProjectInfo.model_validate(
+                        {
+                            "id": "project-1",
+                            "name": "Project One",
+                        }
+                    )
+                ]
+            )
+
+        async def create_project(self, project_name: str):
+            assert project_name == "New Project"
+            return ProjectInfo.model_validate(
+                {
+                    "id": "project-created",
+                    "name": project_name,
+                }
+            )
+
+        async def can_use_llm_proxy(self, project_id: str) -> bool:
+            assert project_id == "project-1"
+            return True
+
+        async def close(self) -> None:
+            return None
+
+    async def _fake_get_client(*, api_url=None):
+        client_api_urls.append(api_url)
+        return _FakeClient()
+
+    async def _fake_get_active_project() -> str | None:
+        return None
+
+    async def _fake_set_active_project(project_id: str | None) -> None:
+        active_project_ids.append(project_id)
+
+    async def _fake_get_access_token() -> str | None:
+        return "oauth-token"
+
+    async def _fake_run_setup_wizard_tui(**kwargs) -> SetupWizardResult:
+        assert await kwargs["list_projects_operation"]() == [
+            SetupProject(id="project-1", name="Project One")
+        ]
+        assert (
+            await kwargs["create_project_operation"]("New Project") == "project-created"
+        )
+        assert await kwargs["activate_project_operation"]("project-1") == "project-1"
+        assert await kwargs["has_llm_proxy_access_operation"]("project-1") is True
+        return SetupWizardResult(status="canceled", message="Setup canceled.")
+
+    def _fake_resolve_api_url(*, api_url=None):
+        if api_url is None:
+            return "https://ambient.meshagent.test"
+        return api_url.rstrip("/")
+
+    monkeypatch.setattr(
+        "meshagent.cli.helper.get_client",
+        _fake_get_client,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.helper.get_active_project",
+        _fake_get_active_project,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.helper.set_active_project",
+        _fake_set_active_project,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tui.setup.run_setup_wizard_tui",
+        _fake_run_setup_wizard_tui,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.auth_async.get_access_token",
+        _fake_get_access_token,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.local_settings.resolve_api_url",
+        _fake_resolve_api_url,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.local_settings.get_active_api_url",
+        lambda: "https://override.meshagent.test",
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.has_codex_cli",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        "meshagent.cli.tool_integrations.has_claude_code_cli",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        root_commands,
+        "_run_async",
+        lambda coro: asyncio.run(coro),
+    )
+
+    callback = root_commands.setup_command.callback
+    assert callback is not None
+    callback(api_url="https://override.meshagent.test/")
+
+    assert client_api_urls == [
+        "https://override.meshagent.test",
+        "https://override.meshagent.test",
+        "https://override.meshagent.test",
+    ]
+    assert active_project_ids == ["project-1"]
 
 
 def test_setup_command_skips_current_account_for_unmatched_override_api_url(
