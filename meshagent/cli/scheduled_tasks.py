@@ -88,6 +88,60 @@ def _scheduled_task_table_rows(tasks: list[ScheduledTask]) -> list[dict[str, Any
     return rows
 
 
+async def _list_scheduled_tasks(
+    client: Any,
+    *,
+    project_id: str,
+    room_id: str | None,
+    task_id: str | None,
+    active: bool | None,
+    count: int,
+    offset: int,
+    filter: str | None,
+) -> list[ScheduledTask]:
+    if count <= 0:
+        return []
+
+    tasks: list[ScheduledTask] = []
+    if room_id is not None:
+        next_offset = offset
+        while len(tasks) < count:
+            page_size = min(count - len(tasks), 100)
+            page = await client.list_scheduled_tasks_page(
+                project_id=project_id,
+                room_id=room_id,
+                task_id=task_id,
+                active=active,
+                page_size=page_size,
+                offset=next_offset,
+                filter=filter,
+            )
+            tasks.extend(page.tasks)
+            if len(page.tasks) < page_size:
+                break
+            next_offset += len(page.tasks)
+        return tasks[:count]
+
+    target_count = offset + count
+    continuation_token: str | None = None
+    while len(tasks) < target_count:
+        page = await client.list_scheduled_tasks_page(
+            project_id=project_id,
+            room_id=None,
+            task_id=task_id,
+            active=active,
+            page_size=min(target_count - len(tasks), 100),
+            continuation_token=continuation_token,
+            filter=filter,
+        )
+        tasks.extend(page.tasks)
+        continuation_token = page.continuation_token
+        if continuation_token is None or not page.tasks:
+            break
+
+    return tasks[offset:target_count]
+
+
 def _scheduled_task_run_records(runs: list[ScheduledTaskRun]) -> list[dict[str, Any]]:
     return [run.model_dump(mode="json", exclude_none=True) for run in runs]
 
@@ -188,17 +242,16 @@ async def scheduled_task_list(
             if room is not None
             else None
         )
-        list_kwargs = {
-            "project_id": project_id,
-            "room_id": room_id,
-            "task_id": task_id,
-            "active": active_filter,
-            "limit": count if count != 100 else limit,
-            "offset": offset,
-        }
-        if filter is not None:
-            list_kwargs["filter"] = filter
-        tasks = await client.list_scheduled_tasks(**list_kwargs)
+        tasks = await _list_scheduled_tasks(
+            client,
+            project_id=project_id,
+            room_id=room_id,
+            task_id=task_id,
+            active=active_filter,
+            count=count if count != 100 else limit,
+            offset=offset,
+            filter=filter,
+        )
 
         if o == "json":
             print(

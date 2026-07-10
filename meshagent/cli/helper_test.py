@@ -6,6 +6,11 @@ from meshagent.api.keys import ApiKey, encode_api_key
 from meshagent.cli import helper
 
 
+def test_print_json_table_uses_custom_empty_message() -> None:
+    with pytest.raises(SystemExit, match="No LLM loggers found"):
+        helper.print_json_table([], empty="No LLM loggers found")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("method", "relation"),

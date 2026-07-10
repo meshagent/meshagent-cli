@@ -4,7 +4,13 @@ import os
 import pytest
 import typer
 
-from meshagent.api.client import NotFoundError, Room, ScheduledTask, ScheduledTaskRun
+from meshagent.api.client import (
+    NotFoundError,
+    Room,
+    ScheduledTask,
+    ScheduledTaskRun,
+    ScheduledTasksPage,
+)
 from meshagent.api.specs.service import ScheduledTaskQueueSpec, ScheduledTaskSpec
 from meshagent.cli import scheduled_tasks
 
@@ -42,9 +48,11 @@ class _FakeScheduledTasksClient:
         self,
         *,
         tasks: list[ScheduledTask] | None = None,
+        task_pages: list[ScheduledTasksPage] | None = None,
         delete_error: Exception | None = None,
     ) -> None:
         self.tasks = tasks or []
+        self.task_pages = task_pages
         self.delete_error = delete_error
         self.closed = False
         self.create_calls: list[dict[str, object]] = []
@@ -54,27 +62,33 @@ class _FakeScheduledTasksClient:
         self.run_calls: list[dict[str, object]] = []
         self.runs: list[ScheduledTaskRun] = []
 
-    async def list_scheduled_tasks(
+    async def list_scheduled_tasks_page(
         self,
         *,
         project_id: str,
         room_id: str | None = None,
         task_id: str | None = None,
         active: bool | None = None,
-        limit: int = 200,
+        page_size: int = 100,
         offset: int = 0,
-    ) -> list[ScheduledTask]:
+        continuation_token: str | None = None,
+        filter: str | None = None,
+    ) -> ScheduledTasksPage:
         self.list_calls.append(
             {
                 "project_id": project_id,
                 "room_id": room_id,
                 "task_id": task_id,
                 "active": active,
-                "limit": limit,
+                "page_size": page_size,
                 "offset": offset,
+                "continuation_token": continuation_token,
+                "filter": filter,
             }
         )
-        return self.tasks
+        if self.task_pages is not None:
+            return self.task_pages.pop(0)
+        return ScheduledTasksPage(tasks=self.tasks)
 
     async def create_scheduled_task(
         self,
@@ -239,6 +253,7 @@ async def test_scheduled_task_list_prints_table_rows(monkeypatch) -> None:
         task_id="task-1",
         active=True,
         inactive=False,
+        filter="queue-1",
         limit=10,
         offset=5,
         o="table",
@@ -250,8 +265,10 @@ async def test_scheduled_task_list_prints_table_rows(monkeypatch) -> None:
             "room_id": "room-1-id",
             "task_id": "task-1",
             "active": True,
-            "limit": 10,
+            "page_size": 10,
             "offset": 5,
+            "continuation_token": None,
+            "filter": "queue-1",
         }
     ]
     assert fake_client.closed is True
@@ -279,7 +296,15 @@ async def test_scheduled_task_list_prints_table_rows(monkeypatch) -> None:
 async def test_scheduled_task_list_defaults_room_from_env(
     monkeypatch,
 ) -> None:
-    fake_client = _FakeScheduledTasksClient()
+    page_tasks = [
+        ScheduledTask.model_construct(id=f"task-{index}") for index in range(100)
+    ]
+    fake_client = _FakeScheduledTasksClient(
+        task_pages=[
+            ScheduledTasksPage(tasks=page_tasks),
+            ScheduledTasksPage(tasks=page_tasks),
+        ]
+    )
 
     async def fake_get_client() -> _FakeScheduledTasksClient:
         return fake_client
@@ -290,6 +315,7 @@ async def test_scheduled_task_list_defaults_room_from_env(
 
     monkeypatch.setattr(scheduled_tasks, "get_client", fake_get_client)
     monkeypatch.setattr(scheduled_tasks, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(scheduled_tasks, "print", lambda *args, **kwargs: None)
     monkeypatch.setenv("MESHAGENT_ROOM", "room-from-env")
 
     await scheduled_tasks.scheduled_task_list(
@@ -309,9 +335,99 @@ async def test_scheduled_task_list_defaults_room_from_env(
             "room_id": "room-from-env-id",
             "task_id": None,
             "active": None,
-            "limit": 200,
+            "page_size": 100,
             "offset": 0,
-        }
+            "continuation_token": None,
+            "filter": None,
+        },
+        {
+            "project_id": "resolved-project",
+            "room_id": "room-from-env-id",
+            "task_id": None,
+            "active": None,
+            "page_size": 100,
+            "offset": 100,
+            "continuation_token": None,
+            "filter": None,
+        },
+    ]
+    assert fake_client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_scheduled_task_list_project_applies_offset_across_pages(
+    monkeypatch,
+) -> None:
+    first_page = [
+        ScheduledTask.model_construct(id=f"task-{index}") for index in range(100)
+    ]
+    second_page = [
+        ScheduledTask.model_construct(id=f"task-{index}") for index in range(100, 103)
+    ]
+    fake_client = _FakeScheduledTasksClient(
+        task_pages=[
+            ScheduledTasksPage(
+                tasks=first_page,
+                continuation_token="next-page",
+            ),
+            ScheduledTasksPage(tasks=second_page),
+        ]
+    )
+    printed: list[list[dict[str, object]]] = []
+
+    async def fake_get_client() -> _FakeScheduledTasksClient:
+        return fake_client
+
+    async def fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-1"
+        return "resolved-project"
+
+    monkeypatch.delenv("MESHAGENT_ROOM", raising=False)
+    monkeypatch.setattr(scheduled_tasks, "get_client", fake_get_client)
+    monkeypatch.setattr(scheduled_tasks, "resolve_project_id", fake_resolve_project_id)
+    monkeypatch.setattr(
+        scheduled_tasks,
+        "print_json_table",
+        lambda records, *columns: printed.append(records),
+    )
+
+    await scheduled_tasks.scheduled_task_list(
+        project_id="project-1",
+        room=None,
+        task_id=None,
+        active=False,
+        inactive=False,
+        filter="daily",
+        count=2,
+        limit=100,
+        offset=101,
+        o="table",
+    )
+
+    assert fake_client.list_calls == [
+        {
+            "project_id": "resolved-project",
+            "room_id": None,
+            "task_id": None,
+            "active": None,
+            "page_size": 100,
+            "offset": 0,
+            "continuation_token": None,
+            "filter": "daily",
+        },
+        {
+            "project_id": "resolved-project",
+            "room_id": None,
+            "task_id": None,
+            "active": None,
+            "page_size": 3,
+            "offset": 0,
+            "continuation_token": "next-page",
+            "filter": "daily",
+        },
+    ]
+    assert [[record["id"] for record in records] for records in printed] == [
+        ["task-101", "task-102"]
     ]
     assert fake_client.closed is True
 

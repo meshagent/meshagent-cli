@@ -314,9 +314,9 @@ async def get_client(*, api_url: str | None = None):
         )
 
 
-def print_json_table(records: list, *cols):
+def print_json_table(records: list, *cols, empty: str = "No rows to print"):
     if not records:
-        raise SystemExit("No rows to print")
+        raise SystemExit(empty)
 
     # 2️⃣  --- build the table -------------------------------------------
     table = Table(show_header=True, header_style="bold magenta")

@@ -96,6 +96,33 @@ def _feed_table_row(feed: Any) -> dict[str, Any]:
     }
 
 
+async def _list_project_feeds(
+    client: Any,
+    *,
+    project_id: str,
+    count: int,
+    offset: int,
+    filter: str | None,
+) -> list[Any]:
+    feeds: list[Any] = []
+    continuation_token: str | None = None
+    target_count = offset + count
+
+    while len(feeds) < target_count:
+        page = await client.list_feeds_page(
+            project_id=project_id,
+            page_size=min(max(target_count - len(feeds), 1), 100),
+            continuation_token=continuation_token,
+            filter=filter,
+        )
+        feeds.extend(page.feeds)
+        continuation_token = page.continuation_token
+        if continuation_token is None:
+            break
+
+    return feeds[offset:target_count]
+
+
 @app.async_command("create")
 async def feed_create(
     *,
@@ -293,7 +320,8 @@ async def feed_list(
                 filter=filter,
             )
             if room is not None
-            else await client.list_feeds(
+            else await _list_project_feeds(
+                client,
                 project_id=project_id,
                 count=count,
                 offset=offset,
