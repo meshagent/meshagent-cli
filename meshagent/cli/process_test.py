@@ -1266,6 +1266,48 @@ def test_selecting_model_can_disambiguate_backend_provider_model() -> None:
     assert changed.model == "gpt-5.6-sol"
 
 
+def test_selected_models_preserve_advertised_attachment_capabilities() -> None:
+    model = AgentModelInfo(
+        name="gpt-capable",
+        supports_attachments=True,
+        accepts=["image/*", "application/pdf"],
+    )
+    response = ModelsResponse(
+        type=process.AGENT_MESSAGE_MODELS_RESPONSE,
+        source_message_id="models-request",
+        providers=[
+            AgentProviderInfo(
+                name="openai",
+                friendly_name="OpenAI",
+                backend="llm",
+                default_model="gpt-capable",
+                models=[model],
+            )
+        ],
+    )
+
+    selected = process._selected_model_from_models_response(
+        response=response,
+        thread_id="/threads/test.thread",
+        backend="llm",
+        provider="openai",
+        model="gpt-capable",
+    )
+    provider_default = process._selected_default_model_for_provider(
+        response=response,
+        thread_id="/threads/test.thread",
+        backend="llm",
+        provider_name="openai",
+    )
+
+    assert selected is not None
+    assert provider_default is not None
+    assert selected.supports_attachments is True
+    assert selected.accepts == ["image/*", "application/pdf"]
+    assert provider_default.supports_attachments is True
+    assert provider_default.accepts == ["image/*", "application/pdf"]
+
+
 def test_build_process_agent_rejects_incompatible_codex_thread_storage() -> None:
     with pytest.raises(typer.Exit):
         process.build_process_agent(

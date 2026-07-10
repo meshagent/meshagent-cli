@@ -3725,6 +3725,8 @@ def _selected_model_from_models_response(
             output_format=selected_model.output_format,
             turn_detection=selected_model.turn_detection,
             realtime_protocols=selected_model.realtime_protocols,
+            supports_attachments=selected_model.supports_attachments,
+            accepts=selected_model.accepts,
             output_modalities=_default_output_modalities_for_model_info(selected_model),
         )
     return None
@@ -3768,6 +3770,8 @@ def _selected_default_model_for_provider(
             output_format=selected_model.output_format,
             turn_detection=selected_model.turn_detection,
             realtime_protocols=selected_model.realtime_protocols,
+            supports_attachments=selected_model.supports_attachments,
+            accepts=selected_model.accepts,
             output_modalities=_default_output_modalities_for_model_info(selected_model),
         )
     return None
