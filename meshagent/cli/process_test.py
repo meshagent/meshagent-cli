@@ -526,6 +526,16 @@ def test_process_run_websocket_headers_omit_auth_for_none() -> None:
     assert headers == {}
 
 
+def test_process_run_websocket_headers_set_iap_user_for_direct_client() -> None:
+    headers = process._process_run_websocket_headers(
+        room=_FakeRoom(local_participant_name="agent"),
+        user=" caller ",
+        websocket_auth="iap",
+    )
+
+    assert headers == {"X-MESHAGENT-USER": "caller"}
+
+
 def test_process_run_websocket_headers_sign_agent_participant_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1597,7 +1597,6 @@ async def _open_process_run_websocket_chat_session(
     websocket_config: "_WebSocketChannelConfig",
     user: str,
     websocket_auth: WebSocketAuthMode,
-    iap_token: str | None = None,
     thread_path: str | None,
     thread_storage: "ThreadStorageBackend",
     agent_name: str | None,
@@ -1608,7 +1607,6 @@ async def _open_process_run_websocket_chat_session(
         room=room,
         user=user,
         websocket_auth=websocket_auth,
-        iap_token=iap_token,
     )
     chat_client = WebSocketChatClient(
         url=_websocket_client_url(websocket_config),
@@ -2792,7 +2790,6 @@ def _process_run_websocket_headers(
     room: RoomClient,
     user: str,
     websocket_auth: WebSocketAuthMode,
-    iap_token: str | None = None,
 ) -> dict[str, str]:
     normalized_user = user.strip()
     if normalized_user == "":
@@ -2800,7 +2797,7 @@ def _process_run_websocket_headers(
     if websocket_auth == "none":
         return {}
     if websocket_auth == "iap":
-        return _websocket_iap_cookie_headers(token=iap_token)
+        return {"X-MESHAGENT-USER": normalized_user}
 
     secret = os.getenv("MESHAGENT_SECRET")
     if secret is None or secret == "":
@@ -11375,7 +11372,6 @@ async def run(
                         websocket_config=websocket_run_channel,
                         user=user,
                         websocket_auth=websocket_auth,
-                        iap_token=jwt,
                         thread_path=thread_path,
                         thread_storage=resolved_thread_storage,
                         agent_name=agent_name,
