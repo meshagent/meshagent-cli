@@ -1,11 +1,12 @@
 import json
 
-from meshagent.cli.testing import CliRunner
 import pytest
+import typer
 
 from meshagent.api.client import Room, RoomsPage
 from meshagent.api.participant_token import ApiScope
 from meshagent.cli import async_typer, cli, rooms
+from meshagent.cli.testing import CliRunner
 
 
 class _FakeRoomsClient:
@@ -15,6 +16,7 @@ class _FakeRoomsClient:
         rooms_result: list[Room],
     ) -> None:
         self.rooms_result = rooms_result
+        self.rooms_page_results: list[RoomsPage] = []
         self.closed = False
         self.list_rooms_page_calls: list[dict[str, object]] = []
         self.create_room_calls: list[dict[str, object]] = []
@@ -37,6 +39,8 @@ class _FakeRoomsClient:
                 "view": view,
             }
         )
+        if self.rooms_page_results:
+            return self.rooms_page_results.pop(0)
         return RoomsPage(rooms=self.rooms_result, continuation_token=None)
 
     async def create_room(
@@ -237,12 +241,73 @@ async def test_room_list_passes_count_and_filter(
     assert client.list_rooms_page_calls == [
         {
             "project_id": "resolved-project",
-            "page_size": 25,
+            "page_size": 100,
             "continuation_token": None,
             "filter": "demo",
             "view": "my",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_room_list_fetches_all_before_name_sort_and_offset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeRoomsClient(rooms_result=[])
+    client.rooms_page_results = [
+        RoomsPage(
+            rooms=[Room(id="room-z", name="zulu", metadata={})],
+            continuation_token="cursor-1",
+        ),
+        RoomsPage(
+            rooms=[
+                Room(id="room-a", name="alpha", metadata={}),
+                Room(id="room-b", name="bravo", metadata={}),
+            ],
+            continuation_token=None,
+        ),
+    ]
+    printed: list[tuple[list[dict[str, object]], tuple[str, ...]]] = []
+    _patch_room_list_command(monkeypatch, client=client)
+    monkeypatch.setattr(
+        rooms,
+        "print_json_table",
+        lambda records, *cols: printed.append((records, cols)),
+    )
+
+    await rooms.room_list_command(
+        project_id="project-1",
+        count=1,
+        offset=0,
+    )
+
+    assert client.list_rooms_page_calls == [
+        {
+            "project_id": "resolved-project",
+            "page_size": 100,
+            "continuation_token": None,
+            "filter": None,
+            "view": "my",
+        },
+        {
+            "project_id": "resolved-project",
+            "page_size": 100,
+            "continuation_token": "cursor-1",
+            "filter": None,
+            "view": "my",
+        },
+    ]
+    assert printed[0][0][0]["name"] == "alpha"
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_room_list_rejects_unsupported_order() -> None:
+    with pytest.raises(typer.BadParameter, match='Only "room_name" is supported'):
+        await rooms.room_list_command(
+            project_id="project-1",
+            order_by="created_at",
+        )
 
 
 @pytest.mark.asyncio

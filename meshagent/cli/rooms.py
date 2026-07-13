@@ -102,10 +102,16 @@ async def _list_rooms_view(
 ) -> list[Room]:
     rooms: list[Room] = []
     continuation_token: str | None = None
-    while len(rooms) < offset + limit:
+    target_count = offset + limit
+    # The "my" view is paged in access-object order, unlike the name-ordered
+    # inventory view, so it must be exhausted before sorting and slicing.
+    fetch_all = view == "my"
+    while fetch_all or len(rooms) < target_count:
         page = await account_client.list_rooms_page(
             project_id=project_id,
-            page_size=min(max(offset + limit - len(rooms), 1), 100),
+            page_size=(
+                100 if fetch_all else min(max(target_count - len(rooms), 1), 100)
+            ),
             continuation_token=continuation_token,
             filter=filter,
             view=view,
@@ -115,7 +121,7 @@ async def _list_rooms_view(
         if continuation_token is None:
             break
     rooms.sort(key=lambda room: room.name.lower())
-    return rooms[offset : offset + limit]
+    return rooms[offset:target_count]
 
 
 # ---------------------------
@@ -293,7 +299,7 @@ async def room_list_command(
     ] = None,
     offset: Annotated[int, typer.Option(help="Offset for pagination", min=0)] = 0,
     order_by: Annotated[
-        str, typer.Option(help='Order by column (e.g. "room_name", "created_at")')
+        str, typer.Option(help='Order rooms by name; only "room_name" is supported')
     ] = "room_name",
     filter: Annotated[
         Optional[str],
@@ -310,6 +316,11 @@ async def room_list_command(
     """
     List rooms in the project.
     """
+    if order_by != "room_name":
+        raise typer.BadParameter(
+            'Only "room_name" is supported.', param_hint="--order-by"
+        )
+
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)

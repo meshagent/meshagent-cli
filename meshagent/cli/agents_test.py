@@ -1,6 +1,7 @@
 import json
 
 import pytest
+import typer
 
 from meshagent.agents.chat_client import BaseChatClient, ChatThreadSession
 from meshagent.agents.messages import (
@@ -10,7 +11,7 @@ from meshagent.agents.messages import (
     AgentTextContent,
     StartThread,
 )
-from meshagent.api.client import ManagedAgent
+from meshagent.api.client import AgentsPage, ManagedAgent
 from meshagent.api.managed_agents import (
     AllowedOpenAIModel,
     ManagedAgentMetadata,
@@ -25,6 +26,7 @@ class _FakeAgentClient:
         self.create_agent_calls: list[dict[str, object]] = []
         self.update_agent_calls: list[dict[str, object]] = []
         self.list_agents_calls: list[dict[str, object]] = []
+        self.list_agents_page_results: list[AgentsPage] = []
         self.get_agent_calls: list[dict[str, object]] = []
         self.list_agents_result: list[ManagedAgent] = []
         self.get_agent_result: ManagedAgent | None = None
@@ -60,21 +62,27 @@ class _FakeAgentClient:
             }
         )
 
-    async def list_agents(
+    async def list_agents_page(
         self,
         *,
         project_id: str,
         page_size: int,
+        continuation_token: str | None = None,
         filter: str | None = None,
-    ) -> list[ManagedAgent]:
+        view: str | None = None,
+    ) -> AgentsPage:
         self.list_agents_calls.append(
             {
                 "project_id": project_id,
                 "page_size": page_size,
+                "continuation_token": continuation_token,
                 "filter": filter,
+                "view": view,
             }
         )
-        return self.list_agents_result
+        if self.list_agents_page_results:
+            return self.list_agents_page_results.pop(0)
+        return AgentsPage(agents=self.list_agents_result, continuation_token=None)
 
     async def get_agent(self, *, project_id: str, name: str) -> ManagedAgent:
         self.get_agent_calls.append({"project_id": project_id, "name": name})
@@ -112,10 +120,12 @@ class _FakeWebSocketChatClient(BaseChatClient):
             )
 
 
-def _sample_configuration(*, agent_id: str | None = "agent-1") -> ManagedAgentSpec:
+def _sample_configuration(
+    *, agent_id: str | None = "agent-1", name: str = "planner"
+) -> ManagedAgentSpec:
     return ManagedAgentSpec(
         id=agent_id,
-        metadata=ManagedAgentMetadata(name="planner"),
+        metadata=ManagedAgentMetadata(name=name),
         allowed_models=[AllowedOpenAIModel(model="gpt-4.1")],
     )
 
@@ -123,8 +133,10 @@ def _sample_configuration(*, agent_id: str | None = "agent-1") -> ManagedAgentSp
 def _sample_agent(
     *,
     configuration: ManagedAgentSpec | None = None,
+    agent_id: str = "agent-1",
+    name: str = "planner",
 ) -> ManagedAgent:
-    configuration = configuration or _sample_configuration()
+    configuration = configuration or _sample_configuration(agent_id=agent_id, name=name)
     return ManagedAgent(
         id=configuration.id or "agent-1",
         name=configuration.name,
@@ -269,7 +281,9 @@ async def test_agent_list_command_outputs_current_agent_shape(
         {
             "project_id": "resolved-project",
             "page_size": 100,
+            "continuation_token": None,
             "filter": None,
+            "view": "my",
         }
     ]
     assert printed == [
@@ -285,6 +299,71 @@ async def test_agent_list_command_outputs_current_agent_shape(
         )
     ]
     assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_agent_list_command_fetches_all_before_name_sort_and_offset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeAgentClient()
+    client.list_agents_page_results = [
+        AgentsPage(
+            agents=[
+                _sample_agent(agent_id=f"agent-{index}", name=f"agent-{index:03}")
+                for index in range(60, 160)
+            ],
+            continuation_token="cursor-1",
+        ),
+        AgentsPage(
+            agents=[
+                _sample_agent(agent_id=f"agent-{index}", name=f"agent-{index:03}")
+                for index in range(60)
+            ],
+            continuation_token=None,
+        ),
+    ]
+    printed: list[str] = []
+    _patch_agent_command(monkeypatch, client=client)
+    monkeypatch.setattr(agents, "print", lambda value: printed.append(value))
+
+    await agents.agent_list_command(
+        project_id="project-1",
+        count=150,
+        offset=10,
+        filter="planner",
+        o="json",
+    )
+
+    assert client.list_agents_calls == [
+        {
+            "project_id": "resolved-project",
+            "page_size": 100,
+            "continuation_token": None,
+            "filter": "planner",
+            "view": "my",
+        },
+        {
+            "project_id": "resolved-project",
+            "page_size": 100,
+            "continuation_token": "cursor-1",
+            "filter": "planner",
+            "view": "my",
+        },
+    ]
+    output = json.loads(printed[0])
+    assert len(output) == 150
+    assert output[0]["name"] == "agent-010"
+    assert output[-1]["name"] == "agent-159"
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_agent_list_rejects_unsupported_order() -> None:
+    with pytest.raises(typer.BadParameter, match='Only "agent_name" is supported'):
+        await agents.agent_list_command(
+            project_id="project-1",
+            order_by="created_at",
+        )
 
 
 @pytest.mark.asyncio

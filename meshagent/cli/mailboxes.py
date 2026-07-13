@@ -8,7 +8,7 @@ import typer
 from aiohttp import ClientResponseError
 from rich import print
 
-from meshagent.api.client import ValidationErrorResponse
+from meshagent.api.client import Mailbox, ValidationErrorResponse
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import ProjectIdOption, OutputFormatOption
 from meshagent.cli.helper import (
@@ -22,6 +22,35 @@ import json
 import os
 
 app = async_typer.AsyncTyper(help="Manage mailboxes for your project")
+
+
+async def _list_project_mailboxes(
+    client,
+    *,
+    project_id: str,
+    count: int,
+    offset: int,
+    filter: str | None,
+) -> list[Mailbox]:
+    if count <= 0:
+        return []
+
+    mailboxes: list[Mailbox] = []
+    continuation_token: str | None = None
+    target_count = offset + count
+    while len(mailboxes) < target_count:
+        page = await client.list_mailboxes_page(
+            project_id=project_id,
+            page_size=min(target_count - len(mailboxes), 100),
+            continuation_token=continuation_token,
+            filter=filter,
+        )
+        mailboxes.extend(page.mailboxes)
+        continuation_token = page.continuation_token
+        if continuation_token is None or not page.mailboxes:
+            break
+
+    return mailboxes[offset:target_count]
 
 
 def _validation_error_message(
@@ -241,10 +270,11 @@ async def mailbox_list(
         Optional[str], typer.Option("--filter", help="Lowercase contains filter")
     ] = None,
     count: Annotated[
-        int, typer.Option("--count", help="Maximum number of mailboxes to return")
+        int,
+        typer.Option("--count", help="Maximum number of mailboxes to return", min=1),
     ] = 100,
     offset: Annotated[
-        int, typer.Option("--offset", help="Row offset for pagination")
+        int, typer.Option("--offset", help="Row offset for pagination", min=0)
     ] = 0,
     o: OutputFormatOption = "table",
 ):
@@ -263,9 +293,11 @@ async def mailbox_list(
                 filter=filter,
             )
         else:
-            mailboxes = await client.list_mailboxes(
+            mailboxes = await _list_project_mailboxes(
+                client,
                 project_id=project_id,
-                page_size=count,
+                count=count,
+                offset=offset,
                 filter=filter,
             )
 
