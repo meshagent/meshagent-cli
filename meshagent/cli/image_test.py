@@ -812,6 +812,10 @@ def test_replace_meshagent_image_vars_uses_nydus_for_non_exception_defaults(
         "us-central1-docker.pkg.dev/meshagent-public/images/"
         f"shell-codex:{image.__version__}-nydus"
     )
+    assert image.replace_meshagent_image_vars("meshagent/website:default") == (
+        "us-central1-docker.pkg.dev/meshagent-public/images/"
+        f"website:{image.__version__}-nydus"
+    )
 
 
 def test_build_generated_pack_dockerfile_defaults_to_scratch() -> None:
