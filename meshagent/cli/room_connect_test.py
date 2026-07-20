@@ -5,7 +5,7 @@ import typer
 from meshagent.cli.testing import CliRunner
 
 from meshagent.api import ApiScope, ParticipantToken
-from meshagent.api.client import Room
+from meshagent.api.client import AccessResource, AccessSubject, AccessTestResult, Room
 from meshagent.cli import room_connect
 from meshagent.cli import cli as root_cli
 from meshagent.cli.async_typer import get_command
@@ -31,7 +31,7 @@ class _FakeAccountClient:
         self.rooms = rooms or []
         self.can_create_rooms_value = can_create_rooms
         self.connect_calls: list[dict[str, str]] = []
-        self.can_create_rooms_calls: list[str] = []
+        self.test_access_calls: list[dict[str, object]] = []
         self.list_rooms_calls: list[dict[str, object]] = []
         self.create_room_calls: list[dict[str, object]] = []
 
@@ -43,9 +43,23 @@ class _FakeAccountClient:
             room_url=self.room_url,
         )
 
-    async def can_create_rooms(self, project_id: str) -> bool:
-        self.can_create_rooms_calls.append(project_id)
-        return self.can_create_rooms_value
+    async def test_access(
+        self,
+        *,
+        project_id: str,
+        subject: AccessSubject,
+        resource: AccessResource,
+        relation: str,
+    ) -> AccessTestResult:
+        self.test_access_calls.append(
+            {
+                "project_id": project_id,
+                "subject": subject,
+                "resource": resource,
+                "relation": relation,
+            }
+        )
+        return AccessTestResult(allowed=self.can_create_rooms_value)
 
     async def list_rooms(
         self,
@@ -105,6 +119,38 @@ def test_room_connect_help_mentions_llm_token_aliases() -> None:
 
 
 @pytest.mark.asyncio
+async def test_user_can_create_connect_room_uses_granular_access_check() -> None:
+    account_client = _FakeAccountClient(can_create_rooms=True)
+
+    can_create = await room_connect._user_can_create_connect_room(
+        account_client,
+        project_id="project-1",
+    )
+
+    assert can_create is True
+    assert account_client.test_access_calls == [
+        {
+            "project_id": "project-1",
+            "subject": AccessSubject(type="user", id="me"),
+            "resource": AccessResource(type="project", id="project-1"),
+            "relation": "room_creator",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_user_can_create_connect_room_returns_false_when_denied() -> None:
+    account_client = _FakeAccountClient(can_create_rooms=False)
+
+    can_create = await room_connect._user_can_create_connect_room(
+        account_client,
+        project_id="project-1",
+    )
+
+    assert can_create is False
+
+
+@pytest.mark.asyncio
 async def test_room_connect_missing_room_prompts_for_existing_room(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -160,7 +206,14 @@ async def test_room_connect_missing_room_prompts_for_existing_room(
 
     assert resolved_project_id == "project-1"
     assert resolved_room == "dev-room"
-    assert account_client.can_create_rooms_calls == ["project-1"]
+    assert account_client.test_access_calls == [
+        {
+            "project_id": "project-1",
+            "subject": AccessSubject(type="user", id="me"),
+            "resource": AccessResource(type="project", id="project-1"),
+            "relation": "room_creator",
+        }
+    ]
     assert account_client.list_rooms_calls == [
         {
             "project_id": "project-1",

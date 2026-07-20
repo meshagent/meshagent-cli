@@ -2443,6 +2443,111 @@ async def test_wait_for_deployed_service_live_streams_logs_and_checks_service_li
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("queue_backed_route", "expect_liveness_warning"),
+    [
+        (False, True),
+        (True, False),
+    ],
+)
+async def test_wait_for_deployed_service_live_skips_missing_liveness_warning_for_queue_backed_routes(
+    monkeypatch: pytest.MonkeyPatch,
+    _stub_deploy_wait: dict[str, object],
+    queue_backed_route: bool,
+    expect_liveness_warning: bool,
+) -> None:
+    captured: dict[str, object] = {
+        "prints": [],
+        "started_logs": [],
+        "stopped_logs": [],
+    }
+    states = [
+        ServiceRuntimeState(
+            service_id="service-1",
+            state="running",
+            container_id="container-1",
+        ),
+    ]
+    fake_active_logs = SimpleNamespace(container_id="container-1")
+
+    class _FakeServices:
+        async def list(self):
+            return SimpleNamespace(service_states={"service-1": states[0]})
+
+    fake_client = SimpleNamespace(services=_FakeServices())
+
+    def _fake_start_deploy_log_stream(*, client, container_id: str, log_handler=None):
+        del client, log_handler
+        captured["started_logs"].append(container_id)
+        return fake_active_logs
+
+    async def _fake_stop_deploy_log_stream(*, active_logs) -> None:
+        captured["stopped_logs"].append(active_logs)
+
+    async def _capture_status(message: str) -> None:
+        captured["prints"].append(message)
+
+    monkeypatch.setattr(image, "_DEPLOY_WAIT_POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(
+        image,
+        "_start_deploy_log_stream",
+        _fake_start_deploy_log_stream,
+    )
+    monkeypatch.setattr(image, "_stop_deploy_log_stream", _fake_stop_deploy_log_stream)
+    monkeypatch.setattr(
+        image,
+        "print",
+        lambda *args, **kwargs: captured["prints"].append(args[0]),
+    )
+
+    wait_helper = _stub_deploy_wait["original"]
+    assert callable(wait_helper)
+
+    await wait_helper(
+        client=fake_client,
+        service_id="service-1",
+        service_name="repo-web",
+        previous_container_id=None,
+        domain="app.meshagent.app",
+        liveness_path=None,
+        queue_backed_route=queue_backed_route,
+        status_handler=_capture_status,
+    )
+
+    warning_messages = [
+        message
+        for message in captured["prints"]
+        if "no HTTP liveness path to check" in message
+    ]
+    assert bool(warning_messages) is expect_liveness_warning
+    assert captured["started_logs"] == ["container-1"]
+    assert captured["stopped_logs"] == [fake_active_logs]
+    assert any("Service is live" in message for message in captured["prints"])
+
+
+def test_route_target_is_request_queue_backed_for_port_annotations() -> None:
+    service_spec = ServiceSpec(
+        version="v1",
+        kind="Service",
+        metadata=ServiceMetadata(name="python-twilio-channel"),
+        ports=[
+            PortSpec(
+                num=8000,
+                type="http",
+                published=True,
+                annotations={image.ANNOTATION_REQUEST_QUEUE: "twilio-inbound"},
+            )
+        ],
+        container=ContainerSpec(image="meshagent/cli:default"),
+    )
+
+    assert image._route_target_is_request_queue_backed(
+        service_spec=service_spec,
+        route_target=image._RoomRouteTarget(port="8000"),
+    )
+
+
+@pytest.mark.asyncio
 async def test_wait_for_deployed_service_live_exits_when_container_restarts(
     monkeypatch: pytest.MonkeyPatch,
     _stub_deploy_wait: dict[str, object],

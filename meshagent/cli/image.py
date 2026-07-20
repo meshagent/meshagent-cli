@@ -73,6 +73,7 @@ from meshagent.api.room_server_client import (
 )
 from meshagent.api.room_ports import RESERVED_ROOM_SERVICE_PORTS
 from meshagent.api.specs.service import (
+    ANNOTATION_REQUEST_QUEUE,
     ANNOTATION_REQUEST_VALIDATION_METHOD,
     ANNOTATION_SERVICE_ID,
     ContainerMountSpec,
@@ -3214,6 +3215,26 @@ def _resolve_domain_liveness_path(
     return service_port.liveness
 
 
+def _route_target_is_request_queue_backed(
+    *,
+    service_spec: ServiceSpec,
+    route_target: _RoomRouteTarget,
+) -> bool:
+    service_port = _find_service_port(service_spec=service_spec, port=route_target.port)
+    if service_port is None:
+        return False
+    if (
+        service_port.annotations
+        and ANNOTATION_REQUEST_QUEUE in service_port.annotations
+    ):
+        return True
+    return any(
+        endpoint.annotations is not None
+        and ANNOTATION_REQUEST_QUEUE in endpoint.annotations
+        for endpoint in service_port.endpoints
+    )
+
+
 async def _find_room_service_by_name(
     *,
     account_client,
@@ -3675,6 +3696,7 @@ async def _wait_for_deployed_service_live(
     previous_container_id: str | None,
     domain: str | None,
     liveness_path: str | None,
+    queue_backed_route: bool = False,
     status_handler: Callable[[str], Awaitable[None]] | None = None,
     log_handler: Callable[[str], Awaitable[None]] | None = None,
 ) -> None:
@@ -3691,7 +3713,7 @@ async def _wait_for_deployed_service_live(
             rich_message=f"[cyan]Waiting for service liveness:[/] {liveness_path}",
             plain_message=f"Waiting for service liveness: {liveness_path}",
         )
-    elif domain is not None:
+    elif domain is not None and not queue_backed_route:
         await _emit_deploy_status(
             status_handler,
             rich_message=(
@@ -5050,6 +5072,14 @@ async def deploy_image(
                     if deploy_result.route_target is not None
                     else None
                 )
+                queue_backed_route = (
+                    _route_target_is_request_queue_backed(
+                        service_spec=deploy_plan.spec,
+                        route_target=deploy_result.route_target,
+                    )
+                    if deploy_result.route_target is not None
+                    else False
+                )
                 try:
                     await asyncio.wait_for(
                         _wait_for_deployed_service_live(
@@ -5059,6 +5089,7 @@ async def deploy_image(
                             previous_container_id=previous_container_id,
                             domain=domain,
                             liveness_path=liveness_path,
+                            queue_backed_route=queue_backed_route,
                             status_handler=status_handler,
                             log_handler=log_handler,
                         ),

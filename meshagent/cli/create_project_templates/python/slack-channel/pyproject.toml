@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meshagent-create-python-slack-channel"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+  "meshagent-cli==__MESHAGENT_CLIENT_VERSION__",
+  "meshagent-api==__MESHAGENT_CLIENT_VERSION__",
+  "meshagent-agents==__MESHAGENT_CLIENT_VERSION__",
+  "meshagent-slack-channel==__MESHAGENT_SLACK_CHANNEL_VERSION__",
+]
+
+[tool.setuptools]
+py-modules = ["server"]

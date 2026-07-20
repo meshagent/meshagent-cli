@@ -10,6 +10,7 @@ from rich import print
 from rich.table import Table
 
 from meshagent.agents.messages import (
+    AgentImageGenerationCompleted,
     AgentMessage,
     AgentTextContentDelta,
     AgentTextContentEnded,
@@ -17,6 +18,7 @@ from meshagent.agents.messages import (
     AgentToolCallEnded,
     AgentToolCallStarted,
     TurnEnded,
+    TurnStart,
     TurnStartAccepted,
 )
 from meshagent.agents.thread_storage import ThreadListPage
@@ -178,8 +180,10 @@ class _TextAccumulator:
 def coalesced_thread_rows(messages: list[AgentMessage]) -> list[CoalescedThreadRow]:
     rows: list[CoalescedThreadRow] = []
     active_text: dict[tuple[str | None, str], _TextAccumulator] = {}
+    rendered_input_source_message_ids: set[str] = set()
+    rendered_image_item_ids: set[tuple[str | None, str]] = set()
     for message in messages:
-        if isinstance(message, TurnStartAccepted):
+        if isinstance(message, TurnStart):
             text = _input_content_text(message.content).strip()
             if text != "":
                 rows.append(
@@ -189,6 +193,22 @@ def coalesced_thread_rows(messages: list[AgentMessage]) -> list[CoalescedThreadR
                         text=text,
                     )
                 )
+                rendered_input_source_message_ids.add(message.message_id)
+            continue
+        if isinstance(message, TurnStartAccepted):
+            text = _input_content_text(message.content).strip()
+            if (
+                text != ""
+                and message.source_message_id not in rendered_input_source_message_ids
+            ):
+                rows.append(
+                    CoalescedThreadRow(
+                        role=message.sender_name or "user",
+                        turn_id=message.turn_id,
+                        text=text,
+                    )
+                )
+                rendered_input_source_message_ids.add(message.source_message_id)
             continue
         if isinstance(message, AgentTextContentDelta):
             key = (message.turn_id, message.item_id)
@@ -207,6 +227,12 @@ def coalesced_thread_rows(messages: list[AgentMessage]) -> list[CoalescedThreadR
                 row = accumulator.row()
                 if row is not None:
                     rows.append(row)
+            continue
+        if isinstance(message, AgentImageGenerationCompleted):
+            item_key = (message.turn_id, message.item_id)
+            if item_key not in rendered_image_item_ids:
+                rendered_image_item_ids.add(item_key)
+                rows.extend(_image_generation_rows(message))
             continue
         if isinstance(message, AgentToolCallStarted):
             label = f"{message.toolkit}.{message.tool}"
@@ -265,3 +291,69 @@ def _input_content_text(content: list[Any]) -> str:
         elif isinstance(item, AgentFileContent):
             parts.append(item.name or item.url)
     return "\n".join(parts)
+
+
+def _image_generation_rows(
+    message: AgentImageGenerationCompleted,
+) -> list[CoalescedThreadRow]:
+    if len(message.images) == 0:
+        return [
+            CoalescedThreadRow(
+                role=message.sender_name or "assistant",
+                turn_id=message.turn_id,
+                text="image:",
+            )
+        ]
+
+    return [
+        CoalescedThreadRow(
+            role=message.sender_name or "assistant",
+            turn_id=message.turn_id,
+            text=_image_generation_text(image),
+        )
+        for image in message.images
+    ]
+
+
+def _image_generation_text(image: Any) -> str:
+    parts = ["image:"]
+    uri = image.uri if isinstance(image.uri, str) and image.uri.strip() != "" else None
+    if uri is not None:
+        parts.append(_display_image_uri(uri))
+    details = [
+        value
+        for value in [
+            image.mime_type,
+            _image_dimensions(image),
+            image.status,
+        ]
+        if isinstance(value, str) and value.strip() != ""
+    ]
+    if len(details) > 0:
+        parts.append(f"({', '.join(details)})")
+    return " ".join(parts)
+
+
+def _display_image_uri(uri: str) -> str:
+    if uri.startswith("data:"):
+        metadata = uri.split(",", 1)[0]
+        return f"{metadata},..."
+    return uri
+
+
+def _image_dimensions(image: Any) -> str | None:
+    width = _image_dimension_value(image.width)
+    height = _image_dimension_value(image.height)
+    if width is None or height is None:
+        return None
+    return f"{width}x{height}"
+
+
+def _image_dimension_value(value: Any) -> str | None:
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, float):
+        return str(value)
+    return None

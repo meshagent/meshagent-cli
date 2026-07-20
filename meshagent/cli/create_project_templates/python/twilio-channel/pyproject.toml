@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meshagent-create-python-twilio-channel"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+  "meshagent-api==__MESHAGENT_CLIENT_VERSION__",
+  "meshagent-agents==__MESHAGENT_CLIENT_VERSION__",
+  "meshagent-twilio==__MESHAGENT_TWILIO_VERSION__",
+]
+
+[tool.setuptools]
+py-modules = ["server"]
