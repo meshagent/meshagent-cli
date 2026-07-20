@@ -1,5 +1,6 @@
 import typer
 import contextlib
+import json
 import jwt
 import sys
 from aiohttp import web
@@ -2430,7 +2431,7 @@ ChannelOption = Annotated[
             "Attach a channel to the agent process. "
             "Can be repeated. Currently supported: chat, "
             "mail:EMAIL_ADDRESS[?reply-all=true|false], memory, queue:QUEUE_NAME, "
-            "toolkit:NAME, websocket:PORT, "
+            'toolkit:NAME, command:EXECUTABLE, command:["COMMAND","ARG"], websocket:PORT, '
             "websocket://HOST:PORT."
         ),
     ),
@@ -2458,6 +2459,11 @@ class _ToolkitChannelConfig:
 class _WebSocketChannelConfig:
     host: str
     port: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ExternalProcessChannelConfig:
+    command: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -2625,6 +2631,14 @@ def _resolved_channels(
                 normalized_channels.append(channel_key)
             continue
 
+        if normalized[:8].casefold() == "command:":
+            process_config = _parse_external_process_channel(channel=normalized)
+            channel_key = _external_process_channel_key(process_config)
+            if channel_key not in seen_channels:
+                seen_channels.add(channel_key)
+                normalized_channels.append(channel_key)
+            continue
+
         raise typer.BadParameter(f"unsupported channel: {item}")
 
     if runtime == "chatbot":
@@ -2674,6 +2688,40 @@ def _parse_mail_channel(*, channel: str) -> _MailChannelConfig:
         queue_name=address,
         email_address=address,
         reply_all=reply_all,
+    )
+
+
+def _parse_external_process_channel(*, channel: str) -> _ExternalProcessChannelConfig:
+    if channel[:8].casefold() != "command:":
+        raise typer.BadParameter(f"unsupported command channel: {channel}")
+    command_text = channel[8:].strip()
+    if command_text == "":
+        raise typer.BadParameter(
+            "command channels must be passed as "
+            '--channel=command:EXECUTABLE or --channel=\'command:["COMMAND","ARG"]\''
+        )
+    if command_text.startswith("["):
+        try:
+            command_value = json.loads(command_text)
+        except json.JSONDecodeError as error:
+            raise typer.BadParameter(f"invalid command channel: {error.msg}") from error
+        if (
+            not isinstance(command_value, list)
+            or len(command_value) == 0
+            or any(not isinstance(part, str) or part == "" for part in command_value)
+        ):
+            raise typer.BadParameter(
+                "command channel must be a non-empty JSON string array"
+            )
+        return _ExternalProcessChannelConfig(command=tuple(command_value))
+    return _ExternalProcessChannelConfig(command=(command_text,))
+
+
+def _external_process_channel_key(config: _ExternalProcessChannelConfig) -> str:
+    return "command:" + json.dumps(
+        config.command,
+        ensure_ascii=False,
+        separators=(",", ":"),
     )
 
 
@@ -4582,6 +4630,7 @@ def _build_runtime_agent(
     *,
     client: RoomClient | None,
     api_key: str | None = None,
+    room_token: str | None = None,
     meshagent_project_id: str | None = None,
     runtime: Literal["chatbot", "process"],
     normalized_tool_options: NormalizedRequiredToolOptions,
@@ -4735,6 +4784,7 @@ def _build_runtime_agent(
         builder_kwargs["save_audio_input"] = save_audio_input
         builder_kwargs["preamble_rule"] = preamble_rule
         builder_kwargs["websocket_auth"] = websocket_auth
+        builder_kwargs["room_token"] = room_token
     return builder(**builder_kwargs)
 
 
@@ -5342,6 +5392,7 @@ def build_process_agent(
     *,
     client: RoomClient | None = None,
     api_key: str | None = None,
+    room_token: str | None = None,
     meshagent_project_id: str | None = None,
     model: str | list[str],
     rule: List[str],
@@ -5426,6 +5477,7 @@ def build_process_agent(
         SingleRoomAgent,
         ToolkitChannel,
         WebSocketChatChannel,
+        ExternalProcessChannel,
     )
     from meshagent.agents.messages import TurnStart, TurnSteer
     from meshagent.agents.process import (
@@ -5741,6 +5793,7 @@ def build_process_agent(
             self._queue_channels: list[QueueChannel] = []
             self._toolkit_channels: list[ToolkitChannel] = []
             self._websocket_channels: list[WebSocketChatChannel] = []
+            self._external_process_channels: list[ExternalProcessChannel] = []
             self._websocket_channel_servers: list[_WebSocketChannelServer] = []
             self._shell_env: dict[str, str] = dict(base_shell_env)
             self._advanced_shell_toolkit: ContainerToolkit | None = None
@@ -5804,6 +5857,7 @@ def build_process_agent(
             channels.extend(self._queue_channels)
             channels.extend(self._toolkit_channels)
             channels.extend(self._websocket_channels)
+            channels.extend(self._external_process_channels)
             for channel in channels:
                 if channel.state != "started":
                     continue
@@ -5902,6 +5956,27 @@ def build_process_agent(
                         llm_adapter=channel_llm_adapter,
                     )
                 )
+            self._external_process_channels = [
+                ExternalProcessChannel(
+                    command=_parse_external_process_channel(
+                        channel=channel_spec
+                    ).command,
+                    environment={
+                        **(
+                            {"MESHAGENT_ROOM": room.room_name}
+                            if room is not None
+                            else {}
+                        ),
+                        **(
+                            {"MESHAGENT_TOKEN": room_token}
+                            if room is not None and room_token is not None
+                            else {}
+                        ),
+                    },
+                )
+                for channel_spec in resolved_channels
+                if channel_spec.startswith("command:")
+            ]
             started_remote_toolkits: list[_RemoteToolkitWrapper] = []
             started_websocket_servers: list[_WebSocketChannelServer] = []
             supervisor: AgentSupervisor | None = None
@@ -6129,6 +6204,8 @@ def build_process_agent(
                     supervisor.add_channel(toolkit_channel)
                 for websocket_channel in self._websocket_channels:
                     supervisor.add_channel(websocket_channel)
+                for external_process_channel in self._external_process_channels:
+                    supervisor.add_channel(external_process_channel)
                 await supervisor.start()
                 self._supervisor = supervisor
 
@@ -6179,6 +6256,7 @@ def build_process_agent(
                 self._queue_channels = []
                 self._toolkit_channels = []
                 self._websocket_channels = []
+                self._external_process_channels = []
                 self._advanced_shell_toolkit = None
                 self._room = None
                 self._started = False
@@ -6197,6 +6275,7 @@ def build_process_agent(
             self._queue_channels = []
             self._toolkit_channels = []
             self._websocket_channels = []
+            self._external_process_channels = []
             room = self._room
             try:
                 if self._advanced_shell_toolkit is not None and room is not None:
@@ -7281,6 +7360,7 @@ async def join(
         CustomChatbot = _build_runtime_agent(
             client=client,
             api_key=jwt,
+            room_token=jwt,
             runtime=runtime,
             normalized_tool_options=normalized_tool_options,
             model=model,
@@ -11251,6 +11331,7 @@ async def run(
         CustomChatbot = _build_runtime_agent(
             client=client,
             api_key=jwt,
+            room_token=jwt,
             meshagent_project_id=meshagent_project_id,
             runtime=runtime,
             normalized_tool_options=normalized_tool_options,

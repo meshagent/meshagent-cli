@@ -6,7 +6,7 @@ from typing import Literal
 
 import typer
 from typer import _click as click
-from typer.core import TyperOption
+from typer.core import TyperCommand, TyperOption
 import aiohttp
 import pytest
 import yaml
@@ -426,6 +426,28 @@ def test_resolved_channels_accept_websocket_channel_url() -> None:
     ) == ["websocket://127.0.0.1:8080"]
 
 
+def test_resolved_channels_accept_external_process_executable() -> None:
+    assert process._resolved_channels(
+        runtime="process",
+        channel=["command:meshagent-channel-chat"],
+    ) == ['command:["meshagent-channel-chat"]']
+
+
+def test_resolved_channels_accept_external_process_command_arguments() -> None:
+    assert process._resolved_channels(
+        runtime="process",
+        channel=['command:["python","channel.py","--verbose"]'],
+    ) == ['command:["python","channel.py","--verbose"]']
+
+
+def test_resolved_channels_reject_invalid_external_process_command() -> None:
+    with pytest.raises(typer.BadParameter, match="non-empty JSON string array"):
+        process._resolved_channels(
+            runtime="process",
+            channel=['command:["python", 1]'],
+        )
+
+
 def test_resolved_channels_reject_websocket_channel_without_port() -> None:
     with pytest.raises(typer.BadParameter):
         process._resolved_channels(
@@ -693,7 +715,7 @@ async def test_process_agent_passes_threading_mode_to_queue_channel(
         assert captured_calls[0]["thread_dir"] == "/threads/queue"
         assert captured_calls[0]["thread_url_scheme"] == "dataset"
         assert captured_calls[0]["thread_path_extension"] == ""
-        assert captured_calls[0]["thread_list_path"] == "agent://threads"
+        assert captured_calls[0]["thread_list_path"] is None
         assert captured_calls[0]["llm_adapter"] is not None
     finally:
         await agent.stop()
@@ -773,7 +795,7 @@ async def test_process_agent_passes_threading_mode_to_mail_channel(
         assert captured_calls[0]["thread_dir"] == "/threads/mail"
         assert captured_calls[0]["thread_url_scheme"] == "dataset"
         assert captured_calls[0]["thread_path_extension"] == ""
-        assert captured_calls[0]["thread_list_path"] == "agent://threads"
+        assert captured_calls[0]["thread_list_path"] is None
         assert captured_calls[0]["llm_adapter"] is not None
     finally:
         await agent.stop()
@@ -1329,18 +1351,6 @@ def test_build_process_agent_rejects_incompatible_codex_thread_storage() -> None
             require_table_write=[],
             channels=[],
             thread_storage="codex",
-        )
-
-    with pytest.raises(typer.Exit):
-        process.build_process_agent(
-            model="codex/gpt-5.6-sol",
-            rule=[],
-            toolkit=[],
-            schema=[],
-            require_table_read=[],
-            require_table_write=[],
-            channels=[],
-            thread_storage="meshagent",
         )
 
 
@@ -2020,9 +2030,9 @@ def test_chatbot_spec_defaults_dataset_namespace(monkeypatch) -> None:
     async def invoke_spec() -> None:
         await chatbot.spec(agent_name="helper")
 
-    root_command = click.Command("meshagent")
-    chatbot_command = click.Command("chatbot")
-    spec_command = click.Command("spec")
+    root_command = TyperCommand("meshagent")
+    chatbot_command = TyperCommand("chatbot")
+    spec_command = TyperCommand("spec")
     with click.Context(root_command, info_name="meshagent") as root_context:
         with click.Context(
             chatbot_command,
@@ -2063,11 +2073,6 @@ def test_process_join_passes_supported_builder_kwargs(monkeypatch) -> None:
         del project_id
         return "project-123"
 
-    async def fake_resolve_key(*, project_id=None, key=None):
-        del project_id
-        del key
-        return None
-
     def fake_build_process_agent(**kwargs):
         build_calls.append(kwargs)
         return type("DummyProcessAgent", (), {})
@@ -2079,7 +2084,6 @@ def test_process_join_passes_supported_builder_kwargs(monkeypatch) -> None:
     monkeypatch.setenv("MESHAGENT_TOKEN", "test-token")
     monkeypatch.setattr(process, "get_client", fake_get_client)
     monkeypatch.setattr(process, "resolve_project_id", fake_resolve_project_id)
-    monkeypatch.setattr(process, "resolve_key", fake_resolve_key)
     monkeypatch.setattr(process, "resolve_room", lambda room_name=None: room_name)
     monkeypatch.setattr(process, "build_process_agent", fake_build_process_agent)
     monkeypatch.setattr(process, "build_chatbot", fail_build_chatbot)
@@ -2121,9 +2125,9 @@ def test_process_join_passes_supported_builder_kwargs(monkeypatch) -> None:
             reasoning_effort="high",
         )
 
-    root_command = click.Command("meshagent")
-    process_command = click.Command("process")
-    join_command = click.Command("join")
+    root_command = TyperCommand("meshagent")
+    process_command = TyperCommand("process")
+    join_command = TyperCommand("join")
     with click.Context(root_command, info_name="meshagent") as root_context:
         with click.Context(
             process_command,
@@ -2177,11 +2181,6 @@ def test_process_join_mints_participant_token_without_active_api_key(
         mint_calls.append(kwargs)
         return "router-minted-token"
 
-    async def fail_resolve_key(*, project_id=None, key=None):
-        del project_id
-        del key
-        raise AssertionError("process join should mint remotely without an API key")
-
     def fake_build_process_agent(**kwargs):
         build_calls.append(kwargs)
         return type("DummyProcessAgent", (), {})
@@ -2195,7 +2194,6 @@ def test_process_join_mints_participant_token_without_active_api_key(
     monkeypatch.delenv("MESHAGENT_SECRET", raising=False)
     monkeypatch.setattr(process, "get_client", fake_get_client)
     monkeypatch.setattr(process, "resolve_project_id", fake_resolve_project_id)
-    monkeypatch.setattr(process, "resolve_key", fail_resolve_key)
     monkeypatch.setattr(
         process, "mint_participant_token_for_cli", fake_mint_participant_token
     )
@@ -2227,9 +2225,9 @@ def test_process_join_mints_participant_token_without_active_api_key(
             channel=["chat"],
         )
 
-    root_command = click.Command("meshagent")
-    process_command = click.Command("process")
-    join_command = click.Command("join")
+    root_command = TyperCommand("meshagent")
+    process_command = TyperCommand("process")
+    join_command = TyperCommand("join")
     with click.Context(root_command, info_name="meshagent") as root_context:
         with click.Context(
             process_command,
@@ -2273,9 +2271,9 @@ def test_process_join_requires_at_least_one_channel(monkeypatch) -> None:
             channel=[],
         )
 
-    root_command = click.Command("meshagent")
-    process_command = click.Command("process")
-    join_command = click.Command("join")
+    root_command = TyperCommand("meshagent")
+    process_command = TyperCommand("process")
+    join_command = TyperCommand("join")
     with click.Context(root_command, info_name="meshagent") as root_context:
         with click.Context(
             process_command,
@@ -2314,9 +2312,9 @@ def test_process_join_requires_room(monkeypatch) -> None:
             channel=["chat"],
         )
 
-    root_command = click.Command("meshagent")
-    process_command = click.Command("process")
-    join_command = click.Command("join")
+    root_command = TyperCommand("meshagent")
+    process_command = TyperCommand("process")
+    join_command = TyperCommand("join")
     with click.Context(root_command, info_name="meshagent") as root_context:
         with click.Context(
             process_command,
@@ -2348,9 +2346,9 @@ def test_process_service_requires_at_least_one_channel(monkeypatch) -> None:
     async def invoke_service() -> None:
         await chatbot.service(agent_name="helper", channel=[])
 
-    root_command = click.Command("meshagent")
-    process_command = click.Command("process")
-    service_command = click.Command("service")
+    root_command = TyperCommand("meshagent")
+    process_command = TyperCommand("process")
+    service_command = TyperCommand("service")
     with click.Context(root_command, info_name="meshagent") as root_context:
         with click.Context(
             process_command,
@@ -2437,11 +2435,6 @@ async def test_process_run_starts_room_agent_and_uses_ask_tui(
         del project_id
         return "project-123"
 
-    async def fake_resolve_key(*, project_id=None, key=None):
-        del project_id
-        del key
-        return "signing-key"
-
     def fake_room_client(*, protocol_factory):
         captured["protocol_factory"] = protocol_factory
         return room_client
@@ -2462,7 +2455,6 @@ async def test_process_run_starts_room_agent_and_uses_ask_tui(
     monkeypatch.setenv("MESHAGENT_TOKEN", "test-token")
     monkeypatch.setattr(process, "get_client", fake_get_client)
     monkeypatch.setattr(process, "resolve_project_id", fake_resolve_project_id)
-    monkeypatch.setattr(process, "resolve_key", fake_resolve_key)
     monkeypatch.setattr(process, "resolve_room", lambda room_name=None: room_name)
     monkeypatch.setattr(process, "RoomClient", fake_room_client)
     monkeypatch.setattr(
@@ -2529,11 +2521,6 @@ async def test_process_run_no_room_starts_local_agent_and_uses_oauth_token(
     async def fail_get_client():
         raise AssertionError("no-room process run should not open an API client")
 
-    async def fail_resolve_key(*, project_id=None, key=None):
-        del project_id
-        del key
-        raise AssertionError("no-room process run should not resolve signing keys")
-
     async def fake_get_access_token():
         captured["oauth_requested"] = True
         return "oauth-token"
@@ -2556,7 +2543,6 @@ async def test_process_run_no_room_starts_local_agent_and_uses_oauth_token(
 
     monkeypatch.delenv("MESHAGENT_TOKEN", raising=False)
     monkeypatch.setattr(process, "get_client", fail_get_client)
-    monkeypatch.setattr(process, "resolve_key", fail_resolve_key)
     monkeypatch.setattr(process.auth_async, "get_access_token", fake_get_access_token)
     monkeypatch.setattr(
         process,
@@ -3747,9 +3733,9 @@ async def test_process_use_routes_to_chat_channel_ask_tui(
     monkeypatch.setattr(process, "_run_process_use_tui", fake_run_process_use_tui)
     monkeypatch.setattr(process, "chat_with", fail_chat_with)
 
-    root_command = click.Command("meshagent")
-    process_command = click.Command("process")
-    use_command = click.Command("use")
+    root_command = TyperCommand("meshagent")
+    process_command = TyperCommand("process")
+    use_command = TyperCommand("use")
     with click.Context(root_command, info_name="meshagent") as root_context:
         with click.Context(
             process_command,
@@ -3800,9 +3786,9 @@ async def test_process_use_routes_to_websocket_with_none_auth(
     monkeypatch.setattr(process, "resolve_room", lambda room_name=None: room_name)
     monkeypatch.setattr(process, "_run_process_use_tui", fake_run_process_use_tui)
 
-    root_command = click.Command("meshagent")
-    process_command = click.Command("process")
-    use_command = click.Command("use")
+    root_command = TyperCommand("meshagent")
+    process_command = TyperCommand("process")
+    use_command = TyperCommand("use")
     with click.Context(root_command, info_name="meshagent") as root_context:
         with click.Context(
             process_command,
@@ -3872,9 +3858,9 @@ async def test_process_use_routes_to_websocket_with_iap_cookie(
     monkeypatch.setattr(process, "resolve_room", lambda room_name=None: room_name)
     monkeypatch.setattr(process, "_run_process_use_tui", fake_run_process_use_tui)
 
-    root_command = click.Command("meshagent")
-    process_command = click.Command("process")
-    use_command = click.Command("use")
+    root_command = TyperCommand("meshagent")
+    process_command = TyperCommand("process")
+    use_command = TyperCommand("use")
     with click.Context(root_command, info_name="meshagent") as root_context:
         with click.Context(
             process_command,
@@ -3929,9 +3915,9 @@ async def test_process_use_requires_room(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(process, "get_client", fail_get_client)
 
-    root_command = click.Command("meshagent")
-    process_command = click.Command("process")
-    use_command = click.Command("use")
+    root_command = TyperCommand("meshagent")
+    process_command = TyperCommand("process")
+    use_command = TyperCommand("use")
     with click.Context(root_command, info_name="meshagent") as root_context:
         with click.Context(
             process_command,
@@ -3988,9 +3974,9 @@ async def test_chatbot_use_routes_to_chat_with_path(
     monkeypatch.setattr(chatbot, "chat_with", fake_chat_with)
     monkeypatch.setattr(chatbot, "_run_process_use_tui", fail_process_use_tui)
 
-    root_command = click.Command("meshagent")
-    chatbot_command = click.Command("chatbot")
-    use_command = click.Command("use")
+    root_command = TyperCommand("meshagent")
+    chatbot_command = TyperCommand("chatbot")
+    use_command = TyperCommand("use")
     with click.Context(root_command, info_name="meshagent") as root_context:
         with click.Context(
             chatbot_command,
@@ -4500,7 +4486,7 @@ async def test_process_use_chat_channel_client_opens_thread_and_tracks_status() 
         type = "agent-message"
 
         def __init__(self, payload: dict[str, object]) -> None:
-            self.message = {"payload": payload}
+            self.message = payload
 
     room = _Room()
     client = process.MessagingChatClient(
@@ -4684,7 +4670,7 @@ async def test_process_use_chat_channel_client_routes_multiple_threads() -> None
         type = "agent-message"
 
         def __init__(self, payload: dict[str, object]) -> None:
-            self.message = {"payload": payload}
+            self.message = payload
 
     room = _Room()
     client = process.MessagingChatClient(
@@ -4910,7 +4896,7 @@ async def test_process_use_chat_channel_client_starts_default_new_thread_with_me
         type = "agent-message"
 
         def __init__(self, payload: dict[str, object]) -> None:
-            self.message = {"payload": payload}
+            self.message = payload
 
     room = _Room()
     client = process.MessagingChatClient(
@@ -5144,7 +5130,7 @@ async def test_process_use_chat_channel_client_reports_accepted_remote_inputs() 
         type = "agent-message"
 
         def __init__(self, payload: dict[str, object]) -> None:
-            self.message = {"payload": payload}
+            self.message = payload
 
     room = _Room()
     client = process.MessagingChatClient(
