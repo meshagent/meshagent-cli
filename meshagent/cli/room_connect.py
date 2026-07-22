@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from rich import print
 
 from meshagent.api import ApiScope, ParticipantToken
-from meshagent.api.client import ConflictError, Room
+from meshagent.api.client import AccessResource, AccessSubject, ConflictError, Room
 from meshagent.api.helpers import websocket_room_url
 from meshagent.cli import async_typer, auth_async
 from meshagent.cli.helper import (
@@ -198,7 +198,13 @@ async def _user_can_create_connect_room(
     *,
     project_id: str,
 ) -> bool:
-    return await account_client.can_create_rooms(project_id)
+    result = await account_client.test_access(
+        project_id=project_id,
+        subject=AccessSubject(type="user", id="me"),
+        resource=AccessResource(type="project", id=project_id),
+        relation="room_creator",
+    )
+    return result.allowed
 
 
 async def _list_connect_rooms(

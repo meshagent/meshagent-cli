@@ -1,0 +1,80 @@
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: python-slack-channel
+  description: Python Slack channel created by meshagent create.
+variables:
+  - name: image
+    title: Container image
+    description: Image tag built and deployed by meshagent deploy.
+    optional: true
+  - name: domain
+    title: Public Slack Events API domain
+    description: Public route domain to configure as the Slack Event Subscriptions Request URL.
+    type: route
+  - name: slack_service_account_email
+    title: Slack service account email
+    description: Service account email that owns the Slack secrets and runs this service.
+  - name: slack_bot_token_secret_id
+    title: Slack Bot Token secret ID
+    description: Service account secret ID containing the Slack Bot User OAuth Token.
+  - name: slack_signing_secret_id
+    title: Slack Signing Secret secret ID
+    description: Service account secret ID containing the Slack Signing Secret used for Events API validation.
+  - name: slack_allowed_channels
+    title: Allowed Slack channels
+    description: Optional comma-separated Slack channel ID allowlist for inbound events and outbound replies.
+    optional: true
+  - name: slack_thread_prefix
+    title: Slack thread storage prefix
+    description: Room thread path prefix for Slack conversations.
+    optional: true
+container:
+  image: meshagent/cli:default
+  template: agent
+  run_as:
+    email: "{{ slack_service_account_email }}"
+    scopes:
+      - secrets:proxy
+      - secrets:read
+  command: >-
+    env PYTHONPATH=/app
+    meshagent process join
+    --agent-name python-slack-channel
+    --channel chat
+    --channel 'command:["python","/app/server.py"]'
+    --thread-storage dataset
+    --image-generation gpt-image-2
+    --host 0.0.0.0
+    --port 8000
+    --path /
+  working_dir: /app
+  environment:
+    - name: SLACK_BOT_TOKEN
+      secret:
+        id: "{{ slack_bot_token_secret_id }}"
+    - name: MESHAGENT_SLACK_ALLOWED_CHANNELS
+      value: "{{ slack_allowed_channels }}"
+    - name: MESHAGENT_SLACK_THREAD_PREFIX
+      value: "{{ slack_thread_prefix }}"
+    - name: MESHAGENT_TOKEN
+      token:
+        identity: python-slack-channel
+        role: agent
+  storage:
+    images:
+      - image: "{{ image }}"
+        path: /app
+        subpath: app
+        read_only: true
+  private: false
+ports:
+  - num: 8000
+    type: http
+    published: true
+    public: false
+    annotations:
+      meshagent.request.queue: slack-events
+      meshagent.request.processor: python-slack-channel
+      meshagent.request.validation.method: slack
+      meshagent.request.validation.secret: "{{ slack_signing_secret_id }}"

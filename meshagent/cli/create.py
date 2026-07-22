@@ -66,10 +66,24 @@ ROOM_CHAT_FOCUS = "room-chat"
 ROOM_WORKSPACE_FOCUS = "room-workspace"
 CONTACT_FORM_FOCUS = "contact-form"
 TASK_QUEUE_DASHBOARD_FOCUS = "task-queue-dashboard"
+TELEGRAM_CHANNEL_FOCUS = "telegram-channel"
+SLACK_CHANNEL_FOCUS = "slack-channel"
+TWILIO_CHANNEL_FOCUS = "twilio-channel"
+WHATSAPP_CHANNEL_FOCUS = "whatsapp-channel"
 DEFAULT_LANGUAGE = "python"
 DEFAULT_FOCUS = AGENT_FOCUS
 CREATE_TEMPLATE_PACKAGE = "meshagent.cli.create_project_templates"
 CREATE_TEMPLATE_VERSION_PLACEHOLDER = "__MESHAGENT_CLIENT_VERSION__"
+CREATE_TEMPLATE_TELEGRAM_VERSION_PLACEHOLDER = "__MESHAGENT_TELEGRAM_VERSION__"
+CREATE_TEMPLATE_SLACK_CHANNEL_VERSION_PLACEHOLDER = (
+    "__MESHAGENT_SLACK_CHANNEL_VERSION__"
+)
+CREATE_TEMPLATE_TWILIO_VERSION_PLACEHOLDER = "__MESHAGENT_TWILIO_VERSION__"
+CREATE_TEMPLATE_WHATSAPP_VERSION_PLACEHOLDER = "__MESHAGENT_WHATSAPP_VERSION__"
+MESHAGENT_TELEGRAM_VERSION = "0.46.3"
+MESHAGENT_SLACK_CHANNEL_VERSION = "0.46.3"
+MESHAGENT_TWILIO_VERSION = "0.46.3"
+MESHAGENT_WHATSAPP_VERSION = "0.46.3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +156,28 @@ CONTACT_FORM_NEXT_STEPS = (
     "CONTACT_FORM_TO=you@example.com ./scripts/deploy.sh",
 )
 TASK_QUEUE_DASHBOARD_NEXT_STEPS = (
+    "./scripts/dev.sh",
+    "./scripts/deploy.sh",
+)
+TELEGRAM_CHANNEL_NEXT_STEPS = (
+    "./scripts/configure-telegram.sh",
+    "./scripts/dev.sh",
+    "./scripts/deploy.sh",
+)
+SLACK_CHANNEL_NEXT_STEPS = (
+    "./scripts/configure-slack.sh",
+    "./scripts/dev.sh",
+    "./scripts/deploy.sh",
+)
+TWILIO_CHANNEL_NEXT_STEPS = (
+    "cp .env.example .env",
+    "${EDITOR:-nano} .env",
+    "./scripts/dev.sh",
+    "./scripts/deploy.sh",
+)
+WHATSAPP_CHANNEL_NEXT_STEPS = (
+    "cp .env.example .env",
+    "${EDITOR:-nano} .env",
     "./scripts/dev.sh",
     "./scripts/deploy.sh",
 )
@@ -268,6 +304,26 @@ FOCUSES: Mapping[str, CreateFocus] = {
         label="Task Queue Dashboard",
         description="Public dashboard backed by a scheduled queue worker.",
     ),
+    TELEGRAM_CHANNEL_FOCUS: CreateFocus(
+        id=TELEGRAM_CHANNEL_FOCUS,
+        label="Telegram Channel",
+        description="Telegram account channel for a process-backed room agent.",
+    ),
+    SLACK_CHANNEL_FOCUS: CreateFocus(
+        id=SLACK_CHANNEL_FOCUS,
+        label="Slack Channel",
+        description="Slack Events API channel for a process-backed room agent.",
+    ),
+    TWILIO_CHANNEL_FOCUS: CreateFocus(
+        id=TWILIO_CHANNEL_FOCUS,
+        label="Twilio Channel",
+        description="Twilio SMS/MMS channel for a process-backed room agent.",
+    ),
+    WHATSAPP_CHANNEL_FOCUS: CreateFocus(
+        id=WHATSAPP_CHANNEL_FOCUS,
+        label="WhatsApp Channel",
+        description="WhatsApp Cloud API channel for a process-backed room agent.",
+    ),
 }
 
 
@@ -307,6 +363,38 @@ TEMPLATES: Mapping[tuple[str, str], CreateTemplate] = {
         description="Python dashboard that schedules text work onto a room queue.",
         template_dir=_template_dir("python", TASK_QUEUE_DASHBOARD_FOCUS),
         next_steps=TASK_QUEUE_DASHBOARD_NEXT_STEPS,
+    ),
+    ("python", TELEGRAM_CHANNEL_FOCUS): CreateTemplate(
+        language_id="python",
+        focus_id=TELEGRAM_CHANNEL_FOCUS,
+        label="Python Telegram Channel",
+        description="Runs a Telegram-backed command channel for a MeshAgent process agent. Incoming Telegram messages become trusted user turns, and completed agent responses are sent back to the same Telegram chat.",
+        template_dir=_template_dir("python", TELEGRAM_CHANNEL_FOCUS),
+        next_steps=TELEGRAM_CHANNEL_NEXT_STEPS,
+    ),
+    ("python", SLACK_CHANNEL_FOCUS): CreateTemplate(
+        language_id="python",
+        focus_id=SLACK_CHANNEL_FOCUS,
+        label="Python Slack Channel",
+        description="Runs a Slack-backed command channel for a MeshAgent process agent. Validated Slack Events API requests become trusted user turns, and completed agent responses are sent back through Slack chat.postMessage.",
+        template_dir=_template_dir("python", SLACK_CHANNEL_FOCUS),
+        next_steps=SLACK_CHANNEL_NEXT_STEPS,
+    ),
+    ("python", TWILIO_CHANNEL_FOCUS): CreateTemplate(
+        language_id="python",
+        focus_id=TWILIO_CHANNEL_FOCUS,
+        label="Python Twilio Channel",
+        description="Runs a Twilio-backed SMS/MMS command channel for a MeshAgent process agent. Validated Twilio webhooks become trusted user turns, and completed agent responses are sent back through the Twilio Messages API.",
+        template_dir=_template_dir("python", TWILIO_CHANNEL_FOCUS),
+        next_steps=TWILIO_CHANNEL_NEXT_STEPS,
+    ),
+    ("python", WHATSAPP_CHANNEL_FOCUS): CreateTemplate(
+        language_id="python",
+        focus_id=WHATSAPP_CHANNEL_FOCUS,
+        label="Python WhatsApp Channel",
+        description="Runs a WhatsApp Cloud API command channel for a MeshAgent process agent. Validated Meta webhooks become trusted user turns, and completed agent responses are sent back through the WhatsApp Cloud API.",
+        template_dir=_template_dir("python", WHATSAPP_CHANNEL_FOCUS),
+        next_steps=WHATSAPP_CHANNEL_NEXT_STEPS,
     ),
     ("javascript", WEB_FOCUS): CreateTemplate(
         language_id="javascript",
@@ -502,6 +590,40 @@ FOCUS_ALIASES = {
     "task_queue": TASK_QUEUE_DASHBOARD_FOCUS,
     "task-queue-dashboard": TASK_QUEUE_DASHBOARD_FOCUS,
     "task_queue_dashboard": TASK_QUEUE_DASHBOARD_FOCUS,
+    "telegram": TELEGRAM_CHANNEL_FOCUS,
+    "telegram-account": TELEGRAM_CHANNEL_FOCUS,
+    "telegram_account": TELEGRAM_CHANNEL_FOCUS,
+    "telegram-agent": TELEGRAM_CHANNEL_FOCUS,
+    "telegram_agent": TELEGRAM_CHANNEL_FOCUS,
+    "telegram-bot": TELEGRAM_CHANNEL_FOCUS,
+    "telegram_bot": TELEGRAM_CHANNEL_FOCUS,
+    "telegram-channel": TELEGRAM_CHANNEL_FOCUS,
+    "telegram_channel": TELEGRAM_CHANNEL_FOCUS,
+    "slack": SLACK_CHANNEL_FOCUS,
+    "slack-agent": SLACK_CHANNEL_FOCUS,
+    "slack_agent": SLACK_CHANNEL_FOCUS,
+    "slack-bot": SLACK_CHANNEL_FOCUS,
+    "slack_bot": SLACK_CHANNEL_FOCUS,
+    "slack-channel": SLACK_CHANNEL_FOCUS,
+    "slack_channel": SLACK_CHANNEL_FOCUS,
+    "twilio": TWILIO_CHANNEL_FOCUS,
+    "twilio-agent": TWILIO_CHANNEL_FOCUS,
+    "twilio_agent": TWILIO_CHANNEL_FOCUS,
+    "twilio-bot": TWILIO_CHANNEL_FOCUS,
+    "twilio_bot": TWILIO_CHANNEL_FOCUS,
+    "twilio-channel": TWILIO_CHANNEL_FOCUS,
+    "twilio_channel": TWILIO_CHANNEL_FOCUS,
+    "twilio-sms": TWILIO_CHANNEL_FOCUS,
+    "twilio_sms": TWILIO_CHANNEL_FOCUS,
+    "whatsapp": WHATSAPP_CHANNEL_FOCUS,
+    "whatsapp-agent": WHATSAPP_CHANNEL_FOCUS,
+    "whatsapp_agent": WHATSAPP_CHANNEL_FOCUS,
+    "whatsapp-bot": WHATSAPP_CHANNEL_FOCUS,
+    "whatsapp_bot": WHATSAPP_CHANNEL_FOCUS,
+    "whatsapp-channel": WHATSAPP_CHANNEL_FOCUS,
+    "whatsapp_channel": WHATSAPP_CHANNEL_FOCUS,
+    "whatsapp-cloud": WHATSAPP_CHANNEL_FOCUS,
+    "whatsapp_cloud": WHATSAPP_CHANNEL_FOCUS,
     "roomclient": AGENT_FOCUS,
     "room-client": AGENT_FOCUS,
     "web": WEB_FOCUS,
@@ -548,9 +670,26 @@ def _create_template_resource(template_name: str) -> Traversable:
 
 def _render_create_template(template_name: str) -> str:
     return render_meshagent_image_prefix_template(
-        _read_create_template(template_name).replace(
+        _read_create_template(template_name)
+        .replace(
             CREATE_TEMPLATE_VERSION_PLACEHOLDER,
             MESHAGENT_CLIENT_VERSION,
+        )
+        .replace(
+            CREATE_TEMPLATE_TELEGRAM_VERSION_PLACEHOLDER,
+            MESHAGENT_TELEGRAM_VERSION,
+        )
+        .replace(
+            CREATE_TEMPLATE_SLACK_CHANNEL_VERSION_PLACEHOLDER,
+            MESHAGENT_SLACK_CHANNEL_VERSION,
+        )
+        .replace(
+            CREATE_TEMPLATE_TWILIO_VERSION_PLACEHOLDER,
+            MESHAGENT_TWILIO_VERSION,
+        )
+        .replace(
+            CREATE_TEMPLATE_WHATSAPP_VERSION_PLACEHOLDER,
+            MESHAGENT_WHATSAPP_VERSION,
         )
     )
 
@@ -834,6 +973,11 @@ def _next_step_sections(
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
     section_specs = (
         ("Install dependencies", ("install",)),
+        (
+            "Configure environment",
+            (".env", "configure-telegram", "configure-slack", "create-bot-token"),
+        ),
+        ("Create Telegram session", ("create-session",)),
         ("Create room", ("rooms create",)),
         ("Run locally", ("dev",)),
         ("Deploy", ("deploy",)),
@@ -975,7 +1119,10 @@ def _create_command(
                 "(Web App), backend-agent (Agent Toolkit), chatbot (OpenAI Chatbot), "
                 "chatbot-anthropic (Anthropic Chatbot), chatbot-ui (Agent UI), "
                 "room-chat (Room Chat), room-workspace (Room Workspace), or "
-                "contact-form (Contact Form)."
+                "contact-form (Contact Form), task-queue-dashboard (Task Queue "
+                "Dashboard), telegram-channel (Telegram Channel), "
+                "slack-channel (Slack Channel), twilio-channel (Twilio Channel), "
+                "or whatsapp-channel (WhatsApp Channel)."
             ),
         ),
     ] = None,
