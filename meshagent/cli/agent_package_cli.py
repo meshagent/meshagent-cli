@@ -9,51 +9,19 @@ from rich.text import Text
 from typing import Annotated
 
 from meshagent.agents import Package, deploy_package, run_package
-import meshagent.agents.package as package_module
+from meshagent.agents.package import load_package
 from meshagent.api import RoomClient, WebSocketClientProtocol
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import ProjectIdOption, RoomOption
 from meshagent.cli.containers import _stream_container_job_logs_and_wait_for_exit
 from meshagent.cli.helper import get_client, resolve_project_id, resolve_room
-from meshagent.cli.multi import import_from_path
 
 
 app = async_typer.AsyncTyper(help="Build, run, and deploy packaged services.")
 
 
 def _load_package(*, module_path: str, export_name: str) -> Package:
-    resolved_module_path = Path(module_path).expanduser().resolve()
-    with package_module._agent_base_path_scope(resolved_module_path.parent):
-        module = import_from_path(str(resolved_module_path))
-
-        if export_name not in module.__dict__:
-            raise ImportError(f"{resolved_module_path} does not define {export_name}")
-
-        exported = module.__dict__[export_name]
-        if isinstance(exported, Package):
-            exported._bind_module_path(module_path=resolved_module_path)
-            exported._bind_module_export(
-                export_name=export_name,
-                export_is_factory=False,
-            )
-            return exported
-
-        if callable(exported):
-            built = exported()
-            if isinstance(built, Package):
-                built._bind_module_path(module_path=resolved_module_path)
-                built._bind_module_export(
-                    export_name=export_name,
-                    export_is_factory=True,
-                )
-                return built
-            raise TypeError(
-                f"{resolved_module_path}:{export_name} returned {type(built).__name__}, expected meshagent.agents.Package"
-            )
-
-        raise TypeError(
-            f"{resolved_module_path}:{export_name} is {type(exported).__name__}, expected meshagent.agents.Package or a zero-argument callable returning one"
-        )
+    return load_package(module_path=module_path, export_name=export_name)
 
 
 def _print_packaged_files(*, package: Package) -> None:

@@ -1,0 +1,93 @@
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: python-telegram-channel
+  description: Python Telegram channel created by meshagent create.
+variables:
+  - name: image
+    title: Container image
+    description: Image tag built and deployed by meshagent deploy.
+    optional: true
+  - name: domain
+    title: Public Telegram webhook domain
+    description: Public route domain to configure as the Telegram webhook URL.
+    type: route
+  - name: telegram_service_account_email
+    title: Telegram service account email
+    description: Service account email that owns the Telegram secrets and runs this service.
+  - name: telegram_bot_token_secret_id
+    title: Telegram bot token secret ID
+    description: Service account secret ID containing the BotFather token.
+  - name: telegram_webhook_secret_id
+    title: Telegram webhook validation secret ID
+    description: Service account secret ID containing Telegram webhook validation secret.
+  - name: telegram_allowed_chat_ids
+    title: Allowed Telegram chat IDs
+    description: Optional comma-separated chat ID allowlist for inbound messages and replies.
+    optional: true
+  - name: telegram_media_storage_prefix
+    title: Telegram media storage prefix
+    description: Optional room storage prefix for inbound Telegram media downloads.
+    optional: true
+  - name: telegram_inbound_media_max_bytes
+    title: Telegram inbound media byte limit
+    description: Optional maximum inbound Telegram media bytes to download into room storage.
+    optional: true
+container:
+  image: meshagent/cli:default
+  template: agent
+  run_as:
+    email: "{{ telegram_service_account_email }}"
+    scopes:
+      - secrets:proxy
+      - secrets:read
+  command: >-
+    env PYTHONPATH=/app
+    python -m meshagent.cli.cli process join
+    --agent-name python-telegram-channel
+    --channel chat
+    --channel 'command:["python","/app/server.py"]'
+    --thread-storage dataset
+    --image-generation gpt-image-2
+  working_dir: /app
+  environment:
+    - name: TELEGRAM_BOT_TOKEN
+      secret:
+        id: "{{ telegram_bot_token_secret_id }}"
+    - name: TELEGRAM_WEBHOOK_SECRET
+      secret:
+        id: "{{ telegram_webhook_secret_id }}"
+    - name: MESHAGENT_TELEGRAM_MODE
+      value: webhook
+    - name: MESHAGENT_TELEGRAM_QUEUE_NAME
+      value: telegram-inbound
+    - name: MESHAGENT_TELEGRAM_ALLOWED_CHAT_IDS
+      value: "{{ telegram_allowed_chat_ids }}"
+    - name: MESHAGENT_TELEGRAM_MEDIA_STORAGE_PREFIX
+      value: "{{ telegram_media_storage_prefix }}"
+    - name: MESHAGENT_TELEGRAM_INBOUND_MEDIA_MAX_BYTES
+      value: "{{ telegram_inbound_media_max_bytes }}"
+    - name: MESHAGENT_TOKEN
+      token:
+        identity: python-telegram-channel
+        role: agent
+  storage:
+    images:
+      - image: "{{ image }}"
+        path: /app
+        subpath: app
+        read_only: true
+  private: false
+ports:
+  - num: 8000
+    type: http
+    published: true
+    public: false
+    liveness: /health
+    annotations:
+      meshagent.request.validation.method: telegram
+      meshagent.request.validation.secret: "{{ telegram_webhook_secret_id }}"
+    endpoints:
+      - path: /telegram/webhook
+        annotations:
+          meshagent.request.processor: python-telegram-channel

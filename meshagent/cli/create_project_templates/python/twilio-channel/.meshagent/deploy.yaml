@@ -1,0 +1,83 @@
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: python-twilio-channel
+  description: Python Twilio channel created by meshagent create.
+variables:
+  - name: image
+    title: Container image
+    description: Image tag built and deployed by meshagent deploy.
+    optional: true
+  - name: domain
+    title: Public Twilio webhook domain
+    description: Public route domain to configure as the Twilio Messaging webhook URL.
+    type: route
+  - name: twilio_account_sid
+    title: Twilio Account SID
+    description: Account SID for the Twilio account that owns the sender.
+  - name: twilio_service_account_email
+    title: Twilio service account email
+    description: Service account email that owns the Twilio secrets and runs this service.
+  - name: twilio_auth_token_secret_id
+    title: Twilio Auth Token secret ID
+    description: Service account secret ID containing the Twilio Auth Token.
+  - name: twilio_allowed_from_numbers
+    title: Allowed SMS/MMS phone numbers
+    description: Optional comma-separated phone number allowlist for inbound senders and outbound replies.
+    optional: true
+  - name: twilio_media_storage_prefix
+    title: Twilio inbound media storage prefix
+    description: Room storage prefix for inbound Twilio MMS media downloaded from MediaUrl webhook fields.
+    optional: true
+  - name: twilio_inbound_media_max_bytes
+    title: Twilio inbound media max bytes
+    description: Maximum bytes to download for each inbound Twilio MMS media file.
+    optional: true
+container:
+  image: meshagent/cli:default
+  template: agent
+  run_as:
+    email: "{{ twilio_service_account_email }}"
+    scopes:
+      - secrets:proxy
+      - secrets:read
+  command: >-
+    env PYTHONPATH=/app
+    python -m meshagent.cli.cli process join
+    --agent-name python-twilio-channel
+    --channel chat
+    --channel 'command:["python","/app/server.py"]'
+    --thread-storage dataset
+  working_dir: /app
+  environment:
+    - name: TWILIO_ACCOUNT_SID
+      value: "{{ twilio_account_sid }}"
+    - name: TWILIO_AUTH_TOKEN
+      secret:
+        id: "{{ twilio_auth_token_secret_id }}"
+    - name: MESHAGENT_TWILIO_ALLOWED_FROM_NUMBERS
+      value: "{{ twilio_allowed_from_numbers }}"
+    - name: MESHAGENT_TWILIO_MEDIA_STORAGE_PREFIX
+      value: "{{ twilio_media_storage_prefix }}"
+    - name: MESHAGENT_TWILIO_INBOUND_MEDIA_MAX_BYTES
+      value: "{{ twilio_inbound_media_max_bytes }}"
+    - name: MESHAGENT_TOKEN
+      token:
+        identity: python-twilio-channel
+        role: agent
+  storage:
+    images:
+      - image: "{{ image }}"
+        path: /app
+        subpath: app
+        read_only: true
+  private: false
+ports:
+  - num: 8000
+    type: http
+    published: true
+    public: false
+    annotations:
+      meshagent.request.processor: python-twilio-channel
+      meshagent.request.validation.method: twilio
+      meshagent.request.validation.secret: "{{ twilio_auth_token_secret_id }}"

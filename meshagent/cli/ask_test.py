@@ -173,6 +173,122 @@ class _FakeTTY:
         return self._is_tty
 
 
+@pytest.mark.asyncio
+async def test_run_ask_chat_thread_prompt_forwards_streamed_deltas_once() -> None:
+    delivered: list[object] = []
+    rendered_text = ""
+    render_snapshots: list[str] = []
+
+    class _StreamingSession:
+        async def ask(self, *, prompt, attachments, on_message):
+            assert prompt == "stream this"
+            assert attachments == ()
+            messages = (
+                AgentTextContentStarted(
+                    type=AGENT_EVENT_TEXT_CONTENT_STARTED,
+                    thread_id="/threads/process-run",
+                    turn_id="turn-1",
+                    item_id="item-1",
+                ),
+                AgentTextContentDelta(
+                    type=AGENT_EVENT_TEXT_CONTENT_DELTA,
+                    thread_id="/threads/process-run",
+                    turn_id="turn-1",
+                    item_id="item-1",
+                    text="Hello ",
+                ),
+                AgentTextContentDelta(
+                    type=AGENT_EVENT_TEXT_CONTENT_DELTA,
+                    thread_id="/threads/process-run",
+                    turn_id="turn-1",
+                    item_id="item-1",
+                    text="world",
+                ),
+                AgentTextContentEnded(
+                    type=AGENT_EVENT_TEXT_CONTENT_ENDED,
+                    thread_id="/threads/process-run",
+                    turn_id="turn-1",
+                    item_id="item-1",
+                ),
+            )
+            for message in messages:
+                await ask_module._maybe_await(on_message(message))
+            # The aggregate return value must not be rendered after the deltas.
+            return "Hello world"
+
+    async def _render(message) -> None:
+        nonlocal rendered_text
+        delivered.append(message)
+        if isinstance(message, AgentTextContentDelta):
+            rendered_text += message.text
+            render_snapshots.append(rendered_text)
+
+    await ask_module._run_ask_chat_thread_prompt(
+        session=_StreamingSession(),
+        prompt="stream this",
+        attachments=(),
+        on_message=_render,
+    )
+
+    assert render_snapshots == ["Hello ", "Hello world"]
+    assert rendered_text == "Hello world"
+    assert [type(message) for message in delivered] == [
+        AgentTextContentStarted,
+        AgentTextContentDelta,
+        AgentTextContentDelta,
+        AgentTextContentEnded,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_ask_chat_thread_prompt_preserves_sequential_turn_context() -> None:
+    completed_prompts: list[str] = []
+    request_contexts: list[tuple[str, ...]] = []
+
+    class _ContextualSession:
+        async def ask(self, *, prompt, attachments, on_message):
+            assert attachments == ()
+            request_contexts.append((*completed_prompts, prompt))
+            item_id = f"item-{len(request_contexts)}"
+            await ask_module._maybe_await(
+                on_message(
+                    AgentTextContentDelta(
+                        type=AGENT_EVENT_TEXT_CONTENT_DELTA,
+                        thread_id="/threads/process-run",
+                        turn_id=f"turn-{len(request_contexts)}",
+                        item_id=item_id,
+                        text=f"response to {prompt}",
+                    )
+                )
+            )
+            completed_prompts.extend((prompt, f"response to {prompt}"))
+            return f"response to {prompt}"
+
+    session = _ContextualSession()
+    delivered: list[AgentTextContentDelta] = []
+    await ask_module._run_ask_chat_thread_prompt(
+        session=session,
+        prompt="first prompt",
+        attachments=(),
+        on_message=delivered.append,
+    )
+    await ask_module._run_ask_chat_thread_prompt(
+        session=session,
+        prompt="second prompt",
+        attachments=(),
+        on_message=delivered.append,
+    )
+
+    assert request_contexts == [
+        ("first prompt",),
+        ("first prompt", "response to first prompt", "second prompt"),
+    ]
+    assert [message.text for message in delivered] == [
+        "response to first prompt",
+        "response to second prompt",
+    ]
+
+
 async def _local_chat_session(
     send_message,
 ) -> tuple[ask_module.LocalChatClient, ask_module._AgentMessageSession]:

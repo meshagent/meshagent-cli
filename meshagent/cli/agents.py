@@ -6,6 +6,7 @@ import typer
 from rich import print
 
 from meshagent.api import RoomException
+from meshagent.api.client import ManagedAgent
 from meshagent.api.managed_agents import ManagedAgentSpec
 from meshagent.agents.chat_client import ChatThreadSession, WebSocketChatClient
 from meshagent.agents.messages import (
@@ -22,6 +23,35 @@ from meshagent.cli.helper import get_client, print_json_table, resolve_project_i
 app = async_typer.AsyncTyper(
     help="Create, list, and manage managed agents in a project"
 )
+
+
+async def _list_agents(
+    account_client,
+    *,
+    project_id: str,
+    count: int,
+    offset: int,
+    filter: str | None,
+) -> list[ManagedAgent]:
+    agents: list[ManagedAgent] = []
+    continuation_token: str | None = None
+    # The "my" view is paged in access-object order, so exhaust it before applying
+    # the CLI's global name ordering and offset.
+    while True:
+        page = await account_client.list_agents_page(
+            project_id=project_id,
+            page_size=100,
+            continuation_token=continuation_token,
+            filter=filter,
+            view="my",
+        )
+        agents.extend(page.agents)
+        continuation_token = page.continuation_token
+        if continuation_token is None or not page.agents:
+            break
+
+    agents.sort(key=lambda agent: agent.name.lower())
+    return agents[offset : offset + count]
 
 
 def _maybe_parse_json_object(label: str, value: Optional[str]) -> Optional[dict]:
@@ -597,19 +627,27 @@ async def agent_list_command(
     ] = None,
     offset: Annotated[int, typer.Option(help="Offset for pagination", min=0)] = 0,
     order_by: Annotated[
-        str, typer.Option(help='Order by column (e.g. "agent_name", "created_at")')
+        str, typer.Option(help='Order agents by name; only "agent_name" is supported')
     ] = "agent_name",
     filter: Annotated[
         Optional[str],
         typer.Option("--filter", help="Lowercase contains filter for agent names"),
     ] = None,
 ):
+    if order_by != "agent_name":
+        raise typer.BadParameter(
+            'Only "agent_name" is supported.', param_hint="--order-by"
+        )
+
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        agents = await account_client.list_agents(
+        agent_count = limit if limit is not None else count
+        agents = await _list_agents(
+            account_client,
             project_id=project_id,
-            page_size=limit if limit is not None else count,
+            count=agent_count,
+            offset=offset,
             filter=filter,
         )
         output = [

@@ -30,6 +30,37 @@ def test_llm_logger_help_exposes_logger_commands() -> None:
     assert "delete" in result.output
 
 
+@pytest.mark.asyncio
+async def test_logger_list_reports_custom_empty_message(monkeypatch) -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def list_llm_loggers(self, *, project_id: str):
+            assert project_id == "project-1"
+            return []
+
+        async def close(self) -> None:
+            self.closed = True
+
+    client = FakeClient()
+
+    async def fake_get_client() -> FakeClient:
+        return client
+
+    async def fake_resolve_project_id(*, project_id: str | None) -> str:
+        assert project_id == "project-1"
+        return project_id
+
+    monkeypatch.setattr(llm_module, "get_client", fake_get_client)
+    monkeypatch.setattr(llm_module, "resolve_project_id", fake_resolve_project_id)
+
+    with pytest.raises(SystemExit, match="No LLM loggers found"):
+        await llm_module.logger_list(project_id="project-1", output="table")
+
+    assert client.closed
+
+
 def test_llm_proxy_help_exposes_proxy_options() -> None:
     result = CliRunner().invoke(cli.app, ["llm", "proxy", "--help"])
 

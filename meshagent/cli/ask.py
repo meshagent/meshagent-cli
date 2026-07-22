@@ -539,6 +539,21 @@ async def _send_chat_thread_prompt(
     await session.start_thread(text=prompt, attachments=file_attachments)
 
 
+async def _run_ask_chat_thread_prompt(
+    *,
+    session: ChatThreadSession,
+    prompt: str,
+    attachments: Sequence[_AskInputAttachment],
+    on_message: Callable[[AgentMessage], Awaitable[None] | None],
+) -> None:
+    """Run a TUI turn while forwarding each event exactly as it arrives."""
+    await session.ask(
+        prompt=prompt,
+        attachments=attachments,
+        on_message=on_message,
+    )
+
+
 class _AgentMessageChannelClient(Protocol):
     @property
     def has_thread_path(self) -> bool: ...
@@ -3866,10 +3881,11 @@ async def _run_ask_tui(
             prompt: str,
             attachments: Sequence[_AskInputAttachment] = (),
         ) -> None:
-            await _send_chat_thread_prompt(
+            await _run_ask_chat_thread_prompt(
                 session=session,
                 prompt=prompt,
                 attachments=attachments,
+                on_message=self._handle_agent_message,
             )
 
         async def _finalize_active_assistant(self) -> None:

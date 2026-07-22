@@ -184,8 +184,8 @@ async def test_package_run_command_invokes_package_run_and_tails_logs(
             captured["delete"] = container_id
 
     class _FakeRoomClient:
-        def __init__(self, *, protocol) -> None:
-            del protocol
+        def __init__(self, *, protocol_factory) -> None:
+            del protocol_factory
             self.containers = _FakeContainers()
 
         async def __aenter__(self):
@@ -293,8 +293,8 @@ async def test_package_run_command_deletes_container_on_interrupt(
             captured["delete"] = container_id
 
     class _FakeRoomClient:
-        def __init__(self, *, protocol) -> None:
-            del protocol
+        def __init__(self, *, protocol_factory) -> None:
+            del protocol_factory
             self.containers = _FakeContainers()
 
         async def __aenter__(self):

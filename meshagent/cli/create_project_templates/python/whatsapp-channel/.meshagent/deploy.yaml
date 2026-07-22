@@ -1,0 +1,84 @@
+version: v1
+kind: ServiceTemplate
+metadata:
+  name: python-whatsapp-channel
+  description: Python WhatsApp channel created by meshagent create.
+variables:
+  - name: image
+    title: Container image
+    description: Image tag built and deployed by meshagent deploy.
+    optional: true
+  - name: domain
+    title: Public WhatsApp webhook domain
+    description: Public route domain to configure as the Meta webhook callback URL.
+    type: route
+  - name: whatsapp_phone_number_id
+    title: WhatsApp Phone Number ID
+    description: WhatsApp Cloud API phone number ID used to send replies.
+  - name: whatsapp_service_account_email
+    title: WhatsApp service account email
+    description: Service account email that owns the WhatsApp secrets and runs this service.
+  - name: whatsapp_access_token_secret_id
+    title: WhatsApp Access Token secret ID
+    description: Service account secret ID containing the WhatsApp Access Token.
+  - name: whatsapp_app_secret_id
+    title: WhatsApp App Secret secret ID
+    description: Service account secret ID containing the Meta app secret for X-Hub-Signature-256 validation.
+  - name: whatsapp_verify_token_secret_id
+    title: WhatsApp Verify Token secret ID
+    description: Service account secret ID containing Meta's webhook subscription challenge token.
+  - name: whatsapp_allowed_from_numbers
+    title: Allowed WhatsApp phone numbers
+    description: Optional comma-separated phone number allowlist for inbound senders and outbound replies.
+    optional: true
+container:
+  image: meshagent/cli:default
+  template: agent
+  run_as:
+    email: "{{ whatsapp_service_account_email }}"
+    scopes:
+      - secrets:proxy
+      - secrets:read
+  command: >-
+    env PYTHONPATH=/app
+    python -m meshagent.cli.cli process join
+    --agent-name python-whatsapp-channel
+    --channel chat
+    --channel 'command:["python","/app/server.py"]'
+    --thread-storage dataset
+  working_dir: /app
+  environment:
+    - name: WHATSAPP_PHONE_NUMBER_ID
+      value: "{{ whatsapp_phone_number_id }}"
+    - name: WHATSAPP_ACCESS_TOKEN
+      secret:
+        id: "{{ whatsapp_access_token_secret_id }}"
+    - name: WHATSAPP_APP_SECRET
+      secret:
+        id: "{{ whatsapp_app_secret_id }}"
+    - name: WHATSAPP_VERIFY_TOKEN
+      secret:
+        id: "{{ whatsapp_verify_token_secret_id }}"
+    - name: MESHAGENT_WHATSAPP_ALLOWED_FROM_NUMBERS
+      value: "{{ whatsapp_allowed_from_numbers }}"
+    - name: MESHAGENT_TOKEN
+      token:
+        identity: python-whatsapp-channel
+        role: agent
+  storage:
+    images:
+      - image: "{{ image }}"
+        path: /app
+        subpath: app
+        read_only: true
+  private: false
+ports:
+  - num: 8000
+    type: http
+    published: true
+    public: false
+    annotations:
+      meshagent.request.processor: python-whatsapp-channel
+      meshagent.request.validation.method: whatsapp
+      meshagent.request.validation.secret: "{{ whatsapp_app_secret_id }}"
+      meshagent.request.validation.challenge_secret: "{{ whatsapp_verify_token_secret_id }}"
