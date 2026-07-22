@@ -1,8 +1,8 @@
 # Python Slack Channel
 
-Runs a Slack-backed channel inside a MeshAgent process agent. Incoming Slack Events API requests are validated with the Slack Signing Secret, placed onto a room queue, converted into trusted user turns, and completed agent responses are sent back through Slack `chat.postMessage`.
+Runs a Slack-backed channel inside a MeshAgent process agent. Incoming Slack Events API requests are validated at the MeshAgent edge and again by the sample HTTP endpoint, converted into trusted user turns, and completed agent responses are sent back through Slack `chat.postMessage`.
 
-The channel runs as a language-neutral child process using `--channel='command:["python","server.py"]'` alongside the normal `--channel chat`. The CLI gives the child a private capability-protected connection, and the channel remains the authority that maps each Slack sender to a MeshAgent participant.
+The channel runs as a language-neutral child process using `--channel='command:["python","server.py"]'` alongside the normal `--channel chat`. The editable channel implementation lives in this project as `channel.py`; no separate Slack channel package is installed.
 
 ## Slack App Credentials
 
@@ -25,7 +25,7 @@ If the setup UI needs to install local dependencies, it writes progress to `.mes
 
 ## Events API
 
-This template expects Slack Events API HTTP `POST` callbacks. The request path validates `X-Slack-Signature` and `X-Slack-Request-Timestamp` with the Slack Signing Secret before the body reaches the `slack-events` queue. Slack `url_verification` requests are answered with the signed `challenge` value.
+This template expects Slack Events API HTTP `POST` callbacks. MeshAgent validates `X-Slack-Signature` and `X-Slack-Request-Timestamp` before proxying the request to `server.py`. The sample endpoint repeats that validation before handing the body to `channel.py`, and answers Slack `url_verification` requests with the challenge value.
 
 Supported inbound events:
 
@@ -108,15 +108,15 @@ The script opens the MeshAgent room picker when you do not pass `--room`, create
 
 `scripts/dev.sh` and `scripts/deploy.sh` print the exact Slack Events API Request URL to paste into the Slack app configuration. By default they derive `https://<room-name>.meshagent.dev/` from the selected room, or use the configured MeshAgent pages domain when one is available. Override the base domain with `MESHAGENT_SLACK_EVENTS_BASE_DOMAIN`, override the full route domain with `MESHAGENT_SLACK_EVENTS_DOMAIN`, or set `MESHAGENT_SLACK_EVENTS_URL` when you want the printed Slack Request URL to include a specific path.
 
-The route is backed by the room queue `slack-events`; MeshAgent validates Slack's signature with the service-account secret ID passed as `slack_signing_secret_id` before any event reaches the queue.
+The deployed route proxies to the HTTP endpoint in `server.py`. MeshAgent validates Slack's signature with `slack_signing_secret_id`, and the endpoint validates it again with the injected `SLACK_SIGNING_SECRET`.
 
 ## Interact From Slack
 
-Use the callback URL printed by `./scripts/dev.sh` for local development, or the callback URL printed by `./scripts/deploy.sh` for the deployed service. Copy that URL, open your Slack app configuration, enable Event Subscriptions, paste the URL as the Request URL, and let Slack verify it with the signed `url_verification` challenge. Under Bot Events, subscribe to `app_mention` at minimum, then reinstall the Slack app to your workspace if Slack prompts you to apply permission changes. Invite the bot user to a channel with `/invite @your-bot-name`, then mention it in Slack with `@your-bot-name hello`. If Slack shows "Sending messages to this app has been turned off" in the app DM/App Home view, use a channel mention first; direct messages require enabling the app's App Home Messages tab, adding the matching DM event subscription such as `message.im`, granting the needed bot scopes such as `im:history` and `chat:write`, and reinstalling the app. The Slack event will reach the MeshAgent route, be validated with the Slack Signing Secret, be placed onto the `slack-events` queue, and the running `python-slack-channel` agent will answer back with Slack `chat.postMessage`.
+Use the callback URL printed by `./scripts/dev.sh` for local development, or the callback URL printed by `./scripts/deploy.sh` for the deployed service. Copy that URL, open your Slack app configuration, enable Event Subscriptions, paste the URL as the Request URL, and let Slack verify it with the signed `url_verification` challenge. Under Bot Events, subscribe to `app_mention` at minimum, then reinstall the Slack app to your workspace if Slack prompts you to apply permission changes. Invite the bot user to a channel with `/invite @your-bot-name`, then mention it in Slack with `@your-bot-name hello`. If Slack shows "Sending messages to this app has been turned off" in the app DM/App Home view, use a channel mention first; direct messages require enabling the app's App Home Messages tab, adding the matching DM event subscription such as `message.im`, granting the needed bot scopes such as `im:history` and `chat:write`, and reinstalling the app. The running `python-slack-channel` agent validates the event and answers with Slack `chat.postMessage`.
 
 ## How It Works
 
-`server.py` is a small executable adapter that imports `create_channel(...)` from `meshagent.slack_channel` and bridges the resulting `SlackChannel` over MeshAgent's existing MessagePack channel protocol. For each queued Slack Events API payload, the channel parses `event.channel`, `event.user`, `event.text`, `event.ts`, and `event.thread_ts`. It emits a `TurnStart` with a Slack `Participant`, then waits for the agent response.
+`server.py` hosts the provider-facing HTTP endpoint and bridges the local `SlackChannel` from `channel.py` over MeshAgent's MessagePack channel protocol. For each Slack Events API payload, the channel parses `event.channel`, `event.user`, `event.text`, `event.ts`, and `event.thread_ts`. It emits a `TurnStart` with a Slack `Participant`, then waits for the agent response. Edit `channel.py` to customize parsing, participant mapping, or replies. Set `MESHAGENT_SLACK_API_BASE_URL` to point outbound API calls at a compatible test server.
 
 The agent's text deltas are collected until `TurnEnded`, then the completed response is sent back to Slack with `chat.postMessage`. Long responses are split before sending.
 

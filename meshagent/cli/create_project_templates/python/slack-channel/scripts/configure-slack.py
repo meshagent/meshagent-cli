@@ -445,7 +445,7 @@ def runtime_dependencies_ready() -> bool:
             [
                 sys.executable,
                 "-c",
-                "import meshagent.slack_channel, textual",
+                "import channel, textual",
             ],
             cwd=ROOT,
             stdout=subprocess.DEVNULL,

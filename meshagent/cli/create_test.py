@@ -256,7 +256,10 @@ def test_published_http_create_template_ports_are_public() -> None:
             f"{template.template_dir}/.meshagent/deploy.yaml"
         )
         if "published: true" in deploy_yaml:
-            if "meshagent.request.queue:" in deploy_yaml:
+            if (
+                "meshagent.request.queue:" in deploy_yaml
+                or "meshagent.request.validation.method:" in deploy_yaml
+            ):
                 assert "public: false" in deploy_yaml, template.template_dir
             else:
                 assert "public: true" in deploy_yaml, template.template_dir
@@ -1047,6 +1050,7 @@ def test_init_creates_python_telegram_channel_non_interactively(tmp_path) -> Non
     agents_md = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
     claude_md = (tmp_path / "CLAUDE.md").read_text(encoding="utf-8")
     server_py = (tmp_path / "server.py").read_text(encoding="utf-8")
+    channel_py = (tmp_path / "channel.py").read_text(encoding="utf-8")
     configure_telegram_py = (tmp_path / "scripts" / "configure-telegram.py").read_text(
         encoding="utf-8"
     )
@@ -1115,8 +1119,8 @@ def test_init_creates_python_telegram_channel_non_interactively(tmp_path) -> Non
     assert "chat.ask" not in readme
     assert "room.agents.invoke_tool" not in readme
     assert '--channel=\'command:["python","server.py"]\'' in readme
-    assert "private capability-protected connection" in readme
-    assert "channel remains the authority" in readme
+    assert "editable implementation lives in `channel.py`" in readme
+    assert "no separate Telegram channel package is installed" in readme
     assert "./scripts/configure-telegram.sh" in readme
     assert "./scripts/create-bot-token.sh" in readme
     assert "in-memory user session" in readme
@@ -1138,13 +1142,13 @@ def test_init_creates_python_telegram_channel_non_interactively(tmp_path) -> Non
     assert ".dockerignore" in readme
     assert "MeshAgent room picker" in readme
     assert "service-account secrets" in readme
-    assert "meshagent.telegram.channel" in readme
+    assert "local `TelegramChannel` from `channel.py`" in readme
     assert "## Platform Secrets" in readme
     assert "telegram-bot-token" in readme
     assert "telegram-webhook-secret" in readme
     assert "/telegram/webhook" in readme
     assert "X-Telegram-Bot-Api-Secret-Token" in readme
-    assert "telegram-inbound" in readme
+    assert "passes the validated update directly to the channel" in readme
     assert "python-telegram-channel" in readme
     assert "container.run_as" in readme
     assert "future deploys can omit `TELEGRAM_BOT_TOKEN` from `.env`" in readme
@@ -1164,16 +1168,16 @@ def test_init_creates_python_telegram_channel_non_interactively(tmp_path) -> Non
 
     assert '"meshagent-api==' in pyproject
     assert '"meshagent-agents==' in pyproject
-    assert '"meshagent-telegram==' in pyproject
+    assert '"meshagent-telegram==' not in pyproject
+    assert '"aiohttp>=3.12,<4"' in pyproject
+    assert '"telethon>=1.36,<2"' in pyproject
     assert '"meshagent-tools==' not in pyproject
-    assert '"telethon>=1.36,<2"' not in pyproject
     assert '"textual>=8.2.3,<9.0"' in pyproject
-    assert (
-        "from meshagent.telegram.channel import TelegramChannel, create_channel"
-        in server_py
-    )
-    assert "from meshagent.agents import run_room_channel" in server_py
-    assert "run_room_channel(lambda room: create_channel(room=room))" in server_py
+    assert "from channel import TelegramChannel" in server_py
+    assert "from meshagent.agents import run_external_channel" in server_py
+    assert "receive_from_http=True" in server_py
+    assert "TELEGRAM_WEBHOOK_SECRET" in server_py
+    assert "class TelegramChannel(ThreadedChannel)" in channel_py
     assert "__all__" in server_py
     assert "TelegramClient" not in server_py
     assert "StringSession" not in server_py
@@ -1214,7 +1218,7 @@ def test_init_creates_python_telegram_channel_non_interactively(tmp_path) -> Non
     assert "run_telegram_install_tui" in configure_telegram_py
     assert "runtime_dependencies_ready" in configure_telegram_py
     assert "ensure_runtime_dependencies" in configure_telegram_py
-    assert "import meshagent.telegram, textual" in configure_telegram_py
+    assert "import channel, textual" in configure_telegram_py
     assert ".meshagent/telegram-setup-install.log" in configure_telegram_py
     assert "TELEGRAM_BOT_TOKEN" in configure_telegram_py
     assert "Telegram bot token" in configure_telegram_py
@@ -1261,14 +1265,14 @@ def test_init_creates_python_telegram_channel_non_interactively(tmp_path) -> Non
     assert "meshagent-api" in install_sh
     assert "meshagent-agents" in install_sh
     assert "meshagent-openai" in install_sh
-    assert "meshagent-telegram" in install_sh
+    assert "meshagent-telegram" not in install_sh
     assert '-e "$SDK_ROOT/meshagent-api"' in install_sh
     assert '-e "$SDK_ROOT/meshagent-tools"' in install_sh
     assert '-e "$SDK_ROOT/meshagent-agents"' in install_sh
     assert '-e "$SDK_ROOT/meshagent-openai"' in install_sh
-    assert '-e "$SDK_ROOT/meshagent-telegram"' in install_sh
+    assert '-e "$SDK_ROOT/meshagent-telegram"' not in install_sh
     assert "./scripts/install.sh" in dev_sh
-    assert "import meshagent.telegram" in dev_sh
+    assert "import channel" in dev_sh
     assert "load_telegram_env" in dev_sh
     assert "if [ -f .env ]; then" in dev_sh
     assert ". ./.env" in dev_sh
@@ -1379,8 +1383,7 @@ def test_init_creates_python_telegram_channel_non_interactively(tmp_path) -> Non
             "env PYTHONPATH=/app python -m meshagent.cli.cli process join --agent-name "
             "python-telegram-channel --channel chat "
             '--channel \'command:["python","/app/server.py"]\' '
-            "--thread-storage dataset --image-generation gpt-image-2 "
-            "--host 0.0.0.0 --port 8000 --path /"
+            "--thread-storage dataset --image-generation gpt-image-2"
         ),
     )
     assert "kind: ServiceTemplate" in deploy_yaml
@@ -1420,9 +1423,9 @@ def test_init_creates_python_telegram_channel_non_interactively(tmp_path) -> Non
     assert "identity: python-telegram-channel" in deploy_yaml
     assert "image: meshagent/cli:default" in deploy_yaml
     assert '--channel \'command:["python","/app/server.py"]\'' in deploy_yaml
-    assert "--host 0.0.0.0" in deploy_yaml
-    assert "--port 8000" in deploy_yaml
-    assert "--path /" in deploy_yaml
+    assert "--host 0.0.0.0" not in deploy_yaml
+    assert "--port 8000" not in deploy_yaml
+    assert "--path /" not in deploy_yaml
     assert "MESHAGENT_AGENT_CHAT_TOOLKIT" not in deploy_yaml
     assert "MESHAGENT_AGENT_CHAT_TOOL" not in deploy_yaml
     assert "MESHAGENT_TOKEN" in deploy_yaml
@@ -1433,7 +1436,8 @@ def test_init_creates_python_telegram_channel_non_interactively(tmp_path) -> Non
         'meshagent.request.validation.secret: "{{ telegram_webhook_secret_id }}"'
         in deploy_yaml
     )
-    assert "meshagent.request.queue: telegram-inbound" in deploy_yaml
+    assert "meshagent.request.queue:" not in deploy_yaml
+    assert "TELEGRAM_WEBHOOK_SECRET" in deploy_yaml
     assert "meshagent.request.processor: python-telegram-channel" in deploy_yaml
     assert "path: /telegram/webhook" in deploy_yaml
     assert deploy_spec.container is not None
@@ -1480,13 +1484,16 @@ def test_init_creates_python_telegram_channel_non_interactively(tmp_path) -> Non
     endpoint = port.endpoints[0]
     assert endpoint.path == "/telegram/webhook"
     assert endpoint.annotations is not None
-    assert endpoint.annotations["meshagent.request.queue"] == "telegram-inbound"
+    assert "meshagent.request.queue" not in endpoint.annotations
+    assert endpoint.annotations["meshagent.request.processor"] == (
+        "python-telegram-channel"
+    )
     assert (
         endpoint.annotations["meshagent.request.processor"] == "python-telegram-channel"
     )
     assert diagnosis.language == "Python"
     assert diagnosis.sdk == "meshagent-api"
-    assert diagnosis.is_headless_backend_agent is True
+    assert diagnosis.is_headless_backend_agent is False
     assert diagnosis.python_has_pyproject is True
     assert diagnosis.python_source_uses_sdk is True
 
@@ -1525,6 +1532,7 @@ def test_init_creates_python_slack_channel_non_interactively(tmp_path) -> None:
     agents_md = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
     claude_md = (tmp_path / "CLAUDE.md").read_text(encoding="utf-8")
     server_py = (tmp_path / "server.py").read_text(encoding="utf-8")
+    channel_py = (tmp_path / "channel.py").read_text(encoding="utf-8")
     configure_slack_py = (tmp_path / "scripts" / "configure-slack.py").read_text(
         encoding="utf-8"
     )
@@ -1594,7 +1602,8 @@ def test_init_creates_python_slack_channel_non_interactively(tmp_path) -> None:
     assert "X-Slack-Request-Timestamp" in readme
     assert "url_verification" in readme
     assert "slack-events" in readme
-    assert "meshagent.slack_channel" in readme
+    assert "local `SlackChannel` from `channel.py`" in readme
+    assert "no separate Slack channel package is installed" in readme
     assert "slack-bot-token" in readme
     assert "slack-signing-secret" in readme
     assert "python-slack-channel" in readme
@@ -1628,16 +1637,14 @@ def test_init_creates_python_slack_channel_non_interactively(tmp_path) -> None:
     assert '"meshagent-cli==' in pyproject
     assert '"meshagent-api==' in pyproject
     assert '"meshagent-agents==' in pyproject
-    assert '"meshagent-slack-channel==' in pyproject
+    assert '"meshagent-slack-channel==' not in pyproject
+    assert '"aiohttp>=3.12,<4"' in pyproject
     assert '"meshagent-tools==' not in pyproject
-    assert '"aiohttp>=3.12,<4"' not in pyproject
-    assert (
-        "from meshagent.slack_channel import SlackChannel, create_channel" in server_py
-    )
-    assert "from meshagent.agents import run_room_channel" in server_py
-    assert "run_room_channel(lambda room: create_channel(room=room))" in server_py
-    assert "import meshagent as _meshagent" in server_py
-    assert "_meshagent.__path__.append" in server_py
+    assert "from channel import SlackChannel, create_channel" in server_py
+    assert "from meshagent.agents import run_external_channel" in server_py
+    assert "receive_from_http=receive_from_http" in server_py
+    assert "SLACK_SIGNING_SECRET" in server_py
+    assert "class SlackChannel(ThreadedChannel)" in channel_py
     assert "__all__" in server_py
     assert "class SlackChannel(ThreadedChannel)" not in server_py
     assert "TurnStart(" not in server_py
@@ -1645,7 +1652,6 @@ def test_init_creates_python_slack_channel_non_interactively(tmp_path) -> None:
     assert "room.queues.receive" not in server_py
     assert "new_client_session" not in server_py
     assert "SLACK_BOT_TOKEN" not in server_py
-    assert "SLACK_SIGNING_SECRET" not in server_py
     assert "MESHAGENT_SLACK_ALLOWED_CHANNELS" not in server_py
     assert "chat.ask" not in server_py
     assert "self.emit(sender=participant, payload=turn_start)" not in server_py
@@ -1662,7 +1668,7 @@ def test_init_creates_python_slack_channel_non_interactively(tmp_path) -> None:
     assert "run_slack_install_tui" in configure_slack_py
     assert "runtime_dependencies_ready" in configure_slack_py
     assert "ensure_runtime_dependencies" in configure_slack_py
-    assert "import meshagent.slack_channel, textual" in configure_slack_py
+    assert "import channel, textual" in configure_slack_py
     assert ".meshagent/slack-setup-install.log" in configure_slack_py
     assert "SLACK_BOT_TOKEN" in configure_slack_py
     assert "SLACK_SIGNING_SECRET" in configure_slack_py
@@ -1687,12 +1693,11 @@ def test_init_creates_python_slack_channel_non_interactively(tmp_path) -> None:
     assert '-e "$SDK_ROOT/meshagent-codex"' in install_sh
     assert "meshagent-cli" in install_sh
     assert '-e "$SDK_ROOT/meshagent-cli"' in install_sh
-    assert "meshagent-slack-channel" in install_sh
-    assert '-e "$SDK_ROOT/meshagent-slack-channel"' in install_sh
+    assert "meshagent-slack-channel" not in install_sh
     assert "MESHAGENT_SDK_ROOT" in install_sh
     assert "meshagent-server/meshagent-sdk" in install_sh
     assert "./scripts/install.sh" in dev_sh
-    assert "import meshagent.slack_channel" in dev_sh
+    assert "import channel" in dev_sh
     assert "load_slack_env" in dev_sh
     assert "./scripts/configure-slack.sh" in dev_sh
     assert "Run ./scripts/configure-slack.sh" in dev_sh
@@ -1808,10 +1813,9 @@ def test_init_creates_python_slack_channel_non_interactively(tmp_path) -> None:
     assert "prepare_slack_deploy_app" in deploy_sh
     assert "MESHAGENT_SLACK_SKIP_VENDOR" in deploy_sh
     assert ".meshagent/deploy-app" in deploy_sh
-    assert "resolve_slack_sdk_root" in deploy_sh
-    assert "slack_sdk_root_has_packages" in deploy_sh
-    assert "$sdk_root/meshagent-slack-channel" in deploy_sh
-    assert "meshagent-slack-channel==0.46.3" in deploy_sh
+    assert "resolve_slack_sdk_root" not in deploy_sh
+    assert "slack_sdk_root_has_packages" not in deploy_sh
+    assert "meshagent-slack-channel==" not in deploy_sh
     assert "--no-deps" in deploy_sh
     assert "--only-binary=:all:" not in deploy_sh
     assert "--find-links" not in deploy_sh
@@ -1827,8 +1831,7 @@ def test_init_creates_python_slack_channel_non_interactively(tmp_path) -> None:
             "env PYTHONPATH=/app meshagent process join --agent-name "
             "python-slack-channel --channel chat "
             '--channel \'command:["python","/app/server.py"]\' '
-            "--thread-storage dataset --image-generation gpt-image-2 "
-            "--host 0.0.0.0 --port 8000 --path /"
+            "--thread-storage dataset --image-generation gpt-image-2"
         ),
     )
     assert "kind: ServiceTemplate" in deploy_yaml
@@ -1852,7 +1855,8 @@ def test_init_creates_python_slack_channel_non_interactively(tmp_path) -> None:
     assert "MESHAGENT_TOKEN" in deploy_yaml
     assert "published: true" in deploy_yaml
     assert "public: false" in deploy_yaml
-    assert "meshagent.request.queue: slack-events" in deploy_yaml
+    assert "meshagent.request.queue:" not in deploy_yaml
+    assert "SLACK_SIGNING_SECRET" in deploy_yaml
     assert "meshagent.request.processor: python-slack-channel" in deploy_yaml
     assert "meshagent.request.validation.method: slack" in deploy_yaml
     assert (
@@ -1885,7 +1889,8 @@ def test_init_creates_python_slack_channel_non_interactively(tmp_path) -> None:
     assert port.published is True
     assert port.public is False
     assert port.annotations is not None
-    assert port.annotations["meshagent.request.queue"] == "slack-events"
+    assert "meshagent.request.queue" not in port.annotations
+    assert port.annotations["meshagent.request.processor"] == "python-slack-channel"
     assert port.annotations["meshagent.request.processor"] == "python-slack-channel"
     assert port.annotations["meshagent.request.validation.method"] == "slack"
     assert (
@@ -1935,6 +1940,7 @@ def test_init_creates_python_twilio_channel_non_interactively(tmp_path) -> None:
     agents_md = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
     claude_md = (tmp_path / "CLAUDE.md").read_text(encoding="utf-8")
     server_py = (tmp_path / "server.py").read_text(encoding="utf-8")
+    channel_py = (tmp_path / "channel.py").read_text(encoding="utf-8")
     install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")
     dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
@@ -1943,10 +1949,7 @@ def test_init_creates_python_twilio_channel_non_interactively(tmp_path) -> None:
     _assert_template_dockerfile(tmp_path)
     _assert_python_dockerfile_vendors_sdk_runtime(
         tmp_path,
-        dependencies=(
-            "meshagent-agents==",
-            "meshagent-twilio==",
-        ),
+        dependencies=("meshagent-agents==",),
     )
 
     assert ".env" in dockerignore
@@ -1974,12 +1977,12 @@ def test_init_creates_python_twilio_channel_non_interactively(tmp_path) -> None:
     assert "chat.ask" not in readme
     assert "room.agents.invoke_tool" not in readme
     assert '--channel=\'command:["python","server.py"]\'' in readme
-    assert "private capability-protected connection" in readme
-    assert "channel remains the authority" in readme
+    assert "editable implementation lives in `channel.py`" in readme
+    assert "no separate Twilio channel package is installed" in readme
     assert "twilio-inbound" in readme
     assert "MeshAgent validates `X-Twilio-Signature`" in readme
     assert "Twilio Messages API" in readme
-    assert "meshagent.twilio.channel" in readme
+    assert "local `TwilioChannel` from `channel.py`" in readme
     assert "## SMS And MMS" in readme
     assert "room.storage.download_url(path=...)" in readme
     assert "Twilio `MediaUrl`" in readme
@@ -2014,25 +2017,21 @@ def test_init_creates_python_twilio_channel_non_interactively(tmp_path) -> None:
 
     assert '"meshagent-api==' in pyproject
     assert '"meshagent-agents==' in pyproject
-    assert '"meshagent-twilio==' in pyproject
+    assert '"meshagent-twilio==' not in pyproject
+    assert '"aiohttp>=3.12,<4"' in pyproject
     assert '"meshagent-tools==' not in pyproject
-    assert '"aiohttp>=3.12,<4"' not in pyproject
-    assert (
-        "from meshagent.twilio.channel import TwilioChannel, create_channel"
-        in server_py
-    )
-    assert "from meshagent.agents import run_room_channel" in server_py
-    assert "run_room_channel(lambda room: create_channel(room=room))" in server_py
+    assert "from channel import TwilioChannel, create_channel" in server_py
+    assert "from meshagent.agents import run_external_channel" in server_py
+    assert "receive_from_http=receive_from_http" in server_py
+    assert "class TwilioChannel(ThreadedChannel)" in channel_py
     assert "__all__" in server_py
     assert "class TwilioChannel(ThreadedChannel)" not in server_py
     assert "TurnStart(" not in server_py
     assert "AgentTextContentDelta" not in server_py
     assert "room.queues.receive" not in server_py
-    assert "parse_qs" not in server_py
     assert "new_client_session" not in server_py
     assert "BasicAuth" not in server_py
     assert "TWILIO_ACCOUNT_SID" not in server_py
-    assert "TWILIO_AUTH_TOKEN" not in server_py
     assert "MESHAGENT_TWILIO_THREAD_PREFIX" not in server_py
     assert "MESHAGENT_TWILIO_ALLOWED_FROM_NUMBERS" not in server_py
     assert "MESHAGENT_TWILIO_RESPONSE_TIMEOUT" not in server_py
@@ -2053,10 +2052,9 @@ def test_init_creates_python_twilio_channel_non_interactively(tmp_path) -> None:
     assert 'VENV="${VENV:-.venv}"' in install_sh
     assert 'PIP_ONLY_BINARY="${PIP_ONLY_BINARY:-:all:}"' in install_sh
     _assert_python_install_prefers_local_sdk(install_sh)
-    assert "meshagent-twilio" in install_sh
-    assert '-e "$SDK_ROOT/meshagent-twilio"' in install_sh
+    assert "meshagent-twilio" not in install_sh
     assert "./scripts/install.sh" in dev_sh
-    assert "import meshagent.twilio" in dev_sh
+    assert "import channel" in dev_sh
     assert "load_twilio_env" in dev_sh
     assert "load_twilio_env_file" in dev_sh
     assert "load_twilio_env_from_parent" in dev_sh
@@ -2190,7 +2188,7 @@ def test_init_creates_python_twilio_channel_non_interactively(tmp_path) -> None:
     assert "MESHAGENT_TOKEN" in deploy_yaml
     assert "published: true" in deploy_yaml
     assert "public: false" in deploy_yaml
-    assert "meshagent.request.queue: twilio-inbound" in deploy_yaml
+    assert "meshagent.request.queue:" not in deploy_yaml
     assert "meshagent.request.processor: python-twilio-channel" in deploy_yaml
     assert "meshagent.request.validation.method: twilio" in deploy_yaml
     assert (
@@ -2228,7 +2226,8 @@ def test_init_creates_python_twilio_channel_non_interactively(tmp_path) -> None:
     assert port.published is True
     assert port.public is False
     assert port.annotations is not None
-    assert port.annotations["meshagent.request.queue"] == "twilio-inbound"
+    assert "meshagent.request.queue" not in port.annotations
+    assert port.annotations["meshagent.request.processor"] == "python-twilio-channel"
     assert port.annotations["meshagent.request.processor"] == "python-twilio-channel"
     assert port.annotations["meshagent.request.validation.method"] == "twilio"
     assert (
@@ -2275,6 +2274,7 @@ def test_init_creates_python_whatsapp_channel_non_interactively(tmp_path) -> Non
     agents_md = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
     claude_md = (tmp_path / "CLAUDE.md").read_text(encoding="utf-8")
     server_py = (tmp_path / "server.py").read_text(encoding="utf-8")
+    channel_py = (tmp_path / "channel.py").read_text(encoding="utf-8")
     install_sh = (tmp_path / "scripts" / "install.sh").read_text(encoding="utf-8")
     dev_sh = (tmp_path / "scripts" / "dev.sh").read_text(encoding="utf-8")
     deploy_sh = (tmp_path / "scripts" / "deploy.sh").read_text(encoding="utf-8")
@@ -2283,10 +2283,7 @@ def test_init_creates_python_whatsapp_channel_non_interactively(tmp_path) -> Non
     _assert_template_dockerfile(tmp_path)
     _assert_python_dockerfile_vendors_sdk_runtime(
         tmp_path,
-        dependencies=(
-            "meshagent-agents==",
-            "meshagent-whatsapp==",
-        ),
+        dependencies=("meshagent-agents==",),
     )
 
     assert ".env" in dockerignore
@@ -2319,7 +2316,8 @@ def test_init_creates_python_whatsapp_channel_non_interactively(tmp_path) -> Non
     assert "WHATSAPP_VERIFY_TOKEN" in readme
     assert "X-Hub-Signature-256" in readme
     assert "whatsapp-inbound" in readme
-    assert "meshagent.whatsapp.channel" in readme
+    assert "local `WhatsAppChannel` from `channel.py`" in readme
+    assert "no separate WhatsApp channel package is installed" in readme
     assert "whatsapp-access-token" in readme
     assert "whatsapp-app-secret" in readme
     assert "whatsapp-verify-token" in readme
@@ -2360,15 +2358,15 @@ def test_init_creates_python_whatsapp_channel_non_interactively(tmp_path) -> Non
 
     assert '"meshagent-api==' in pyproject
     assert '"meshagent-agents==' in pyproject
-    assert '"meshagent-whatsapp==' in pyproject
+    assert '"meshagent-whatsapp==' not in pyproject
+    assert '"aiohttp>=3.12,<4"' in pyproject
     assert '"meshagent-tools==' not in pyproject
-    assert '"aiohttp>=3.12,<4"' not in pyproject
-    assert (
-        "from meshagent.whatsapp.channel import WhatsAppChannel, create_channel"
-        in server_py
-    )
-    assert "from meshagent.agents import run_room_channel" in server_py
-    assert "run_room_channel(lambda room: create_channel(room=room))" in server_py
+    assert "from channel import WhatsAppChannel, create_channel" in server_py
+    assert "from meshagent.agents import run_external_channel" in server_py
+    assert "receive_from_http=receive_from_http" in server_py
+    assert "WHATSAPP_APP_SECRET" in server_py
+    assert "WHATSAPP_VERIFY_TOKEN" in server_py
+    assert "class WhatsAppChannel(ThreadedChannel)" in channel_py
     assert "__all__" in server_py
     assert "class WhatsAppChannel(ThreadedChannel)" not in server_py
     assert "TurnStart(" not in server_py
@@ -2385,10 +2383,9 @@ def test_init_creates_python_whatsapp_channel_non_interactively(tmp_path) -> Non
     assert 'PYTHON="${PYTHON:-python3.13}"' in install_sh
     assert 'VENV="${VENV:-.venv}"' in install_sh
     _assert_python_install_prefers_local_sdk(install_sh)
-    assert "meshagent-whatsapp" in install_sh
-    assert '-e "$SDK_ROOT/meshagent-whatsapp"' in install_sh
+    assert "meshagent-whatsapp" not in install_sh
     assert "./scripts/install.sh" in dev_sh
-    assert "import meshagent.whatsapp" in dev_sh
+    assert "import channel" in dev_sh
     assert "load_whatsapp_env" in dev_sh
     assert "Missing WhatsApp credentials." in dev_sh
     assert dev_sh.index("Missing WhatsApp credentials.") < dev_sh.index(
@@ -2505,7 +2502,9 @@ def test_init_creates_python_whatsapp_channel_non_interactively(tmp_path) -> Non
     assert "MESHAGENT_TOKEN" in deploy_yaml
     assert "published: true" in deploy_yaml
     assert "public: false" in deploy_yaml
-    assert "meshagent.request.queue: whatsapp-inbound" in deploy_yaml
+    assert "meshagent.request.queue:" not in deploy_yaml
+    assert "WHATSAPP_APP_SECRET" in deploy_yaml
+    assert "WHATSAPP_VERIFY_TOKEN" in deploy_yaml
     assert "meshagent.request.processor: python-whatsapp-channel" in deploy_yaml
     assert "meshagent.request.validation.method: whatsapp" in deploy_yaml
     assert (
@@ -2545,7 +2544,10 @@ def test_init_creates_python_whatsapp_channel_non_interactively(tmp_path) -> Non
     assert port.published is True
     assert port.public is False
     assert port.annotations is not None
-    assert port.annotations["meshagent.request.queue"] == "whatsapp-inbound"
+    assert "meshagent.request.queue" not in port.annotations
+    assert port.annotations["meshagent.request.processor"] == (
+        "python-whatsapp-channel"
+    )
     assert port.annotations["meshagent.request.processor"] == "python-whatsapp-channel"
     assert port.annotations["meshagent.request.validation.method"] == "whatsapp"
     assert (
@@ -3845,22 +3847,21 @@ def test_init_launches_tui_when_tty_and_language_or_focus_missing(
     )
     assert descriptions_by_focus["slack-channel"]["python"] == (
         "Runs a Slack-backed channel inside a MeshAgent process agent. "
-        "Incoming Slack Events API requests are validated with the Slack "
-        "Signing Secret, placed onto a room queue, converted into trusted user "
-        "turns, and completed agent responses are sent back through Slack "
-        "`chat.postMessage`."
+        "Incoming Slack Events API requests are validated at the MeshAgent edge "
+        "and again by the sample HTTP endpoint, converted into trusted user turns, "
+        "and completed agent responses are sent back through Slack `chat.postMessage`."
     )
     assert descriptions_by_focus["twilio-channel"]["python"] == (
         "Runs a Twilio-backed SMS/MMS channel inside a MeshAgent process agent. "
-        "Incoming Twilio webhook requests are validated by MeshAgent, placed "
-        "onto a room queue, converted into trusted user turns, and completed "
-        "agent responses are sent back through the Twilio Messages API."
+        "Incoming Twilio webhook requests are validated at the MeshAgent edge and "
+        "again by the sample HTTP endpoint, converted into trusted user turns, and "
+        "completed agent responses are sent back through the Twilio Messages API."
     )
     assert descriptions_by_focus["whatsapp-channel"]["python"] == (
         "Runs a WhatsApp Cloud API channel inside a MeshAgent process agent. "
-        "Incoming Meta webhook requests are validated by MeshAgent, placed "
-        "onto a room queue, converted into trusted user turns, and completed "
-        "agent responses are sent back through the WhatsApp Cloud API."
+        "Incoming Meta webhook requests are validated at the MeshAgent edge and "
+        "again by the sample HTTP endpoint, converted into trusted user turns, and "
+        "completed agent responses are sent back through the WhatsApp Cloud API."
     )
     assert descriptions_by_focus["room-workspace"]["typescript"] == (
         "Shows why room apps matter once you need more than one feature. A "

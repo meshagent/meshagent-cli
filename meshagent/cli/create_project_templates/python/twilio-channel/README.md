@@ -1,8 +1,8 @@
 # Python Twilio Channel
 
-Runs a Twilio-backed SMS/MMS channel inside a MeshAgent process agent. Incoming Twilio webhook requests are validated by MeshAgent, placed onto a room queue, converted into trusted user turns, and completed agent responses are sent back through the Twilio Messages API.
+Runs a Twilio-backed SMS/MMS channel inside a MeshAgent process agent. Incoming Twilio webhook requests are validated at the MeshAgent edge and again by the sample HTTP endpoint, converted into trusted user turns, and completed agent responses are sent back through the Twilio Messages API.
 
-The channel runs as a language-neutral child process using `--channel='command:["python","server.py"]'` alongside the normal `--channel chat`. The CLI gives the child a private capability-protected connection, and the channel remains the authority that maps each SMS sender to a MeshAgent participant.
+The channel runs as a language-neutral child process using `--channel='command:["python","server.py"]'` alongside the normal `--channel chat`. Its complete, editable implementation lives in `channel.py`; no separate Twilio channel package is installed.
 
 ## Twilio Credentials
 
@@ -28,7 +28,7 @@ This template uses Twilio Programmable Messaging for SMS and MMS. Twilio sends o
 
 Set `MESHAGENT_TWILIO_ALLOWED_FROM_NUMBERS` to a comma-separated phone number allowlist when you only want the channel to process and send messages for specific SMS/MMS senders. Numbers are matched by digits, so `+1 (555) 010-1000` and `15550101000` are equivalent. Leave it empty to allow all senders.
 
-Configure the sender's Messaging webhook for "A message comes in". MeshAgent validates Twilio's request signature before the form body reaches the `twilio-inbound` queue. Use the `whatsapp-channel` template for Meta WhatsApp Cloud API integrations.
+Configure the sender's Messaging webhook for "A message comes in". MeshAgent validates Twilio's request signature before proxying it to `server.py`, which validates the signature again before passing the form body to the channel. Use the `whatsapp-channel` template for Meta WhatsApp Cloud API integrations.
 
 Text responses are sent as SMS. When the agent attaches files with the room `attach_file` tool, the Twilio channel sends those attachments as MMS media:
 
@@ -103,11 +103,11 @@ Run:
 
 The script opens the MeshAgent room picker when you do not pass `--room`, creates or updates the Twilio service-account secret, builds the code image, and deploys the service template.
 
-After deploy, set the Twilio sender's Messaging webhook for "A message comes in" to the route URL shown by MeshAgent, using HTTP `POST`. The route is backed by the room queue `twilio-inbound`; MeshAgent validates `X-Twilio-Signature` with the service-account secret ID passed as `twilio_auth_token_secret_id` before any request reaches the queue.
+After deploy, set the Twilio sender's Messaging webhook for "A message comes in" to the route URL shown by MeshAgent, using HTTP `POST`. MeshAgent validates `X-Twilio-Signature` with `twilio_auth_token_secret_id`; the endpoint validates it again with the injected `TWILIO_AUTH_TOKEN` and returns an empty TwiML `Response`.
 
 ## How It Works
 
-`server.py` is a small executable adapter that imports `create_channel(...)` from `meshagent.twilio.channel` and bridges the resulting `TwilioChannel` over MeshAgent's existing MessagePack channel protocol. For each queued Twilio form body, the channel parses `From`, `To`, `Body`, `MessageSid`, `NumMedia`, `MediaUrl{N}`, and `MediaContentType{N}`. It emits a `TurnStart` with a `Participant` whose name comes from `ProfileName` or the Twilio sender address, then waits for the agent response.
+`server.py` hosts the provider-facing HTTP endpoint and bridges the local `TwilioChannel` from `channel.py` over MeshAgent's MessagePack channel protocol. For each Twilio form body, the channel parses `From`, `To`, `Body`, `MessageSid`, `NumMedia`, `MediaUrl{N}`, and `MediaContentType{N}`. It emits a `TurnStart` with a `Participant` whose name comes from `ProfileName` or the Twilio sender address, then waits for the agent response. Edit `channel.py` to customize this behavior. Set `MESHAGENT_TWILIO_API_BASE_URL` to point outbound API calls at a compatible test server.
 
 The agent's text deltas are collected until `TurnEnded`, then the completed response is sent back to the same sender with Twilio's Messages API. Inbound file attachments are stored in room storage before the turn starts, and file attachments emitted during the turn are resolved into Twilio-fetchable media URLs and sent as MMS. The participant attributes include `twilio.channel=sms`. Long responses are split before sending. The default thread path prefix is `.threads/twilio`; override it with `MESHAGENT_TWILIO_THREAD_PREFIX` when you want to isolate multiple channel deployments.
 

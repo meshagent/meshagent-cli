@@ -11,7 +11,7 @@ if [ ! -x "$VENV_PYTHON" ]; then
 fi
 SDK_ROOT="${SDK_ROOT:-}"
 is_sdk_root() {
-  [ -d "$1/meshagent-api" ] && [ -d "$1/meshagent-tools" ] && [ -d "$1/meshagent-agents" ] && [ -d "$1/meshagent-openai" ] && [ -d "$1/meshagent-twilio" ]
+  [ -d "$1/meshagent-api" ] && [ -d "$1/meshagent-tools" ] && [ -d "$1/meshagent-agents" ] && [ -d "$1/meshagent-openai" ]
 }
 OLD_IFS="$IFS"
 IFS=":"
@@ -39,6 +39,6 @@ if [ -z "$SDK_ROOT" ]; then
   done
 fi
 if [ -n "$SDK_ROOT" ]; then
-  "$VENV_PYTHON" -m pip install -e "$SDK_ROOT/meshagent-api" -e "$SDK_ROOT/meshagent-tools" -e "$SDK_ROOT/meshagent-agents" -e "$SDK_ROOT/meshagent-openai" -e "$SDK_ROOT/meshagent-twilio"
+  "$VENV_PYTHON" -m pip install -e "$SDK_ROOT/meshagent-api" -e "$SDK_ROOT/meshagent-tools" -e "$SDK_ROOT/meshagent-agents" -e "$SDK_ROOT/meshagent-openai"
 fi
 PIP_ONLY_BINARY="${PIP_ONLY_BINARY:-:all:}" "$VENV_PYTHON" -m pip install -e .

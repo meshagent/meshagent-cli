@@ -21,7 +21,8 @@ AGENT_NAME="${MESHAGENT_AGENT_NAME:-python-slack-channel}"
 THREAD_STORAGE="${MESHAGENT_THREAD_STORAGE:-dataset}"
 IMAGE_GENERATION_MODEL="${MESHAGENT_IMAGE_GENERATION_MODEL:-gpt-image-2}"
 MESHAGENT_SLACK_EVENT_STDOUT="${MESHAGENT_SLACK_EVENT_STDOUT:-1}"
-export MESHAGENT_SLACK_EVENT_STDOUT
+MESHAGENT_SAMPLE_QUEUE_MODE=1
+export MESHAGENT_SLACK_EVENT_STDOUT MESHAGENT_SAMPLE_QUEUE_MODE
 if [ -z "${SLACK_BOT_TOKEN:-}" ] && [ "$MESHAGENT_SLACK_DRY_RUN" != "1" ]; then
   ./scripts/configure-slack.sh
   load_slack_env
@@ -32,7 +33,7 @@ if [ -z "${SLACK_BOT_TOKEN:-}" ] && [ "$MESHAGENT_SLACK_DRY_RUN" != "1" ]; then
   echo "For local queue-only tests, set MESHAGENT_SLACK_DRY_RUN=1." >&2
   exit 1
 fi
-if [ ! -x "$VENV_PYTHON" ] || [ ! -x "$MESHAGENT_CLI" ] || ! "$VENV_PYTHON" -c 'import meshagent.slack_channel' >/dev/null 2>&1; then
+if [ ! -x "$VENV_PYTHON" ] || [ ! -x "$MESHAGENT_CLI" ] || ! "$VENV_PYTHON" -c 'import channel' >/dev/null 2>&1; then
   ./scripts/install.sh
 fi
 SITE_PACKAGES="$("$VENV_PYTHON" -c 'import site; print(site.getsitepackages()[0])')"

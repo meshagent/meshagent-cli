@@ -9,8 +9,8 @@ requires-python = ">=3.13"
 dependencies = [
   "meshagent-api==__MESHAGENT_CLIENT_VERSION__",
   "meshagent-agents==__MESHAGENT_CLIENT_VERSION__",
-  "meshagent-whatsapp==__MESHAGENT_WHATSAPP_VERSION__",
+  "aiohttp>=3.12,<4",
 ]
 
 [tool.setuptools]
-py-modules = ["server"]
+py-modules = ["channel", "server"]

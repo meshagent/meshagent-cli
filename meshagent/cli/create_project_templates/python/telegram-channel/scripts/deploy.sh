@@ -135,7 +135,7 @@ meshagent_with_project() {
 
 telegram_sdk_root_has_packages() {
   candidate="$1"
-  [ -d "$candidate/meshagent-api" ] && [ -d "$candidate/meshagent-tools" ] && [ -d "$candidate/meshagent-agents" ] && [ -d "$candidate/meshagent-openai" ] && [ -d "$candidate/meshagent-telegram" ]
+  [ -d "$candidate/meshagent-api" ] && [ -d "$candidate/meshagent-tools" ] && [ -d "$candidate/meshagent-agents" ] && [ -d "$candidate/meshagent-openai" ]
 }
 
 resolve_telegram_sdk_root() {
@@ -184,7 +184,6 @@ prepare_telegram_deploy_app() {
       "$sdk_root/meshagent-tools" \
       "$sdk_root/meshagent-agents" \
       "$sdk_root/meshagent-openai" \
-      "$sdk_root/meshagent-telegram" \
       "$ROOT"
   else
     "$python_bin" -m pip wheel --disable-pip-version-check --no-deps --wheel-dir "$wheel_dir" "$ROOT"

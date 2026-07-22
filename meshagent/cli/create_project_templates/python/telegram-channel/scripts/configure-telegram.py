@@ -452,7 +452,7 @@ def runtime_dependencies_ready() -> bool:
             [
                 sys.executable,
                 "-c",
-                "import meshagent.telegram, textual",
+                "import channel, textual",
             ],
             cwd=ROOT,
             stdout=subprocess.DEVNULL,

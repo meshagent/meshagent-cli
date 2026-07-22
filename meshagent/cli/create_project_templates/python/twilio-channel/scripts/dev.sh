@@ -51,12 +51,14 @@ find_meshagent_cli() {
 find_meshagent_cli
 AGENT_NAME="${MESHAGENT_AGENT_NAME:-python-twilio-channel}"
 THREAD_STORAGE="${MESHAGENT_THREAD_STORAGE:-dataset}"
+MESHAGENT_SAMPLE_QUEUE_MODE=1
+export MESHAGENT_SAMPLE_QUEUE_MODE
 if [ -z "${TWILIO_ACCOUNT_SID:-}" ] || [ -z "${TWILIO_AUTH_TOKEN:-}" ]; then
   echo "Missing Twilio credentials." >&2
   echo "Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in .env, .env-twilio, or the shell, then retry ./scripts/dev.sh." >&2
   exit 1
 fi
-if [ ! -x "$VENV_PYTHON" ] || ! "$VENV_PYTHON" -c 'import meshagent.twilio' >/dev/null 2>&1; then
+if [ ! -x "$VENV_PYTHON" ] || ! "$VENV_PYTHON" -c 'import channel' >/dev/null 2>&1; then
   ./scripts/install.sh
 fi
 SITE_PACKAGES="$("$VENV_PYTHON" -c 'import site; print(site.getsitepackages()[0])')"

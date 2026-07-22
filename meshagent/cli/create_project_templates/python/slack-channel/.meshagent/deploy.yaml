@@ -45,14 +45,14 @@ container:
     --channel 'command:["python","/app/server.py"]'
     --thread-storage dataset
     --image-generation gpt-image-2
-    --host 0.0.0.0
-    --port 8000
-    --path /
   working_dir: /app
   environment:
     - name: SLACK_BOT_TOKEN
       secret:
         id: "{{ slack_bot_token_secret_id }}"
+    - name: SLACK_SIGNING_SECRET
+      secret:
+        id: "{{ slack_signing_secret_id }}"
     - name: MESHAGENT_SLACK_ALLOWED_CHANNELS
       value: "{{ slack_allowed_channels }}"
     - name: MESHAGENT_SLACK_THREAD_PREFIX
@@ -74,7 +74,6 @@ ports:
     published: true
     public: false
     annotations:
-      meshagent.request.queue: slack-events
       meshagent.request.processor: python-slack-channel
       meshagent.request.validation.method: slack
       meshagent.request.validation.secret: "{{ slack_signing_secret_id }}"

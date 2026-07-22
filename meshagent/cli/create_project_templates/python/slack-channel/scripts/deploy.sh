@@ -137,58 +137,19 @@ meshagent_with_project() {
   fi
 }
 
-slack_sdk_root_has_packages() {
-  candidate="$1"
-  [ -d "$candidate/meshagent-slack-channel" ]
-}
-
-resolve_slack_sdk_root() {
-  if [ -n "${MESHAGENT_SDK_ROOT:-}" ]; then
-    if slack_sdk_root_has_packages "$MESHAGENT_SDK_ROOT"; then
-      (cd "$MESHAGENT_SDK_ROOT" && pwd)
-      return
-    fi
-    echo "MESHAGENT_SDK_ROOT does not point to a MeshAgent SDK checkout with the Slack channel dependencies." >&2
-    exit 1
-  fi
-
-  search_dir="$ROOT"
-  while [ "$search_dir" != "/" ]; do
-    for candidate in "$search_dir/meshagent-sdk" "$search_dir/meshagent-server/meshagent-sdk" "$search_dir/../meshagent-server/meshagent-sdk"; do
-      if slack_sdk_root_has_packages "$candidate"; then
-        (cd "$candidate" && pwd)
-        return
-      fi
-    done
-    search_dir="$(dirname "$search_dir")"
-  done
-  printf ''
-}
-
 prepare_slack_deploy_app() {
   if [ "${MESHAGENT_SLACK_SKIP_VENDOR:-}" = "1" ]; then
     return
   fi
   deploy_app_dir="$ROOT/.meshagent/deploy-app"
-  sdk_root="$(resolve_slack_sdk_root)"
   echo "Preparing Slack deploy package..."
   rm -rf "$deploy_app_dir"
   mkdir -p "$deploy_app_dir"
-  if [ -n "$sdk_root" ]; then
-    "$VENV_PYTHON" -m pip install --disable-pip-version-check --no-warn-conflicts \
-      --target "$deploy_app_dir" \
-      --no-deps \
-      --upgrade \
-      "$sdk_root/meshagent-slack-channel" \
-      "$ROOT"
-  else
-    "$VENV_PYTHON" -m pip install --disable-pip-version-check --no-warn-conflicts \
-      --target "$deploy_app_dir" \
-      --no-deps \
-      --upgrade \
-      "$ROOT" \
-      'meshagent-slack-channel==__MESHAGENT_SLACK_CHANNEL_VERSION__'
-  fi
+  "$VENV_PYTHON" -m pip install --disable-pip-version-check --no-warn-conflicts \
+    --target "$deploy_app_dir" \
+    --no-deps \
+    --upgrade \
+    "$ROOT"
   find "$deploy_app_dir" -type d -name __pycache__ -prune -exec rm -rf {} +
 }
 

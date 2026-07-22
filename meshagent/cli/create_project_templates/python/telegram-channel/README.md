@@ -2,7 +2,7 @@
 
 Runs a Telegram-backed channel inside a MeshAgent process agent. Incoming Telegram messages become trusted user turns, and completed agent responses are sent back to the same Telegram chat.
 
-The channel runs as a language-neutral child process using `--channel='command:["python","server.py"]'` alongside the normal `--channel chat`. The CLI gives the child a private capability-protected connection, and the channel remains the authority that maps each Telegram user to a MeshAgent participant.
+The channel runs as a language-neutral child process using `--channel='command:["python","server.py"]'` alongside the normal `--channel chat`. Its complete, editable implementation lives in `channel.py`; no separate Telegram channel package is installed.
 
 ## Telegram Credentials
 
@@ -50,7 +50,7 @@ When you run `./scripts/deploy.sh`, the script uses the MeshAgent room picker wh
 
 `scripts/deploy.sh` derives a stable webhook validation secret from `TELEGRAM_BOT_TOKEN` and stores it automatically. After the service-account secrets exist, future deploys can omit `TELEGRAM_BOT_TOKEN` from `.env` by setting `MESHAGENT_TELEGRAM_SKIP_CONFIGURE=1`. For non-interactive deploys, pass `--room <room>` or set `MESHAGENT_ROOM`.
 
-The deploy template publishes one private HTTP route with liveness at `/health` and a queue-backed webhook endpoint at `/telegram/webhook`. MeshAgent validates Telegram's `X-Telegram-Bot-Api-Secret-Token` header with the `telegram-webhook-secret` service-account secret before any POST reaches the `telegram-inbound` queue. `scripts/deploy.sh` uses `MESHAGENT_TELEGRAM_WEBHOOK_URL` when set; otherwise it derives `https://<domain>/telegram/webhook` from `MESHAGENT_TELEGRAM_WEBHOOK_DOMAIN` or the room's default MeshAgent pages domain, then calls Telegram `setWebhook` after deploy using the generated secret token.
+The deploy template publishes liveness at `/health` and an HTTP webhook endpoint at `/telegram/webhook`. MeshAgent validates Telegram's `X-Telegram-Bot-Api-Secret-Token` header before proxying the request to `server.py`, which validates the header again with the injected `TELEGRAM_WEBHOOK_SECRET` and returns Telegram's JSON acknowledgement. `scripts/deploy.sh` uses `MESHAGENT_TELEGRAM_WEBHOOK_URL` when set; otherwise it derives `https://<domain>/telegram/webhook` from `MESHAGENT_TELEGRAM_WEBHOOK_DOMAIN` or the room's default MeshAgent pages domain, then calls Telegram `setWebhook` after deploy using the generated secret token.
 
 ## Next Steps
 
@@ -74,12 +74,12 @@ The deploy template publishes one private HTTP route with liveness at `/health` 
 
 ## How It Works
 
-`server.py` is a small executable adapter that imports `create_channel(...)` from `meshagent.telegram.channel` and bridges the resulting `TelegramChannel` over MeshAgent's existing MessagePack channel protocol. `scripts/dev.sh` builds the JSON command value using the virtual environment's exact Python path, then starts the equivalent of:
+`server.py` hosts the deployed webhook endpoint and bridges the local `TelegramChannel` from `channel.py` over MeshAgent's MessagePack channel protocol. `scripts/dev.sh` builds the JSON command value using the virtual environment's exact Python path, then starts the equivalent of:
 
 ```bash
 meshagent process join --channel chat --channel='command:["python","server.py"]'
 ```
 
-For local development, each incoming Telegram text or media message arrives through Telethon. For deployed services, Telegram POSTs to `/telegram/webhook`, MeshAgent queues the request on `telegram-inbound`, and the channel sends replies through the Bot API. In both modes, the channel emits a `TurnStart` with a `Participant` whose name comes from the Telegram sender. The agent's text and file deltas are collected until `TurnEnded`, then the completed response is sent back to Telegram.
+For local development, each incoming Telegram text or media message arrives through Telethon. For deployed services, Telegram POSTs to `/telegram/webhook` and the local HTTP endpoint passes the validated update directly to the channel, which sends replies through the Bot API. In both modes, the channel emits a `TurnStart` with a `Participant` whose name comes from the Telegram sender. The agent's text and file deltas are collected until `TurnEnded`, then the completed response is sent back to Telegram. Edit `channel.py` to customize this behavior. Use `MESHAGENT_TELEGRAM_BOT_API_BASE_URL` to point outbound Bot API calls at a compatible test server.
 
 The default thread path prefix is `.threads/telegram`. Override it with `MESHAGENT_TELEGRAM_THREAD_PREFIX` when you want to isolate multiple channel deployments.

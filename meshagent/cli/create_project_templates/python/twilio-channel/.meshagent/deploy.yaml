@@ -78,7 +78,6 @@ ports:
     published: true
     public: false
     annotations:
-      meshagent.request.queue: twilio-inbound
       meshagent.request.processor: python-twilio-channel
       meshagent.request.validation.method: twilio
       meshagent.request.validation.secret: "{{ twilio_auth_token_secret_id }}"

@@ -49,14 +49,14 @@ container:
     --channel 'command:["python","/app/server.py"]'
     --thread-storage dataset
     --image-generation gpt-image-2
-    --host 0.0.0.0
-    --port 8000
-    --path /
   working_dir: /app
   environment:
     - name: TELEGRAM_BOT_TOKEN
       secret:
         id: "{{ telegram_bot_token_secret_id }}"
+    - name: TELEGRAM_WEBHOOK_SECRET
+      secret:
+        id: "{{ telegram_webhook_secret_id }}"
     - name: MESHAGENT_TELEGRAM_MODE
       value: webhook
     - name: MESHAGENT_TELEGRAM_QUEUE_NAME
@@ -90,5 +90,4 @@ ports:
     endpoints:
       - path: /telegram/webhook
         annotations:
-          meshagent.request.queue: telegram-inbound
           meshagent.request.processor: python-telegram-channel

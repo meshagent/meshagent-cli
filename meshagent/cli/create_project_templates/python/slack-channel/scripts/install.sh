@@ -12,7 +12,7 @@ fi
 SDK_ROOT=""
 sdk_root_has_packages() {
   candidate="$1"
-  [ -d "$candidate/meshagent-api" ] && [ -d "$candidate/meshagent-tools" ] && [ -d "$candidate/meshagent-agents" ] && [ -d "$candidate/meshagent-openai" ] && [ -d "$candidate/meshagent-anthropic" ] && [ -d "$candidate/meshagent-llm-proxy" ] && [ -d "$candidate/meshagent-codex" ] && [ -d "$candidate/meshagent-cli" ] && [ -d "$candidate/meshagent-slack-channel" ]
+  [ -d "$candidate/meshagent-api" ] && [ -d "$candidate/meshagent-tools" ] && [ -d "$candidate/meshagent-agents" ] && [ -d "$candidate/meshagent-openai" ] && [ -d "$candidate/meshagent-anthropic" ] && [ -d "$candidate/meshagent-llm-proxy" ] && [ -d "$candidate/meshagent-codex" ] && [ -d "$candidate/meshagent-cli" ]
 }
 set_sdk_root() {
   candidate="$1"
@@ -47,6 +47,6 @@ if [ -z "$SDK_ROOT" ]; then
   done
 fi
 if [ -n "$SDK_ROOT" ]; then
-  "$VENV_PYTHON" -m pip install -e "$SDK_ROOT/meshagent-api" -e "$SDK_ROOT/meshagent-tools" -e "$SDK_ROOT/meshagent-agents" -e "$SDK_ROOT/meshagent-openai" -e "$SDK_ROOT/meshagent-anthropic" -e "$SDK_ROOT/meshagent-llm-proxy" -e "$SDK_ROOT/meshagent-codex" -e "$SDK_ROOT/meshagent-cli" -e "$SDK_ROOT/meshagent-slack-channel"
+  "$VENV_PYTHON" -m pip install -e "$SDK_ROOT/meshagent-api" -e "$SDK_ROOT/meshagent-tools" -e "$SDK_ROOT/meshagent-agents" -e "$SDK_ROOT/meshagent-openai" -e "$SDK_ROOT/meshagent-anthropic" -e "$SDK_ROOT/meshagent-llm-proxy" -e "$SDK_ROOT/meshagent-codex" -e "$SDK_ROOT/meshagent-cli"
 fi
 PIP_ONLY_BINARY="${PIP_ONLY_BINARY:-:all:}" "$VENV_PYTHON" -m pip install -e .

@@ -1,8 +1,8 @@
 # Python WhatsApp Channel
 
-Runs a WhatsApp Cloud API channel inside a MeshAgent process agent. Incoming Meta webhook requests are validated by MeshAgent, placed onto a room queue, converted into trusted user turns, and completed agent responses are sent back through the WhatsApp Cloud API.
+Runs a WhatsApp Cloud API channel inside a MeshAgent process agent. Incoming Meta webhook requests are validated at the MeshAgent edge and again by the sample HTTP endpoint, converted into trusted user turns, and completed agent responses are sent back through the WhatsApp Cloud API.
 
-The channel runs as a language-neutral child process using `--channel='command:["python","server.py"]'` alongside the normal `--channel chat`. The CLI gives the child a private capability-protected connection, and the channel remains the authority that maps each WhatsApp sender to a MeshAgent participant.
+The channel runs as a language-neutral child process using `--channel='command:["python","server.py"]'` alongside the normal `--channel chat`. Its complete, editable implementation lives in `channel.py`; no separate WhatsApp channel package is installed.
 
 ## Meta Credentials
 
@@ -105,11 +105,11 @@ Run:
 
 The script opens the MeshAgent room picker when you do not pass `--room`, creates or updates the WhatsApp service-account secrets, builds the code image, and deploys the service template.
 
-After deploy, set the Meta app webhook callback URL to the route URL shown by MeshAgent. Use the same value from `WHATSAPP_VERIFY_TOKEN` as the verify token. The route is backed by the room queue `whatsapp-inbound`; MeshAgent validates `X-Hub-Signature-256` with the service-account secret ID passed as `whatsapp_app_secret_id` before any POST request reaches the queue.
+After deploy, set the Meta app webhook callback URL to the route URL shown by MeshAgent. Use the same value from `WHATSAPP_VERIFY_TOKEN` as the verify token. MeshAgent validates `X-Hub-Signature-256` with `whatsapp_app_secret_id`; `server.py` validates it again with the injected `WHATSAPP_APP_SECRET`. The endpoint also handles Meta's verification challenge and returns `EVENT_RECEIVED` for accepted events.
 
 ## How It Works
 
-`server.py` is a small executable adapter that imports `create_channel(...)` from `meshagent.whatsapp.channel` and bridges the resulting `WhatsAppChannel` over MeshAgent's existing MessagePack channel protocol. For each queued Meta webhook JSON body, the channel extracts text messages, interactive replies, and inbound media from `entry[].changes[].value.messages[]`, parses status events from `entry[].changes[].value.statuses[]`, emits a `TurnStart` with a `Participant` whose name comes from the matching contact profile, then waits for the agent response.
+`server.py` hosts the provider-facing HTTP endpoint and bridges the local `WhatsAppChannel` from `channel.py` over MeshAgent's MessagePack channel protocol. For each Meta webhook JSON body, the channel extracts text messages, interactive replies, and inbound media from `entry[].changes[].value.messages[]`, parses status events from `entry[].changes[].value.statuses[]`, emits a `TurnStart` with a `Participant` whose name comes from the matching contact profile, then waits for the agent response. Edit `channel.py` to customize this behavior. Set `MESHAGENT_WHATSAPP_GRAPH_API_BASE_URL` to point outbound API calls at a compatible test server.
 
 The agent's text deltas are collected until `TurnEnded`, then the completed response is sent back to the same WhatsApp sender with the Cloud API. File attachments emitted during the turn are resolved into Cloud API media links and sent as media messages. The participant attributes include `whatsapp.from`, `whatsapp.message_id`, `whatsapp.message_type`, `whatsapp.phone_number_id`, `whatsapp.display_phone_number`, and `whatsapp.interactive.reply_id` when present. Long responses are split before sending. The default thread path prefix is `.threads/whatsapp`; override it with `MESHAGENT_WHATSAPP_THREAD_PREFIX` when you want to isolate multiple channel deployments.
 

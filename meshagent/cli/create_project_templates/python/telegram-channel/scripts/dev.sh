@@ -46,7 +46,7 @@ if [ -z "${TELEGRAM_API_ID:-}" ] || [ -z "${TELEGRAM_API_HASH:-}" ] || [ -z "${T
   echo "Run ./scripts/configure-telegram.sh, then retry ./scripts/dev.sh." >&2
   exit 1
 fi
-if [ ! -x "$VENV_PYTHON" ] || ! "$VENV_PYTHON" -c 'import meshagent.telegram' >/dev/null 2>&1; then
+if [ ! -x "$VENV_PYTHON" ] || ! "$VENV_PYTHON" -c 'import channel' >/dev/null 2>&1; then
   ./scripts/install.sh
 fi
 SITE_PACKAGES="$("$VENV_PYTHON" -c 'import site; print(site.getsitepackages()[0])')"

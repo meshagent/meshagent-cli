@@ -35,12 +35,14 @@ find_meshagent_cli() {
 find_meshagent_cli
 AGENT_NAME="${MESHAGENT_AGENT_NAME:-python-whatsapp-channel}"
 THREAD_STORAGE="${MESHAGENT_THREAD_STORAGE:-dataset}"
+MESHAGENT_SAMPLE_QUEUE_MODE=1
+export MESHAGENT_SAMPLE_QUEUE_MODE
 if [ -z "${WHATSAPP_ACCESS_TOKEN:-}" ] || [ -z "${WHATSAPP_PHONE_NUMBER_ID:-}" ]; then
   echo "Missing WhatsApp credentials." >&2
   echo "Copy .env.example to .env, fill WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID, then retry ./scripts/dev.sh." >&2
   exit 1
 fi
-if [ ! -x "$VENV_PYTHON" ] || ! "$VENV_PYTHON" -c 'import meshagent.whatsapp' >/dev/null 2>&1; then
+if [ ! -x "$VENV_PYTHON" ] || ! "$VENV_PYTHON" -c 'import channel' >/dev/null 2>&1; then
   ./scripts/install.sh
 fi
 SITE_PACKAGES="$("$VENV_PYTHON" -c 'import site; print(site.getsitepackages()[0])')"

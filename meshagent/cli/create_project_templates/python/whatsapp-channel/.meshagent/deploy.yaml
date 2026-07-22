@@ -53,6 +53,12 @@ container:
     - name: WHATSAPP_ACCESS_TOKEN
       secret:
         id: "{{ whatsapp_access_token_secret_id }}"
+    - name: WHATSAPP_APP_SECRET
+      secret:
+        id: "{{ whatsapp_app_secret_id }}"
+    - name: WHATSAPP_VERIFY_TOKEN
+      secret:
+        id: "{{ whatsapp_verify_token_secret_id }}"
     - name: MESHAGENT_WHATSAPP_ALLOWED_FROM_NUMBERS
       value: "{{ whatsapp_allowed_from_numbers }}"
     - name: MESHAGENT_TOKEN
@@ -72,7 +78,6 @@ ports:
     published: true
     public: false
     annotations:
-      meshagent.request.queue: whatsapp-inbound
       meshagent.request.processor: python-whatsapp-channel
       meshagent.request.validation.method: whatsapp
       meshagent.request.validation.secret: "{{ whatsapp_app_secret_id }}"
