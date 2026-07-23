@@ -295,8 +295,6 @@ def test_static_nginx_create_templates_mount_writable_data_dir() -> None:
 
 
 def test_init_creates_python_backend_agent_by_default_in_non_tty(tmp_path) -> None:
-    (tmp_path / ".gitkeep").write_text("", encoding="utf-8")
-
     result = CliRunner().invoke(create_command, [str(tmp_path)])
     diagnosis = diagnose_project(tmp_path)
 
@@ -4363,8 +4361,8 @@ def test_init_interactive_requires_tty_when_language_missing(tmp_path) -> None:
     assert not (tmp_path / "Dockerfile").exists()
 
 
-def test_init_recommends_doctor_for_existing_code(tmp_path) -> None:
-    (tmp_path / "server.py").write_text("print('already here')\n", encoding="utf-8")
+def test_init_treats_any_nonempty_target_as_an_existing_project(tmp_path) -> None:
+    (tmp_path / ".gitkeep").write_text("", encoding="utf-8")
 
     result = CliRunner().invoke(
         create_command,
@@ -4380,7 +4378,7 @@ def test_init_recommends_doctor_for_existing_code(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "meshagent create" in result.output
-    assert "Existing application code" in result.output
+    assert "target directory is not empty" in result.output
     assert "No files were written" in result.output
     assert "meshagent doctor" in result.output
     assert not (tmp_path / "Dockerfile").exists()
