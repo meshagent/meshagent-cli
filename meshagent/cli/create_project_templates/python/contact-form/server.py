@@ -25,7 +25,8 @@ logging.basicConfig(
 )
 LOGGER = logging.getLogger("contact_form")
 
-DEFAULT_FROM_ADDRESS = "contact@mail.meshagent.com"
+DEFAULT_MAIL_DOMAIN = "mail.meshagent.com"
+DEFAULT_FROM_ADDRESS = f"contact@{DEFAULT_MAIL_DOMAIN}"
 DEFAULT_TO_ADDRESS = ""
 PRIVATE_MAILBOX_PERMISSION_ERROR = "5.7.1 Permission denied"
 TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
@@ -181,10 +182,19 @@ def room_slug_from_name(room_name: str) -> str:
     return room_slug or "room"
 
 
+def mail_domain() -> str:
+    return (
+        os.getenv("MESHAGENT_MAIL_DOMAIN", DEFAULT_MAIL_DOMAIN)
+        .strip()
+        .removeprefix("@")
+        or DEFAULT_MAIL_DOMAIN
+    )
+
+
 def default_from_address() -> str:
     room_name = os.getenv("MESHAGENT_ROOM", "").strip()
     if room_name:
-        return f"contact-{room_slug_from_name(room_name)}@mail.meshagent.com"
+        return f"contact-{room_slug_from_name(room_name)}@{mail_domain()}"
     return DEFAULT_FROM_ADDRESS
 
 
