@@ -17,46 +17,6 @@ from meshagent.cli.meshagent_images import render_meshagent_image_prefix_templat
 from meshagent.cli.version import __version__ as MESHAGENT_CLIENT_VERSION
 
 
-SOURCE_SUFFIXES = {
-    ".cs",
-    ".dart",
-    ".go",
-    ".js",
-    ".jsx",
-    ".py",
-    ".rb",
-    ".ts",
-    ".tsx",
-}
-PROJECT_MARKER_NAMES = {
-    "Containerfile",
-    "Dockerfile",
-    "Gemfile",
-    "go.mod",
-    "meshagent.yaml",
-    "meshagent.yml",
-    "package.json",
-    "pubspec.yaml",
-    "pyproject.toml",
-    "requirements.txt",
-    "tsconfig.json",
-}
-IGNORED_DIR_NAMES = {
-    ".git",
-    ".venv",
-    "__pycache__",
-    "build",
-    "dist",
-    "node_modules",
-    "obj",
-    "target",
-    "venv",
-}
-IGNORED_FILE_NAMES = {
-    ".DS_Store",
-    ".gitkeep",
-}
-
 WEB_FOCUS = "webserver"
 AGENT_FOCUS = "backend-agent"
 CHATBOT_FOCUS = "chatbot"
@@ -637,23 +597,8 @@ FOCUS_ALIASES = {
 }
 
 
-def _has_existing_project_content(root: Path) -> bool:
-    for path in sorted(root.rglob("*")):
-        try:
-            relative_parts = path.relative_to(root).parts
-        except ValueError:
-            continue
-        if any(part in IGNORED_DIR_NAMES for part in relative_parts[:-1]):
-            continue
-        if path.is_dir():
-            continue
-        if path.name in IGNORED_FILE_NAMES:
-            continue
-        if path.name in PROJECT_MARKER_NAMES:
-            return True
-        if path.suffix.lower() in SOURCE_SUFFIXES:
-            return True
-    return False
+def _target_directory_is_nonempty(root: Path) -> bool:
+    return next(root.iterdir(), None) is not None
 
 
 def _read_create_template(template_name: str) -> str:
@@ -1153,7 +1098,7 @@ def _create_command(
             "--no-interactive when running from a script."
         )
 
-    if _has_existing_project_content(root):
+    if _target_directory_is_nonempty(root):
         if interactive is not False and is_interactive_stdio:
             existing_project_selection = _run_existing_project_tui(root=root)
             if existing_project_selection is None:
@@ -1169,7 +1114,9 @@ def _create_command(
             typer.echo(f"New project: {root}")
         else:
             typer.echo("")
-            typer.echo("Existing application code or deployment metadata was detected.")
+            typer.echo(
+                "The target directory is not empty; treating it as an existing project."
+            )
             typer.echo("No files were written.")
             typer.echo("")
             typer.echo("Recommended next step for existing projects:")
