@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import PurePath
 from typing import Literal, Sequence
 
+from meshagent.api.messaging import Content, JsonContent
+
 ParsedCommandKind = Literal["read", "list_files", "search", "unknown"]
 
 _CONNECTORS = {"&&", "||", "|", ";"}
@@ -44,6 +46,7 @@ def format_tool_call_summary(
     toolkit: str,
     tool: str,
     arguments: dict[str, object] | None,
+    result: Content | dict[str, object] | None = None,
     failed: bool = False,
     completed: bool = True,
 ) -> str:
@@ -52,6 +55,7 @@ def format_tool_call_summary(
         toolkit=toolkit,
         tool=tool,
         arguments=arguments,
+        result=result,
         failed=failed,
         completed=completed,
     )
@@ -112,6 +116,7 @@ def _friendly_builtin_summary(
     toolkit: str,
     tool: str,
     arguments: dict[str, object] | None,
+    result: Content | dict[str, object] | None,
     failed: bool,
     completed: bool,
 ) -> str | None:
@@ -125,6 +130,13 @@ def _friendly_builtin_summary(
         summary = _storage_summary(
             tool=normalized_tool,
             arguments=arguments,
+            completed=completed,
+        )
+    elif normalized_toolkit == "image-generation":
+        summary = _image_generation_summary(
+            tool=normalized_tool,
+            arguments=arguments,
+            result=result,
             completed=completed,
         )
     elif normalized_toolkit == "dataset":
@@ -167,6 +179,64 @@ def _friendly_builtin_summary(
     if failed:
         return f"Failed: {summary}"
     return summary
+
+
+def _image_generation_summary(
+    *,
+    tool: str,
+    arguments: dict[str, object],
+    result: Content | dict[str, object] | None,
+    completed: bool,
+) -> str | None:
+    if tool == "imagegen":
+        return "Generated image" if completed else "Generating image"
+    if tool == "read_image":
+        return _with_optional_suffix(
+            "Read image" if completed else "Reading image",
+            _string_argument(arguments, "id"),
+        )
+    if tool == "delete_image":
+        return _with_optional_suffix(
+            "Deleted image" if completed else "Deleting image",
+            _string_argument(arguments, "id"),
+        )
+    if tool == "import_image":
+        source_path = _result_string(result, "source_path") or _string_argument(
+            arguments, "source_path"
+        )
+        return _with_optional_suffix(
+            "Imported image from" if completed else "Importing image from",
+            source_path,
+        )
+    if tool == "export_image":
+        destination_path = _result_string(
+            result, "destination_path"
+        ) or _string_argument(arguments, "destination_path")
+        return _with_optional_suffix(
+            "Exported image to" if completed else "Exporting image to",
+            destination_path,
+        )
+    return None
+
+
+def _result_string(
+    result: Content | dict[str, object] | None,
+    name: str,
+) -> str | None:
+    value: object = result
+    if isinstance(value, JsonContent):
+        value = value.json
+    if not isinstance(value, dict):
+        return None
+    if value.get("type") == "json" and isinstance(value.get("json"), dict):
+        value = value["json"]
+    if not isinstance(value, dict):
+        return None
+    selected = value.get(name)
+    if not isinstance(selected, str):
+        return None
+    normalized = selected.strip()
+    return normalized or None
 
 
 def _codex_summary(*, tool: str, completed: bool) -> str | None:

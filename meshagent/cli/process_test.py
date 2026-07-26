@@ -68,6 +68,7 @@ from meshagent.cli import process
 from meshagent.cli import task_runner
 from meshagent.cli import worker
 from meshagent.computers.agent import ComputerToolkit
+from meshagent.openai.tools.image_generation import ImageGenerationToolkit
 from meshagent.tools import RoomToolContext, Toolkit
 from meshagent.tools import ContainerShellTool, ContainerToolkit, ProcessShellTool
 
@@ -2865,6 +2866,37 @@ async def test_process_run_no_room_rejects_room_tools(
     assert printed == [
         "[bold red]--no-room cannot be used because these options require a room: "
         "--storage[/bold red]"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_process_run_no_room_rejects_image_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    printed: list[str] = []
+    monkeypatch.setattr(
+        process,
+        "print",
+        lambda *args, **kwargs: printed.append(" ".join(str(arg) for arg in args)),
+    )
+    monkeypatch.setattr(process, "_current_command_runtime", lambda: "process")
+
+    with pytest.raises(click.exceptions.Exit) as exc_info:
+        await process.run(
+            project_id=None,
+            room=None,
+            no_room=True,
+            model=["gpt-5.6-sol"],
+            thread_storage="none",
+            agent_name="helper",
+            channel=["chat"],
+            image_generation="gpt-image-2",
+        )
+
+    assert exc_info.value.exit_code == 1
+    assert printed == [
+        "[bold red]--no-room cannot be used because these options require a room: "
+        "--image-generation[/bold red]"
     ]
 
 
@@ -6111,6 +6143,60 @@ async def test_process_turn_toolkits_keep_computer_toolkit_top_level(
     )
     if tool_wrapper is not None:
         assert all(not isinstance(tool, ComputerToolkit) for tool in tool_wrapper.tools)
+
+
+@pytest.mark.asyncio
+async def test_process_turn_toolkits_use_dataset_backed_image_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_cls = process.build_process_agent(
+        model="gpt-5.6-sol",
+        api_key="test-key",
+        rule=[],
+        toolkit=[],
+        schema=[],
+        require_image_generation="gpt-image-test",
+        require_table_read=[],
+        require_table_write=[],
+    )
+    agent = agent_cls()
+    agent._room = _FakeProcessRoom()
+
+    async def _fake_get_required_toolkits(*, context):
+        del context
+        return []
+
+    monkeypatch.setattr(agent, "get_required_toolkits", _fake_get_required_toolkits)
+
+    combined_toolkits = await agent.get_process_turn_toolkits(
+        process=_FakeProcessState(),
+        sender=None,
+        model="gpt-5.6-sol",
+        turns=[
+            TurnStart(
+                type="meshagent.agent.turn.start",
+                thread_id="threads/example",
+                content=[AgentTextContent(type="text", text="hello")],
+            )
+        ],
+    )
+
+    image_toolkit = next(
+        toolkit for toolkit in combined_toolkits if toolkit.name == "image-generation"
+    )
+    assert isinstance(image_toolkit, ImageGenerationToolkit)
+    assert [tool.name for tool in image_toolkit.tools] == [
+        "imagegen",
+        "read_image",
+        "delete_image",
+        "export_image",
+        "import_image",
+    ]
+    assert all(
+        tool.name != "image_generation"
+        for toolkit in combined_toolkits
+        for tool in toolkit.tools
+    )
 
 
 @pytest.mark.asyncio
