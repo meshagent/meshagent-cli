@@ -436,14 +436,8 @@ def test_room_connect_runs_command_with_connected_room_env(
     assert captured_env["MESHAGENT_PROJECT_ID"] == "project-1"
     assert captured_env["MESHAGENT_TOKEN"] == "room-jwt"
     assert captured_env["MESHAGENT_ROOM"] == "connected-room"
-    assert (
-        captured_env["OPENAI_BASE_URL"]
-        == "https://room-proxy.meshagent.test/rooms/connected-room/openai/v1"
-    )
-    assert (
-        captured_env["ANTHROPIC_BASE_URL"]
-        == "https://room-proxy.meshagent.test/rooms/connected-room/anthropic"
-    )
+    assert captured_env["OPENAI_BASE_URL"] == "https://env.meshagent.test/openai/v1"
+    assert captured_env["ANTHROPIC_BASE_URL"] == "https://env.meshagent.test/anthropic"
     assert captured_env["OPENAI_API_KEY"] == "room-jwt"
     assert captured_env["ANTHROPIC_API_KEY"] == "room-jwt"
 
@@ -572,14 +566,8 @@ async def test_room_connect_env_satisfies_llm_proxy_docs_samples(
     assert child_env["MESHAGENT_TOKEN"] == "room-jwt"
     assert child_env["OPENAI_API_KEY"] == child_env["MESHAGENT_TOKEN"]
     assert child_env["ANTHROPIC_API_KEY"] == child_env["MESHAGENT_TOKEN"]
-    assert (
-        child_env["OPENAI_BASE_URL"]
-        == "https://room-proxy.meshagent.test/rooms/connected-room/openai/v1"
-    )
-    assert (
-        child_env["ANTHROPIC_BASE_URL"]
-        == "https://room-proxy.meshagent.test/rooms/connected-room/anthropic"
-    )
+    assert child_env["OPENAI_BASE_URL"] == "https://env.meshagent.test/openai/v1"
+    assert child_env["ANTHROPIC_BASE_URL"] == "https://env.meshagent.test/anthropic"
 
 
 @pytest.mark.asyncio
@@ -811,14 +799,8 @@ async def test_room_connect_build_env_with_identity_mints_local_token(
     assert minted_token.get_api_grant() == ApiScope.agent_default()
     assert child_env["MESHAGENT_PROJECT_ID"] == "project-1"
     assert child_env["MESHAGENT_ROOM"] == "room-input"
-    assert (
-        child_env["OPENAI_BASE_URL"]
-        == "https://room-proxy.meshagent.test/rooms/room-input/openai/v1"
-    )
-    assert (
-        child_env["ANTHROPIC_BASE_URL"]
-        == "https://room-proxy.meshagent.test/rooms/room-input/anthropic"
-    )
+    assert child_env["OPENAI_BASE_URL"] == "https://default.meshagent.test/openai/v1"
+    assert child_env["ANTHROPIC_BASE_URL"] == "https://default.meshagent.test/anthropic"
     assert child_env["OPENAI_API_KEY"] == child_env["MESHAGENT_TOKEN"]
     assert child_env["ANTHROPIC_API_KEY"] == child_env["MESHAGENT_TOKEN"]
 

@@ -175,7 +175,7 @@ _DEPLOY_DOCKERFILE_HAPPY_PATH = (
 _DEPLOY_MISSING_DOCKERFILE_GUIDANCE = (
     "If PATH does not include a Dockerfile yet, create a minimal Dockerfile in "
     "the app directory first or create one elsewhere in PATH and pass it with "
-    "--dockerfile-path."
+    "--file."
 )
 
 
@@ -519,6 +519,41 @@ def _resolve_build_context_path(
     if not mount_path.startswith("/"):
         raise typer.BadParameter("PATH mount path must be an absolute path")
     return mount_path
+
+
+def _dockerfile_path_from_file_option(
+    *,
+    pack_spec: _BuildPackSpec,
+    file_path: str,
+) -> str:
+    relative_path = PurePosixPath(file_path)
+    if relative_path.is_absolute():
+        raise typer.BadParameter("--file must be relative to PATH")
+    if len(relative_path.parts) == 0 or relative_path == PurePosixPath("."):
+        raise typer.BadParameter("--file cannot be empty")
+    if ".." in relative_path.parts:
+        raise typer.BadParameter("--file must stay inside PATH")
+    return posixpath.join(pack_spec.mount_path, relative_path.as_posix())
+
+
+def _warn_legacy_build_path_options(
+    *,
+    context_path: str | None,
+    dockerfile_path: str | None,
+) -> None:
+    if context_path is not None:
+        typer.echo(
+            "Warning: --context-path is deprecated; pass the selected build "
+            "context directory as PATH instead.",
+            err=True,
+        )
+    if dockerfile_path is not None:
+        typer.echo(
+            "Warning: --dockerfile-path/--docker-file-path is deprecated; use "
+            "--file with a path relative to PATH instead (for example, "
+            "--file refresher/Dockerfile).",
+            err=True,
+        )
 
 
 def _parse_build_tag(tag: str) -> _ParsedImageTag:
@@ -1046,17 +1081,28 @@ def _resolve_build_stage_inputs(
     context_path: str | None,
     dockerfile_path: str | None,
     pack: str,
+    file_path: str | None = None,
 ) -> _ResolvedBuildStageInputs:
     pack_spec = _parse_build_pack(pack)
+    if file_path is not None and dockerfile_path is not None:
+        raise typer.BadParameter(
+            "--file cannot be combined with --dockerfile-path/--docker-file-path"
+        )
     resolved_context_path = _resolve_build_context_path(
         context_path=context_path,
         mount_path=pack_spec.mount_path,
     )
-    dockerfile_path = _infer_packed_dockerfile_path(
-        pack_spec=pack_spec,
-        context_path=resolved_context_path,
-        dockerfile_path=dockerfile_path,
-    )
+    if file_path is not None:
+        dockerfile_path = _dockerfile_path_from_file_option(
+            pack_spec=pack_spec,
+            file_path=file_path,
+        )
+    else:
+        dockerfile_path = _infer_packed_dockerfile_path(
+            pack_spec=pack_spec,
+            context_path=resolved_context_path,
+            dockerfile_path=dockerfile_path,
+        )
 
     local_packed_dockerfile = _resolve_local_packed_dockerfile(
         pack_spec=pack_spec,
@@ -3688,6 +3734,19 @@ def _print_service_exited_before_live(
     )
 
 
+def _is_transient_room_disconnect(error: RoomException) -> bool:
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in (
+            "room connection is disconnected",
+            "room connection unexpectedly closed",
+            "websocket closed with code 1006",
+            "cannot write to closing transport",
+        )
+    )
+
+
 async def _wait_for_deployed_service_live(
     *,
     client: RoomClient,
@@ -3701,6 +3760,7 @@ async def _wait_for_deployed_service_live(
     log_handler: Callable[[str], Awaitable[None]] | None = None,
 ) -> None:
     active_logs: _ActiveDeployLogStream | None = None
+    connection_retry_reported = False
 
     await _emit_deploy_status(
         status_handler,
@@ -3728,9 +3788,29 @@ async def _wait_for_deployed_service_live(
 
     try:
         while True:
-            state = await _get_service_runtime_state(
-                client=client, service_id=service_id
-            )
+            try:
+                state = await _get_service_runtime_state(
+                    client=client, service_id=service_id
+                )
+            except RoomException as error:
+                if not _is_transient_room_disconnect(error):
+                    raise
+                if not connection_retry_reported:
+                    await _emit_deploy_status(
+                        status_handler,
+                        rich_message=(
+                            "[yellow]Room connection interrupted while confirming "
+                            "service readiness; retrying...[/]"
+                        ),
+                        plain_message=(
+                            "Room connection interrupted while confirming service "
+                            "readiness; retrying..."
+                        ),
+                    )
+                    connection_retry_reported = True
+                await asyncio.sleep(_DEPLOY_WAIT_POLL_INTERVAL_SECONDS)
+                continue
+            connection_retry_reported = False
             if state is None:
                 await asyncio.sleep(_DEPLOY_WAIT_POLL_INTERVAL_SECONDS)
                 continue
@@ -3989,6 +4069,7 @@ async def _run_image_build_stage(
     private: bool,
     optimize: bool,
     cred: list[str],
+    file_path: str | None = None,
     add_latest_tag: bool = False,
     status_handler: Callable[[str], Awaitable[None]] | None = None,
     log_handler: Callable[[str], Awaitable[None]] | None = None,
@@ -3998,6 +4079,7 @@ async def _run_image_build_stage(
         context_path=context_path,
         dockerfile_path=dockerfile_path,
         pack=pack,
+        file_path=file_path,
     )
 
     account_client, client = await _with_client(
@@ -4129,6 +4211,7 @@ def _validate_deploy_build_stage_options(
     optimize: bool,
     cred: list[str],
     add_latest_tag: bool,
+    file_path: str | None = None,
 ) -> None:
     if pack is not None:
         return
@@ -4138,6 +4221,8 @@ def _validate_deploy_build_stage_options(
         invalid_options.append("--context-path")
     if dockerfile_path is not None:
         invalid_options.append("--dockerfile-path")
+    if file_path is not None:
+        invalid_options.append("--file")
     if builder_name is not None:
         invalid_options.append("--builder-name")
     if not optimize:
@@ -4170,16 +4255,15 @@ async def build_image(
         typer.Argument(
             ...,
             metavar="PATH",
-            help=(
-                "Local directory to stream as the build context. Format "
-                "'<path>[:<mount>]'. Defaults mount to /context."
-            ),
+            help=("Local directory to use as the Docker build context."),
         ),
     ],
     tag: Annotated[
         str,
         typer.Option(
             ...,
+            "-t",
+            "--tag",
             help=(
                 "Image tag to build. Supports <repository>:<tag>, "
                 "<project-key>/<repository>:<tag>, or "
@@ -4188,24 +4272,27 @@ async def build_image(
             ),
         ),
     ],
+    file_path: Annotated[
+        Optional[str],
+        typer.Option(
+            "-f",
+            "--file",
+            help="Dockerfile path relative to PATH.",
+        ),
+    ] = None,
     context_path: Annotated[
         Optional[str],
         typer.Option(
             "--context-path",
-            help=(
-                "Build context path inside the streamed build context (absolute "
-                "path). Defaults to the PATH mount path."
-            ),
+            hidden=True,
         ),
     ] = None,
     dockerfile_path: Annotated[
         Optional[str],
         typer.Option(
             "--dockerfile-path",
-            help=(
-                "Optional Dockerfile path inside the streamed build context "
-                "(absolute path)."
-            ),
+            "--docker-file-path",
+            hidden=True,
         ),
     ] = None,
     builder_name: Annotated[
@@ -4247,6 +4334,10 @@ async def build_image(
         ),
     ] = False,
 ) -> None:
+    _warn_legacy_build_path_options(
+        context_path=context_path,
+        dockerfile_path=dockerfile_path,
+    )
     parsed_tag = _parse_build_tag(tag)
     resolved_room = resolve_room(room)
     if resolved_room is None:
@@ -4273,6 +4364,7 @@ async def build_image(
         private=private,
         optimize=optimize,
         cred=cred,
+        file_path=file_path,
         add_latest_tag=latest,
     )
 
@@ -4350,17 +4442,15 @@ async def deploy_image(
         Optional[str],
         typer.Argument(
             metavar="PATH",
-            help=(
-                "Local directory to stream as the build context before deploy. "
-                "Format '<path>[:<mount>]'. Defaults mount to /context. PATH is "
-                "typically the app directory you want to deploy."
-            ),
+            help=("Local directory to use as the Docker build context before deploy."),
         ),
     ] = None,
     tag: Annotated[
         str,
         typer.Option(
             ...,
+            "-t",
+            "--tag",
             help=(
                 "Image tag to deploy, e.g. repo/name:tag. When used with PATH, "
                 "shorthand <repository>:<tag> and "
@@ -4369,26 +4459,27 @@ async def deploy_image(
             ),
         ),
     ],
+    file_path: Annotated[
+        Optional[str],
+        typer.Option(
+            "-f",
+            "--file",
+            help="Dockerfile path relative to PATH. Only used with PATH.",
+        ),
+    ] = None,
     context_path: Annotated[
         Optional[str],
         typer.Option(
             "--context-path",
-            help=(
-                "Build context path inside the packed build context (absolute path). "
-                "Only used with PATH."
-            ),
+            hidden=True,
         ),
     ] = None,
     dockerfile_path: Annotated[
         Optional[str],
         typer.Option(
             "--dockerfile-path",
-            help=(
-                "Optional Dockerfile path inside the packed build context (absolute "
-                "path). Only used with PATH. Use this when the app directory has "
-                "no top-level Dockerfile or when you create the Dockerfile under "
-                "a different path."
-            ),
+            "--docker-file-path",
+            hidden=True,
         ),
     ] = None,
     optimize: Annotated[
@@ -4453,7 +4544,6 @@ async def deploy_image(
         list[str],
         typer.Option(
             "--values",
-            "-f",
             help=(
                 "YAML file containing deploy template values. Can be passed "
                 "multiple times; later files override earlier files."
@@ -4605,6 +4695,10 @@ async def deploy_image(
     ] = True,
 ) -> None:
     """Create or update a room service from an image."""
+    _warn_legacy_build_path_options(
+        context_path=context_path,
+        dockerfile_path=dockerfile_path,
+    )
     parsed_tag = _parse_build_tag(tag)
     project_registry: str | None = None
     _validate_deploy_build_stage_options(
@@ -4615,6 +4709,7 @@ async def deploy_image(
         optimize=optimize,
         cred=cred,
         add_latest_tag=latest,
+        file_path=file_path,
     )
     parsed_environment = _parse_environment_variables(values=env)
     parsed_secret_environment = _parse_environment_secret_variables(values=env_secret)
@@ -4672,6 +4767,7 @@ async def deploy_image(
             context_path=context_path,
             dockerfile_path=dockerfile_path,
             pack=pack,
+            file_path=file_path,
         )
         packed_dockerfile_metadata = _parse_packed_dockerfile_metadata(
             local_packed_dockerfile=build_inputs.local_packed_dockerfile
@@ -4964,6 +5060,7 @@ async def deploy_image(
                         private=False,
                         optimize=optimize,
                         cred=cred,
+                        file_path=file_path,
                         add_latest_tag=latest,
                         status_handler=status_handler,
                         log_handler=log_handler,

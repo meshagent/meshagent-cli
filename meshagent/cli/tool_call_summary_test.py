@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from meshagent.api.messaging import JsonContent
 from meshagent.cli.tool_call_summary import (
     ParsedCommand,
     format_tool_call_summary,
@@ -124,6 +125,39 @@ def test_format_tool_call_summary_uses_storage_friendly_items() -> None:
             arguments={"path": "/src/report.html"},
         )
         == "Wrote file: /src/report.html"
+    )
+
+
+def test_format_tool_call_summary_uses_image_generation_paths() -> None:
+    assert (
+        format_tool_call_summary(
+            toolkit="image-generation",
+            tool="imagegen",
+            arguments={"prompt": "draw a fox"},
+        )
+        == "Generated image"
+    )
+    assert (
+        format_tool_call_summary(
+            toolkit="image-generation",
+            tool="import_image",
+            arguments={"source_path": "/in/photo.webp"},
+        )
+        == "Imported image from: /in/photo.webp"
+    )
+    assert (
+        format_tool_call_summary(
+            toolkit="image-generation",
+            tool="export_image",
+            arguments={"id": "image-1", "destination_path": "/out/photo.png"},
+            result=JsonContent(
+                json={
+                    "exported_image_id": "image-1",
+                    "destination_path": "/out/photo-converted.png",
+                }
+            ),
+        )
+        == "Exported image to: /out/photo-converted.png"
     )
 
 

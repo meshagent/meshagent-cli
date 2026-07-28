@@ -142,7 +142,10 @@ from meshagent.openai.tools.responses_adapter import (
     WebSearchTool,
     ApplyPatchTool,
     ShellTool,
-    ImageGenerationTool,
+)
+from meshagent.openai.tools.image_generation import (
+    DEFAULT_IMAGE_GENERATION_MODEL,
+    ImageGenerationToolkit,
 )
 
 from meshagent.tools.dataset import make_dataset_toolkit
@@ -3095,6 +3098,8 @@ def _process_run_room_requirements(
         requirements.append("--advanced-shell")
     if normalized_tool_options["require_apply_patch"]:
         requirements.append("--apply-patch")
+    if normalized_tool_options["require_image_generation"]:
+        requirements.append("--image-generation")
     if llm_participant:
         requirements.append("--llm-participant")
     if delegate_shell_token:
@@ -5208,6 +5213,22 @@ def build_chatbot(
 
             return None
 
+        def get_image_generation_toolkit(self) -> ImageGenerationToolkit:
+            room = client or self.room
+            return ImageGenerationToolkit(
+                images_dataset=ImagesDataset(room.datasets),
+                storage_toolkit=StorageToolkit(
+                    mounts=_require_storage_tool_mounts(
+                        room=room,
+                        local_paths=storage_tool_local_paths,
+                        room_paths=storage_tool_room_paths,
+                        default_room_mount=True,
+                    )
+                ),
+                model=require_image_generation or DEFAULT_IMAGE_GENERATION_MODEL,
+                api_key=api_key,
+            )
+
         async def get_rules(self, *, thread_context, participant):
             rules = await super().get_rules(
                 thread_context=thread_context, participant=participant
@@ -5248,13 +5269,7 @@ def build_chatbot(
                     add_tool(toolkit_name="script", tool=script_tool)
 
             if require_image_generation:
-                add_tool(
-                    toolkit_name="image_generation",
-                    tool=ImageGenerationTool(
-                        model=require_image_generation,
-                        partial_images=3,
-                    ),
-                )
+                add_toolkit(self.get_image_generation_toolkit())
 
             if require_apply_patch:
                 add_tool(
@@ -5870,12 +5885,6 @@ def build_process_agent(
 
             self._started = True
             self._room = room
-            if room is not None and require_image_generation:
-                for provider in llm_providers:
-                    if isinstance(provider.adapter, OpenAIResponsesAdapter):
-                        provider.adapter.set_images_dataset(
-                            ImagesDataset(room.datasets)
-                        )
             if room is not None and require_mcp:
                 await room.local_participant.set_attribute("supports_mcp", True)
             if room is not None and _has_chat_channel(channels=resolved_channels):
@@ -6349,6 +6358,22 @@ def build_process_agent(
 
             return None
 
+        def get_image_generation_toolkit(self) -> ImageGenerationToolkit:
+            room = client or self.room
+            return ImageGenerationToolkit(
+                images_dataset=ImagesDataset(room.datasets),
+                storage_toolkit=StorageToolkit(
+                    mounts=_require_storage_tool_mounts(
+                        room=room,
+                        local_paths=storage_tool_local_paths,
+                        room_paths=storage_tool_room_paths,
+                        default_room_mount=True,
+                    )
+                ),
+                model=require_image_generation or DEFAULT_IMAGE_GENERATION_MODEL,
+                api_key=api_key,
+            )
+
         async def get_rules(self, *, participant: Optional[Participant]) -> list[str]:
             rules = [*rule]
             storage_toolkit = self.get_skills_storage_toolkit()
@@ -6452,13 +6477,7 @@ def build_process_agent(
 
             if require_image_generation:
                 if _supports_openai_responses_builtin_tools(model=model):
-                    add_tool(
-                        toolkit_name="image_generation",
-                        tool=ImageGenerationTool(
-                            model=require_image_generation,
-                            partial_images=3,
-                        ),
-                    )
+                    add_toolkit(self.get_image_generation_toolkit())
 
             if require_apply_patch:
                 if _supports_openai_responses_builtin_tools(model=model):

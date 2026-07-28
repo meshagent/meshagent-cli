@@ -494,11 +494,12 @@ async def _build_connected_command_env(
 
         child_env = os.environ.copy()
         if normalized_template == "agent":
-            child_env["MESHAGENT_API_URL"] = room_env.api_url
+            api_url = room_env.api_url.rstrip("/")
+            child_env["MESHAGENT_API_URL"] = api_url
             child_env["MESHAGENT_PROJECT_ID"] = room_env.project_id
             child_env["MESHAGENT_ROOM"] = room_env.room_name
-            child_env["OPENAI_BASE_URL"] = f"{room_env.room_url}/openai/v1"
-            child_env["ANTHROPIC_BASE_URL"] = f"{room_env.room_url}/anthropic"
+            child_env["OPENAI_BASE_URL"] = f"{api_url}/openai/v1"
+            child_env["ANTHROPIC_BASE_URL"] = f"{api_url}/anthropic"
             _set_connected_token_environment(
                 child_env=child_env,
                 connected_token=connected_token,
@@ -581,8 +582,9 @@ def _connect_command(
             "Allowed values: agent, none. agent: MeshAgent sets MESHAGENT_TOKEN, "
             "OPENAI_API_KEY, and ANTHROPIC_API_KEY to a room-scoped MeshAgent token, "
             "and sets OPENAI_BASE_URL, ANTHROPIC_BASE_URL, MESHAGENT_API_URL, "
-            "MESHAGENT_PROJECT_ID, and MESHAGENT_ROOM from the connected room unless "
-            "manually set. none: MeshAgent applies no template defaults."
+            "MESHAGENT_PROJECT_ID, and MESHAGENT_ROOM for the connected room unless "
+            "manually set. Provider base URLs use the project API endpoint. none: "
+            "MeshAgent applies no template defaults."
         ),
     ),
 ) -> None:

@@ -376,8 +376,12 @@ SHELL_RENDERERS = {
 }
 
 
-if __name__ == "__main__":
+def main() -> None:
     from meshagent.agents.channel_process import dispatch_main
 
     if not dispatch_main(executable_name=Path(sys.argv[0]).name, argv=sys.argv[1:]):
-        app()
+        raise SystemExit(app())
+
+
+if __name__ == "__main__":
+    main()

@@ -137,6 +137,7 @@ from meshagent.agents.process import (
     TurnInstructionsProvider,
 )
 from meshagent.api import Participant, RoomException
+from meshagent.api.messaging import Content
 from meshagent.cli import async_typer, auth_async
 from meshagent.cli._filedrop import (
     dropped_file_paths_from_text,
@@ -348,6 +349,7 @@ def _format_ask_tool_call_entry_text(
     toolkit: str,
     tool: str,
     arguments: dict[str, Any] | None,
+    result: Content | dict[str, object] | None = None,
     logs: list[str],
     error_message: str | None,
     completed: bool = True,
@@ -357,6 +359,7 @@ def _format_ask_tool_call_entry_text(
         toolkit=toolkit,
         tool=tool,
         arguments=arguments,
+        result=result,
         failed=failed,
         completed=completed,
     )
@@ -4701,6 +4704,7 @@ async def _run_ask_tui(
                 toolkit=toolkit,
                 tool=tool,
                 arguments=arguments,
+                result=message.result,
                 logs=logs,
                 error_message=error_message,
             )
