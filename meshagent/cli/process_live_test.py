@@ -299,14 +299,13 @@ class _RestoringThreadStorage:
     def agent_messages(self) -> list[AgentMessage]:
         return [*self.messages]
 
-    async def restore_session_context_async(self, *, context, llm_adapter) -> None:
-        restored_messages: list[dict[str, Any]] = []
-        reader = llm_adapter.make_agent_event_reader(
-            emit_message=restored_messages.append
+    async def restore_session_context(
+        self, *, context, llm_adapter, file_reader=None
+    ) -> None:
+        restored_messages = await llm_adapter.project_agent_messages(
+            messages=self.messages,
+            file_reader=file_reader,
         )
-        for message in self.messages:
-            reader.consume(message)
-        reader.finalize()
         llm_adapter.restore_context_messages(
             context=context,
             messages=restored_messages,
