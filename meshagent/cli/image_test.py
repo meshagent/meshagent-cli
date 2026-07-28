@@ -242,6 +242,10 @@ def test_root_build_help_uses_positional_path() -> None:
     assert result.exit_code == 0
     assert "Usage: meshagent build [OPTIONS] PATH" in result.output
     assert "--pack" not in result.output
+    assert "--file" in result.output
+    assert "-f" in result.output
+    assert "--context-path" not in result.output
+    assert "--dockerfile-path" not in result.output
 
 
 def test_root_deploy_help_uses_optional_positional_path() -> None:
@@ -250,6 +254,11 @@ def test_root_deploy_help_uses_optional_positional_path() -> None:
     assert result.exit_code == 0
     assert "Usage: meshagent deploy [OPTIONS] [PATH]" in result.output
     assert "--pack" not in result.output
+    assert "--file" in result.output
+    assert "-f" in result.output
+    assert "--values" in result.output
+    assert "--context-path" not in result.output
+    assert "--dockerfile-path" not in result.output
 
 
 def test_root_deploy_help_mentions_existing_room_flow() -> None:
@@ -266,7 +275,29 @@ def test_root_deploy_help_mentions_existing_room_flow() -> None:
     assert ".meshagent.dev" not in result.output
     assert ".meshagent.life" not in result.output
     assert "If PATH does not include a Dockerfile yet" in normalized_output
-    assert "--dockerfile-path" in result.output
+    assert "--file" in result.output
+
+
+def test_legacy_build_path_aliases_remain_hidden_and_accepted() -> None:
+    commands = typer.main.get_command(image.app).commands
+    build_options = {
+        parameter.name: parameter for parameter in commands["build"].params
+    }
+    deploy_options = {
+        parameter.name: parameter for parameter in commands["deploy"].params
+    }
+
+    assert build_options["context_path"].opts == ["--context-path"]
+    assert build_options["context_path"].hidden is True
+    assert build_options["dockerfile_path"].opts == [
+        "--dockerfile-path",
+        "--docker-file-path",
+    ]
+    assert build_options["dockerfile_path"].hidden is True
+    assert deploy_options["context_path"].hidden is True
+    assert deploy_options["dockerfile_path"].hidden is True
+    assert deploy_options["file_path"].opts == ["-f", "--file"]
+    assert deploy_options["values_file"].opts == ["--values"]
 
 
 def test_resolve_deploy_environment_replaces_existing_service_environment() -> None:
@@ -1338,14 +1369,18 @@ async def test_build_image_normalizes_shorthand_room_registry_tag(
 
 
 @pytest.mark.asyncio
-async def test_build_image_pack_streams_context_and_defaults_context_path(
+async def test_build_image_file_option_streams_nested_dockerfile_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     captured: dict[str, object] = {}
     source_dir = tmp_path / "website"
     source_dir.mkdir()
-    (source_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    (source_dir / "refresher").mkdir()
+    (source_dir / "refresher" / "Dockerfile").write_text(
+        "FROM scratch\n",
+        encoding="utf-8",
+    )
     archive_dir = tempfile.TemporaryDirectory(prefix="meshagent-build-context-test-")
     archive_path = Path(archive_dir.name) / "context.tar"
     archive_bytes = b"context-archive"
@@ -1427,6 +1462,7 @@ async def test_build_image_pack_streams_context_and_defaults_context_path(
         pack=str(source_dir),
         context_path=None,
         dockerfile_path=None,
+        file_path="refresher/Dockerfile",
         builder_name="builder-1",
         private=False,
         optimize=True,
@@ -1443,7 +1479,7 @@ async def test_build_image_pack_streams_context_and_defaults_context_path(
         "tags": ["registry.meshagent.com/project/example:1"],
         "mount_path": "/context",
         "context_path": "/context",
-        "dockerfile_path": "/context/Dockerfile",
+        "dockerfile_path": "/context/refresher/Dockerfile",
         "optimize_image": True,
         "private": False,
         "credentials": [],
@@ -1617,6 +1653,41 @@ def test_generated_pack_dockerfile_path_uses_mount_path() -> None:
     assert image._generated_pack_dockerfile_path(mount_path="/workspace") == (
         "/workspace/.meshagent-pack.Dockerfile"
     )
+
+
+def test_file_option_resolves_nested_dockerfile_relative_to_build_path(
+    tmp_path: Path,
+) -> None:
+    source_dir = tmp_path / "website"
+    dockerfile = source_dir / "refresher" / "Dockerfile"
+    dockerfile.parent.mkdir(parents=True)
+    dockerfile.write_text("FROM scratch\n", encoding="utf-8")
+
+    resolved = image._resolve_build_stage_inputs(
+        context_path=None,
+        dockerfile_path=None,
+        pack=str(source_dir),
+        file_path="refresher/Dockerfile",
+    )
+
+    assert resolved.context_path == "/context"
+    assert resolved.dockerfile_path == "/context/refresher/Dockerfile"
+    assert resolved.local_packed_dockerfile == dockerfile
+
+
+def test_legacy_build_path_options_warn_with_migration_guidance(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    image._warn_legacy_build_path_options(
+        context_path="/context/app",
+        dockerfile_path="/context/refresher/Dockerfile",
+    )
+
+    stderr = capsys.readouterr().err
+    assert "--context-path is deprecated" in stderr
+    assert "pass the selected build context directory as PATH" in stderr
+    assert "--dockerfile-path/--docker-file-path is deprecated" in stderr
+    assert "--file refresher/Dockerfile" in stderr
 
 
 def test_infer_deploy_ports_from_packed_dockerfile_reads_expose_lines(
@@ -2440,6 +2511,84 @@ async def test_wait_for_deployed_service_live_streams_logs_and_checks_service_li
     assert captured["started_logs"] == ["container-1"]
     assert captured["stopped_logs"] == [fake_active_logs]
     assert any("Service liveness is ready" in message for message in captured["prints"])
+
+
+@pytest.mark.asyncio
+async def test_wait_for_deployed_service_live_retries_transient_room_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+    _stub_deploy_wait: dict[str, object],
+) -> None:
+    statuses: list[str] = []
+    calls = 0
+    state = ServiceRuntimeState(
+        service_id="service-1",
+        state="running",
+        container_id="container-1",
+    )
+
+    class _FakeServices:
+        async def list(self):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RoomException(
+                    "room connection unexpectedly closed before request completed: "
+                    "websocket closed with code 1006"
+                )
+            return SimpleNamespace(service_states={"service-1": state})
+
+    async def _capture_status(message: str) -> None:
+        statuses.append(message)
+
+    monkeypatch.setattr(image, "_DEPLOY_WAIT_POLL_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr(image, "_start_deploy_log_stream", lambda **kwargs: None)
+
+    wait_helper = _stub_deploy_wait["original"]
+    assert callable(wait_helper)
+
+    await wait_helper(
+        client=SimpleNamespace(services=_FakeServices()),
+        service_id="service-1",
+        service_name="repo-web",
+        previous_container_id=None,
+        domain=None,
+        liveness_path=None,
+        status_handler=_capture_status,
+    )
+
+    assert calls == 2
+    assert any("connection interrupted" in status for status in statuses)
+    assert any("Service is live" in status for status in statuses)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_deployed_service_live_does_not_retry_api_error(
+    monkeypatch: pytest.MonkeyPatch,
+    _stub_deploy_wait: dict[str, object],
+) -> None:
+    calls = 0
+
+    class _FakeServices:
+        async def list(self):
+            nonlocal calls
+            calls += 1
+            raise RoomException("permission denied")
+
+    monkeypatch.setattr(image, "_DEPLOY_WAIT_POLL_INTERVAL_SECONDS", 0)
+    wait_helper = _stub_deploy_wait["original"]
+    assert callable(wait_helper)
+
+    with pytest.raises(RoomException, match="permission denied"):
+        await wait_helper(
+            client=SimpleNamespace(services=_FakeServices()),
+            service_id="service-1",
+            service_name="repo-web",
+            previous_container_id=None,
+            domain=None,
+            liveness_path=None,
+        )
+
+    assert calls == 1
 
 
 @pytest.mark.asyncio

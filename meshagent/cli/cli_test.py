@@ -5,6 +5,7 @@ import types
 import pytest
 
 from meshagent.api import RoomException
+from meshagent.agents import channel_process
 from meshagent.cli import async_typer
 from meshagent.cli import cli
 from meshagent.cli.testing import CliRunner
@@ -130,6 +131,17 @@ def test_app_prints_room_exception_without_traceback(capsys) -> None:
     captured = capsys.readouterr()
     assert captured.err == "roomserver failed\n"
     assert captured.out == ""
+
+
+def test_main_exits_with_status_returned_by_async_typer(monkeypatch) -> None:
+    monkeypatch.setattr(channel_process, "dispatch_main", lambda **kwargs: False)
+    monkeypatch.setattr(cli, "app", lambda: 23)
+    monkeypatch.setattr(sys, "argv", ["meshagent", "build"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 23
 
 
 def test_room_help_lists_agents_command() -> None:
