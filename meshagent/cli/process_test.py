@@ -5442,12 +5442,12 @@ class _FakeProcessThreadAdapter:
     def agent_messages(self):
         return []
 
-    def restore_session_context(self, *, context, llm_adapter=None) -> None:
+    async def restore_session_context(
+        self, *, context, llm_adapter=None, file_reader=None
+    ) -> None:
         del context
         del llm_adapter
-
-    async def restore_session_context_async(self, *, context, llm_adapter=None) -> None:
-        self.restore_session_context(context=context, llm_adapter=llm_adapter)
+        del file_reader
 
     def make_toolkit(self):
         return Toolkit(name="thread", tools=[])
@@ -5546,6 +5546,28 @@ class _SteeringRecordingAdapter:
         del callback
         del custom_event_callback
         return lambda message: None
+
+    async def project_agent_messages(
+        self,
+        *,
+        messages: list[AgentMessage],
+        file_reader=None,
+        callbacks=None,
+    ) -> list[dict[str, object]]:
+        del file_reader
+        del callbacks
+        projected: list[dict[str, object]] = []
+        for message in messages:
+            if not isinstance(message, (TurnStart, TurnSteer)):
+                continue
+            text = "\n".join(
+                item.text
+                for item in message.content
+                if isinstance(item, AgentTextContent) and item.text != ""
+            )
+            if text != "":
+                projected.append({"role": "user", "content": text})
+        return projected
 
     async def create_response(
         self,
