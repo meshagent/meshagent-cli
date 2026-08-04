@@ -58,6 +58,7 @@ def test_root_help_lists_create_and_doctor_but_hides_legacy_command_namespaces()
     assert "│ api-key" not in result.output
     assert "│ launch" in result.output
     assert "│ room" in result.output
+    assert "│ volumes" in result.output
     assert "│ call" not in result.output
     assert "│ package" not in result.output
     assert "│ multi" not in result.output
@@ -149,6 +150,36 @@ def test_room_help_lists_agents_command() -> None:
 
     assert result.exit_code == 0
     assert "│ agents" in result.output
+
+
+def test_volumes_help_lists_durable_lifecycle_commands() -> None:
+    result = CliRunner().invoke(cli.app, ["volumes", "--help"])
+
+    assert result.exit_code == 0
+    assert "│ list" in result.output
+    assert "│ create" in result.output
+    assert "│ expand" in result.output
+    assert "│ delete" in result.output
+    assert "lease" not in result.output.lower()
+
+    create_result = CliRunner().invoke(cli.app, ["volumes", "create", "--help"])
+    assert create_result.exit_code == 0
+    assert "--type" in create_result.output
+    assert "--max-size" in create_result.output
+
+    expand_result = CliRunner().invoke(cli.app, ["volumes", "expand", "--help"])
+    assert expand_result.exit_code == 0
+    assert "--max-size" in expand_result.output
+
+
+def test_room_mounts_help_is_list_only() -> None:
+    result = CliRunner().invoke(cli.app, ["room", "mounts", "--help"])
+
+    assert result.exit_code == 0
+    assert "│ list" in result.output
+    assert "│ mount" not in result.output
+    assert "│ unmount" not in result.output
+    assert "lease" not in result.output.lower()
 
 
 def test_room_agents_help_lists_call_command() -> None:
