@@ -30,6 +30,11 @@ app.add_lazy_command(
     help="Manage storage for a room",
 )
 app.add_lazy_command(
+    name="mounts",
+    module="meshagent.cli.mounts",
+    help="List storage mounts currently ready in a room",
+)
+app.add_lazy_command(
     name="service",
     module="meshagent.cli.room_services",
     help="Manage services in a room",

@@ -181,6 +181,11 @@ app.add_lazy_command(
     help="Create, list, and manage rooms in a project",
 )
 app.add_lazy_command(
+    name="volumes",
+    module="meshagent.cli.volumes",
+    help="Manage durable storage volumes for a room",
+)
+app.add_lazy_command(
     name="agent",
     module="meshagent.cli.agents",
     help="Create, list, and manage managed agents in a project",
