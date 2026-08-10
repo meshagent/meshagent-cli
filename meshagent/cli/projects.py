@@ -255,12 +255,11 @@ async def set_room_roles(
     client = await get_client()
     try:
         resolved_project_id = await resolve_project_id(project_id)
-        project = await client.get_project(resolved_project_id)
-        settings = dict(project.settings or {})
-        settings["room_roles"] = spec.model_dump(mode="json", exclude_none=True)[
-            "roles"
-        ]
-        await client.update_project_settings(resolved_project_id, settings)
+        await client.set_project_settings_document(
+            resolved_project_id,
+            "room_roles",
+            {"roles": spec.model_dump(mode="json", exclude_none=True)["roles"]},
+        )
         print(f"[green]Room role override updated:[/] {resolved_project_id}")
     finally:
         await client.close()
@@ -274,10 +273,10 @@ async def reset_room_roles(project_id: ProjectIdOption):
     client = await get_client()
     try:
         resolved_project_id = await resolve_project_id(project_id)
-        project = await client.get_project(resolved_project_id)
-        settings = dict(project.settings or {})
-        settings.pop("room_roles", None)
-        await client.update_project_settings(resolved_project_id, settings)
+        await client.delete_project_settings_document(
+            resolved_project_id,
+            "room_roles",
+        )
         print(f"[green]Room role defaults restored:[/] {resolved_project_id}")
     finally:
         await client.close()

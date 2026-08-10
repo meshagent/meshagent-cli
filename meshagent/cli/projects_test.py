@@ -17,7 +17,8 @@ class _FakeClient:
         self._project_rows = list(project_rows)
         self._created_project_id = created_project_id
         self.created_project_names: list[str] = []
-        self.updated_settings: dict | None = None
+        self.settings_documents: dict[str, dict] = {}
+        self.deleted_settings_documents: list[str] = []
         self.closed = False
 
     async def list_projects(self) -> ProjectsPage:
@@ -49,8 +50,14 @@ class _FakeClient:
         self._project_rows.append(created_row)
         return ProjectInfo.model_validate(created_row)
 
-    async def update_project_settings(self, project_id: str, settings: dict):
-        self.updated_settings = settings
+    async def set_project_settings_document(
+        self, project_id: str, name: str, document: dict
+    ):
+        self.settings_documents[name] = document
+        return {}
+
+    async def delete_project_settings_document(self, project_id: str, name: str):
+        self.deleted_settings_documents.append(name)
         return {}
 
     async def close(self) -> None:
@@ -383,15 +390,12 @@ async def test_activate_prints_cancel_message_when_tui_is_canceled(monkeypatch) 
 
 
 @pytest.mark.asyncio
-async def test_set_room_roles_preserves_other_project_settings(
-    monkeypatch, tmp_path
-) -> None:
+async def test_set_room_roles_writes_dedicated_document(monkeypatch, tmp_path) -> None:
     client = _FakeClient(
         [
             {
                 "id": "project-1",
                 "name": "Alpha",
-                "settings": {"room_version": "stable"},
             }
         ]
     )
@@ -422,20 +426,21 @@ roles:
 
     await projects.set_room_roles(file=spec, project_id="project-1")
 
-    assert client.updated_settings == {
-        "room_version": "stable",
+    assert client.settings_documents == {
         "room_roles": {
-            "guest": {
-                "participant": {
-                    "api": {
-                        "messaging": {
-                            "broadcast": False,
-                            "list": True,
-                            "send": False,
+            "roles": {
+                "guest": {
+                    "participant": {
+                        "api": {
+                            "messaging": {
+                                "broadcast": False,
+                                "list": True,
+                                "send": False,
+                            }
                         }
-                    }
-                },
-                "site_user": False,
+                    },
+                    "site_user": False,
+                }
             }
         },
     }
@@ -443,16 +448,12 @@ roles:
 
 
 @pytest.mark.asyncio
-async def test_reset_room_roles_removes_only_override(monkeypatch) -> None:
+async def test_reset_room_roles_deletes_dedicated_document(monkeypatch) -> None:
     client = _FakeClient(
         [
             {
                 "id": "project-1",
                 "name": "Alpha",
-                "settings": {
-                    "room_version": "stable",
-                    "room_roles": {"guest": {"site_user": True}},
-                },
             }
         ]
     )
@@ -468,5 +469,5 @@ async def test_reset_room_roles_removes_only_override(monkeypatch) -> None:
 
     await projects.reset_room_roles(project_id="project-1")
 
-    assert client.updated_settings == {"room_version": "stable"}
+    assert client.deleted_settings_documents == ["room_roles"]
     assert client.closed is True
