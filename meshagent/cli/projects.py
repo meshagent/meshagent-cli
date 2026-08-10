@@ -1,19 +1,24 @@
 import sys
 from dataclasses import dataclass
-from typing import Annotated
+from pathlib import Path
+from typing import Annotated, Literal
 
 import typer
+from pydantic import BaseModel, ConfigDict
+from pydantic_yaml import parse_yaml_raw_as
 from rich import print
 
+from meshagent.api import ApiScope
 from meshagent.api.client import Meshagent, NotFoundError, ProjectInfo, ProjectsPage
 from meshagent.cli import async_typer
+from meshagent.cli.common_options import OutputFormatOption, ProjectIdOption
 from meshagent.cli.helper import (
     get_client,
     get_active_project,
     print_json_table,
+    resolve_project_id,
     set_active_project,
 )
-from meshagent.cli.common_options import OutputFormatOption
 
 app = async_typer.AsyncTyper(help="Manage or activate your meshagent projects")
 
@@ -23,6 +28,30 @@ class ListedProject:
     id: str
     name: str
     is_active: bool
+
+
+RoomAccessRole = Literal["guest", "viewer", "operator", "developer", "admin"]
+
+
+class ParticipantTokenRoleDefinition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    api: ApiScope
+
+
+class RoomRoleDefinition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    participant: ParticipantTokenRoleDefinition | None = None
+    site_user: bool = False
+
+
+class RoomRolesSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal["v1"]
+    kind: Literal["RoomRoles"]
+    roles: dict[RoomAccessRole, RoomRoleDefinition]
 
 
 def _parse_listed_projects(
@@ -205,6 +234,51 @@ async def get(
                 "name",
                 "project_key",
             )
+    finally:
+        await client.close()
+
+
+@app.async_command(
+    "set-room-roles",
+    help="Set authoritative project room-role mappings from a YAML spec.",
+)
+async def set_room_roles(
+    file: Annotated[Path, typer.Argument(help="RoomRoles YAML spec")],
+    project_id: ProjectIdOption,
+):
+    try:
+        spec = parse_yaml_raw_as(RoomRolesSpec, file.read_text())
+    except (OSError, ValueError) as error:
+        print(f"[red]Invalid room role spec: {error}[/red]")
+        raise typer.Exit(code=1) from error
+
+    client = await get_client()
+    try:
+        resolved_project_id = await resolve_project_id(project_id)
+        project = await client.get_project(resolved_project_id)
+        settings = dict(project.settings or {})
+        settings["room_roles"] = spec.model_dump(mode="json", exclude_none=True)[
+            "roles"
+        ]
+        await client.update_project_settings(resolved_project_id, settings)
+        print(f"[green]Room role override updated:[/] {resolved_project_id}")
+    finally:
+        await client.close()
+
+
+@app.async_command(
+    "reset-room-roles",
+    help="Remove the project room-role override and restore built-in defaults.",
+)
+async def reset_room_roles(project_id: ProjectIdOption):
+    client = await get_client()
+    try:
+        resolved_project_id = await resolve_project_id(project_id)
+        project = await client.get_project(resolved_project_id)
+        settings = dict(project.settings or {})
+        settings.pop("room_roles", None)
+        await client.update_project_settings(resolved_project_id, settings)
+        print(f"[green]Room role defaults restored:[/] {resolved_project_id}")
     finally:
         await client.close()
 
