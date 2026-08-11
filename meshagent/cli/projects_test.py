@@ -17,6 +17,8 @@ class _FakeClient:
         self._project_rows = list(project_rows)
         self._created_project_id = created_project_id
         self.created_project_names: list[str] = []
+        self.settings_documents: dict[str, dict] = {}
+        self.deleted_settings_documents: list[str] = []
         self.closed = False
 
     async def list_projects(self) -> ProjectsPage:
@@ -47,6 +49,16 @@ class _FakeClient:
         }
         self._project_rows.append(created_row)
         return ProjectInfo.model_validate(created_row)
+
+    async def set_project_settings_document(
+        self, project_id: str, name: str, document: dict
+    ):
+        self.settings_documents[name] = document
+        return {}
+
+    async def delete_project_settings_document(self, project_id: str, name: str):
+        self.deleted_settings_documents.append(name)
+        return {}
 
     async def close(self) -> None:
         self.closed = True
@@ -374,4 +386,88 @@ async def test_activate_prints_cancel_message_when_tui_is_canceled(monkeypatch) 
     assert result is None
     assert active_project_calls == []
     assert output == ["Project activation canceled."]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_set_room_roles_writes_dedicated_document(monkeypatch, tmp_path) -> None:
+    client = _FakeClient(
+        [
+            {
+                "id": "project-1",
+                "name": "Alpha",
+            }
+        ]
+    )
+    spec = tmp_path / "room-roles.yaml"
+    spec.write_text(
+        """version: v1
+kind: RoomRoles
+roles:
+  guest:
+    participant:
+      api:
+        messaging:
+          broadcast: false
+          list: true
+          send: false
+    site_user: false
+"""
+    )
+
+    async def _fake_get_client():
+        return client
+
+    async def _fake_resolve_project_id(project_id=None):
+        return project_id or "project-1"
+
+    monkeypatch.setattr(projects, "get_client", _fake_get_client)
+    monkeypatch.setattr(projects, "resolve_project_id", _fake_resolve_project_id)
+
+    await projects.set_room_roles(file=spec, project_id="project-1")
+
+    assert client.settings_documents == {
+        "room_roles": {
+            "roles": {
+                "guest": {
+                    "participant": {
+                        "api": {
+                            "messaging": {
+                                "broadcast": False,
+                                "list": True,
+                                "send": False,
+                            }
+                        }
+                    },
+                    "site_user": False,
+                }
+            }
+        },
+    }
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_reset_room_roles_deletes_dedicated_document(monkeypatch) -> None:
+    client = _FakeClient(
+        [
+            {
+                "id": "project-1",
+                "name": "Alpha",
+            }
+        ]
+    )
+
+    async def _fake_get_client():
+        return client
+
+    async def _fake_resolve_project_id(project_id=None):
+        return project_id or "project-1"
+
+    monkeypatch.setattr(projects, "get_client", _fake_get_client)
+    monkeypatch.setattr(projects, "resolve_project_id", _fake_resolve_project_id)
+
+    await projects.reset_room_roles(project_id="project-1")
+
+    assert client.deleted_settings_documents == ["room_roles"]
     assert client.closed is True
