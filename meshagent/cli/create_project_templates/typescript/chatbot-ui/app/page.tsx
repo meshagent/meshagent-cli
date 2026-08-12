@@ -218,18 +218,19 @@ export default function Home() {
       return;
     }
 
-    setMessages((current) => {
-      const existingId = pendingAssistantMessageId.current;
-      if (existingId !== null) {
-        return current.map((message) =>
+    const existingId = pendingAssistantMessageId.current;
+    if (existingId !== null) {
+      setMessages((current) =>
+        current.map((message) =>
           message.id === existingId ? { ...message, text: `${message.text}${text}` } : message,
-        );
-      }
+        ),
+      );
+      return;
+    }
 
-      const id = makeId("assistant");
-      pendingAssistantMessageId.current = id;
-      return [...current, { id, role: "assistant", text }];
-    });
+    const id = makeId("assistant");
+    pendingAssistantMessageId.current = id;
+    setMessages((current) => [...current, { id, role: "assistant", text }]);
   }
 
   function submitMessage(event: FormEvent<HTMLFormElement>) {
@@ -286,6 +287,7 @@ export default function Home() {
             <p className="eyebrow">MeshAgent</p>
             <h1>Chat</h1>
           </div>
+
           <div className={activeTurnId === null ? "status" : "status busy"}>
             <span />
             {statusText}
@@ -316,11 +318,9 @@ export default function Home() {
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={handleInputKeyDown}
             placeholder="Message the assistant"
-            rows={1}
-          />
-          <button disabled={!canSend} type="submit">
-            Send
-          </button>
+            rows={1} />
+
+          <button disabled={!canSend} type="submit">Send</button>
         </form>
       </section>
     </main>
