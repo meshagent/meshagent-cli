@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from rich import print
 
 from meshagent.api.client import ValidationErrorResponse
-from meshagent.api.specs.service import RouteSpec
+from meshagent.api.specs.service import RouteContentSpec, RouteCorsRule, RouteSpec
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import ProjectIdOption, OutputFormatOption
 from meshagent.cli.helper import (
@@ -50,6 +50,74 @@ def _parse_annotations(annotations: Optional[str]) -> Optional[dict[str, str]]:
         return json.loads(annotations)
     except json.JSONDecodeError as exc:
         raise typer.BadParameter("Invalid JSON for --annotations") from exc
+
+
+def _parse_cors(cors: Optional[str]) -> Optional[list[RouteCorsRule]]:
+    if cors is None:
+        return None
+    if cors.strip() == "":
+        return []
+    try:
+        value = json.loads(cors)
+        if not isinstance(value, list):
+            raise ValueError("expected a JSON array")
+        return [RouteCorsRule.model_validate(rule) for rule in value]
+    except (json.JSONDecodeError, TypeError, ValueError, ValidationError) as exc:
+        raise typer.BadParameter("Invalid JSON for --cors") from exc
+
+
+def _parse_compression(compression: Optional[str]) -> Optional[str]:
+    if compression is None:
+        return None
+    normalized = compression.strip().lower()
+    if normalized not in {"brotli", "gzip", "none"}:
+        raise typer.BadParameter(
+            "Invalid value for --compression: expected brotli, gzip, or none"
+        )
+    return normalized
+
+
+def _parse_route_path(path: str) -> str:
+    if not path.startswith("/"):
+        raise typer.BadParameter("RouteSpec paths must start with /")
+    return path
+
+
+def _content_options_supplied(
+    *,
+    content_path: Optional[str],
+    cors: Optional[str],
+    index: Optional[bool],
+    iap: Optional[bool],
+    compression: Optional[str],
+) -> bool:
+    return any(
+        value is not None for value in (content_path, cors, index, iap, compression)
+    )
+
+
+def _route_table_row(route) -> dict[str, object]:
+    paths = route.spec.paths
+    content = [path.targetContent for path in paths if path.targetContent is not None]
+    return {
+        "domain": route.domain,
+        "backend": route.spec.room_name or route.spec.agent_name or "",
+        "path": ", ".join(path.path for path in paths),
+        "port": ", ".join(
+            str(path.targetPort) for path in paths if path.targetPort is not None
+        ),
+        "content_path": ", ".join(item.subpath or "/" for item in content),
+        "index": ", ".join(str(item.index).lower() for item in content),
+        "iap": ", ".join(str(item.iap).lower() for item in content),
+        "compression": ", ".join(item.compression for item in content),
+        "cors": " | ".join(
+            json.dumps(
+                [rule.model_dump(mode="json") for rule in item.cors],
+                separators=(",", ":"),
+            )
+            for item in content
+        ),
+    }
 
 
 def _load_route_spec(path: str) -> RouteSpec:
@@ -128,6 +196,34 @@ async def route_create(
             help="Published port to route to",
         ),
     ] = None,
+    path: Annotated[
+        str,
+        typer.Option("--path", help="Public URL path to expose"),
+    ] = "/",
+    content_path: Annotated[
+        Optional[str],
+        typer.Option(
+            "--content-path",
+            "--room-path",
+            help="Room storage subpath to serve directly",
+        ),
+    ] = None,
+    cors: Annotated[
+        Optional[str],
+        typer.Option("--cors", help="CORS rules as a JSON array"),
+    ] = None,
+    index: Annotated[
+        Optional[bool],
+        typer.Option("--index/--no-index", help="Serve index.html for directories"),
+    ] = None,
+    iap: Annotated[
+        Optional[bool],
+        typer.Option("--iap/--no-iap", help="Require identity-aware proxy access"),
+    ] = None,
+    compression: Annotated[
+        Optional[str],
+        typer.Option("--compression", help="brotli, gzip, or none"),
+    ] = None,
     annotations: Annotated[
         Optional[str],
         typer.Option(
@@ -150,8 +246,25 @@ async def route_create(
     try:
         project_id = await resolve_project_id(project_id)
         if file is None:
-            if domain is None or port is None:
-                raise typer.BadParameter("Provide --file or both --domain and --port")
+            content_options = _content_options_supplied(
+                content_path=content_path,
+                cors=cors,
+                index=index,
+                iap=iap,
+                compression=compression,
+            )
+            if domain is None or (port is None and not content_options):
+                raise typer.BadParameter(
+                    "Provide --file or --domain and one of --port or --content-path"
+                )
+            if port is not None and content_options:
+                raise typer.BadParameter(
+                    "--port cannot be combined with room content options"
+                )
+            if content_options and content_path is None:
+                raise typer.BadParameter(
+                    "Provide --content-path when using room content options"
+                )
             room = resolve_room(room)
             if room is None:
                 print(
@@ -159,12 +272,31 @@ async def route_create(
                 )
                 raise typer.Exit(code=1)
             parsed_annotations = _parse_annotations(annotations) or {}
+            target: dict[str, object]
+            if content_path is not None:
+                target = {
+                    "targetContent": RouteContentSpec(
+                        subpath=content_path,
+                        cors=_parse_cors(cors) or [],
+                        index=index or False,
+                        iap=iap or False,
+                        compression=_parse_compression(compression) or "brotli",
+                    )
+                }
+            else:
+                target = {"targetPort": port}
             spec = RouteSpec.model_validate(
                 {
                     "metadata": {"name": domain, "annotations": parsed_annotations},
                     "domain": domain,
                     "backend": {"room": {"name": room}},
-                    "paths": [{"path": "/", "pathType": "prefix", "targetPort": port}],
+                    "paths": [
+                        {
+                            "path": _parse_route_path(path),
+                            "pathType": "prefix",
+                            **target,
+                        }
+                    ],
                 }
             )
         else:
@@ -219,6 +351,34 @@ async def route_update(
             help="Published port to route to",
         ),
     ] = None,
+    path: Annotated[
+        Optional[str],
+        typer.Option("--path", help="Public URL path to expose"),
+    ] = None,
+    content_path: Annotated[
+        Optional[str],
+        typer.Option(
+            "--content-path",
+            "--room-path",
+            help="Room storage subpath to serve directly",
+        ),
+    ] = None,
+    cors: Annotated[
+        Optional[str],
+        typer.Option("--cors", help="CORS rules as a JSON array"),
+    ] = None,
+    index: Annotated[
+        Optional[bool],
+        typer.Option("--index/--no-index", help="Serve index.html for directories"),
+    ] = None,
+    iap: Annotated[
+        Optional[bool],
+        typer.Option("--iap/--no-iap", help="Require identity-aware proxy access"),
+    ] = None,
+    compression: Annotated[
+        Optional[str],
+        typer.Option("--compression", help="brotli, gzip, or none"),
+    ] = None,
     annotations: Annotated[
         Optional[str],
         typer.Option(
@@ -238,6 +398,19 @@ async def route_update(
         else:
             room = resolve_room(room)
             parsed_annotations = _parse_annotations(annotations)
+            parsed_cors = _parse_cors(cors)
+            parsed_compression = _parse_compression(compression)
+            content_options = _content_options_supplied(
+                content_path=content_path,
+                cors=cors,
+                index=index,
+                iap=iap,
+                compression=compression,
+            )
+            if port is not None and content_options:
+                raise typer.BadParameter(
+                    "--port cannot be combined with room content options"
+                )
             try:
                 route = await client.get_route(project_id=project_id, domain=domain)
             except (ClientResponseError, ValidationErrorResponse) as exc:
@@ -250,18 +423,105 @@ async def route_update(
                     raise typer.Exit(code=1)
                 raise
             room = room or route.room_name
-            port = port or route.port
+            if room == "":
+                raise typer.BadParameter("Provide --room for a room route")
             parsed_annotations = (
                 parsed_annotations
                 if parsed_annotations is not None
                 else route.annotations
             )
+            current_path = route.spec.paths[0] if route.spec.paths else None
+            route_path = (
+                _parse_route_path(path)
+                if path is not None
+                else current_path.path
+                if current_path is not None
+                else "/"
+            )
+            if port is not None:
+                target: dict[str, object] = {"targetPort": port}
+                strip_prefix = (
+                    current_path.stripPrefix if current_path is not None else False
+                )
+            elif content_options:
+                current_content = (
+                    current_path.targetContent if current_path is not None else None
+                )
+                if content_path is None and current_content is None:
+                    raise typer.BadParameter(
+                        "Provide --content-path when using room content options"
+                    )
+                target = {
+                    "targetContent": RouteContentSpec(
+                        subpath=(
+                            content_path
+                            if content_path is not None
+                            else current_content.subpath
+                            if current_content is not None
+                            else ""
+                        ),
+                        cors=(
+                            parsed_cors
+                            if parsed_cors is not None
+                            else current_content.cors
+                            if current_content is not None
+                            else []
+                        ),
+                        index=(
+                            index
+                            if index is not None
+                            else current_content.index
+                            if current_content is not None
+                            else False
+                        ),
+                        iap=(
+                            iap
+                            if iap is not None
+                            else current_content.iap
+                            if current_content is not None
+                            else False
+                        ),
+                        compression=(
+                            parsed_compression
+                            if parsed_compression is not None
+                            else current_content.compression
+                            if current_content is not None
+                            else "brotli"
+                        ),
+                    )
+                }
+                strip_prefix = False
+            else:
+                if current_path is None:
+                    raise typer.BadParameter(
+                        "Provide --port or --content-path for a room route"
+                    )
+                if current_path.targetPort is not None:
+                    target = {"targetPort": current_path.targetPort}
+                elif current_path.targetContent is not None:
+                    target = {"targetContent": current_path.targetContent}
+                else:
+                    raise typer.BadParameter(
+                        "Provide --port or --content-path for a room route"
+                    )
+                strip_prefix = current_path.stripPrefix
+            paths = [
+                {
+                    "path": route_path,
+                    "pathType": (
+                        current_path.pathType if current_path is not None else "prefix"
+                    ),
+                    "stripPrefix": strip_prefix,
+                    **target,
+                },
+                *[item.model_dump(mode="python") for item in route.spec.paths[1:]],
+            ]
             spec = RouteSpec.model_validate(
                 {
                     "metadata": {"name": domain, "annotations": parsed_annotations},
                     "domain": domain,
                     "backend": {"room": {"name": room}},
-                    "paths": [{"path": "/", "pathType": "prefix", "targetPort": port}],
+                    "paths": paths,
                 }
             )
 
@@ -353,17 +613,16 @@ async def route_list(
             print({"routes": [route.model_dump(mode="json") for route in routes]})
         else:
             print_json_table(
-                [
-                    {
-                        "domain": route.domain,
-                        "backend": route.spec.room_name or route.spec.agent_name or "",
-                        "port": route.port,
-                    }
-                    for route in routes
-                ],
+                [_route_table_row(route) for route in routes],
                 "domain",
                 "backend",
+                "path",
                 "port",
+                "content_path",
+                "index",
+                "iap",
+                "compression",
+                "cors",
             )
     finally:
         await client.close()
