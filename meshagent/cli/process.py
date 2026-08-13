@@ -2178,6 +2178,7 @@ ThreadStorageBackends = ThreadStorageBackend | str | list[str] | tuple[str, ...]
 DEFAULT_PROCESS_THREAD_STORAGE_BACKENDS: tuple[str, ...] = ("dataset",)
 ContextManagementMode = Literal["auto", "standalone", "none"]
 ProcessToolSearchMode = Literal["room", "agent", "none"]
+LlmDelegationPolicy = Literal["required", "optional"]
 
 ShellCopyEnvOption = Annotated[
     list[str],
@@ -4701,6 +4702,7 @@ def _build_runtime_agent(
     verbose_dataset: bool = False,
     save_audio_input: bool = False,
     preamble_rule: bool = True,
+    llm_delegation: LlmDelegationPolicy = "optional",
 ):
     builder = _builder_for_runtime(runtime)
     selected_models = (
@@ -4790,6 +4792,7 @@ def _build_runtime_agent(
         builder_kwargs["preamble_rule"] = preamble_rule
         builder_kwargs["websocket_auth"] = websocket_auth
         builder_kwargs["room_token"] = room_token
+        builder_kwargs["llm_delegation"] = llm_delegation
     return builder(**builder_kwargs)
 
 
@@ -5482,6 +5485,7 @@ def build_process_agent(
     verbose_dataset: bool = False,
     save_audio_input: bool = False,
     preamble_rule: bool = True,
+    llm_delegation: LlmDelegationPolicy = "optional",
 ):
     from meshagent.agents import (
         AgentMessageThreadStatusPublisher,
@@ -6108,6 +6112,12 @@ def build_process_agent(
                     connection = await provider.adapter.create_realtime_connection(
                         protocol=protocol,
                         model=resolved_model,
+                        llm_authorization_token=(
+                            start_thread.llm_authorization.token
+                            if start_thread.llm_authorization is not None
+                            and not start_thread.llm_authorization.is_expired()
+                            else None
+                        ),
                     )
                     return AgentRealtimeConnectionInfo(
                         protocol=connection.protocol,
@@ -6936,6 +6946,7 @@ def build_process_agent(
                         turns=turns,
                     )
                 ),
+                llm_delegation=llm_delegation,
             )
             if room is not None:
                 process.register_content_scheme(_room_content_scheme(room=room))
@@ -7194,6 +7205,13 @@ async def join(
         Optional[str],
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
+    llm_delegation: Annotated[
+        LlmDelegationPolicy,
+        typer.Option(
+            "--llm-delegation",
+            help="Require per-turn LLM delegation or allow it when provided.",
+        ),
+    ] = "optional",
     decision_model: DecisionModelOption = None,
     transcription_model: TranscriptionModelOption = (
         DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
@@ -7403,6 +7421,7 @@ async def join(
             require_discovery=require_discovery,
             require_advanced_shell=require_advanced_shell,
             llm_participant=llm_participant,
+            llm_delegation=llm_delegation,
             decision_model=decision_model,
             transcription_model=transcription_model,
             voice=voice,
@@ -7689,6 +7708,13 @@ async def service(
         Optional[str],
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
+    llm_delegation: Annotated[
+        LlmDelegationPolicy,
+        typer.Option(
+            "--llm-delegation",
+            help="Require per-turn LLM delegation or allow it when provided.",
+        ),
+    ] = "optional",
     decision_model: DecisionModelOption = None,
     transcription_model: TranscriptionModelOption = (
         DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
@@ -7865,6 +7891,7 @@ async def service(
             require_discovery=require_discovery,
             require_advanced_shell=require_advanced_shell,
             llm_participant=llm_participant,
+            llm_delegation=llm_delegation,
             decision_model=decision_model,
             transcription_model=transcription_model,
             voice=voice,
@@ -8125,6 +8152,13 @@ async def spec(
         Optional[str],
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
+    llm_delegation: Annotated[
+        LlmDelegationPolicy,
+        typer.Option(
+            "--llm-delegation",
+            help="Require per-turn LLM delegation or allow it when provided.",
+        ),
+    ] = "optional",
     decision_model: DecisionModelOption = None,
     transcription_model: TranscriptionModelOption = (
         DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
@@ -8281,6 +8315,7 @@ async def spec(
             require_discovery=require_discovery,
             require_advanced_shell=require_advanced_shell,
             llm_participant=llm_participant,
+            llm_delegation=llm_delegation,
             decision_model=decision_model,
             transcription_model=transcription_model,
             voice=voice,
@@ -8557,6 +8592,13 @@ async def deploy(
         Optional[str],
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
+    llm_delegation: Annotated[
+        LlmDelegationPolicy,
+        typer.Option(
+            "--llm-delegation",
+            help="Require per-turn LLM delegation or allow it when provided.",
+        ),
+    ] = "optional",
     decision_model: DecisionModelOption = None,
     transcription_model: TranscriptionModelOption = (
         DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
@@ -8716,6 +8758,7 @@ async def deploy(
             require_discovery=require_discovery,
             require_advanced_shell=require_advanced_shell,
             llm_participant=llm_participant,
+            llm_delegation=llm_delegation,
             decision_model=decision_model,
             transcription_model=transcription_model,
             voice=voice,
@@ -11061,6 +11104,13 @@ async def run(
         Optional[str],
         typer.Option(..., help="Delegate LLM interactions to a remote participant"),
     ] = None,
+    llm_delegation: Annotated[
+        LlmDelegationPolicy,
+        typer.Option(
+            "--llm-delegation",
+            help="Require per-turn LLM delegation or allow it when provided.",
+        ),
+    ] = "optional",
     decision_model: DecisionModelOption = None,
     transcription_model: TranscriptionModelOption = (
         DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL
@@ -11375,6 +11425,7 @@ async def run(
             require_discovery=require_discovery,
             require_advanced_shell=require_advanced_shell,
             llm_participant=llm_participant,
+            llm_delegation=llm_delegation,
             decision_model=decision_model,
             transcription_model=transcription_model,
             voice=voice,
