@@ -4,7 +4,7 @@ import types
 
 import pytest
 
-from meshagent.api import RoomException
+from meshagent.api import RoomDisabledError, RoomException
 from meshagent.agents import channel_process
 from meshagent.cli import async_typer
 from meshagent.cli import cli
@@ -131,6 +131,26 @@ def test_app_prints_room_exception_without_traceback(capsys) -> None:
     assert exc_info.value.code == 1
     captured = capsys.readouterr()
     assert captured.err == "roomserver failed\n"
+    assert captured.out == ""
+
+
+def test_app_prints_disabled_room_message_and_exits_nonzero(capsys) -> None:
+    app = async_typer.AsyncTyper()
+
+    @app.callback()
+    def app_callback() -> None:
+        pass
+
+    @app.command("connect")
+    def connect_command() -> None:
+        raise RoomDisabledError()
+
+    with pytest.raises(SystemExit) as exc_info:
+        app(["connect"])
+
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.err == "This room is currently disabled.\n"
     assert captured.out == ""
 
 

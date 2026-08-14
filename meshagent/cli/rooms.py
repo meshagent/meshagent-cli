@@ -199,6 +199,7 @@ async def room_create_command(
                     "name": room.name,
                     "metadata": room.metadata,
                     "annotations": room.annotations,
+                    "enabled": room.enabled,
                 },
                 indent=2,
             )
@@ -245,7 +246,11 @@ async def room_update_command(
     project_id: ProjectIdOption,
     id: Annotated[Optional[str], typer.Option(help="Room ID (preferred)")] = None,
     name: Optional[str] = None,
-    new_name: Annotated[str, typer.Option(..., help="New room name")],
+    new_name: Annotated[Optional[str], typer.Option(help="New room name")] = None,
+    enabled: Annotated[
+        Optional[bool],
+        typer.Option("--enabled/--disabled", help="Enable or disable the room"),
+    ] = None,
     annotations: Annotated[
         Optional[str],
         typer.Option(
@@ -255,7 +260,7 @@ async def room_update_command(
     ] = None,
 ):
     """
-    Update a room's name (ID is preferred; name will be resolved to ID if needed).
+    Update a room's name or enabled state (ID is preferred; name will be resolved to ID if needed).
     """
     account_client = await get_client()
     try:
@@ -265,15 +270,23 @@ async def room_update_command(
             account_client, project_id=project_id, room_id=id, room_name=room_name
         )
         annotations_obj = _maybe_parse_string_dict_json("annotations", annotations)
+        if new_name is None and annotations_obj is None and enabled is None:
+            raise RoomException(
+                "Provide at least one of --new-name, --annotations, --enabled, or --disabled."
+            )
+        if new_name is None:
+            current_room = await account_client.get_room(
+                project_id=project_id, name=rid
+            )
+            new_name = current_room.name
 
-        print(
-            f"[bold green]Updating room id={rid} -> name='{new_name}'...[/bold green]"
-        )
+        print(f"[bold green]Updating room id={rid}...[/bold green]")
         await account_client.update_room(
             project_id=project_id,
             room_id=rid,
             name=new_name,
             annotations=annotations_obj,
+            enabled=enabled,
         )
         print("[bold cyan]Room updated.[/bold cyan]")
     except RoomException as ex:
@@ -348,13 +361,14 @@ async def room_list_command(
                 "name": r.name,
                 "metadata": r.metadata,
                 "annotations": r.annotations,
+                "enabled": r.enabled,
             }
             for r in rooms
         ]
         if o == "json":
             print(json.dumps(output, indent=2))
         elif output:
-            print_json_table(output, "id", "name")
+            print_json_table(output, "id", "name", "enabled")
         else:
             print("No rooms found.")
     except RoomException as ex:
@@ -392,6 +406,7 @@ async def room_get_command(
                     "name": r.name,
                     "metadata": r.metadata,
                     "annotations": r.annotations,
+                    "enabled": r.enabled,
                 },
                 indent=2,
             )
