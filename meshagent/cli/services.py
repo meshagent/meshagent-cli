@@ -1810,6 +1810,79 @@ async def service_run(
         await my_client.close()
 
 
+async def _set_service_enabled(
+    *,
+    project_id: str | None,
+    service_id: str,
+    room: str | None,
+    enabled: bool,
+) -> None:
+    client = await get_client()
+    try:
+        resolved_project_id = await resolve_project_id(project_id=project_id)
+        scope = _ServiceCommandScope(room_name=room)
+        service = await _get_service_for_show(
+            client=client,
+            project_id=resolved_project_id,
+            scope=scope,
+            identifier=service_id,
+        )
+        record_id = _require_service_record_id(service)
+        await _update_service_in_scope(
+            client=client,
+            project_id=resolved_project_id,
+            scope=scope,
+            service_id=record_id,
+            spec=service.model_copy(update={"enabled": enabled}),
+        )
+        state = "enabled" if enabled else "disabled"
+        print(f"[green]Service {record_id} {state}.[/]")
+    finally:
+        await client.close()
+
+
+@app.async_command("enable")
+async def service_enable(
+    *,
+    project_id: ProjectIdOption,
+    service_id: Annotated[
+        str,
+        typer.Argument(help="Service UUID or metadata name to enable"),
+    ],
+    room: Annotated[
+        Optional[str], typer.Option("--room", help="Room name")
+    ] = os.getenv("MESHAGENT_ROOM"),
+):
+    """Enable a service so it can start and run."""
+    await _set_service_enabled(
+        project_id=project_id,
+        service_id=service_id,
+        room=room,
+        enabled=True,
+    )
+
+
+@app.async_command("disable")
+async def service_disable(
+    *,
+    project_id: ProjectIdOption,
+    service_id: Annotated[
+        str,
+        typer.Argument(help="Service UUID or metadata name to disable"),
+    ],
+    room: Annotated[
+        Optional[str], typer.Option("--room", help="Room name")
+    ] = os.getenv("MESHAGENT_ROOM"),
+):
+    """Disable a service, stopping it and preventing future starts."""
+    await _set_service_enabled(
+        project_id=project_id,
+        service_id=service_id,
+        room=room,
+        enabled=False,
+    )
+
+
 @app.async_command("get")
 async def service_get(
     *,
@@ -1867,6 +1940,7 @@ async def service_list(
                     {
                         "id": svc.id,
                         "name": svc.metadata.name,
+                        "enabled": svc.enabled,
                         "image": svc.container.image
                         if svc.container is not None
                         else None,
@@ -1875,6 +1949,7 @@ async def service_list(
                 ],
                 "id",
                 "name",
+                "enabled",
                 "image",
             )
     finally:
