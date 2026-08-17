@@ -298,6 +298,7 @@ def _service_record(
     id: str,
     name: str,
     service_annotation_id: Optional[str],
+    enabled: bool = True,
 ) -> services.ServiceSpec:
     annotations: dict[str, str] | None = None
     if service_annotation_id is not None:
@@ -306,6 +307,7 @@ def _service_record(
         version="v1",
         kind="Service",
         id=id,
+        enabled=enabled,
         metadata=services.ServiceMetadata(name=name, annotations=annotations),
         ports=[],
         container=None,
@@ -1102,6 +1104,71 @@ async def test_service_update_template_room_prints_only_updated_service_id(
         )
     ]
     assert printed == ["[green]Updated service:[/] room-service-1"]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_service_disable_updates_room_service_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    printed = _capture_prints(monkeypatch)
+    client = _ServiceCommandClient()
+    service_id = "550e8400-e29b-41d4-a716-446655440000"
+    client.room_services = [
+        _service_record(
+            id=service_id,
+            name="assistant",
+            service_annotation_id=None,
+        )
+    ]
+    _patch_service_command_runtime(monkeypatch, client=client)
+
+    await services.service_disable(
+        project_id=None,
+        service_id="assistant",
+        room="chatbot3",
+    )
+
+    assert client.get_room_by_name_calls == [("project-1", "chatbot3", "assistant")]
+    assert len(client.update_room_calls) == 1
+    assert client.update_room_calls[0][0:3] == (
+        "project-1",
+        "chatbot3",
+        service_id,
+    )
+    assert client.update_room_calls[0][3].enabled is False
+    assert printed == [f"[green]Service {service_id} disabled.[/]"]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_service_enable_updates_global_service_by_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    printed = _capture_prints(monkeypatch)
+    client = _ServiceCommandClient()
+    service_id = "550e8400-e29b-41d4-a716-446655440000"
+    client.services = [
+        _service_record(
+            id=service_id,
+            name="assistant",
+            service_annotation_id=None,
+            enabled=False,
+        )
+    ]
+    _patch_service_command_runtime(monkeypatch, client=client)
+
+    await services.service_enable(
+        project_id=None,
+        service_id=service_id,
+        room=None,
+    )
+
+    assert client.get_calls == [("project-1", service_id)]
+    assert len(client.update_calls) == 1
+    assert client.update_calls[0][0:2] == ("project-1", service_id)
+    assert client.update_calls[0][2].enabled is True
+    assert printed == [f"[green]Service {service_id} enabled.[/]"]
     assert client.closed is True
 
 

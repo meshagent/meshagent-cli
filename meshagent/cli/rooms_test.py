@@ -20,6 +20,8 @@ class _FakeRoomsClient:
         self.closed = False
         self.list_rooms_page_calls: list[dict[str, object]] = []
         self.create_room_calls: list[dict[str, object]] = []
+        self.update_room_calls: list[dict[str, object]] = []
+        self.get_room_calls: list[dict[str, object]] = []
 
     async def list_rooms_page(
         self,
@@ -70,6 +72,29 @@ class _FakeRoomsClient:
             annotations=annotations or {},
         )
 
+    async def get_room(self, *, project_id: str, name: str) -> Room:
+        self.get_room_calls.append({"project_id": project_id, "name": name})
+        return self.rooms_result[0]
+
+    async def update_room(
+        self,
+        *,
+        project_id: str,
+        room_id: str,
+        name: str,
+        annotations: dict[str, str] | None = None,
+        enabled: bool | None = None,
+    ) -> None:
+        self.update_room_calls.append(
+            {
+                "project_id": project_id,
+                "room_id": room_id,
+                "name": name,
+                "annotations": annotations,
+                "enabled": enabled,
+            }
+        )
+
     async def close(self) -> None:
         self.closed = True
 
@@ -81,6 +106,35 @@ def _sample_room() -> Room:
         metadata={"team": "core"},
         annotations={"meshagent.storage.class": "ephemeral"},
     )
+
+
+@pytest.mark.asyncio
+async def test_room_update_can_disable_without_renaming(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeRoomsClient(rooms_result=[_sample_room()])
+    _patch_room_list_command(monkeypatch, client=client)
+    monkeypatch.setattr(rooms, "print", lambda *args, **kwargs: None)
+
+    await rooms.room_update_command(
+        project_id="project-1",
+        id="room-1",
+        enabled=False,
+    )
+
+    assert client.get_room_calls == [
+        {"project_id": "resolved-project", "name": "room-1"}
+    ]
+    assert client.update_room_calls == [
+        {
+            "project_id": "resolved-project",
+            "room_id": "room-1",
+            "name": "demo",
+            "annotations": None,
+            "enabled": False,
+        }
+    ]
+    assert client.closed is True
 
 
 def _patch_room_list_command(
@@ -179,8 +233,9 @@ def test_route_create_help_mentions_short_domains_and_service_id_annotation() ->
     assert result.exit_code == 0
     normalized_output = " ".join(result.output.split())
     assert "Use a short, DNS-safe domain name" in normalized_output
-    assert "long room-name-derived" in normalized_output
-    assert "domains may be rejected" in normalized_output
+    assert "DNS-safe; long" in normalized_output
+    assert "room-name-derived domains" in normalized_output
+    assert "may be rejected" in normalized_output
     assert "meshagent.service.id" in result.output
 
 
@@ -220,9 +275,10 @@ async def test_room_list_defaults_to_table_output(
                     "name": "demo",
                     "metadata": {"team": "core"},
                     "annotations": {"meshagent.storage.class": "ephemeral"},
+                    "enabled": True,
                 }
             ],
-            ("id", "name"),
+            ("id", "name", "enabled"),
         )
     ]
     assert client.closed is True
@@ -337,6 +393,7 @@ async def test_room_list_json_output_skips_table_printer(
             "name": "demo",
             "metadata": {"team": "core"},
             "annotations": {"meshagent.storage.class": "ephemeral"},
+            "enabled": True,
         }
     ]
 
