@@ -29,6 +29,8 @@ _CONNECTED_TOKEN_ENV_NAMES = (
     "MESHAGENT_TOKEN",
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
+    "GROK_API_KEY",
+    "XAI_API_KEY",
 )
 
 if TYPE_CHECKING:
@@ -500,6 +502,8 @@ async def _build_connected_command_env(
             child_env["MESHAGENT_ROOM"] = room_env.room_name
             child_env["OPENAI_BASE_URL"] = f"{api_url}/openai/v1"
             child_env["ANTHROPIC_BASE_URL"] = f"{api_url}/anthropic"
+            child_env["GROK_BASE_URL"] = f"{api_url}/grok/v1"
+            child_env["XAI_BASE_URL"] = child_env["GROK_BASE_URL"]
             _set_connected_token_environment(
                 child_env=child_env,
                 connected_token=connected_token,
@@ -528,7 +532,8 @@ app = async_typer.AsyncTyper(add_completion=False)
     help=(
         "Connect to a room and run a local command with "
         "MESHAGENT_API_URL, MESHAGENT_PROJECT_ID, MESHAGENT_TOKEN, "
-        "OPENAI_API_KEY, ANTHROPIC_API_KEY, and MESHAGENT_ROOM set by "
+        "OPENAI_API_KEY, ANTHROPIC_API_KEY, GROK_API_KEY, XAI_API_KEY, and "
+        "MESHAGENT_ROOM set by "
         "the default agent template. Use -- before the local command."
     ),
 )
@@ -580,8 +585,9 @@ def _connect_command(
         show_default=True,
         help=(
             "Allowed values: agent, none. agent: MeshAgent sets MESHAGENT_TOKEN, "
-            "OPENAI_API_KEY, and ANTHROPIC_API_KEY to a room-scoped MeshAgent token, "
-            "and sets OPENAI_BASE_URL, ANTHROPIC_BASE_URL, MESHAGENT_API_URL, "
+            "OPENAI_API_KEY, ANTHROPIC_API_KEY, GROK_API_KEY, and XAI_API_KEY to a "
+            "room-scoped MeshAgent token, and sets OPENAI_BASE_URL, "
+            "ANTHROPIC_BASE_URL, GROK_BASE_URL, XAI_BASE_URL, MESHAGENT_API_URL, "
             "MESHAGENT_PROJECT_ID, and MESHAGENT_ROOM for the connected room unless "
             "manually set. Provider base URLs use the project API endpoint. none: "
             "MeshAgent applies no template defaults."

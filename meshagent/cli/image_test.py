@@ -3131,7 +3131,12 @@ async def test_deploy_image_creates_room_service_with_mounts_env_secret_and_toke
     assert env_by_name["MESHAGENT_TOKEN"].token.api.secrets is None
     assert env_by_name["MESHAGENT_TOKEN"].token.api.services is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.role == "agent"
-    for env_name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+    for env_name in (
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GROK_API_KEY",
+        "XAI_API_KEY",
+    ):
         assert env_by_name[env_name].token is not None
         assert env_by_name[env_name].token == env_by_name["MESHAGENT_TOKEN"].token
     assert "restarted_service_id" not in captured
@@ -3208,7 +3213,12 @@ async def test_deploy_image_identity_overrides_env_secret_and_token_identity(
     assert env_by_name["APP_SECRET"].secret == SecretValue(id="secret-1")
     assert env_by_name["MESHAGENT_TOKEN"].token is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.identity == "custom-agent"
-    for env_name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+    for env_name in (
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GROK_API_KEY",
+        "XAI_API_KEY",
+    ):
         assert env_by_name[env_name].token is not None
         assert env_by_name[env_name].token == env_by_name["MESHAGENT_TOKEN"].token
     assert captured["room_client_closed"] is True
@@ -5252,7 +5262,12 @@ async def test_deploy_image_updates_existing_service_route_and_replaces_environm
     assert env_by_name["MESHAGENT_TOKEN"].token.api.admin is not None
     assert env_by_name["MESHAGENT_TOKEN"].token.api.secrets is None
     assert env_by_name["MESHAGENT_TOKEN"].token.api.tunnels is not None
-    for env_name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+    for env_name in (
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GROK_API_KEY",
+        "XAI_API_KEY",
+    ):
         assert env_by_name[env_name].token is not None
         assert env_by_name[env_name].token == env_by_name["MESHAGENT_TOKEN"].token
     assert updated_spec.ports is not None

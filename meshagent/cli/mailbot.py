@@ -395,6 +395,8 @@ def build_mailbot(
                 env["MESHAGENT_TOKEN"] = self.room.protocol.token
                 env["OPENAI_API_KEY"] = self.room.protocol.token
                 env["ANTHROPIC_API_KEY"] = self.room.protocol.token
+                env["GROK_API_KEY"] = self.room.protocol.token
+                env["XAI_API_KEY"] = self.room.protocol.token
 
             if require_shell:
                 if supports_openai_shell:

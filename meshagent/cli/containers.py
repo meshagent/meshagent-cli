@@ -780,12 +780,14 @@ async def run_container(
             "--template",
             help=(
                 "Allowed values: agent, none. agent: MeshAgent mounts room storage "
-                "at /data, sets MESHAGENT_TOKEN, OPENAI_API_KEY, and "
-                "ANTHROPIC_API_KEY to a container-scoped MeshAgent token. agent "
+                "at /data, sets MESHAGENT_TOKEN, OPENAI_API_KEY, "
+                "ANTHROPIC_API_KEY, GROK_API_KEY, and XAI_API_KEY to a "
+                "container-scoped MeshAgent token. agent "
                 "also sets SMTP_PASSWORD to that token, SMTP_USERNAME to the "
                 "container name, SMTP_PORT to 587, SMTP_HOSTNAME from "
                 "MESHAGENT_MAIL_DOMAIN when available, plus OPENAI_BASE_URL, "
-                "ANTHROPIC_BASE_URL, MESHAGENT_API_URL, MESHAGENT_ROOM_URL, "
+                "ANTHROPIC_BASE_URL, GROK_BASE_URL, XAI_BASE_URL, "
+                "MESHAGENT_API_URL, MESHAGENT_ROOM_URL, "
                 "MESHAGENT_ROOM, MESHAGENT_PROJECT_ID, MESHAGENT_SESSION_ID, "
                 "OTEL_ENDPOINT, OTEL_PYTHON_LOG_LEVEL, and MESHAGENT_MAIL_DOMAIN "
                 "from the room runtime when available. Manual env values win. "
