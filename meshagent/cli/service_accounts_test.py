@@ -1,5 +1,6 @@
 import pytest
 
+from meshagent.api.client import ServiceAccountsPage
 from meshagent.cli import service_accounts
 from meshagent.cli.testing import CliRunner
 
@@ -35,18 +36,24 @@ async def test_list_service_accounts_prints_table(
     printed_tables: list[tuple[list[dict[str, object]], tuple[str, ...]]] = []
 
     class _FakeClient:
-        async def list_service_accounts(self, *, project_id: str) -> dict[str, object]:
+        async def list_service_accounts(
+            self, *, project_id: str
+        ) -> ServiceAccountsPage:
             assert project_id == "resolved-project"
-            return {
-                "service_accounts": [
-                    {
-                        "id": "service-account-1",
-                        "name": "worker",
-                        "display_name": "Worker",
-                        "description": "background jobs",
-                    }
-                ]
-            }
+            return ServiceAccountsPage.model_validate(
+                {
+                    "service_accounts": [
+                        {
+                            "id": "service-account-1",
+                            "project_id": "resolved-project",
+                            "key": "worker",
+                            "name": "worker",
+                            "display_name": "Worker",
+                            "description": "background jobs",
+                        }
+                    ]
+                }
+            )
 
         async def close(self) -> None:
             pass
@@ -65,7 +72,7 @@ async def test_list_service_accounts_prints_table(
     monkeypatch.setattr(service_accounts, "get_client", fake_get_client)
     monkeypatch.setattr(service_accounts, "print_json_table", fake_print_json_table)
 
-    await service_accounts.list(project_id="project-1", o="table")
+    await service_accounts.list_service_accounts(project_id="project-1", o="table")
 
     assert printed_tables == [
         (
