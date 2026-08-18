@@ -1360,7 +1360,12 @@ def _ensure_website_llm_token_environment(
     environment = list(spec.container.environment or [])
     default_scope = ApiScope.agent_default()
 
-    for env_name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+    for env_name in (
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GROK_API_KEY",
+        "XAI_API_KEY",
+    ):
         token_value = TokenValue(
             identity=identity,
             api=default_scope,

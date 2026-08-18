@@ -1437,6 +1437,9 @@ def test_build_process_agent_groups_repeated_models_by_provider(
             response_options=None,
             tool_search=None,
             allowed_models=None,
+            provider="openai",
+            base_url=None,
+            mode="websocket",
         ) -> None:
             del api_key
             del client
@@ -1447,9 +1450,11 @@ def test_build_process_agent_groups_repeated_models_by_provider(
             del reasoning_effort
             del response_options
             del tool_search
+            del base_url
+            del mode
             created_adapters.append(
                 {
-                    "provider": "openai",
+                    "provider": provider,
                     "model": model,
                     "allowed_models": allowed_models,
                 }
@@ -1514,7 +1519,13 @@ def test_build_process_agent_groups_repeated_models_by_provider(
     )
 
     agent_cls = process.build_process_agent(
-        model=["gpt-5.6-sol", "gpt-5.4", "claude-opus-4-7", "gpt-realtime"],
+        model=[
+            "gpt-5.6-sol",
+            "gpt-5.4",
+            "claude-opus-4-7",
+            "gpt-realtime",
+            "grok-4.6",
+        ],
         rule=[],
         toolkit=[],
         schema=[],
@@ -1539,6 +1550,11 @@ def test_build_process_agent_groups_repeated_models_by_provider(
             "provider": "anthropic",
             "model": "claude-opus-4-7",
             "allowed_models": ["claude-opus-4-7"],
+        },
+        {
+            "provider": "grok",
+            "model": "grok-4.6",
+            "allowed_models": ["grok-4.6"],
         },
     ]
 
@@ -7075,6 +7091,8 @@ async def test_chatbot_require_advanced_shell_uses_container_toolkit_with_shell_
         "MESHAGENT_TOKEN": "test-token",
         "OPENAI_API_KEY": "test-token",
         "ANTHROPIC_API_KEY": "test-token",
+        "GROK_API_KEY": "test-token",
+        "XAI_API_KEY": "test-token",
     }
 
 
@@ -7124,6 +7142,8 @@ async def test_process_agent_require_advanced_shell_uses_container_toolkit_with_
             "MESHAGENT_TOKEN": "token",
             "OPENAI_API_KEY": "token",
             "ANTHROPIC_API_KEY": "token",
+            "GROK_API_KEY": "token",
+            "XAI_API_KEY": "token",
         }
     finally:
         await agent.stop()

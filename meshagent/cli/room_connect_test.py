@@ -440,6 +440,10 @@ def test_room_connect_runs_command_with_connected_room_env(
     assert captured_env["ANTHROPIC_BASE_URL"] == "https://env.meshagent.test/anthropic"
     assert captured_env["OPENAI_API_KEY"] == "room-jwt"
     assert captured_env["ANTHROPIC_API_KEY"] == "room-jwt"
+    assert captured_env["GROK_BASE_URL"] == "https://env.meshagent.test/grok/v1"
+    assert captured_env["XAI_BASE_URL"] == captured_env["GROK_BASE_URL"]
+    assert captured_env["GROK_API_KEY"] == "room-jwt"
+    assert captured_env["XAI_API_KEY"] == "room-jwt"
 
 
 def test_room_connect_ignores_ambient_participant_token_for_other_room(
@@ -561,13 +565,21 @@ async def test_room_connect_env_satisfies_llm_proxy_docs_samples(
         "OPENAI_API_KEY",
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_API_KEY",
+        "GROK_BASE_URL",
+        "GROK_API_KEY",
+        "XAI_BASE_URL",
+        "XAI_API_KEY",
     }
     assert sample_required_env <= child_env.keys()
     assert child_env["MESHAGENT_TOKEN"] == "room-jwt"
     assert child_env["OPENAI_API_KEY"] == child_env["MESHAGENT_TOKEN"]
     assert child_env["ANTHROPIC_API_KEY"] == child_env["MESHAGENT_TOKEN"]
+    assert child_env["GROK_API_KEY"] == child_env["MESHAGENT_TOKEN"]
+    assert child_env["XAI_API_KEY"] == child_env["MESHAGENT_TOKEN"]
     assert child_env["OPENAI_BASE_URL"] == "https://env.meshagent.test/openai/v1"
     assert child_env["ANTHROPIC_BASE_URL"] == "https://env.meshagent.test/anthropic"
+    assert child_env["GROK_BASE_URL"] == "https://env.meshagent.test/grok/v1"
+    assert child_env["XAI_BASE_URL"] == child_env["GROK_BASE_URL"]
 
 
 @pytest.mark.asyncio

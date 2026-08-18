@@ -3472,6 +3472,8 @@ def _provider_name_for_model(model: str) -> str:
         return "openai-realtime"
     if model.startswith("claude-"):
         return "anthropic"
+    if model.startswith("grok-"):
+        return "grok"
     return "openai"
 
 
@@ -4325,7 +4327,7 @@ def _format_model_list(
 
 
 def _supports_openai_responses_builtin_tools(*, model: str) -> bool:
-    return _provider_name_for_model(model) == "openai"
+    return _provider_name_for_model(model) in {"openai", "grok"}
 
 
 def _supports_anthropic_builtin_tools(*, model: str) -> bool:
@@ -4338,7 +4340,8 @@ def _has_openai_responses_provider(
     if llm_participant is not None:
         return False
     return any(
-        spec.backend == "llm" and spec.provider == "openai" for spec in model_specs
+        spec.backend == "llm" and spec.provider in {"openai", "grok"}
+        for spec in model_specs
     )
 
 
@@ -4353,6 +4356,16 @@ def _build_decision_llm_adapter(
         return AnthropicOpenAIResponsesStreamAdapter(
             model=decision_model,
             api_key=api_key,
+            log_requests=log_llm_requests,
+        )
+
+    if decision_model.startswith("grok-"):
+        return OpenAIResponsesAdapter(
+            model=decision_model,
+            provider="grok",
+            base_url=os.getenv("GROK_BASE_URL"),
+            api_key=api_key,
+            mode="request",
             log_requests=log_llm_requests,
         )
 
@@ -4860,6 +4873,8 @@ def _build_shell_tool_env(
         env["MESHAGENT_TOKEN"] = room.protocol.token
         env["OPENAI_API_KEY"] = room.protocol.token
         env["ANTHROPIC_API_KEY"] = room.protocol.token
+        env["GROK_API_KEY"] = room.protocol.token
+        env["XAI_API_KEY"] = room.protocol.token
     return env
 
 
@@ -5064,9 +5079,13 @@ def build_chatbot(
             if resolved_decision_model is None:
                 resolved_decision_model = _DEFAULT_OPENAI_REALTIME_DECISION_MODEL
         else:
+            is_grok_model = model.startswith("grok-")
             llm_adapter = OpenAIResponsesAdapter(
                 model=model,
+                provider="grok" if is_grok_model else "openai",
+                base_url=os.getenv("GROK_BASE_URL") if is_grok_model else None,
                 api_key=api_key,
+                mode="request" if is_grok_model else "websocket",
                 log_requests=log_llm_requests,
             )
 
@@ -5702,6 +5721,7 @@ def build_process_agent(
         openai_models: list[str] = []
         realtime_models: list[str] = []
         anthropic_models: list[str] = []
+        grok_models: list[str] = []
         provider_order: list[str] = []
         for selected_spec in llm_model_specs:
             selected_model = selected_spec.model
@@ -5715,6 +5735,9 @@ def build_process_agent(
             elif provider_name == "anthropic":
                 if selected_model not in anthropic_models:
                     anthropic_models.append(selected_model)
+            elif provider_name == "grok":
+                if selected_model not in grok_models:
+                    grok_models.append(selected_model)
             elif selected_model not in openai_models:
                 openai_models.append(selected_model)
 
@@ -5779,6 +5802,24 @@ def build_process_agent(
                     api_key=api_key,
                     log_requests=log_llm_requests,
                     allowed_models=None if unfiltered_llm_backend else anthropic_models,
+                ),
+            )
+        if grok_models:
+            providers_by_name["grok"] = LLMProvider(
+                name="grok",
+                adapter=OpenAIResponsesAdapter(
+                    model=grok_models[0],
+                    provider="grok",
+                    base_url=os.getenv("GROK_BASE_URL"),
+                    api_key=api_key,
+                    mode="request",
+                    log_requests=log_llm_requests,
+                    context_management=context_management,
+                    compaction_threshold=compaction_threshold,
+                    max_output_tokens=max_output_tokens,
+                    reasoning_effort=reasoning_effort,
+                    tool_search="server" if tool_search != "none" else None,
+                    allowed_models=None if unfiltered_llm_backend else grok_models,
                 ),
             )
         for provider_name in provider_order:

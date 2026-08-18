@@ -1471,6 +1471,8 @@ def _build_shell_tool_env(
         env["MESHAGENT_TOKEN"] = room.protocol.token
         env["OPENAI_API_KEY"] = room.protocol.token
         env["ANTHROPIC_API_KEY"] = room.protocol.token
+        env["GROK_API_KEY"] = room.protocol.token
+        env["XAI_API_KEY"] = room.protocol.token
     return env
 
 
