@@ -145,7 +145,7 @@ def _service_account_table_rows(
 
 
 @app.async_command("list", help="List service accounts for a project.")
-async def list(
+async def list_service_accounts(
     *,
     project_id: ProjectIdOption,
     o: OutputFormatOption = "table",
