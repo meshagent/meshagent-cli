@@ -1492,6 +1492,10 @@ def test_build_process_agent_groups_repeated_models_by_provider(
                 }
             )
 
+    class _FakeGrokAdapter(_FakeOpenAIAdapter):
+        def __init__(self, **kwargs) -> None:
+            super().__init__(provider="grok", mode="request", **kwargs)
+
     class _FakeAnthropicAdapter:
         def __init__(
             self,
@@ -1512,6 +1516,7 @@ def test_build_process_agent_groups_repeated_models_by_provider(
             )
 
     monkeypatch.setattr(process, "OpenAIResponsesAdapter", _FakeOpenAIAdapter)
+    monkeypatch.setattr(process, "GrokResponsesAdapter", _FakeGrokAdapter)
     monkeypatch.setattr(process, "OpenAIRealtimeAdapter", _FakeRealtimeAdapter)
     monkeypatch.setattr(
         process,

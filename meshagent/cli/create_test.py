@@ -3568,9 +3568,9 @@ def test_init_creates_flutter_webserver_non_interactively(tmp_path) -> None:
     assert (
         "FROM --platform=${FLUTTER_IMAGE_PLATFORM} ubuntu:24.04 AS build" in dockerfile
     )
-    assert "ARG FLUTTER_VERSION=3.44.6" in dockerfile
+    assert "ARG FLUTTER_VERSION=3.47.0" in dockerfile
     assert (
-        "a6320fd72e9a2690c08e2a6a70874a30cb120dee7c78f49d2c628bd7c9e20525" in dockerfile
+        "26cd99d3d94b1367e6b50535a18aeef0282c10a535bbe3ec493534dcdab75296" in dockerfile
     )
     assert 'PUB_CACHE="${PUB_CACHE:-$ROOT/.pub-cache}"' in install_sh
     assert "command -v flutter" in install_sh
