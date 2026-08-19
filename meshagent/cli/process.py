@@ -3477,6 +3477,14 @@ def _provider_name_for_model(model: str) -> str:
     return "openai"
 
 
+def _grok_base_url() -> str:
+    for name in ("GROK_BASE_URL", "XAI_BASE_URL"):
+        value = os.getenv(name)
+        if value is not None and value.strip() != "":
+            return value.strip()
+    raise ValueError("GROK_BASE_URL or XAI_BASE_URL is required for Grok models")
+
+
 def _normalize_thread_storage_backend(
     thread_storage: str,
 ) -> NormalizedThreadStorageBackend:
@@ -4363,7 +4371,7 @@ def _build_decision_llm_adapter(
         return OpenAIResponsesAdapter(
             model=decision_model,
             provider="grok",
-            base_url=os.getenv("GROK_BASE_URL"),
+            base_url=_grok_base_url(),
             api_key=api_key,
             mode="request",
             log_requests=log_llm_requests,
@@ -5083,7 +5091,7 @@ def build_chatbot(
             llm_adapter = OpenAIResponsesAdapter(
                 model=model,
                 provider="grok" if is_grok_model else "openai",
-                base_url=os.getenv("GROK_BASE_URL") if is_grok_model else None,
+                base_url=_grok_base_url() if is_grok_model else None,
                 api_key=api_key,
                 mode="request" if is_grok_model else "websocket",
                 log_requests=log_llm_requests,
@@ -5810,7 +5818,7 @@ def build_process_agent(
                 adapter=OpenAIResponsesAdapter(
                     model=grok_models[0],
                     provider="grok",
-                    base_url=os.getenv("GROK_BASE_URL"),
+                    base_url=_grok_base_url(),
                     api_key=api_key,
                     mode="request",
                     log_requests=log_llm_requests,

@@ -1420,6 +1420,7 @@ def test_build_process_agent_passes_custom_realtime_transcription_model(
 def test_build_process_agent_groups_repeated_models_by_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("GROK_BASE_URL", "https://grok.example.test/v1")
     created_adapters: list[dict[str, object]] = []
 
     class _FakeOpenAIAdapter:
@@ -1557,6 +1558,23 @@ def test_build_process_agent_groups_repeated_models_by_provider(
             "allowed_models": ["grok-4.6"],
         },
     ]
+
+
+def test_grok_base_url_never_falls_back_to_openai(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://openai.example.test/v1")
+    monkeypatch.delenv("GROK_BASE_URL", raising=False)
+    monkeypatch.delenv("XAI_BASE_URL", raising=False)
+
+    with pytest.raises(
+        ValueError,
+        match="GROK_BASE_URL or XAI_BASE_URL is required for Grok models",
+    ):
+        process._grok_base_url()
+
+    monkeypatch.setenv("XAI_BASE_URL", " https://xai.example.test/v1 ")
+    assert process._grok_base_url() == "https://xai.example.test/v1"
 
 
 def test_build_process_agent_passes_project_header_client_to_openai_adapters(
