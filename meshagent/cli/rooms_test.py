@@ -1,9 +1,10 @@
 import json
+from datetime import datetime, timezone
 
 import pytest
 import typer
 
-from meshagent.api.client import Room, RoomsPage
+from meshagent.api.client import Room, RoomLifecycleEvent, RoomsPage, RoomStatus
 from meshagent.api.participant_token import ApiScope
 from meshagent.cli import async_typer, cli, rooms
 from meshagent.cli.testing import CliRunner
@@ -22,6 +23,8 @@ class _FakeRoomsClient:
         self.create_room_calls: list[dict[str, object]] = []
         self.update_room_calls: list[dict[str, object]] = []
         self.get_room_calls: list[dict[str, object]] = []
+        self.get_room_status_calls: list[dict[str, object]] = []
+        self.list_room_events_calls: list[dict[str, object]] = []
 
     async def list_rooms_page(
         self,
@@ -75,6 +78,36 @@ class _FakeRoomsClient:
     async def get_room(self, *, project_id: str, name: str) -> Room:
         self.get_room_calls.append({"project_id": project_id, "name": name})
         return self.rooms_result[0]
+
+    async def get_room_status(self, *, project_id: str, name: str) -> RoomStatus:
+        self.get_room_status_calls.append({"project_id": project_id, "name": name})
+        return RoomStatus(
+            status="Allocated",
+            allocated_at=datetime(2026, 8, 19, 18, 0, tzinfo=timezone.utc),
+            running_for_seconds=90,
+        )
+
+    async def list_room_events(
+        self,
+        *,
+        project_id: str,
+        name: str,
+        limit: int,
+    ) -> list[RoomLifecycleEvent]:
+        self.list_room_events_calls.append(
+            {"project_id": project_id, "name": name, "limit": limit}
+        )
+        return [
+            RoomLifecycleEvent(
+                id="event-1",
+                room_name=name,
+                session_id="session-1",
+                type="room.lifecycle.started",
+                message="room started",
+                severity="INFO",
+                created_at=datetime(2026, 8, 19, 18, 0, tzinfo=timezone.utc),
+            )
+        ]
 
     async def update_room(
         self,
@@ -441,4 +474,65 @@ async def test_room_list_table_output_handles_empty_results(
     await rooms.room_list_command(project_id="project-1")
 
     assert printed == ["No rooms found."]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_room_status_command_prints_typed_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeRoomsClient(rooms_result=[])
+    printed: list[tuple[list[dict[str, object]], tuple[str, ...]]] = []
+    _patch_room_list_command(monkeypatch, client=client)
+    monkeypatch.setattr(
+        rooms,
+        "print_json_table",
+        lambda records, *cols: printed.append((records, cols)),
+    )
+
+    await rooms.room_status_command("demo", project_id="project-1")
+
+    assert client.get_room_status_calls == [
+        {"project_id": "resolved-project", "name": "demo"}
+    ]
+    assert printed[0][0][0]["status"] == "Allocated"
+    assert printed[0][0][0]["running_for_seconds"] == 90
+    assert printed[0][1] == (
+        "status",
+        "allocated_at",
+        "running_for_seconds",
+    )
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_room_events_command_lists_lifecycle_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeRoomsClient(rooms_result=[])
+    printed: list[tuple[list[dict[str, object]], tuple[str, ...]]] = []
+    _patch_room_list_command(monkeypatch, client=client)
+    monkeypatch.setattr(
+        rooms,
+        "print_json_table",
+        lambda records, *cols: printed.append((records, cols)),
+    )
+
+    await rooms.room_events_command(
+        "demo",
+        project_id="project-1",
+        count=25,
+    )
+
+    assert client.list_room_events_calls == [
+        {"project_id": "resolved-project", "name": "demo", "limit": 25}
+    ]
+    assert printed[0][0][0]["type"] == "room.lifecycle.started"
+    assert printed[0][1] == (
+        "created_at",
+        "type",
+        "session_id",
+        "severity",
+        "message",
+    )
     assert client.closed is True

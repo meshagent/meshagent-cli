@@ -113,9 +113,12 @@ from meshagent.cli.thread_inspect import (
 
 from meshagent.openai import (
     DEFAULT_OPENAI_REALTIME_TRANSCRIPTION_MODEL,
+    GrokResponsesAdapter,
     OpenAIRealtimeAdapter,
     OpenAIResponsesAdapter,
     OpenAIResponsesMCPToolkit,
+    ResponsesProviderCapabilities,
+    responses_provider_capabilities,
 )
 from meshagent.openai.tools.realtime_adapter import (
     DEFAULT_OPENAI_REALTIME_INPUT_FORMAT,
@@ -4334,21 +4337,40 @@ def _format_model_list(
     return "\n".join(lines)
 
 
+def _responses_capabilities_for_model(
+    *, model: str
+) -> ResponsesProviderCapabilities | None:
+    provider = _provider_name_for_model(model)
+    if provider not in {"openai", "grok"}:
+        return None
+    return responses_provider_capabilities(provider)
+
+
 def _supports_openai_responses_builtin_tools(*, model: str) -> bool:
-    return _provider_name_for_model(model) in {"openai", "grok"}
+    return _responses_capabilities_for_model(model=model) is not None
+
+
+def _supports_responses_tool_type(*, model: str, tool_type: str) -> bool:
+    capabilities = _responses_capabilities_for_model(model=model)
+    return capabilities is not None and capabilities.supports_tool_type(tool_type)
 
 
 def _supports_anthropic_builtin_tools(*, model: str) -> bool:
     return _provider_name_for_model(model) == "anthropic"
 
 
-def _has_openai_responses_provider(
-    *, model_specs: list[_ProcessModelSpec], llm_participant: str | None
+def _has_responses_provider_capability(
+    *,
+    model_specs: list[_ProcessModelSpec],
+    llm_participant: str | None,
+    predicate: Callable[[ResponsesProviderCapabilities], bool],
 ) -> bool:
     if llm_participant is not None:
         return False
     return any(
-        spec.backend == "llm" and spec.provider in {"openai", "grok"}
+        spec.backend == "llm"
+        and spec.provider in {"openai", "grok"}
+        and predicate(responses_provider_capabilities(spec.provider))
         for spec in model_specs
     )
 
@@ -4368,12 +4390,10 @@ def _build_decision_llm_adapter(
         )
 
     if decision_model.startswith("grok-"):
-        return OpenAIResponsesAdapter(
+        return GrokResponsesAdapter(
             model=decision_model,
-            provider="grok",
             base_url=_grok_base_url(),
             api_key=api_key,
-            mode="request",
             log_requests=log_llm_requests,
         )
 
@@ -5088,12 +5108,13 @@ def build_chatbot(
                 resolved_decision_model = _DEFAULT_OPENAI_REALTIME_DECISION_MODEL
         else:
             is_grok_model = model.startswith("grok-")
-            llm_adapter = OpenAIResponsesAdapter(
+            adapter_type = (
+                GrokResponsesAdapter if is_grok_model else OpenAIResponsesAdapter
+            )
+            llm_adapter = adapter_type(
                 model=model,
-                provider="grok" if is_grok_model else "openai",
                 base_url=_grok_base_url() if is_grok_model else None,
                 api_key=api_key,
-                mode="request" if is_grok_model else "websocket",
                 log_requests=log_llm_requests,
             )
 
@@ -5669,37 +5690,59 @@ def build_process_agent(
     default_realtime_output_modalities = _default_realtime_output_modalities(
         selected_output_modalities
     )
-    supports_openai_responses_tools = _has_openai_responses_provider(
+    supports_reasoning_effort = _has_responses_provider_capability(
         model_specs=selected_model_specs,
         llm_participant=llm_participant,
+        predicate=lambda capabilities: capabilities.supports_reasoning_effort,
     )
-    if reasoning_effort is not None and not supports_openai_responses_tools:
+    supports_tool_search = _has_responses_provider_capability(
+        model_specs=selected_model_specs,
+        llm_participant=llm_participant,
+        predicate=lambda capabilities: capabilities.supports_tool_type("tool_search"),
+    )
+    supports_image_generation = _has_responses_provider_capability(
+        model_specs=selected_model_specs,
+        llm_participant=llm_participant,
+        predicate=lambda capabilities: capabilities.supports_tool_type(
+            "image_generation"
+        ),
+    )
+    supports_apply_patch = _has_responses_provider_capability(
+        model_specs=selected_model_specs,
+        llm_participant=llm_participant,
+        predicate=lambda capabilities: capabilities.supports_tool_type("apply_patch"),
+    )
+    supports_computer = _has_responses_provider_capability(
+        model_specs=selected_model_specs,
+        llm_participant=llm_participant,
+        predicate=lambda capabilities: capabilities.supports_tool_type("computer"),
+    )
+    if reasoning_effort is not None and not supports_reasoning_effort:
         print(
             "[red]--reasoning-effort is only supported by OpenAI Responses models[/red]"
         )
         raise typer.Exit(1)
-    if tool_search != "none" and not supports_openai_responses_tools:
+    if tool_search != "none" and not supports_tool_search:
         print("[red]--tool-search is only supported by OpenAI Responses models[/red]")
         raise typer.Exit(1)
     base_shell_env = _copy_shell_env_vars(copy_env=shell_copy_env)
     base_shell_env.update(_set_shell_env_vars(set_env=shell_set_env))
     resolved_shell_image = resolve_shell_image(shell_image)
-    if not supports_openai_responses_tools:
-        if require_image_generation:
-            print(
-                "[red]image generation tool is only supported by OpenAI Responses models[/red]"
-            )
-            raise typer.Exit(1)
-        if require_apply_patch:
-            print(
-                "[red]apply patch tool is only supported by OpenAI Responses models[/red]"
-            )
-            raise typer.Exit(1)
-        if computer_use or require_computer_use:
-            print(
-                "[red]computer use tool is currently only supported by OpenAI Responses models[/red]"
-            )
-            raise typer.Exit(1)
+    if require_image_generation and not supports_image_generation:
+        print(
+            "[red]image generation tool is only supported by OpenAI Responses models[/red]"
+        )
+        raise typer.Exit(1)
+    if require_apply_patch and not supports_apply_patch:
+        print(
+            "[red]apply patch tool is only supported by OpenAI Responses models[/red]"
+        )
+        raise typer.Exit(1)
+    if (computer_use or require_computer_use) and not supports_computer:
+        print(
+            "[red]computer use tool is currently only supported by OpenAI Responses models[/red]"
+        )
+        raise typer.Exit(1)
 
     memory_selection: Optional[tuple[str, Optional[list[str]]]] = None
     if use_memory is not None:
@@ -5815,12 +5858,10 @@ def build_process_agent(
         if grok_models:
             providers_by_name["grok"] = LLMProvider(
                 name="grok",
-                adapter=OpenAIResponsesAdapter(
+                adapter=GrokResponsesAdapter(
                     model=grok_models[0],
-                    provider="grok",
                     base_url=_grok_base_url(),
                     api_key=api_key,
-                    mode="request",
                     log_requests=log_llm_requests,
                     context_management=context_management,
                     compaction_threshold=compaction_threshold,
@@ -6535,11 +6576,13 @@ def build_process_agent(
                     add_tool(toolkit_name="script", tool=script_tool)
 
             if require_image_generation:
-                if _supports_openai_responses_builtin_tools(model=model):
+                if _supports_responses_tool_type(
+                    model=model, tool_type="image_generation"
+                ):
                     add_toolkit(self.get_image_generation_toolkit())
 
             if require_apply_patch:
-                if _supports_openai_responses_builtin_tools(model=model):
+                if _supports_responses_tool_type(model=model, tool_type="apply_patch"):
                     add_tool(
                         toolkit_name="apply_patch",
                         tool=ApplyPatchTool(
@@ -6666,8 +6709,8 @@ def build_process_agent(
 
                 add_toolkit(DiscoveryToolkit(room=self.room))
 
-            if require_computer_use and _supports_openai_responses_builtin_tools(
-                model=model
+            if require_computer_use and _supports_responses_tool_type(
+                model=model, tool_type="computer"
             ):
                 from meshagent.agents.images_dataset import ImagesDataset
                 from meshagent.agents.messages import (

@@ -416,3 +416,79 @@ async def room_get_command(
         raise typer.Exit(1)
     finally:
         await account_client.close()
+
+
+@app.async_command("status", help="Show the current allocation status for a room.")
+async def room_status_command(
+    room: Annotated[str, typer.Argument(help="Room name or ID")],
+    *,
+    project_id: ProjectIdOption,
+    o: OutputFormatOption = "table",
+):
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        room_name = resolve_room(room)
+        status = await account_client.get_room_status(
+            project_id=project_id,
+            name=room_name,
+        )
+        output = status.model_dump(mode="json")
+        if o == "json":
+            print(json.dumps(output, indent=2))
+        else:
+            print_json_table(
+                [output],
+                "status",
+                "allocated_at",
+                "running_for_seconds",
+            )
+    except RoomException as ex:
+        print(f"[red]{ex}[/red]")
+        raise typer.Exit(1)
+    finally:
+        await account_client.close()
+
+
+@app.async_command(
+    "events",
+    help="List recent lifecycle events for a room across all sessions.",
+)
+async def room_events_command(
+    room: Annotated[str, typer.Argument(help="Room name or ID")],
+    *,
+    project_id: ProjectIdOption,
+    o: OutputFormatOption = "table",
+    count: Annotated[
+        int,
+        typer.Option("--count", "--limit", help="Max events to return", min=1, max=500),
+    ] = 100,
+):
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        room_name = resolve_room(room)
+        events = await account_client.list_room_events(
+            project_id=project_id,
+            name=room_name,
+            limit=count,
+        )
+        output = [event.model_dump(mode="json") for event in events]
+        if o == "json":
+            print(json.dumps(output, indent=2))
+        elif output:
+            print_json_table(
+                output,
+                "created_at",
+                "type",
+                "session_id",
+                "severity",
+                "message",
+            )
+        else:
+            print("No room lifecycle events found.")
+    except RoomException as ex:
+        print(f"[red]{ex}[/red]")
+        raise typer.Exit(1)
+    finally:
+        await account_client.close()
