@@ -1,6 +1,14 @@
 import pytest
+from datetime import datetime, timezone
 
-from meshagent.api.client import Mailbox, MailboxesPage
+from meshagent.api.client import (
+    Mailbox,
+    MailboxDeliveriesPage,
+    MailboxDelivery,
+    MailboxDeliveryEvent,
+    MailboxDeliveryEventsPage,
+    MailboxesPage,
+)
 from meshagent.cli import async_typer, mailboxes
 from meshagent.cli.testing import CliRunner
 
@@ -21,6 +29,8 @@ class _FakeClient:
         self.list_mailboxes_page_calls: list[dict[str, object]] = []
         self.list_room_mailboxes_calls: list[dict[str, object]] = []
         self.room_mailboxes: list[Mailbox] = []
+        self.delivery_calls: list[dict[str, object]] = []
+        self.delivery_event_calls: list[dict[str, object]] = []
         self.closed = False
 
     async def list_mailboxes_page(self, **kwargs) -> MailboxesPage:
@@ -32,6 +42,43 @@ class _FakeClient:
     async def list_room_mailboxes(self, **kwargs) -> list[Mailbox]:
         self.list_room_mailboxes_calls.append(kwargs)
         return self.room_mailboxes
+
+    async def list_mailbox_deliveries(self, **kwargs) -> MailboxDeliveriesPage:
+        self.delivery_calls.append(kwargs)
+        timestamp = datetime(2026, 8, 21, tzinfo=timezone.utc)
+        return MailboxDeliveriesPage(
+            deliveries=[
+                MailboxDelivery(
+                    id="delivery-1",
+                    submission_id="submission-1",
+                    recipient="person@example.net",
+                    message_id="<message@example.test>",
+                    status="delivered",
+                    submitted_at=timestamp,
+                    status_at=timestamp,
+                )
+            ],
+            total=1,
+        )
+
+    async def list_mailbox_delivery_events(self, **kwargs) -> MailboxDeliveryEventsPage:
+        self.delivery_event_calls.append(kwargs)
+        timestamp = datetime(2026, 8, 21, tzinfo=timezone.utc)
+        return MailboxDeliveryEventsPage(
+            events=[
+                MailboxDeliveryEvent(
+                    id="event-1",
+                    delivery_id="delivery-1",
+                    provider="mailgun",
+                    provider_event_id="mailgun-event-1",
+                    event_type="delivered",
+                    status="delivered",
+                    occurred_at=timestamp,
+                    received_at=timestamp,
+                )
+            ],
+            total=1,
+        )
 
     async def close(self) -> None:
         self.closed = True
@@ -149,4 +196,70 @@ async def test_mailbox_list_room_preserves_offset_pagination(
         }
     ]
     assert client.list_mailboxes_page_calls == []
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_mailbox_deliveries_outputs_status_and_passes_filters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeClient()
+    printed: list[dict[str, object]] = []
+    _patch_mailbox_list(monkeypatch, client=client)
+    monkeypatch.setattr(mailboxes, "print", lambda value: printed.append(value))
+
+    await mailboxes.mailbox_deliveries(
+        project_id="project-1",
+        address="alerts@example.test",
+        status="delivered",
+        recipient="person",
+        message_id="<message@example.test>",
+        count=25,
+        offset=10,
+        o="json",
+    )
+
+    assert client.delivery_calls == [
+        {
+            "project_id": "project-1",
+            "address": "alerts@example.test",
+            "status": "delivered",
+            "recipient": "person",
+            "message_id": "<message@example.test>",
+            "count": 25,
+            "offset": 10,
+        }
+    ]
+    assert printed[0]["deliveries"][0]["status"] == "delivered"
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_mailbox_delivery_events_outputs_chronological_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeClient()
+    printed: list[dict[str, object]] = []
+    _patch_mailbox_list(monkeypatch, client=client)
+    monkeypatch.setattr(mailboxes, "print", lambda value: printed.append(value))
+
+    await mailboxes.mailbox_delivery_events(
+        project_id="project-1",
+        address="alerts@example.test",
+        delivery_id="delivery-1",
+        count=50,
+        offset=0,
+        o="json",
+    )
+
+    assert client.delivery_event_calls == [
+        {
+            "project_id": "project-1",
+            "address": "alerts@example.test",
+            "delivery_id": "delivery-1",
+            "count": 50,
+            "offset": 0,
+        }
+    ]
+    assert printed[0]["events"][0]["event_type"] == "delivered"
     assert client.closed is True
