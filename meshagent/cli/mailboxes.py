@@ -8,7 +8,11 @@ import typer
 from aiohttp import ClientResponseError
 from rich import print
 
-from meshagent.api.client import Mailbox, ValidationErrorResponse
+from meshagent.api.client import (
+    Mailbox,
+    MailboxDeliveryStatus,
+    ValidationErrorResponse,
+)
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import ProjectIdOption, OutputFormatOption
 from meshagent.cli.helper import (
@@ -255,6 +259,120 @@ async def mailbox_get(
                 raise typer.Exit(code=1)
             raise
         print(mb.model_dump(mode="json"))
+    finally:
+        await client.close()
+
+
+@app.async_command("deliveries")
+async def mailbox_deliveries(
+    *,
+    project_id: ProjectIdOption,
+    address: Annotated[str, typer.Argument(help="Mailbox address")],
+    status: Annotated[
+        Optional[MailboxDeliveryStatus],
+        typer.Option("--status", help="Filter by current delivery status"),
+    ] = None,
+    recipient: Annotated[
+        Optional[str], typer.Option("--recipient", help="Recipient contains filter")
+    ] = None,
+    message_id: Annotated[
+        Optional[str], typer.Option("--message-id", help="Exact Message-ID filter")
+    ] = None,
+    count: Annotated[
+        int, typer.Option("--count", help="Maximum rows to return", min=1)
+    ] = 100,
+    offset: Annotated[
+        int, typer.Option("--offset", help="Row offset for pagination", min=0)
+    ] = 0,
+    o: OutputFormatOption = "table",
+):
+    """List outbound deliveries for a mailbox, newest submission first."""
+    client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id)
+        page = await client.list_mailbox_deliveries(
+            project_id=project_id,
+            address=address,
+            status=status,
+            recipient=recipient,
+            message_id=message_id,
+            count=count,
+            offset=offset,
+        )
+        rows = [delivery.model_dump(mode="json") for delivery in page.deliveries]
+        if o == "json":
+            print({"deliveries": rows, "total": page.total})
+        else:
+            print_json_table(
+                rows,
+                "submitted_at",
+                "recipient",
+                "status",
+                "message_id",
+                "id",
+            )
+    finally:
+        await client.close()
+
+
+@app.async_command("delivery")
+async def mailbox_delivery(
+    *,
+    project_id: ProjectIdOption,
+    address: Annotated[str, typer.Argument(help="Mailbox address")],
+    delivery_id: Annotated[str, typer.Argument(help="Delivery ID")],
+):
+    """Get the current status and SMTP details for a delivery."""
+    client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id)
+        delivery = await client.get_mailbox_delivery(
+            project_id=project_id,
+            address=address,
+            delivery_id=delivery_id,
+        )
+        print(delivery.model_dump(mode="json"))
+    finally:
+        await client.close()
+
+
+@app.async_command("delivery-events")
+async def mailbox_delivery_events(
+    *,
+    project_id: ProjectIdOption,
+    address: Annotated[str, typer.Argument(help="Mailbox address")],
+    delivery_id: Annotated[str, typer.Argument(help="Delivery ID")],
+    count: Annotated[
+        int, typer.Option("--count", help="Maximum rows to return", min=1)
+    ] = 100,
+    offset: Annotated[
+        int, typer.Option("--offset", help="Row offset for pagination", min=0)
+    ] = 0,
+    o: OutputFormatOption = "table",
+):
+    """List a delivery's events in chronological order."""
+    client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id)
+        page = await client.list_mailbox_delivery_events(
+            project_id=project_id,
+            address=address,
+            delivery_id=delivery_id,
+            count=count,
+            offset=offset,
+        )
+        rows = [event.model_dump(mode="json") for event in page.events]
+        if o == "json":
+            print({"events": rows, "total": page.total})
+        else:
+            print_json_table(
+                rows,
+                "occurred_at",
+                "event_type",
+                "smtp_code",
+                "description",
+                "attempt_no",
+            )
     finally:
         await client.close()
 
