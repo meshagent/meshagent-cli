@@ -58,13 +58,17 @@ class _FakeRoomClient:
 
 
 class _FakeAccountClient:
-    def __init__(self) -> None:
+    def __init__(
+        self, *, requested_room: str = "jesse", canonical_room: str | None = None
+    ) -> None:
         self.closed = False
+        self.requested_room = requested_room
+        self.canonical_room = canonical_room or requested_room
 
     async def connect_room(self, *, project_id: str, room: str) -> SimpleNamespace:
         assert project_id == "project-1"
-        assert room == "jesse"
-        return SimpleNamespace(jwt="token")
+        assert room == self.requested_room
+        return SimpleNamespace(jwt="token", room_name=self.canonical_room)
 
     async def close(self) -> None:
         self.closed = True
@@ -75,6 +79,7 @@ def _patch_storage_command(
     *,
     storage_client: _FakeStorageClient,
     account_client: _FakeAccountClient,
+    websocket_urls: list[str] | None = None,
 ) -> None:
     monkeypatch.setattr(storage, "print", lambda *args, **kwargs: None)
     monkeypatch.setattr(storage, "resolve_room", lambda room: room)
@@ -89,12 +94,49 @@ def _patch_storage_command(
     monkeypatch.setattr(storage, "get_client", fake_get_client)
     monkeypatch.setattr(storage, "resolve_project_id", fake_resolve_project_id)
     monkeypatch.setattr(storage, "websocket_room_url", lambda room_name: room_name)
-    monkeypatch.setattr(storage, "WebSocketClientProtocol", lambda url, token: None)
+
+    class _FakeProtocol:
+        def __init__(self, *, url: str, token: str) -> None:
+            del token
+            if websocket_urls is not None:
+                websocket_urls.append(url)
+
+        def create_factory(self) -> object:
+            return object()
+
+    monkeypatch.setattr(storage, "WebSocketClientProtocol", _FakeProtocol)
     monkeypatch.setattr(
         storage,
         "RoomClient",
-        lambda protocol: _FakeRoomClient(storage_client=storage_client),
+        lambda protocol_factory: _FakeRoomClient(storage_client=storage_client),
     )
+
+
+@pytest.mark.asyncio
+async def test_storage_uses_canonical_room_name_for_websocket_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage_client = _FakeStorageClient()
+    storage_client.exists_paths.add("notes.txt")
+    account_client = _FakeAccountClient(
+        requested_room="xResies", canonical_room="xresies"
+    )
+    websocket_urls: list[str] = []
+    _patch_storage_command(
+        monkeypatch,
+        storage_client=storage_client,
+        account_client=account_client,
+        websocket_urls=websocket_urls,
+    )
+
+    await storage.storage_exists_command(
+        project_id=None,
+        room="xResies",
+        path="room://notes.txt",
+    )
+
+    assert websocket_urls == ["xresies"]
+    assert account_client.closed is True
 
 
 @pytest.mark.asyncio
