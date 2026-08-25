@@ -80,7 +80,7 @@ async def storage_exists_command(
         print("[bold green]Connecting to room...[/bold green]")
         async with RoomClient(
             protocol_factory=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room),
+                url=websocket_room_url(room_name=connection.room_name),
                 token=connection.jwt,
             ).create_factory()
         ) as client:
@@ -140,7 +140,7 @@ async def storage_cp_command(
             print("[bold green]Connecting to room...[/bold green]")
             client = RoomClient(
                 protocol_factory=WebSocketClientProtocol(
-                    url=websocket_room_url(room_name=room),
+                    url=websocket_room_url(room_name=connection.room_name),
                     token=connection.jwt,
                 ).create_factory()
             )
@@ -358,7 +358,7 @@ async def storage_get_command(
         print("[bold green]Connecting to room...[/bold green]")
         client = RoomClient(
             protocol_factory=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room),
+                url=websocket_room_url(room_name=connection.room_name),
                 token=connection.jwt,
             ).create_factory()
         )
@@ -457,7 +457,7 @@ async def storage_rm_command(
             print("[bold green]Connecting to room...[/bold green]")
             client = RoomClient(
                 protocol_factory=WebSocketClientProtocol(
-                    url=websocket_room_url(room_name=room),
+                    url=websocket_room_url(room_name=connection.room_name),
                     token=connection.jwt,
                 ).create_factory()
             )
@@ -652,7 +652,7 @@ async def storage_ls_command(
 
         client = RoomClient(
             protocol_factory=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=room),
+                url=websocket_room_url(room_name=connection.room_name),
                 token=connection.jwt,
             ).create_factory()
         )
