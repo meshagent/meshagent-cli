@@ -418,13 +418,24 @@ async def room_get_command(
         await account_client.close()
 
 
-@app.async_command("status", help="Show the current allocation status for a room.")
+@app.async_command(
+    "status",
+    help="Show whether a room currently has an allocated room server.",
+)
 async def room_status_command(
     room: Annotated[str, typer.Argument(help="Room name or ID")],
     *,
     project_id: ProjectIdOption,
     o: OutputFormatOption = "table",
 ):
+    """
+    Show the room's current control-plane allocation state.
+
+    This reports whether a room server is currently allocated and, when
+    allocated, when it was allocated and how long it has been running. It does
+    not report service or container health; use `rooms events` for lifecycle
+    history.
+    """
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
@@ -452,7 +463,7 @@ async def room_status_command(
 
 @app.async_command(
     "events",
-    help="List recent lifecycle events for a room across all sessions.",
+    help="List recent room lifecycle history across all sessions.",
 )
 async def room_events_command(
     room: Annotated[str, typer.Argument(help="Room name or ID")],
@@ -464,6 +475,13 @@ async def room_events_command(
         typer.Option("--count", "--limit", help="Max events to return", min=1, max=500),
     ] = 100,
 ):
+    """
+    List recent allocation, startup, shutdown, and failure events for a room.
+
+    Events are historical observability records ordered newest first and may
+    span multiple room sessions. Use `rooms status` for the current allocation
+    state.
+    """
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
