@@ -116,8 +116,6 @@ async def test_room_build_operation_fails_immediately_on_disconnect(
             client=client,
             operation=operation(),
             operation_name="waiting for the image build and publish",
-            timeout=60,
-            timeout_message="timed out waiting for image build",
         )
     )
     await asyncio.sleep(0)
@@ -2492,7 +2490,8 @@ async def test_wait_for_deployed_service_live_streams_logs_and_checks_service_li
         ServiceRuntimeState(
             service_id="service-1",
             state="running",
-            container_id="container-1",
+            container_id="container-2",
+            restart_count=3,
             status=ServiceRuntimeStatus(
                 ports=[
                     ServicePortRuntimeState(
@@ -2506,7 +2505,8 @@ async def test_wait_for_deployed_service_live_streams_logs_and_checks_service_li
         ServiceRuntimeState(
             service_id="service-1",
             state="running",
-            container_id="container-1",
+            container_id="container-2",
+            restart_count=3,
             status=ServiceRuntimeStatus(
                 ports=[
                     ServicePortRuntimeState(
@@ -2518,7 +2518,6 @@ async def test_wait_for_deployed_service_live_streams_logs_and_checks_service_li
             ),
         ),
     ]
-    fake_active_logs = SimpleNamespace(container_id="container-1")
 
     class _FakeServices:
         def __init__(self, runtime_states: list[ServiceRuntimeState]) -> None:
@@ -2540,7 +2539,7 @@ async def test_wait_for_deployed_service_live_streams_logs_and_checks_service_li
     def _fake_start_deploy_log_stream(*, client, container_id: str, log_handler=None):
         del client, log_handler
         captured["started_logs"].append(container_id)
-        return fake_active_logs
+        return SimpleNamespace(container_id=container_id)
 
     async def _fake_stop_deploy_log_stream(*, active_logs) -> None:
         captured["stopped_logs"].append(active_logs)
@@ -2569,8 +2568,11 @@ async def test_wait_for_deployed_service_live_streams_logs_and_checks_service_li
         liveness_path="/ready",
     )
 
-    assert captured["started_logs"] == ["container-1"]
-    assert captured["stopped_logs"] == [fake_active_logs]
+    assert captured["started_logs"] == ["container-1", "container-2"]
+    assert [active.container_id for active in captured["stopped_logs"]] == [
+        "container-1",
+        "container-2",
+    ]
     assert any("Service liveness is ready" in message for message in captured["prints"])
 
 

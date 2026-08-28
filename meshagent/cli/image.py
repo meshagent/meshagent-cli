@@ -125,8 +125,6 @@ class _DeployDomainPromptHandler(Protocol):
 
 app = async_typer.AsyncTyper(help="Pack local directories as OCI images")
 _BUILD_CONTEXT_CHUNK_SIZE = 1024 * 1024
-_BUILD_RESULT_TIMEOUT_SECONDS = 30.0
-_BUILD_WAIT_TIMEOUT_SECONDS = 600.0
 _CLIENT_CLOSE_TIMEOUT_SECONDS = 2.0
 _OPERATION_CANCEL_TIMEOUT_SECONDS = 1.0
 _DEFAULT_CONTEXT_MOUNT_PATH = "/context"
@@ -3830,7 +3828,10 @@ async def _wait_for_deployed_service_live(
                 await asyncio.sleep(_DEPLOY_WAIT_POLL_INTERVAL_SECONDS)
                 continue
 
-            if state.restart_count > expected_restart_count:
+            if (
+                state.restart_count > expected_restart_count
+                and state.last_exit_code not in (None, 0)
+            ):
                 if status_handler is None:
                     _print_service_exited_before_live(
                         service_name=service_name,
@@ -3865,23 +3866,17 @@ async def _wait_for_deployed_service_live(
                 and container_id is not None
                 and container_id != active_logs.container_id
             ):
-                if status_handler is None:
-                    _print_service_exited_before_live(
-                        service_name=service_name,
-                        service_id=service_id,
-                        exit_code=state.last_exit_code,
-                    )
-                else:
-                    exit_code_text = (
-                        str(state.last_exit_code)
-                        if state.last_exit_code is not None
-                        else "unknown"
-                    )
-                    await status_handler(
-                        "Service container changed before the service was live: "
-                        f"{service_name} ({service_id}), exit code {exit_code_text}"
-                    )
-                raise typer.Exit(code=1)
+                await _stop_deploy_log_stream(active_logs=active_logs)
+                await _emit_deploy_status(
+                    status_handler,
+                    rich_message=f"[cyan]Tailing container logs:[/] {container_id}",
+                    plain_message=f"Tailing container logs: {container_id}",
+                )
+                active_logs = _start_deploy_log_stream(
+                    client=client,
+                    container_id=container_id,
+                    log_handler=log_handler,
+                )
 
             if container_id is None or state.state != "running":
                 await asyncio.sleep(_DEPLOY_WAIT_POLL_INTERVAL_SECONDS)
@@ -3991,8 +3986,6 @@ async def _await_room_build_operation(
     client: RoomClient,
     operation: Awaitable[_T],
     operation_name: str,
-    timeout: float,
-    timeout_message: str,
 ) -> _T:
     loop = asyncio.get_running_loop()
     disconnected = loop.create_future()
@@ -4008,19 +4001,16 @@ async def _await_room_build_operation(
     try:
         done, _ = await asyncio.wait(
             {operation_task, disconnected},
-            timeout=timeout,
             return_when=asyncio.FIRST_COMPLETED,
         )
         if operation_task in done:
             return await operation_task
-        if disconnected in done:
-            reason = disconnected.result()
-            detail = f": {reason}" if reason else ""
-            raise RuntimeError(
-                f"room connection lost while {operation_name}{detail}; "
-                "the in-flight operation cannot be resumed safely. Retry the deploy."
-            )
-        raise RuntimeError(timeout_message)
+        reason = disconnected.result()
+        detail = f": {reason}" if reason else ""
+        raise RuntimeError(
+            f"room connection lost while {operation_name}{detail}; "
+            "the in-flight operation cannot be resumed safely. Retry the deploy."
+        )
     finally:
         if observes_disconnects:
             client.off("disconnected", on_disconnected)
@@ -4115,8 +4105,6 @@ async def _run_image_pack_stage(
                 size=archive_size,
             ),
             operation_name="uploading the build context",
-            timeout=_BUILD_WAIT_TIMEOUT_SECONDS,
-            timeout_message="timed out uploading the build context",
         )
         exit_code = await _await_room_build_operation(
             client=client,
@@ -4125,8 +4113,6 @@ async def _run_image_pack_stage(
                 build_id=build_id,
             ),
             operation_name="waiting for the image build and publish",
-            timeout=_BUILD_WAIT_TIMEOUT_SECONDS,
-            timeout_message="timed out waiting for image build",
         )
         if exit_code != 0:
             raise typer.Exit(code=exit_code)
@@ -4233,8 +4219,6 @@ async def _run_image_build_stage(
                 size=archive_size,
             ),
             operation_name="uploading the build context",
-            timeout=_BUILD_WAIT_TIMEOUT_SECONDS,
-            timeout_message="timed out uploading the build context",
         )
         await _emit_deploy_status(
             status_handler,
@@ -4250,8 +4234,6 @@ async def _run_image_build_stage(
                     )
                 ),
                 operation_name="waiting for the image build and publish",
-                timeout=_BUILD_WAIT_TIMEOUT_SECONDS,
-                timeout_message="timed out waiting for image build",
             )
         else:
             exit_code = await _await_room_build_operation(
@@ -4264,8 +4246,6 @@ async def _run_image_build_stage(
                     )
                 ),
                 operation_name="waiting for the image build and publish",
-                timeout=_BUILD_WAIT_TIMEOUT_SECONDS,
-                timeout_message="timed out waiting for image build",
             )
         if exit_code != 0:
             await _emit_deploy_status(
@@ -4282,8 +4262,6 @@ async def _run_image_build_stage(
                 parsed_tag=parsed_tag,
             ),
             operation_name="resolving the published image",
-            timeout=_BUILD_RESULT_TIMEOUT_SECONDS,
-            timeout_message="timed out resolving the published image",
         )
         await _emit_deploy_status(
             status_handler,
