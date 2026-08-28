@@ -83,6 +83,58 @@ def _fake_published_build_image(
     )
 
 
+@pytest.mark.asyncio
+async def test_room_build_operation_fails_immediately_on_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeRoomClient:
+        def __init__(self) -> None:
+            self.handlers: dict[str, list[object]] = {}
+
+        def on(self, event_name: str, handler) -> None:
+            self.handlers.setdefault(event_name, []).append(handler)
+
+        def off(self, event_name: str, handler) -> None:
+            self.handlers[event_name].remove(handler)
+
+        def disconnect(self, reason: str) -> None:
+            for handler in list(self.handlers.get("disconnected", [])):
+                handler(reason=reason)
+
+    operation_cancelled = asyncio.Event()
+
+    async def operation() -> None:
+        try:
+            await asyncio.Future()
+        finally:
+            operation_cancelled.set()
+
+    client = _FakeRoomClient()
+    monkeypatch.setattr(image, "RoomClient", _FakeRoomClient)
+    task = asyncio.create_task(
+        image._await_room_build_operation(
+            client=client,
+            operation=operation(),
+            operation_name="waiting for the image build and publish",
+        )
+    )
+    await asyncio.sleep(0)
+    client.disconnect("websocket closed with code 1006")
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "room connection lost while waiting for the image build and publish: "
+            "websocket closed with code 1006; the in-flight operation cannot be "
+            "resumed safely"
+        ),
+    ):
+        await asyncio.wait_for(task, timeout=0.5)
+
+    assert operation_cancelled.is_set()
+    assert client.handlers["disconnected"] == []
+
+
 def _route_for_service(
     *, domain: str, room_name: str, port: str, service_id: str
 ) -> Route:
@@ -2133,6 +2185,13 @@ async def test_run_image_build_stage_requests_repository_token_and_prepends_regi
     class _FakeRoomClient:
         def __init__(self) -> None:
             self.containers = _FakeContainersClient()
+            self.handlers: dict[str, list[object]] = {}
+
+        def on(self, event_name: str, handler) -> None:
+            self.handlers.setdefault(event_name, []).append(handler)
+
+        def off(self, event_name: str, handler) -> None:
+            self.handlers[event_name].remove(handler)
 
         async def __aexit__(self, exc_type, exc, tb) -> None:
             del exc_type, exc, tb
@@ -2431,7 +2490,8 @@ async def test_wait_for_deployed_service_live_streams_logs_and_checks_service_li
         ServiceRuntimeState(
             service_id="service-1",
             state="running",
-            container_id="container-1",
+            container_id="container-2",
+            restart_count=3,
             status=ServiceRuntimeStatus(
                 ports=[
                     ServicePortRuntimeState(
@@ -2445,7 +2505,8 @@ async def test_wait_for_deployed_service_live_streams_logs_and_checks_service_li
         ServiceRuntimeState(
             service_id="service-1",
             state="running",
-            container_id="container-1",
+            container_id="container-2",
+            restart_count=3,
             status=ServiceRuntimeStatus(
                 ports=[
                     ServicePortRuntimeState(
@@ -2457,7 +2518,6 @@ async def test_wait_for_deployed_service_live_streams_logs_and_checks_service_li
             ),
         ),
     ]
-    fake_active_logs = SimpleNamespace(container_id="container-1")
 
     class _FakeServices:
         def __init__(self, runtime_states: list[ServiceRuntimeState]) -> None:
@@ -2479,7 +2539,7 @@ async def test_wait_for_deployed_service_live_streams_logs_and_checks_service_li
     def _fake_start_deploy_log_stream(*, client, container_id: str, log_handler=None):
         del client, log_handler
         captured["started_logs"].append(container_id)
-        return fake_active_logs
+        return SimpleNamespace(container_id=container_id)
 
     async def _fake_stop_deploy_log_stream(*, active_logs) -> None:
         captured["stopped_logs"].append(active_logs)
@@ -2508,8 +2568,11 @@ async def test_wait_for_deployed_service_live_streams_logs_and_checks_service_li
         liveness_path="/ready",
     )
 
-    assert captured["started_logs"] == ["container-1"]
-    assert captured["stopped_logs"] == [fake_active_logs]
+    assert captured["started_logs"] == ["container-1", "container-2"]
+    assert [active.container_id for active in captured["stopped_logs"]] == [
+        "container-1",
+        "container-2",
+    ]
     assert any("Service liveness is ready" in message for message in captured["prints"])
 
 
