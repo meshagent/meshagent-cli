@@ -83,6 +83,60 @@ def _fake_published_build_image(
     )
 
 
+@pytest.mark.asyncio
+async def test_room_build_operation_fails_immediately_on_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeRoomClient:
+        def __init__(self) -> None:
+            self.handlers: dict[str, list[object]] = {}
+
+        def on(self, event_name: str, handler) -> None:
+            self.handlers.setdefault(event_name, []).append(handler)
+
+        def off(self, event_name: str, handler) -> None:
+            self.handlers[event_name].remove(handler)
+
+        def disconnect(self, reason: str) -> None:
+            for handler in list(self.handlers.get("disconnected", [])):
+                handler(reason=reason)
+
+    operation_cancelled = asyncio.Event()
+
+    async def operation() -> None:
+        try:
+            await asyncio.Future()
+        finally:
+            operation_cancelled.set()
+
+    client = _FakeRoomClient()
+    monkeypatch.setattr(image, "RoomClient", _FakeRoomClient)
+    task = asyncio.create_task(
+        image._await_room_build_operation(
+            client=client,
+            operation=operation(),
+            operation_name="waiting for the image build and publish",
+            timeout=60,
+            timeout_message="timed out waiting for image build",
+        )
+    )
+    await asyncio.sleep(0)
+    client.disconnect("websocket closed with code 1006")
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "room connection lost while waiting for the image build and publish: "
+            "websocket closed with code 1006; the in-flight operation cannot be "
+            "resumed safely"
+        ),
+    ):
+        await asyncio.wait_for(task, timeout=0.5)
+
+    assert operation_cancelled.is_set()
+    assert client.handlers["disconnected"] == []
+
+
 def _route_for_service(
     *, domain: str, room_name: str, port: str, service_id: str
 ) -> Route:
@@ -2133,6 +2187,13 @@ async def test_run_image_build_stage_requests_repository_token_and_prepends_regi
     class _FakeRoomClient:
         def __init__(self) -> None:
             self.containers = _FakeContainersClient()
+            self.handlers: dict[str, list[object]] = {}
+
+        def on(self, event_name: str, handler) -> None:
+            self.handlers.setdefault(event_name, []).append(handler)
+
+        def off(self, event_name: str, handler) -> None:
+            self.handlers[event_name].remove(handler)
 
         async def __aexit__(self, exc_type, exc, tb) -> None:
             del exc_type, exc, tb

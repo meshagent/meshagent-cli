@@ -365,9 +365,15 @@ async def _drain_stream_plain(stream, *, show_progress: bool = True):
 
     t1 = asyncio.create_task(_logs())
     t2 = asyncio.create_task(_prog())
+    completed = False
     try:
-        return await stream
+        result = await stream
+        completed = True
+        return result
     finally:
+        if not completed:
+            t1.cancel()
+            t2.cancel()
         await asyncio.gather(t1, t2, return_exceptions=True)
 
 
@@ -511,8 +517,10 @@ async def _drain_stream_pretty(stream):
         t_logs = asyncio.create_task(_logs())
         t_prog = asyncio.create_task(_prog())
         t_ui = asyncio.create_task(_refresh())
+        completed = False
         try:
             result = await stream
+            completed = True
             return result
         finally:
             # Hide any still-visible tasks (e.g., indeterminate ones with total=None)
@@ -520,10 +528,11 @@ async def _drain_stream_pretty(stream):
                 progress.update(tid, visible=False)
             live.update(render())
 
-            for t in (t_logs, t_prog):
-                await t
-
+            if not completed:
+                t_logs.cancel()
+                t_prog.cancel()
             t_ui.cancel()
+            await asyncio.gather(t_logs, t_prog, t_ui, return_exceptions=True)
 
 
 async def _with_client(
