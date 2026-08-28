@@ -460,6 +460,11 @@ async def route_update(
                             if current_content is not None
                             else ""
                         ),
+                        notFound=(
+                            current_content.notFound
+                            if current_content is not None
+                            else None
+                        ),
                         cors=(
                             parsed_cors
                             if parsed_cors is not None
@@ -512,6 +517,13 @@ async def route_update(
                         current_path.pathType if current_path is not None else "prefix"
                     ),
                     "stripPrefix": strip_prefix,
+                    **(
+                        {"unavailable": current_path.unavailable}
+                        if current_path is not None
+                        and target.get("targetPort") is not None
+                        and current_path.unavailable is not None
+                        else {}
+                    ),
                     **target,
                 },
                 *[item.model_dump(mode="python") for item in route.spec.paths[1:]],
