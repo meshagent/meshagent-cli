@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -12,7 +13,7 @@ import tempfile
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Literal, Optional, Protocol, TYPE_CHECKING
+from typing import Annotated, Literal, Optional, Protocol, TYPE_CHECKING, TypeVar
 from urllib.parse import urlparse
 
 import typer
@@ -124,8 +125,10 @@ class _DeployDomainPromptHandler(Protocol):
 
 app = async_typer.AsyncTyper(help="Pack local directories as OCI images")
 _BUILD_CONTEXT_CHUNK_SIZE = 1024 * 1024
+_BUILD_RESULT_TIMEOUT_SECONDS = 30.0
 _BUILD_WAIT_TIMEOUT_SECONDS = 600.0
 _CLIENT_CLOSE_TIMEOUT_SECONDS = 2.0
+_OPERATION_CANCEL_TIMEOUT_SECONDS = 1.0
 _DEFAULT_CONTEXT_MOUNT_PATH = "/context"
 _DEFAULT_REPOSITORY_TOKEN_TTL_SECONDS = 3600
 _DEPLOY_CACHE_CLEANUP_TIMEOUT_SECONDS = 30.0
@@ -151,6 +154,7 @@ _PROJECT_KEY_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _COOKIE_VALIDATION_METHOD = "cookie"
 DeployValidationMode = Literal["default", "cookie", "none"]
 ContainerTemplateOption = Literal["agent", "none"]
+_T = TypeVar("_T")
 _RESERVED_ROOM_SERVICE_PORTS_TEXT = ", ".join(
     str(port) for port in sorted(RESERVED_ROOM_SERVICE_PORTS)
 )
@@ -3758,6 +3762,7 @@ async def _wait_for_deployed_service_live(
     domain: str | None,
     liveness_path: str | None,
     queue_backed_route: bool = False,
+    expected_restart_count: int = 0,
     status_handler: Callable[[str], Awaitable[None]] | None = None,
     log_handler: Callable[[str], Awaitable[None]] | None = None,
 ) -> None:
@@ -3825,7 +3830,7 @@ async def _wait_for_deployed_service_live(
                 await asyncio.sleep(_DEPLOY_WAIT_POLL_INTERVAL_SECONDS)
                 continue
 
-            if state.restart_count > 0:
+            if state.restart_count > expected_restart_count:
                 if status_handler is None:
                     _print_service_exited_before_live(
                         service_name=service_name,
@@ -3974,6 +3979,75 @@ async def _build_local_context_archive(
         raise
 
 
+def _consume_background_task_result(task: asyncio.Future[object]) -> None:
+    if task.cancelled():
+        return
+    with contextlib.suppress(Exception):
+        task.exception()
+
+
+async def _await_room_build_operation(
+    *,
+    client: RoomClient,
+    operation: Awaitable[_T],
+    operation_name: str,
+    timeout: float,
+    timeout_message: str,
+) -> _T:
+    loop = asyncio.get_running_loop()
+    disconnected = loop.create_future()
+
+    def on_disconnected(*, reason: str | None = None) -> None:
+        if not disconnected.done():
+            disconnected.set_result(reason)
+
+    observes_disconnects = isinstance(client, RoomClient)
+    if observes_disconnects:
+        client.on("disconnected", on_disconnected)
+    operation_task = asyncio.ensure_future(operation)
+    try:
+        done, _ = await asyncio.wait(
+            {operation_task, disconnected},
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if operation_task in done:
+            return await operation_task
+        if disconnected in done:
+            reason = disconnected.result()
+            detail = f": {reason}" if reason else ""
+            raise RuntimeError(
+                f"room connection lost while {operation_name}{detail}; "
+                "the in-flight operation cannot be resumed safely. Retry the deploy."
+            )
+        raise RuntimeError(timeout_message)
+    finally:
+        if observes_disconnects:
+            client.off("disconnected", on_disconnected)
+        if not disconnected.done():
+            disconnected.cancel()
+        if not operation_task.done():
+            operation_task.cancel()
+            done, _ = await asyncio.wait(
+                {operation_task}, timeout=_OPERATION_CANCEL_TIMEOUT_SECONDS
+            )
+            if operation_task not in done:
+                operation_task.add_done_callback(_consume_background_task_result)
+
+
+async def _close_room_client(client: RoomClient) -> None:
+    close_task = asyncio.create_task(client.__aexit__(None, None, None))
+    done, _ = await asyncio.wait({close_task}, timeout=_CLIENT_CLOSE_TIMEOUT_SECONDS)
+    if close_task in done:
+        await close_task
+        return
+    close_task.cancel()
+    close_task.add_done_callback(_consume_background_task_result)
+    sys.stderr.write(
+        "Room client did not close promptly after the build; abandoning cleanup.\n"
+    )
+
+
 async def _run_image_pack_stage(
     *,
     resolved_project_id: str | None,
@@ -4024,36 +4098,42 @@ async def _run_image_pack_stage(
                 )
             },
         )
-        build_id = await client.containers.build(
-            tags=[parsed_tag.value],
-            mount_path=_DEFAULT_CONTEXT_MOUNT_PATH,
-            context_path=_DEFAULT_CONTEXT_MOUNT_PATH,
-            dockerfile_path=_generated_pack_dockerfile_path(
-                mount_path=_DEFAULT_CONTEXT_MOUNT_PATH
-            ),
-            optimize_image=True,
-            private=False,
-            credentials=registry_credentials,
-            builder_name=_default_builder_name(client=client),
-            chunks=_iter_file_chunks(archive_path),
-            size=archive_size,
-        )
-        try:
-            exit_code = await asyncio.wait_for(
-                _stream_build_job_logs_and_wait_for_exit(
-                    client=client,
-                    build_id=build_id,
+        build_id = await _await_room_build_operation(
+            client=client,
+            operation=client.containers.build(
+                tags=[parsed_tag.value],
+                mount_path=_DEFAULT_CONTEXT_MOUNT_PATH,
+                context_path=_DEFAULT_CONTEXT_MOUNT_PATH,
+                dockerfile_path=_generated_pack_dockerfile_path(
+                    mount_path=_DEFAULT_CONTEXT_MOUNT_PATH
                 ),
-                timeout=_BUILD_WAIT_TIMEOUT_SECONDS,
-            )
-        except TimeoutError as exc:
-            raise RuntimeError("timed out waiting for image build") from exc
+                optimize_image=True,
+                private=False,
+                credentials=registry_credentials,
+                builder_name=_default_builder_name(client=client),
+                chunks=_iter_file_chunks(archive_path),
+                size=archive_size,
+            ),
+            operation_name="uploading the build context",
+            timeout=_BUILD_WAIT_TIMEOUT_SECONDS,
+            timeout_message="timed out uploading the build context",
+        )
+        exit_code = await _await_room_build_operation(
+            client=client,
+            operation=_stream_build_job_logs_and_wait_for_exit(
+                client=client,
+                build_id=build_id,
+            ),
+            operation_name="waiting for the image build and publish",
+            timeout=_BUILD_WAIT_TIMEOUT_SECONDS,
+            timeout_message="timed out waiting for image build",
+        )
         if exit_code != 0:
             raise typer.Exit(code=exit_code)
     finally:
         if context_archive_temp_dir is not None:
             context_archive_temp_dir.cleanup()
-        await client.__aexit__(None, None, None)
+        await _close_room_client(client)
         await account_client.close()
 
 
@@ -4134,46 +4214,59 @@ async def _run_image_build_stage(
             rich_message=f"[cyan]Uploading build context ({archive_size_text})...[/cyan]",
             plain_message=f"Uploading build context ({archive_size_text})...",
         )
-        build_id = await client.containers.build(
-            tags=tags,
-            mount_path=build_inputs.pack_spec.mount_path,
-            context_path=build_inputs.context_path,
-            dockerfile_path=build_inputs.dockerfile_path,
-            optimize_image=optimize,
-            private=private,
-            credentials=credentials,
-            builder_name=resolved_builder_name,
-            chunks=_iter_file_chunks_with_progress(
-                path=archive_path,
+        build_id = await _await_room_build_operation(
+            client=client,
+            operation=client.containers.build(
+                tags=tags,
+                mount_path=build_inputs.pack_spec.mount_path,
+                context_path=build_inputs.context_path,
+                dockerfile_path=build_inputs.dockerfile_path,
+                optimize_image=optimize,
+                private=private,
+                credentials=credentials,
+                builder_name=resolved_builder_name,
+                chunks=_iter_file_chunks_with_progress(
+                    path=archive_path,
+                    size=archive_size,
+                    status_handler=status_handler,
+                ),
                 size=archive_size,
-                status_handler=status_handler,
             ),
-            size=archive_size,
+            operation_name="uploading the build context",
+            timeout=_BUILD_WAIT_TIMEOUT_SECONDS,
+            timeout_message="timed out uploading the build context",
         )
         await _emit_deploy_status(
             status_handler,
             rich_message="[cyan]Starting image build...[/cyan]",
             plain_message="Starting image build...",
         )
-        try:
-            if log_handler is None:
-                exit_code = await asyncio.wait_for(
+        if log_handler is None:
+            exit_code = await _await_room_build_operation(
+                client=client,
+                operation=(
                     _stream_build_job_logs_and_wait_for_exit(
                         client=client, build_id=build_id
-                    ),
-                    timeout=_BUILD_WAIT_TIMEOUT_SECONDS,
-                )
-            else:
-                exit_code = await asyncio.wait_for(
+                    )
+                ),
+                operation_name="waiting for the image build and publish",
+                timeout=_BUILD_WAIT_TIMEOUT_SECONDS,
+                timeout_message="timed out waiting for image build",
+            )
+        else:
+            exit_code = await _await_room_build_operation(
+                client=client,
+                operation=(
                     _stream_build_job_logs_and_wait_for_exit_tui(
                         client=client,
                         build_id=build_id,
                         log_handler=log_handler,
-                    ),
-                    timeout=_BUILD_WAIT_TIMEOUT_SECONDS,
-                )
-        except TimeoutError as exc:
-            raise RuntimeError("timed out waiting for image build") from exc
+                    )
+                ),
+                operation_name="waiting for the image build and publish",
+                timeout=_BUILD_WAIT_TIMEOUT_SECONDS,
+                timeout_message="timed out waiting for image build",
+            )
         if exit_code != 0:
             await _emit_deploy_status(
                 status_handler,
@@ -4181,10 +4274,16 @@ async def _run_image_build_stage(
                 plain_message=f"Image build failed: exit code {exit_code}",
             )
             raise typer.Exit(code=exit_code)
-        published_image = await _resolve_completed_build_image(
+        published_image = await _await_room_build_operation(
             client=client,
-            build_id=build_id,
-            parsed_tag=parsed_tag,
+            operation=_resolve_completed_build_image(
+                client=client,
+                build_id=build_id,
+                parsed_tag=parsed_tag,
+            ),
+            operation_name="resolving the published image",
+            timeout=_BUILD_RESULT_TIMEOUT_SECONDS,
+            timeout_message="timed out resolving the published image",
         )
         await _emit_deploy_status(
             status_handler,
@@ -4200,7 +4299,7 @@ async def _run_image_build_stage(
     finally:
         if context_archive_temp_dir is not None:
             context_archive_temp_dir.cleanup()
-        await client.__aexit__(None, None, None)
+        await _close_room_client(client)
         await account_client.close()
 
 
@@ -5165,6 +5264,14 @@ async def deploy_image(
                     if previous_runtime_state is not None
                     else None
                 )
+                previous_restart_count = (
+                    previous_runtime_state.restart_count
+                    if previous_runtime_state is not None
+                    else 0
+                )
+                expected_restart_count = previous_restart_count + (
+                    0 if deploy_result.created else 1
+                )
                 liveness_path = (
                     _resolve_domain_liveness_path(
                         service_spec=deploy_plan.spec,
@@ -5191,6 +5298,7 @@ async def deploy_image(
                             domain=domain,
                             liveness_path=liveness_path,
                             queue_backed_route=queue_backed_route,
+                            expected_restart_count=expected_restart_count,
                             status_handler=status_handler,
                             log_handler=log_handler,
                         ),

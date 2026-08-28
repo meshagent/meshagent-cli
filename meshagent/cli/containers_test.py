@@ -324,6 +324,38 @@ async def test_drain_stream_plain_strips_cri_log_prefixes(
 
 
 @pytest.mark.asyncio
+async def test_drain_stream_plain_cancels_consumers_when_stream_is_cancelled() -> None:
+    consumers_cancelled = 0
+
+    class _BlockingStream:
+        async def _consume(self):
+            nonlocal consumers_cancelled
+            try:
+                await asyncio.Future()
+                yield None
+            finally:
+                consumers_cancelled += 1
+
+        def logs(self):
+            return self._consume()
+
+        def progress(self):
+            return self._consume()
+
+        def __await__(self):
+            return asyncio.Future().__await__()
+
+    task = asyncio.create_task(containers._drain_stream_plain(_BlockingStream()))
+    await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=0.5)
+
+    assert consumers_cancelled == 2
+
+
+@pytest.mark.asyncio
 async def test_stream_build_job_logs_and_wait_for_exit_uses_build_log_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
