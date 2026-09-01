@@ -598,7 +598,7 @@ def test_process_use_websocket_headers_set_iap_cookie() -> None:
         iap_token="room-jwt",
     )
 
-    assert headers == {"Cookie": "__meshagent_iap=room-jwt"}
+    assert headers == {"Cookie": "__Host-meshagent_iap=room-jwt"}
 
 
 def test_process_use_websocket_headers_sign_agent_participant_token(

@@ -217,6 +217,11 @@ app.add_lazy_command(
     help="Manage routes for your project",
 )
 app.add_lazy_command(
+    name="custom-domain",
+    module="meshagent.cli.custom_domains",
+    help="Manage custom domains for project routes",
+)
+app.add_lazy_command(
     name="registry",
     module="meshagent.cli.registry",
     help="Manage registries for your project",
