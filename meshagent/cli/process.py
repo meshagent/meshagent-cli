@@ -1667,7 +1667,7 @@ def _websocket_iap_cookie_headers(
         raise typer.BadParameter(
             "a room participant token is required for --websocket-auth=iap"
         )
-    return {"Cookie": f"__Host-meshagent_iap={token.strip()}"}
+    return {"Cookie": f"__meshagent_iap={token.strip()}"}
 
 
 def _process_use_websocket_headers(
