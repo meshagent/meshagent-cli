@@ -4,12 +4,14 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import typer
+import yaml
 from pydantic import BaseModel, ConfigDict
 from pydantic_yaml import parse_yaml_raw_as
 from rich import print
 
 from meshagent.api import ApiScope
 from meshagent.api.client import Meshagent, NotFoundError, ProjectInfo, ProjectsPage
+from meshagent.api.llm_router_config import LlmRouterConfig
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import OutputFormatOption, ProjectIdOption
 from meshagent.cli.helper import (
@@ -278,6 +280,84 @@ async def reset_room_roles(project_id: ProjectIdOption):
             "room_roles",
         )
         print(f"[green]Room role defaults restored:[/] {resolved_project_id}")
+    finally:
+        await client.close()
+
+
+@app.async_command(
+    "get-llm-router-config",
+    help=(
+        "Get the complete LLM router configuration as YAML. The document "
+        "contains allowedModels, apps, and rules."
+    ),
+)
+async def get_llm_router_config(
+    project_id: ProjectIdOption,
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "--output", "-o", help="Write YAML to this file instead of stdout."
+        ),
+    ] = None,
+):
+    client = await get_client()
+    try:
+        resolved_project_id = await resolve_project_id(project_id)
+        document = await client.get_project_settings_document(
+            resolved_project_id, "router"
+        )
+        try:
+            config = LlmRouterConfig.model_validate(document or {})
+        except ValueError as error:
+            print(f"[red]The stored LLM router configuration is invalid: {error}[/red]")
+            raise typer.Exit(code=1) from error
+        serialized = yaml.safe_dump(
+            config.to_document(),
+            sort_keys=False,
+            allow_unicode=True,
+        )
+        if output is None:
+            typer.echo(serialized, nl=False)
+        else:
+            try:
+                output.write_text(serialized)
+            except OSError as error:
+                print(f"[red]Unable to write LLM router configuration: {error}[/red]")
+                raise typer.Exit(code=1) from error
+    finally:
+        await client.close()
+
+
+@app.async_command(
+    "set-llm-router-config",
+    help=(
+        "Validate and replace allowedModels, apps, and rules from YAML. "
+        "Providers: openai, anthropic, grok. APIs: completions, "
+        "chat_completions, responses, messages, realtime. Transports: http, "
+        "websocket. App modes: allowed, blocked. Ensure tools: web_search, "
+        "static, advice; other tool types are filter-only. Search context: "
+        "low, medium, high. Advice strategy: parallel."
+    ),
+)
+async def set_llm_router_config(
+    file: Annotated[Path, typer.Argument(help="LLM router configuration YAML")],
+    project_id: ProjectIdOption,
+):
+    try:
+        config = parse_yaml_raw_as(LlmRouterConfig, file.read_text())
+    except (OSError, ValueError) as error:
+        print(f"[red]Invalid LLM router configuration: {error}[/red]")
+        raise typer.Exit(code=1) from error
+
+    client = await get_client()
+    try:
+        resolved_project_id = await resolve_project_id(project_id)
+        await client.set_project_settings_document(
+            resolved_project_id,
+            "router",
+            config.to_document(),
+        )
+        print(f"[green]LLM router configuration updated:[/] {resolved_project_id}")
     finally:
         await client.close()
 

@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 
 import pytest
+import typer
+import yaml
 
 from meshagent.api.client import NotFoundError
 from meshagent.api.client import ProjectInfo, ProjectsPage
@@ -55,6 +57,9 @@ class _FakeClient:
     ):
         self.settings_documents[name] = document
         return {}
+
+    async def get_project_settings_document(self, project_id: str, name: str):
+        return self.settings_documents.get(name)
 
     async def delete_project_settings_document(self, project_id: str, name: str):
         self.deleted_settings_documents.append(name)
@@ -471,3 +476,167 @@ async def test_reset_room_roles_deletes_dedicated_document(monkeypatch) -> None:
 
     assert client.deleted_settings_documents == ["room_roles"]
     assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_set_llm_router_config_validates_and_writes_complete_document(
+    monkeypatch, tmp_path
+) -> None:
+    client = _FakeClient([])
+    spec = tmp_path / "router.yaml"
+    spec.write_text(
+        """allowedModels:
+  - provider: openai
+    model: gpt-4.1-mini
+apps:
+  mode: allowed
+  userAgentPatterns: [meshagent-*]
+  blockMissingUserAgent: true
+rules:
+  - name: policy
+    when:
+      providers: [openai, anthropic, grok]
+      apis: [responses, messages]
+    then:
+      instructions:
+        append: Follow policy.
+      tools:
+        deny:
+          - type: image_generation
+        ignore:
+          - type: computer
+        ensure:
+          - type: static
+            name: policy_context
+            description: Read policy context.
+            content: Internal policy.
+"""
+    )
+
+    async def _fake_get_client():
+        return client
+
+    async def _fake_resolve_project_id(project_id=None):
+        return project_id or "project-1"
+
+    monkeypatch.setattr(projects, "get_client", _fake_get_client)
+    monkeypatch.setattr(projects, "resolve_project_id", _fake_resolve_project_id)
+
+    await projects.set_llm_router_config(file=spec, project_id="project-1")
+
+    document = client.settings_documents["router"]
+    assert document["allowedModels"] == [
+        {"provider": "openai", "model": "gpt-4.1-mini"}
+    ]
+    assert document["apps"]["blockMissingUserAgent"] is True
+    assert document["rules"][0]["then"]["tools"]["deny"] == [
+        {"type": "image_generation", "name": None}
+    ]
+    assert document["rules"][0]["then"]["tools"]["ensure"][0]["type"] == "static"
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_yaml",
+    [
+        "rules:\n  - then:\n      tools:\n        ensure:\n          - type: image_generation\n",
+        """rules:
+  - then:
+      tools:
+        ensure:
+          - {type: static, name: same, description: x, content: x}
+          - {type: advice, name: same, description: x, advisors: [{provider: openai, model: gpt}]}
+""",
+    ],
+)
+async def test_set_llm_router_config_rejects_invalid_yaml_before_opening_client(
+    monkeypatch, tmp_path, invalid_yaml: str
+) -> None:
+    spec = tmp_path / "router.yaml"
+    spec.write_text(invalid_yaml)
+    opened = False
+
+    async def _fake_get_client():
+        nonlocal opened
+        opened = True
+        return _FakeClient([])
+
+    monkeypatch.setattr(projects, "get_client", _fake_get_client)
+
+    with pytest.raises(typer.Exit) as error:
+        await projects.set_llm_router_config(file=spec, project_id="project-1")
+
+    assert error.value.exit_code == 1
+    assert opened is False
+
+
+@pytest.mark.asyncio
+async def test_get_llm_router_config_prints_canonical_defaults(
+    monkeypatch, capsys
+) -> None:
+    client = _FakeClient([])
+
+    async def _fake_get_client():
+        return client
+
+    async def _fake_resolve_project_id(project_id=None):
+        return project_id or "project-1"
+
+    monkeypatch.setattr(projects, "get_client", _fake_get_client)
+    monkeypatch.setattr(projects, "resolve_project_id", _fake_resolve_project_id)
+
+    await projects.get_llm_router_config(project_id="project-1", output=None)
+
+    document = yaml.safe_load(capsys.readouterr().out)
+    assert document == {
+        "allowedModels": None,
+        "apps": {
+            "mode": "blocked",
+            "userAgentPatterns": [],
+            "blockMissingUserAgent": False,
+        },
+        "rules": [],
+    }
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_get_llm_router_config_writes_file_and_rejects_invalid_stored_data(
+    monkeypatch, tmp_path
+) -> None:
+    client = _FakeClient([])
+    client.settings_documents["router"] = {
+        "allowedModels": [{"provider": "anthropic", "model": "claude-sonnet-4-5"}],
+        "rules": [],
+    }
+
+    async def _fake_get_client():
+        return client
+
+    async def _fake_resolve_project_id(project_id=None):
+        return project_id or "project-1"
+
+    monkeypatch.setattr(projects, "get_client", _fake_get_client)
+    monkeypatch.setattr(projects, "resolve_project_id", _fake_resolve_project_id)
+    output = tmp_path / "router.yaml"
+
+    await projects.get_llm_router_config(project_id="project-1", output=output)
+
+    assert (
+        yaml.safe_load(output.read_text())["allowedModels"][0]["provider"]
+        == "anthropic"
+    )
+    assert client.closed is True
+
+    invalid_client = _FakeClient([])
+    invalid_client.settings_documents["router"] = {"rules": [{"then": {}}]}
+
+    async def _fake_invalid_client():
+        return invalid_client
+
+    monkeypatch.setattr(projects, "get_client", _fake_invalid_client)
+    with pytest.raises(typer.Exit) as error:
+        await projects.get_llm_router_config(project_id="project-1", output=None)
+    assert error.value.exit_code == 1
+    assert invalid_client.closed is True
