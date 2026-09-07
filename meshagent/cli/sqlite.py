@@ -10,6 +10,7 @@ from meshagent.api import RoomClient, RoomException, WebSocketClientProtocol
 from meshagent.api.helpers import websocket_room_url
 from meshagent.api.room_server_client import SqliteSqlStatement
 from meshagent.api.sql import SchemaParseError, parse_table_schema
+from meshagent.cli.sqlite_recovery import restore_database
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import OutputFormatOption, ProjectIdOption, RoomOption
 from meshagent.cli.dataset import (
@@ -37,6 +38,13 @@ from meshagent.cli.helper import (
 app = async_typer.AsyncTyper(help="Manage SQLite databases and tables in a room")
 database_app = async_typer.AsyncTyper(help="Manage SQLite databases in a room")
 app.add_typer(database_app, name="database", help="Manage SQLite databases in a room")
+
+# Replica recovery works even when the room database cannot open.
+
+database_app.command(
+    "restore",
+    help="Restore replica history to a new local SQLite file, with full validation.",
+)(restore_database)
 
 
 SqliteImportMode = Annotated[
