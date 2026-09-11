@@ -386,6 +386,13 @@ SHELL_RENDERERS = {
 }
 
 
+app.add_lazy_command(
+    name="oauth-client",
+    module="meshagent.cli.oauth_clients",
+    help="Manage OAuth clients and login branding",
+)
+
+
 def main() -> None:
     from meshagent.agents.channel_process import dispatch_main
 
