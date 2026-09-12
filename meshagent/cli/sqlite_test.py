@@ -28,7 +28,9 @@ def test_sqlite_help_lists_supported_commands_without_dataset_only_commands() ->
     assert "│ optimize" not in output
     assert "│ stats" not in output
     assert "│ install" not in output
-    assert "│ restore" not in output
+    assert "restore" in output
+    assert "backup" in output
+    assert "recover" in output
 
 
 def test_sqlite_database_help_lists_database_subcommands() -> None:
@@ -72,3 +74,18 @@ def test_sqlite_import_help_omits_unsupported_merge_mode() -> None:
     assert "merge" not in output
     assert "--on" not in output
     assert "--branch" not in output
+
+
+def test_sqlite_backup_restore_and_recovery_have_distinct_inputs() -> None:
+    for command, required, absent in [
+        ("backup", "--output", "--source"),
+        ("restore", "--input", "--source"),
+        ("recover", "--source", "--room"),
+    ]:
+        result = CliRunner().invoke(app, [command, "--help"])
+        assert result.exit_code == 0
+        output = Text.from_ansi(result.output).plain
+        assert required in output
+        assert absent not in output
+    result = CliRunner().invoke(app, ["database", "--help"])
+    assert "restore" not in Text.from_ansi(result.output).plain

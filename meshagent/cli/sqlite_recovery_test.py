@@ -123,8 +123,7 @@ def test_restore_process_cancellation_preserves_candidate(
         + [
             "room",
             "sqlite",
-            "database",
-            "restore",
+            "recover",
             "--source",
             "copy",
             "--output",
@@ -209,8 +208,7 @@ def test_restore_candidate_path_changed_during_verification(
     result = CliRunner().invoke(
         app,
         [
-            "database",
-            "restore",
+            "recover",
             "--source",
             "source",
             "--output",
@@ -233,7 +231,7 @@ def test_restore_candidate_path_changed_during_verification(
 def test_restore_dry_run_without_room_connection(monkeypatch) -> None:
     calls = mock_helper(monkeypatch, recovery_report("validated"))
     result = CliRunner().invoke(
-        app, ["database", "restore", "--source", "copied replica", "--dry-run"]
+        app, ["recover", "--source", "copied replica", "--dry-run"]
     )
     assert result.exit_code == 0, result.output
     assert calls[-1] == [
@@ -252,8 +250,7 @@ def test_restore_writes_structured_report(monkeypatch, tmp_path: Path) -> None:
     result = CliRunner().invoke(
         app,
         [
-            "database",
-            "restore",
+            "recover",
             "--source",
             "source",
             "--output",
@@ -291,8 +288,7 @@ def test_restore_helper_launch_failure_preserves_report_path(
     result = CliRunner().invoke(
         app,
         [
-            "database",
-            "restore",
+            "recover",
             "--source",
             "copy",
             "--output",
@@ -330,8 +326,7 @@ def test_restore_report_path_changed_during_recovery(
     result = CliRunner().invoke(
         app,
         [
-            "database",
-            "restore",
+            "recover",
             "--source",
             "copy",
             "--output",
@@ -378,8 +373,7 @@ def test_restore_report_sync_failure_preserves_candidate_metadata(
     result = CliRunner().invoke(
         app,
         [
-            "database",
-            "restore",
+            "recover",
             "--source",
             "source",
             "--output",
@@ -423,8 +417,7 @@ def test_restore_candidate_io_failure_preserves_failed_report(
         result = CliRunner().invoke(
             app,
             [
-                "database",
-                "restore",
+                "recover",
                 "--source",
                 "source",
                 "--output",
@@ -453,8 +446,7 @@ def test_restore_never_overwrites(
     result = CliRunner().invoke(
         app,
         [
-            "database",
-            "restore",
+            "recover",
             "--source",
             "source",
             "--dry-run",
@@ -475,8 +467,7 @@ def test_restore_failure_is_machine_readable(monkeypatch, tmp_path: Path) -> Non
     result = CliRunner().invoke(
         app,
         [
-            "database",
-            "restore",
+            "recover",
             "--source",
             "source",
             "--dry-run",
@@ -493,17 +484,13 @@ def test_restore_rejects_silent_rollback(monkeypatch) -> None:
     payload = recovery_report("validated")
     payload["recovered_txid"] = "00000000000000b3"
     mock_helper(monkeypatch, payload)
-    result = CliRunner().invoke(
-        app, ["database", "restore", "--source", "source", "--dry-run"]
-    )
+    result = CliRunner().invoke(app, ["recover", "--source", "source", "--dry-run"])
     assert result.exit_code == 1
 
 
 def test_restore_requires_compatible_helper(monkeypatch) -> None:
     monkeypatch.setattr(sqlite_recovery.shutil, "which", lambda _: None)
-    result = CliRunner().invoke(
-        app, ["database", "restore", "--source", "source", "--dry-run"]
-    )
+    result = CliRunner().invoke(app, ["recover", "--source", "source", "--dry-run"])
     assert result.exit_code != 0
     assert "not installed" in result.output
 
@@ -527,8 +514,7 @@ def test_restore_rejects_inconsistent_success(
     result = CliRunner().invoke(
         app,
         [
-            "database",
-            "restore",
+            "recover",
             "--source",
             "source",
             "--output",
@@ -559,9 +545,7 @@ def test_restore_rejects_incomplete_source_provenance(monkeypatch, field, value)
     payload = recovery_report("validated")
     payload["sources"][0][field] = value
     mock_helper(monkeypatch, payload)
-    result = CliRunner().invoke(
-        app, ["database", "restore", "--source", "source", "--dry-run"]
-    )
+    result = CliRunner().invoke(app, ["recover", "--source", "source", "--dry-run"])
     assert result.exit_code == 1
     assert json.loads(result.output)["status"] == "failed"
 
@@ -580,9 +564,7 @@ def test_restore_source_chain_allows_overlap_but_rejects_gaps(
     second["level"] = second_level
     payload["sources"].append(second)
     mock_helper(monkeypatch, payload)
-    result = CliRunner().invoke(
-        app, ["database", "restore", "--source", "source", "--dry-run"]
-    )
+    result = CliRunner().invoke(app, ["recover", "--source", "source", "--dry-run"])
     assert result.exit_code == (0 if successful else 1)
     assert json.loads(result.output)["status"] == (
         "validated" if successful else "failed"
@@ -633,8 +615,7 @@ def test_restore_invalid_helper_report_preserves_unverified_candidate(
     result = CliRunner().invoke(
         app,
         [
-            "database",
-            "restore",
+            "recover",
             "--source",
             "copy",
             "--output",
@@ -683,8 +664,7 @@ def test_restore_invalid_utf8_helper_output_is_structured_failure(
     result = CliRunner().invoke(
         app,
         [
-            "database",
-            "restore",
+            "recover",
             "--source",
             "copy",
             "--output",
@@ -721,7 +701,7 @@ def test_native_recovery_cli(tmp_path: Path) -> None:
     command = (
         [packaged_cli] if packaged_cli else [sys.executable, "-m", "meshagent.cli.cli"]
     )
-    command += ["room", "sqlite", "database", "restore", "--source", str(source)]
+    command += ["room", "sqlite", "recover", "--source", str(source)]
     if packaged_cli is None:
         command += ["--recovery-tool", helper]
     execution_env = os.environ.copy()
@@ -978,8 +958,7 @@ def test_restore_enforces_planned_database_hash(
     report = tmp_path / "result.json"
     expected = payload["output_sha256"].upper() if matches else "0" * 64
     arguments = [
-        "database",
-        "restore",
+        "recover",
         "--source",
         "copy",
         "--expected-sha256",
@@ -1013,8 +992,7 @@ def test_restore_rejects_invalid_expected_hash(monkeypatch, value):
     result = CliRunner().invoke(
         app,
         [
-            "database",
-            "restore",
+            "recover",
             "--source",
             "copy",
             "--dry-run",

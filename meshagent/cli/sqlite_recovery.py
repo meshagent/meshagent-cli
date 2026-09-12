@@ -118,7 +118,7 @@ def _run_recovery_helper(
     return completed, interrupted
 
 
-def restore_database(
+def recover_database(
     source: Annotated[
         str,
         typer.Option(

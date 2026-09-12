@@ -1,4 +1,7 @@
 import json as _json
+import os
+import tempfile
+from pathlib import Path
 from typing import Annotated, Optional, List, Any
 
 import pyarrow as pa
@@ -10,7 +13,7 @@ from meshagent.api import RoomClient, RoomException, WebSocketClientProtocol
 from meshagent.api.helpers import websocket_room_url
 from meshagent.api.room_server_client import SqliteSqlStatement
 from meshagent.api.sql import SchemaParseError, parse_table_schema
-from meshagent.cli.sqlite_recovery import restore_database
+from meshagent.cli.sqlite_recovery import recover_database
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import OutputFormatOption, ProjectIdOption, RoomOption
 from meshagent.cli.dataset import (
@@ -41,10 +44,118 @@ app.add_typer(database_app, name="database", help="Manage SQLite databases in a 
 
 # Replica recovery works even when the room database cannot open.
 
-database_app.command(
-    "restore",
-    help="Restore replica history to a new local SQLite file, with full validation.",
-)(restore_database)
+app.command(
+    "recover",
+    help="Recover replica history to a new local SQLite file, with full validation.",
+)(recover_database)
+
+
+@app.async_command(
+    "backup", help="Save a consistent room database as a local SQLite file."
+)
+async def backup_database(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    database: Annotated[str, typer.Option("--database", "-d", help="Database name")],
+    output: Annotated[
+        Path,
+        typer.Option("--output", "-o", help="New local SQLite file; never overwritten"),
+    ],
+    namespace: NamespaceOption = None,
+):
+    if os.path.lexists(output):
+        raise typer.BadParameter(f"Destination already exists: {output}")
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        room_name = resolve_room(room)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
+        async with RoomClient(
+            protocol_factory=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room_name),
+                token=connection.jwt,
+            ).create_factory()
+        ) as client:
+            # Same directory permits atomic, no-clobber publication with link().
+            with tempfile.NamedTemporaryFile(
+                dir=output.parent, prefix=".sqlite-backup-", suffix=".sqlite"
+            ) as temporary:
+                async for chunk in client.sqlite.backup(
+                    database=database, namespace=_ns(namespace)
+                ):
+                    temporary.write(chunk)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+                os.link(temporary.name, output)
+            print(f"[bold green]Saved database:[/bold green] {output}")
+    except (RoomException, OSError) as error:
+        print(error)
+        raise typer.Exit(1) from error
+    finally:
+        await account_client.close()
+
+
+@app.async_command(
+    "restore", help="Restore a local SQLite file as a new room database."
+)
+async def restore_room_database(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    database: Annotated[
+        str, typer.Option("--database", "-d", help="New database name; must not exist")
+    ],
+    input: Annotated[
+        Path,
+        typer.Option(
+            "--input",
+            help="Standalone SQLite file",
+            exists=True,
+            dir_okay=False,
+            readable=True,
+        ),
+    ],
+    namespace: NamespaceOption = None,
+):
+    from meshagent.api.sqlite_transfer import CHUNK_SIZE
+
+    # A standalone backup is required: silently omitting a live file's WAL could
+    # lose committed data. Do not run SQL or checkpoint the user's source file.
+    if Path(str(input) + "-wal").exists() or Path(str(input) + "-journal").exists():
+        raise typer.BadParameter(
+            "Input has a WAL or journal; first make a standalone SQLite backup"
+        )
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        room_name = resolve_room(room)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
+        async with RoomClient(
+            protocol_factory=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room_name),
+                token=connection.jwt,
+            ).create_factory()
+        ) as client:
+            with input.open("rb") as source:
+
+                async def chunks():
+                    while chunk := source.read(CHUNK_SIZE):
+                        yield chunk
+
+                await client.sqlite.restore(
+                    database=database, namespace=_ns(namespace), source=chunks()
+                )
+            print(f"[bold green]Restored database:[/bold green] {database}")
+    except (RoomException, OSError) as error:
+        print(error)
+        raise typer.Exit(1) from error
+    finally:
+        await account_client.close()
 
 
 SqliteImportMode = Annotated[
