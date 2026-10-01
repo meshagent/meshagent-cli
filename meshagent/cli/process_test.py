@@ -1201,9 +1201,9 @@ def test_process_backend_options_expand_to_unfiltered_backend_defaults() -> None
         backend=selected_backends,
     ) == [
         "chat/none",
-        "llm/openai/gpt-5.2",
+        "llm/openai/gpt-6.1-sol",
         "llm/anthropic/claude-3-5-sonnet-latest",
-        "codex/gpt-5.6-sol",
+        "codex/gpt-6.1-sol",
     ]
     assert process._normalize_process_model_specs(["chat/none"])[0].backend == "chat"
 
@@ -2522,7 +2522,7 @@ async def test_process_run_starts_room_agent_and_uses_ask_tui(
     assert captured["process_tui_kwargs"] == {
         "bot": process_agent,
         "room": room_client,
-        "model": ["gpt-5.6-sol"],
+        "model": ["gpt-6.1-sol"],
         "thread_path": None,
         "thread_storage": "dataset",
         "agent_name": "helper",

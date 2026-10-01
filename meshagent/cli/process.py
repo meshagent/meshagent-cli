@@ -753,7 +753,7 @@ async def _list_codex_threads(
         await client.initialize()
         repository = CodexThreadStorageRepository(
             client=client,
-            default_model=lambda: "gpt-5.6-sol",
+            default_model=lambda: "gpt-6.1-sol",
         )
         return await repository.list_threads(limit=limit, offset=offset)
     finally:
@@ -3466,7 +3466,7 @@ def _normalize_model_options(model: str | list[str]) -> list[str]:
 
     normalized = [item.strip() for item in models if item.strip() != ""]
     if len(normalized) == 0:
-        return ["gpt-5.6-sol"]
+        return ["gpt-6.1-sol"]
     return normalized
 
 
@@ -3644,12 +3644,12 @@ def _process_models_for_backend_option(
         if backend_name == "llm":
             models.extend(
                 [
-                    "llm/openai/gpt-5.2",
+                    "llm/openai/gpt-6.1-sol",
                     "llm/anthropic/claude-3-5-sonnet-latest",
                 ]
             )
         elif backend_name == "codex":
-            models.append("codex/gpt-5.6-sol")
+            models.append("codex/gpt-6.1-sol")
         elif backend_name == "chat":
             models.append("chat/none")
         else:
@@ -7126,7 +7126,7 @@ async def join(
             "--model",
             help="Name of an LLM model to make available. Can be repeated.",
         ),
-    ] = ["gpt-5.6-sol"],
+    ] = ["gpt-6.1-sol"],
     backend: Annotated[
         list[str],
         typer.Option(
@@ -7634,7 +7634,7 @@ async def service(
             "--model",
             help="Name of an LLM model to make available. Can be repeated.",
         ),
-    ] = ["gpt-5.6-sol"],
+    ] = ["gpt-6.1-sol"],
     backend: Annotated[
         list[str],
         typer.Option(
@@ -8085,7 +8085,7 @@ async def spec(
             "--model",
             help="Name of an LLM model to make available. Can be repeated.",
         ),
-    ] = ["gpt-5.6-sol"],
+    ] = ["gpt-6.1-sol"],
     backend: Annotated[
         list[str],
         typer.Option(
@@ -8525,7 +8525,7 @@ async def deploy(
             "--model",
             help="Name of an LLM model to make available. Can be repeated.",
         ),
-    ] = ["gpt-5.6-sol"],
+    ] = ["gpt-6.1-sol"],
     backend: Annotated[
         list[str],
         typer.Option(
@@ -11032,7 +11032,7 @@ async def run(
             "--model",
             help="Name of an LLM model to make available. Can be repeated.",
         ),
-    ] = ["gpt-5.6-sol"],
+    ] = ["gpt-6.1-sol"],
     backend: Annotated[
         list[str],
         typer.Option(
