@@ -15,7 +15,10 @@ def test_iam_help_exposes_policy_grant_and_revoke_commands() -> None:
 
 
 @pytest.mark.asyncio
-async def test_iam_grant_calls_generic_policy_api(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize("roles", [["developer", "list"], ["user_profile_editor"]])
+async def test_iam_grant_calls_generic_policy_api(
+    monkeypatch: pytest.MonkeyPatch, roles
+):
     calls: list[dict[str, object]] = []
 
     class _FakeClient:
@@ -41,7 +44,7 @@ async def test_iam_grant_calls_generic_policy_api(monkeypatch: pytest.MonkeyPatc
         resource_id="resolved-project",
         subject_type="service_account",
         subject_id="service-account-1",
-        role=["developer", "list"],
+        role=roles,
         invite_redirect_url=None,
     )
 
@@ -50,7 +53,7 @@ async def test_iam_grant_calls_generic_policy_api(monkeypatch: pytest.MonkeyPatc
     assert call["project_id"] == "resolved-project"
     assert call["resource_type"] == "project"
     assert call["resource_id"] == "resolved-project"
-    assert call["roles"] == ["developer", "list"]
+    assert call["roles"] == roles
     assert call["subject"] == AccessSubject(
         type="service_account",
         id="service-account-1",

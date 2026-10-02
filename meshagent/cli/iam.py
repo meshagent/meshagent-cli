@@ -90,6 +90,7 @@ def _parse_roles(values: list[str]) -> list[AccessRole]:
         "usage_reporter",
         "billing_manager",
         "group_manager",
+        "user_profile_editor",
         "viewer",
         "operator",
         "reader",
