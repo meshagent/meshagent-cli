@@ -53,6 +53,7 @@ def test_root_help_lists_create_and_doctor_but_hides_legacy_command_namespaces()
     assert "│ create" in result.output
     assert "│ doctor" in result.output
     assert "│ iam" in result.output
+    assert "│ user" in result.output
     assert "│ service-account" in result.output
     assert "│ custom-domain" in result.output
     assert "│ init" not in result.output
@@ -78,6 +79,8 @@ def test_root_registers_create_and_doctor_as_visible_commands() -> None:
     assert registrations["create"].hidden is False
     assert registrations["iam"].module == "meshagent.cli.iam"
     assert registrations["iam"].hidden is False
+    assert registrations["user"].module == "meshagent.cli.users"
+    assert registrations["user"].hidden is False
     assert registrations["service-account"].module == "meshagent.cli.service_accounts"
     assert registrations["service-account"].hidden is False
     assert registrations["custom-domain"].module == "meshagent.cli.custom_domains"
