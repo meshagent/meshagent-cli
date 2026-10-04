@@ -109,6 +109,11 @@ app.add_lazy_command(
     help="Manage IAM policies for project resources",
 )
 app.add_lazy_command(
+    name="sysadmin",
+    module="meshagent.cli.sysadmin",
+    help="Administer global account profiles",
+)
+app.add_lazy_command(
     name="user",
     module="meshagent.cli.users",
     help="List project users and manage user profiles",

@@ -3,14 +3,17 @@ import logging
 from dataclasses import dataclass, field
 
 import pytest
-from pydantic import JsonValue
-from rich.console import Console
-
 from meshagent.api import RoomException
-from meshagent.api.client import ProjectMemberAccess, ProjectMembersPage, User
+from meshagent.api.client import (
+    ProjectMemberAccess,
+    ProjectMembersPage,
+    User,
+    UserProfilesPage,
+)
 from meshagent.cli import cli, users
 from meshagent.cli.testing import CliRunner
-
+from pydantic import JsonValue
+from rich.console import Console
 
 PROFILE = User(
     id="user-1",
@@ -42,13 +45,16 @@ class FakeClient:
         page_size: int,
         continuation_token: str | None,
         filter: str | None,
+        view: str = "merged",
     ) -> ProjectMembersPage:
         self.list_calls.append((project_id, page_size, continuation_token, filter))
         if self.error:
             raise self.error
         return self.pages.pop(0)
 
-    async def get_user_profile(self, user_id: str) -> dict[str, object]:
+    async def get_user_profile(
+        self, user_id: str, *, project_id: str | None = None, view: str = "merged"
+    ) -> dict[str, object]:
         self.get_calls.append(user_id)
         if self.error:
             raise self.error
@@ -63,6 +69,7 @@ class FakeClient:
         metadata: dict[str, JsonValue] | None,
         annotations: dict[str, str] | None,
         project_id: str | None,
+        inherit: list[str] | None = None,
     ) -> dict[str, bool]:
         self.update_calls.append(
             {
@@ -73,6 +80,28 @@ class FakeClient:
                 "annotations": annotations,
                 "project_id": project_id,
             }
+        )
+        if self.error:
+            raise self.error
+        return {"ok": True}
+
+    async def search_sysadmin_users(
+        self, *, filter=None, page_size=100, continuation_token=None
+    ):
+        self.list_calls.append(("sysadmin", page_size, continuation_token, filter))
+        if self.error:
+            raise self.error
+        return UserProfilesPage(users=[PROFILE])
+
+    async def get_sysadmin_user_profile(self, user_id):
+        self.get_calls.append(user_id)
+        if self.error:
+            raise self.error
+        return PROFILE
+
+    async def update_sysadmin_user_profile(self, user_id, *, update):
+        self.update_calls.append(
+            {"user_id": user_id, **update.model_dump(exclude_unset=True)}
         )
         if self.error:
             raise self.error
@@ -300,8 +329,8 @@ def test_annotations_require_project_before_client_creation(
     monkeypatch.setattr("meshagent.cli.helper.get_active_project", no_project)
     result = CliRunner().invoke(users.app, ["update", "--annotations", "{}"])
 
-    assert result.exit_code == 1, result.output
-    assert "Project ID not specified" in result.output
+    assert result.exit_code == 2, result.output
+    assert "sysadmin user update" in result.output
     assert not client.update_calls and not client.closed
 
 
@@ -319,3 +348,60 @@ def test_api_errors_are_reported_and_client_closed(
     assert error.value.code == 1
     assert "user_profile_editor is required" in capsys.readouterr().err
     assert client.closed
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["list", "--filter", "alice", "-o", "json"],
+        ["get", "user-1", "-o", "json"],
+        ["update", "user-1", "--annotations", '{"verified":"yes"}', "-o", "json"],
+    ],
+)
+def test_sysadmin_user_commands_use_global_admin_apis(args, client):
+    result = CliRunner().invoke(cli.app, ["sysadmin", "user", *args])
+    assert result.exit_code == 0, result.output
+    assert client.closed
+    if args[0] == "list":
+        assert json.loads(result.stdout)["users"][0]["id"] == "user-1"
+        assert client.list_calls == [("sysadmin", 100, None, "alice")]
+    elif args[0] == "update":
+        assert client.update_calls == [
+            {"user_id": "user-1", "annotations": {"verified": "yes"}}
+        ]
+
+
+@pytest.mark.parametrize(
+    "args", [["get", "user-1"], ["list"], ["update", "user-1", "--annotations", "{}"]]
+)
+def test_sysadmin_cli_reports_denials_and_closes_client(args, client, capsys):
+    client.error = RoomException("Status=403, body=sysadmin is required")
+    with pytest.raises(SystemExit):
+        users.sysadmin_app(args)
+    assert "sysadmin is required" in capsys.readouterr().err
+    assert client.closed
+
+
+def test_global_flag_ignores_active_project(client, monkeypatch):
+    monkeypatch.setenv("MESHAGENT_PROJECT_ID", "project-1")
+    result = CliRunner().invoke(
+        users.app, ["update", "--global", "--first-name", "Global"]
+    )
+    assert result.exit_code == 0, result.output
+    assert client.update_calls[0]["project_id"] is None
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["get", "--view", "invalid"],
+        ["get", "--view", "project"],
+        ["update", "--inherit", "metadata"],
+        ["update", "--project-id", "p", "--inherit", "email"],
+        ["update", "--project-id", "p", "--inherit", "metadata", "--metadata", "{}"],
+    ],
+)
+def test_invalid_views_and_inheritance_are_rejected_before_api_calls(args, client):
+    result = CliRunner().invoke(users.app, args)
+    assert result.exit_code == 2, result.output
+    assert not client.get_calls and not client.update_calls

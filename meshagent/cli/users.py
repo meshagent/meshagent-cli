@@ -1,21 +1,46 @@
 import json
 import math
+from enum import Enum
 from typing import Annotated
 
 import typer
+from meshagent.api import RoomException
+from meshagent.api.client import ProjectMembersPage, UpdateUserProfileRequest, User
+from meshagent.cli import async_typer
+from meshagent.cli.common_options import OutputFormatOption, ProjectIdOption
+from meshagent.cli.helper import get_client, resolve_project_id
 from pydantic import JsonValue, TypeAdapter
 from rich import print
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from meshagent.api import RoomException
-from meshagent.api.client import ProjectMembersPage, User
-from meshagent.cli import async_typer
-from meshagent.cli.common_options import OutputFormatOption, ProjectIdOption
-from meshagent.cli.helper import get_client, resolve_project_id
-
 app = async_typer.AsyncTyper(help="List project users and manage user profiles")
+
+
+class ProfileView(str, Enum):
+    project = "project"
+    user = "user"
+    merged = "merged"
+
+
+class ProfileField(str, Enum):
+    first_name = "first_name"
+    last_name = "last_name"
+    metadata = "metadata"
+    annotations = "annotations"
+
+
+ProfileViewOption = Annotated[
+    ProfileView, typer.Option("--view", help="Profile attributes to return")
+]
+GlobalOption = Annotated[
+    bool,
+    typer.Option(
+        "--global", help="Use your global account profile, ignoring the active project"
+    ),
+]
+
 UserIdArgument = Annotated[
     str, typer.Argument(help="User id, or me for your own profile")
 ]
@@ -91,6 +116,7 @@ def _print_table(records: list[dict[str, object]], *columns: str) -> None:
 async def list_users(
     *,
     project_id: ProjectIdOption,
+    view: ProfileViewOption = ProfileView.merged,
     count: Annotated[
         int, typer.Option("--count", min=1, help="Maximum number of users to return")
     ] = 100,
@@ -114,6 +140,7 @@ async def list_users(
                 page_size=min(count - len(result.users), 100),
                 continuation_token=result.continuation_token,
                 filter=filter,
+                view=view.value,
             )
             if (
                 page.continuation_token is not None
@@ -127,7 +154,9 @@ async def list_users(
     finally:
         await client.close()
     if o == "json":
-        _print_json(result.model_dump(mode="json"))
+        _print_json(
+            result.model_dump(mode="json", exclude_unset=view == ProfileView.project)
+        )
         return
     if not result.users:
         print("No users found")
@@ -154,25 +183,42 @@ async def list_users(
 
 
 @app.async_command(
-    "get", help="Get a user profile, including metadata and annotations."
+    "get", help="Get a project user profile or your global account profile."
 )
 async def get(
-    *, user_id: UserIdArgument = "me", o: OutputFormatOption = "table"
+    *,
+    user_id: UserIdArgument = "me",
+    project_id: ProjectIdOption,
+    view: ProfileViewOption = ProfileView.merged,
+    global_profile: GlobalOption = False,
+    o: OutputFormatOption = "table",
 ) -> None:
     _validate_output(o)
+    if global_profile:
+        project_id = None
+    if view == ProfileView.project and project_id is None:
+        raise typer.BadParameter("--view project requires --project-id")
     client = await get_client()
     try:
-        user = User.model_validate(await client.get_user_profile(user_id))
+        row = await client.get_user_profile(
+            user_id, project_id=project_id, view=view.value
+        )
     finally:
         await client.close()
-    row = user.model_dump(mode="json")
     if o == "json":
         _print_json(row)
         return
-    row["metadata"] = json.dumps(user.metadata)
-    row["annotations"] = json.dumps(user.annotations)
+    _print_profile(row)
+
+
+def _print_profile(row: dict) -> None:
+    values = {
+        name: row.get(name) for name in ("id", "email", "first_name", "last_name")
+    }
+    values["metadata"] = json.dumps(row.get("metadata", {}))
+    values["annotations"] = json.dumps(row.get("annotations", {}))
     _print_table(
-        [row], "id", "email", "first_name", "last_name", "metadata", "annotations"
+        [values], "id", "email", "first_name", "last_name", "metadata", "annotations"
     )
 
 
@@ -183,6 +229,13 @@ async def update(
     *,
     project_id: ProjectIdOption,
     user_id: UserIdArgument = "me",
+    global_profile: GlobalOption = False,
+    inherit: Annotated[
+        list[ProfileField] | None,
+        typer.Option(
+            "--inherit", help="Remove a project override; repeat for multiple fields"
+        ),
+    ] = None,
     first_name: Annotated[
         str | None, typer.Option("--first-name", help="First name")
     ] = None,
@@ -204,12 +257,31 @@ async def update(
     o: OutputFormatOption = "table",
 ) -> None:
     _validate_output(o)
-    if all(value is None for value in (first_name, last_name, metadata, annotations)):
+    if (
+        all(value is None for value in (first_name, last_name, metadata, annotations))
+        and not inherit
+    ):
         raise typer.BadParameter("supply at least one profile field to update")
     parsed_metadata = _parse_object(metadata, "metadata")
     parsed_annotations = _parse_annotations(annotations)
-    if parsed_annotations is not None:
-        project_id = await resolve_project_id(project_id=project_id)
+    if global_profile:
+        project_id = None
+    if parsed_annotations is not None and project_id is None:
+        raise typer.BadParameter(
+            "Global annotations require the sysadmin user update command"
+        )
+    if inherit and project_id is None:
+        raise typer.BadParameter("--inherit requires --project-id")
+    supplied = {
+        "first_name": first_name,
+        "last_name": last_name,
+        "metadata": metadata,
+        "annotations": annotations,
+    }
+    if inherit and any(supplied[field.value] is not None for field in inherit):
+        raise typer.BadParameter(
+            "A field cannot be supplied and inherited in the same update"
+        )
     client = await get_client()
     try:
         result = await client.update_user_profile(
@@ -219,6 +291,7 @@ async def update(
             metadata=parsed_metadata,
             annotations=parsed_annotations,
             project_id=project_id,
+            **({"inherit": [field.value for field in inherit]} if inherit else {}),
         )
     finally:
         await client.close()
@@ -226,3 +299,108 @@ async def update(
         _print_json(result)
     else:
         print("User profile updated")
+
+
+sysadmin_app = async_typer.AsyncTyper(
+    help="Search and edit global user profiles; requires sysadmin access"
+)
+
+
+@sysadmin_app.async_command(
+    "list", help="Search global users by email, name, or user id."
+)
+async def list_sysadmin_users(
+    *,
+    filter: Annotated[str | None, typer.Option("--filter")] = None,
+    count: Annotated[int, typer.Option("--count", min=1)] = 100,
+    continuation_token: Annotated[
+        str | None, typer.Option("--continuation-token")
+    ] = None,
+    o: OutputFormatOption = "table",
+) -> None:
+    _validate_output(o)
+    client = await get_client()
+    records: list[User] = []
+    try:
+        while len(records) < count:
+            page = await client.search_sysadmin_users(
+                filter=filter,
+                page_size=min(count - len(records), 100),
+                continuation_token=continuation_token,
+            )
+            records.extend(page.users)
+            if (
+                page.continuation_token == continuation_token
+                and page.continuation_token is not None
+            ):
+                raise RoomException("User listing continuation token did not advance")
+            continuation_token = page.continuation_token
+            if continuation_token is None:
+                break
+    finally:
+        await client.close()
+    rows = [record.model_dump(mode="json") for record in records]
+    if o == "json":
+        _print_json({"users": rows, "continuation_token": continuation_token})
+    else:
+        _print_table(rows, "id", "email", "first_name", "last_name")
+        if continuation_token is not None:
+            typer.echo(f"Continuation token: {continuation_token}")
+
+
+@sysadmin_app.async_command("get", help="Get a global user profile.")
+async def get_sysadmin_user(
+    *, user_id: UserIdArgument = "me", o: OutputFormatOption = "table"
+) -> None:
+    _validate_output(o)
+    client = await get_client()
+    try:
+        user = await client.get_sysadmin_user_profile(user_id)
+    finally:
+        await client.close()
+    row = user.model_dump(mode="json")
+    if o == "json":
+        _print_json(row)
+    else:
+        _print_profile(row)
+
+
+@sysadmin_app.async_command(
+    "update", help="Update global names, metadata, or annotations."
+)
+async def update_sysadmin_user(
+    *,
+    user_id: UserIdArgument = "me",
+    first_name: Annotated[str | None, typer.Option("--first-name")] = None,
+    last_name: Annotated[str | None, typer.Option("--last-name")] = None,
+    metadata: Annotated[
+        str | None, typer.Option("--metadata", help="Replacement JSON object")
+    ] = None,
+    annotations: Annotated[
+        str | None, typer.Option("--annotations", help="Replacement string map")
+    ] = None,
+    o: OutputFormatOption = "table",
+) -> None:
+    _validate_output(o)
+    if all(value is None for value in (first_name, last_name, metadata, annotations)):
+        raise typer.BadParameter("supply at least one profile field to update")
+    fields = {
+        key: value
+        for key, value in {
+            "first_name": first_name,
+            "last_name": last_name,
+            "metadata": _parse_object(metadata, "metadata"),
+            "annotations": _parse_annotations(annotations),
+        }.items()
+        if value is not None
+    }
+    update = UpdateUserProfileRequest.model_validate(fields)
+    client = await get_client()
+    try:
+        result = await client.update_sysadmin_user_profile(user_id, update=update)
+    finally:
+        await client.close()
+    if o == "json":
+        _print_json(result)
+    else:
+        print("Global user profile updated")
