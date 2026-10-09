@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine
+FROM golang:1.26.9-alpine
 WORKDIR /app
 COPY server.go .
 RUN go build -o server server.go
