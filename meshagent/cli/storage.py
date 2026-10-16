@@ -1,823 +1,449 @@
-import typer
-from typing import Annotated, Optional
-from meshagent.cli.common_options import ProjectIdOption, RoomOption
-from rich import print
-import os
-import posixpath
+"""File commands shared by room, agent and top-level files entry points."""
+
+from __future__ import annotations
+
+import asyncio
+import codecs
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 import fnmatch
 import glob
+import mimetypes
+import os
+from pathlib import Path
+import posixpath
 import shutil
+import sys
+import tempfile
+from typing import Annotated, Literal
+from urllib.parse import unquote, urlsplit
 
-from meshagent.api import RoomClient, RoomException, WebSocketClientProtocol
-from meshagent.api.error_codes import ErrorCode
-from meshagent.api.room_server_client import StorageClient
-from meshagent.api.helpers import websocket_room_url
+from rich import print
+import typer
+
+from meshagent.api import FilesTarget, Meshagent, TargetFilesClient
+from meshagent.api.client import NotFoundError
 from meshagent.cli import async_typer
-from meshagent.cli.helper import (
-    get_client,
-    resolve_project_id,
-)
-from meshagent.cli.helper import resolve_room
+from meshagent.cli.common_options import ProjectIdOption
+from meshagent.cli.helper import get_client, resolve_project_id, resolve_room
 
-app = async_typer.AsyncTyper(help="Manage storage for a room")
+app = async_typer.AsyncTyper(help="Manage persistent room and managed-agent files")
+RoomOption = Annotated[
+    str | None, typer.Option("--room", help="Room name (defaults to MESHAGENT_ROOM)")
+]
+AgentOption = Annotated[str | None, typer.Option("--agent", help="Managed agent name")]
+RecursiveOption = Annotated[
+    bool, typer.Option("-r", "--recursive", help="Include directories recursively")
+]
 
 
-def parse_path(path: str):
+@dataclass(frozen=True)
+class StoragePath:
+    scheme: Literal["local", "room", "agent", "meshagent"]
+    path: str
+    target: FilesTarget | None = None
+
+
+def parse_path(value: str) -> StoragePath:
+    """Keep legacy room://path; qualified meshagent://project/rooms/name/path
+    addresses another target without changing the command's default target.
     """
-    Parse a path and return a tuple (scheme, subpath).
-    scheme = "room" if it starts with "room://", otherwise "local".
-    subpath = the remainder of the path with no leading slashes.
-    """
-    prefix = "room://"
-    if path.startswith(prefix):
-        return ("room", path[len(prefix) :])
-    return ("local", path)
+    for scheme in ("room", "agent"):
+        if value.startswith(f"{scheme}://"):
+            return StoragePath(scheme, value[len(scheme) + 3 :].strip("/"))
+    if value.startswith("meshagent://"):
+        uri = urlsplit(value)
+        parts = uri.path.lstrip("/").split("/", 2)
+        if uri.query or uri.fragment or not uri.netloc or len(parts) < 2:
+            raise typer.BadParameter("Use meshagent://PROJECT/{rooms|agents}/NAME/PATH")
+        namespace, name = parts[:2]
+        if namespace not in {"rooms", "agents"}:
+            raise typer.BadParameter("Files namespace must be rooms or agents")
+        target = FilesTarget(
+            project_id=unquote(uri.netloc),
+            kind="room" if namespace == "rooms" else "agent",
+            name=unquote(name),
+        )
+        return StoragePath(
+            "meshagent", unquote(parts[2]).rstrip("/") if len(parts) > 2 else "", target
+        )
+    return StoragePath("local", value)
 
 
-def split_glob_subpath(subpath: str):
-    """
-    Given something like "folder/*.txt" or "folder/subfolder/*.json",
-    return (dir_part, pattern_part).
-
-    If there's no wildcard, we return (subpath, None).
-    """
-    # If there is no '*', '?', or '[' in subpath, we assume no glob
-    # (simplistic check — if you want more robust detection, parse carefully).
-    if any(c in subpath for c in ["*", "?", "["]):
-        # We assume the pattern is the final portion after the last slash
-        # e.g. "folder/*.txt" => dir_part="folder", pattern_part="*.txt"
-        # If there's no slash, dir_part="" and pattern_part=subpath
-        base_dir = os.path.dirname(subpath)
-        pattern = os.path.basename(subpath)
-        return (base_dir, pattern)
-    else:
-        return (subpath, None)
+def split_glob_subpath(path: str) -> tuple[str, str | None]:
+    if glob.has_magic(path):
+        return posixpath.dirname(path), posixpath.basename(path)
+    return path, None
 
 
-def _join_remote_path(base_dir: str, name: str) -> str:
-    return posixpath.join(base_dir, name)
+class StorageContext:
+    def __init__(self, project_id: str | None, room: str | None, agent: str | None):
+        if room and agent:
+            raise typer.BadParameter(
+                "--room and --agent are mutually exclusive; use qualified meshagent:// paths for cross-target copies"
+            )
+        self.project_id = project_id
+        self.room = room
+        self.agent = agent
+        self.client: Meshagent | None = None
+
+    async def remote(self, path: StoragePath) -> TargetFilesClient:
+        if self.client is None:
+            self.client = await get_client()
+        if path.target is not None:
+            return self.client.files.for_target(path.target)
+        project = await resolve_project_id(project_id=self.project_id)
+        if path.scheme == "agent" or (path.scheme == "local" and self.agent):
+            if not self.agent:
+                raise typer.BadParameter("Provide --agent for agent:// paths")
+            return self.client.files.for_agent(
+                project_id=project, agent_name=self.agent
+            )
+        room = resolve_room(self.room)
+        return self.client.files.for_room(project_id=project, room_name=room)
+
+    async def close(self) -> None:
+        if self.client is not None:
+            await self.client.close()
 
 
-@app.async_command("exists", help="Check whether a path exists in room storage.")
+@asynccontextmanager
+async def storage_context(project_id: str | None, room: str | None, agent: str | None):
+    context = StorageContext(project_id, room, agent)
+    try:
+        yield context
+    finally:
+        await context.close()
+
+
+async def _remote_matches(
+    files: TargetFilesClient, path: str, *, folders: bool = False
+) -> list[str]:
+    base, pattern = split_glob_subpath(path)
+    if pattern is None:
+        if not await files.exists(base):
+            raise FileNotFoundError(f"Remote path '{path}' does not exist")
+        return [base]
+    return [
+        posixpath.join(base, entry.name)
+        async for entry in files.list(base)
+        if (folders or not entry.is_folder) and fnmatch.fnmatchcase(entry.name, pattern)
+    ]
+
+
+async def _local_chunks(path: Path) -> AsyncIterator[bytes]:
+    with path.open("rb") as file:
+        while chunk := await asyncio.to_thread(file.read, 256 * 1024):
+            yield chunk
+
+
+async def _download(files: TargetFilesClient, source: str, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as file:
+            temporary = file.name
+            async for chunk in files.download_stream(source):
+                await asyncio.to_thread(file.write, chunk)
+        os.replace(temporary, destination)
+    finally:
+        if temporary is not None:
+            Path(temporary).unlink(missing_ok=True)
+
+
+@app.async_command("exists", help="Check whether a path exists in room or agent files.")
 async def storage_exists_command(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
     path: str,
+    agent: AgentOption = None,
 ):
-    """
-    Check if a file/folder exists in remote storage.
-    """
-    scheme, subpath = parse_path(path)
-    remote_path = subpath if scheme == "room" else path
-
-    account_client = await get_client()
-    try:
-        project_id = await resolve_project_id(project_id=project_id)
-        room = resolve_room(room)
-        connection = await account_client.connect_room(project_id=project_id, room=room)
-
-        print("[bold green]Connecting to room...[/bold green]")
-        async with RoomClient(
-            protocol_factory=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=connection.room_name),
-                token=connection.jwt,
-            ).create_factory()
-        ) as client:
-            file_exists = await client.storage.exists(path=remote_path)
-            if file_exists:
-                print(f"[bold cyan]'{path}' exists in remote storage.[/bold cyan]")
-            else:
-                print(
-                    f"[bold red]'{path}' does NOT exist in remote storage.[/bold red]"
-                )
-    finally:
-        await account_client.close()
+    parsed = parse_path(path)
+    async with storage_context(project_id, room, agent) as context:
+        files = await context.remote(parsed)
+        exists = await files.exists(parsed.path.strip("/"))
+        print(f"'{path}' {'exists' if exists else 'does NOT exist'} in remote storage.")
 
 
-@app.async_command("cp", help="Copy files between local paths and room storage.")
+async def _copy_local_tree(
+    files: TargetFilesClient, source: Path, destination: str, recursive: bool
+) -> None:
+    if source.is_symlink() and source.is_dir():
+        raise ValueError("Copying directory symlinks is not supported")
+    if source.is_dir():
+        if not recursive:
+            raise typer.BadParameter("Use -r to copy a directory")
+        if destination:
+            await files.mkdir(destination)
+        for child in sorted(source.iterdir()):
+            await _copy_local_tree(
+                files, child, posixpath.join(destination, child.name), True
+            )
+    else:
+        await files.upload(
+            destination,
+            _local_chunks(source),
+            content_type=mimetypes.guess_type(source.name)[0]
+            or "application/octet-stream",
+            overwrite=True,
+        )
+
+
+async def _copy_remote_tree(
+    files: TargetFilesClient, source: str, destination: Path, recursive: bool
+) -> None:
+    metadata = await files.stat(source)
+    if metadata.is_folder:
+        if not recursive:
+            raise typer.BadParameter("Use -r to copy a directory")
+        destination.mkdir(parents=True, exist_ok=True)
+        async for entry in files.list(source):
+            # Never interpret a server-returned filename as a local path.
+            if (
+                entry.name in {"", ".", ".."}
+                or "/" in entry.name
+                or "\\" in entry.name
+                or Path(entry.name).name != entry.name
+            ):
+                raise ValueError("Files server returned an invalid filename")
+            await _copy_remote_tree(
+                files,
+                posixpath.join(source, entry.name),
+                destination / entry.name,
+                True,
+            )
+    else:
+        await _download(files, source, destination)
+
+
+@app.async_command(
+    "cp", help="Copy local, room or agent files, including across projects/targets."
+)
 async def storage_cp_command(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
     source_path: str,
     dest_path: str,
+    agent: AgentOption = None,
+    recursive: RecursiveOption = False,
 ):
-    room = resolve_room(room)
-
-    try:
-        """
-        Copy files between local and remote storage. Supports globs on the source side.
-        - cp room://folder/*.txt mylocaldir
-        - cp *.txt room://myfolder
-        - cp room://file.bin room://backup/file.bin
-        - etc.
-        """
-        # Determine what is remote or local for source/dest
-        src_scheme, src_subpath = parse_path(source_path)
-        dst_scheme, dst_subpath = parse_path(dest_path)
-
-        # This code will only connect to the room once if either side is remote
-        # (or both are remote).
-        account_client = None
-        client = None
-        storage_client: None | StorageClient = None
-
-        # A helper to ensure we have a connected StorageClient if needed
-        async def ensure_storage_client():
-            nonlocal account_client, client, storage_client, project_id
-
-            if storage_client is not None:
-                return  # Already connected
-
-            account_client = await get_client()
-            project_id = await resolve_project_id(project_id=project_id)
-
-            connection = await account_client.connect_room(
-                project_id=project_id, room=room
+    source, destination = parse_path(source_path), parse_path(dest_path)
+    async with storage_context(project_id, room, agent) as context:
+        source_files = (
+            await context.remote(source) if source.scheme != "local" else None
+        )
+        destination_files = (
+            await context.remote(destination) if destination.scheme != "local" else None
+        )
+        if source_files is not None:
+            sources = await _remote_matches(
+                source_files, source.path, folders=recursive
             )
-
-            print("[bold green]Connecting to room...[/bold green]")
-            client = RoomClient(
-                protocol_factory=WebSocketClientProtocol(
-                    url=websocket_room_url(room_name=connection.room_name),
-                    token=connection.jwt,
-                ).create_factory()
+        else:
+            sources = (
+                glob.glob(source.path) if glob.has_magic(source.path) else [source.path]
             )
-
-            await client.__aenter__()  # Manually enter the async context
-            storage_client = client.storage
-
-        # We’ll gather the final (source->destination) file pairs to copy
-        copy_operations = []
-
-        # 1) Expand the source side if there's a glob
-        def local_list_files_with_glob(path_pattern: str):
-            return glob.glob(path_pattern)
-
-        async def remote_list_files_with_glob(sc: StorageClient, path_pattern: str):
-            base_dir, maybe_pattern = split_glob_subpath(path_pattern)
-            if maybe_pattern is None:
-                # Single file
-                # We'll just see if it exists
-                file_exists = await sc.exists(path=base_dir)
-                if not file_exists:
-                    raise FileNotFoundError(
-                        f"Remote file '{path_pattern}' does not exist."
-                    )
-                return [(base_dir, os.path.basename(base_dir))]  # (full, filename)
-            else:
-                # List base_dir, filter
-                entries = await sc.list(path=base_dir)
-                matched = [
-                    (_join_remote_path(base_dir, e.name), e.name)
-                    for e in entries
-                    if not e.is_folder and fnmatch.fnmatch(e.name, maybe_pattern)
-                ]
-                return matched
-
-        # Expand the source files
-        if src_scheme == "local":
-            # local
-            if any(c in src_subpath for c in ["*", "?", "["]):
-                # Glob
-                local_matches = local_list_files_with_glob(src_subpath)
-                if not local_matches:
-                    print(f"[bold red]No local files match '{src_subpath}'[/bold red]")
-                    return
-                # We'll store (absolute_source_file, filename_only)
-                expanded_sources = [
-                    (m, os.path.basename(m)) for m in local_matches if os.path.isfile(m)
-                ]
-            else:
-                # Single local file
-                if not os.path.isfile(src_subpath):
-                    print(f"[bold red]Local file '{src_subpath}' not found.[/bold red]")
-                    return
-                expanded_sources = [(src_subpath, os.path.basename(src_subpath))]
+            sources = [path for path in sources if Path(path).exists()]
+        if not sources:
+            raise FileNotFoundError(f"No files match '{source_path}'")
+        if destination_files is None:
+            folder = Path(destination.path).is_dir() or dest_path.endswith(os.sep)
         else:
-            # remote
-            await ensure_storage_client()
-            matches = await remote_list_files_with_glob(storage_client, src_subpath)
-            if not matches:
-                print(f"[bold red]No remote files match '{src_subpath}'[/bold red]")
-                return
-            expanded_sources = matches  # list of (full_remote_path, filename)
-
-        # 2) Figure out if destination is a single file or a directory
-        #    We'll handle multi-file -> directory or single-file -> single-file.
-        multiple_sources = len(expanded_sources) > 1
-
-        if dst_scheme == "local":
-            # If local destination is a directory or ends with a path separator,
-            # we treat it as a directory. If multiple files, it must be a directory.
-            if (
-                os.path.isdir(dst_subpath)
-                or dst_subpath.endswith(os.sep)
-                or dst_subpath == ""
-            ):
-                # directory
-                for full_src, fname in expanded_sources:
-                    copy_operations.append((full_src, os.path.join(dst_subpath, fname)))
+            folder = not destination.path or dest_path.endswith("/")
+            if not folder:
+                try:
+                    folder = (await destination_files.stat(destination.path)).is_folder
+                except NotFoundError:
+                    pass
+        if len(sources) > 1 and not folder:
+            raise typer.BadParameter(
+                "Destination must be a directory for multiple source files"
+            )
+        for item in sources:
+            name = posixpath.basename(item) if source_files else Path(item).name
+            dest = (
+                destination.path
+                if not item
+                else (
+                    posixpath.join(destination.path, name)
+                    if folder
+                    else destination.path
+                )
+            )
+            if source_files is not None and destination_files is not None:
+                if not item:
+                    if not recursive:
+                        raise typer.BadParameter("Use -r to copy a files root")
+                    if dest:
+                        await destination_files.mkdir(dest)
+                    async for entry in source_files.list():
+                        await destination_files.copy(
+                            source_files.location(entry.name),
+                            posixpath.join(dest, entry.name),
+                            overwrite=True,
+                        )
+                        print(
+                            f"Copied '{entry.name}' to '{posixpath.join(dest, entry.name)}'"
+                        )
+                    continue
+                if (await source_files.stat(item)).is_folder and not recursive:
+                    raise typer.BadParameter("Use -r to copy a directory")
+                await destination_files.copy(
+                    source_files.location(item), dest, overwrite=True
+                )
+            elif source_files is not None:
+                await _copy_remote_tree(source_files, item, Path(dest), recursive)
+            elif destination_files is not None:
+                await _copy_local_tree(destination_files, Path(item), dest, recursive)
             else:
-                # single file (or maybe it doesn't exist yet, but no slash)
-                if multiple_sources:
-                    # Must be a directory, but user gave a file-like name => error
-                    print(
-                        f"[bold red]Destination '{dest_path}' is not a directory, but multiple files are being copied.[/bold red]"
-                    )
-                    return
-                # single file
-                copy_operations.append((expanded_sources[0][0], dst_subpath))
-        else:
-            # remote
-            # Determine if destination should be treated as a folder.
-            await ensure_storage_client()
-
-            is_destination_folder = False
-            if dst_subpath in ("", "/") or dest_path.endswith("/"):
-                is_destination_folder = True
-            else:
-                dst_stat = await storage_client.stat(path=dst_subpath)
-                if dst_stat is not None and dst_stat.is_folder:
-                    is_destination_folder = True
-
-            if is_destination_folder:
-                # it's a folder
-                for full_src, fname in expanded_sources:
-                    # We'll store a path "dst_subpath/fname"
-                    remote_dest_file = _join_remote_path(dst_subpath, fname)
-                    copy_operations.append((full_src, remote_dest_file))
-            else:
-                # single file path
-                if multiple_sources:
-                    print(
-                        f"[bold red]Destination '{dest_path}' is not a folder, but multiple files are being copied.[/bold red]"
-                    )
-                    return
-                copy_operations.append((expanded_sources[0][0], dst_subpath))
-
-        # 3) Perform the copy
-        #    copy_operations is a list of (source_file, dest_file).
-        #    We need to handle four combos:
-        #    a) local->local (unlikely in your scenario, but we handle it)
-        #    b) local->remote
-        #    c) remote->local
-        #    d) remote->remote
-        for src_file, dst_file in copy_operations:
-            # Determine combo
-            if src_scheme == "local" and dst_scheme == "local":
-                # local->local
-                print(f"Copying local '{src_file}' -> local '{dst_file}'")
-                os.makedirs(os.path.dirname(dst_file), exist_ok=True)
-                with open(src_file, "rb") as fsrc, open(dst_file, "wb") as fdst:
-                    fdst.write(fsrc.read())
-                print(
-                    f"[bold cyan]Copied local '{src_file}' to '{dst_file}'[/bold cyan]"
-                )
-
-            elif src_scheme == "local" and dst_scheme == "room":
-                # local->remote
-                print(f"Copying local '{src_file}' -> remote '{dst_file}'")
-                with open(src_file, "rb") as fsrc:
-                    data = fsrc.read()
-                await storage_client.upload(path=dst_file, data=data, overwrite=True)
-                print(
-                    f"[bold cyan]Uploaded '{src_file}' to remote '{dst_file}'[/bold cyan]"
-                )
-
-            elif src_scheme == "room" and dst_scheme == "local":
-                # remote->local
-                print(f"Copying remote '{src_file}' -> local '{dst_file}'")
-                remote_file = await storage_client.download(path=src_file)
-                if os.path.dirname(dst_file) != "":
-                    os.makedirs(os.path.dirname(dst_file), exist_ok=True)
-                with open(dst_file, "wb") as fdst:
-                    fdst.write(remote_file.data)
-                print(
-                    f"[bold cyan]Downloaded remote '{src_file}' to local '{dst_file}'[/bold cyan]"
-                )
-
-            else:
-                # remote->remote
-                print(f"Copying remote '{src_file}' -> remote '{dst_file}'")
-                source_file = await storage_client.download(path=src_file)
-                await storage_client.upload(
-                    path=dst_file,
-                    data=source_file.data,
-                    overwrite=True,
-                    mime_type=source_file.mime_type,
-                )
-                print(
-                    f"[bold cyan]Copied remote '{src_file}' to '{dst_file}'[/bold cyan]"
-                )
-    finally:
-        # Clean up
-        if client is not None:
-            await client.__aexit__(None, None, None)
-        if account_client is not None:
-            await account_client.close()
+                output = Path(dest)
+                output.parent.mkdir(parents=True, exist_ok=True)
+                if Path(item).is_dir():
+                    if not recursive:
+                        raise typer.BadParameter("Use -r to copy a directory")
+                    shutil.copytree(item, output, dirs_exist_ok=True)
+                else:
+                    shutil.copyfile(item, output)
+            print(f"Copied '{item}' to '{dest}'")
 
 
-@app.async_command("get", help="Print file contents from local disk or room storage.")
+@app.async_command("get", help="Print a local, room or agent text file.")
 async def storage_get_command(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
     path: str,
+    agent: AgentOption = None,
     encoding: Annotated[
         str, typer.Option("--encoding", help="Text encoding")
     ] = "utf-8",
 ):
-    """
-    Print the contents of a file (local or remote) to the console.
-    """
-    room = resolve_room(room)
-
-    scheme, subpath = parse_path(path)
-
-    # If we need a remote connection, set it up:
-    account_client = None
-    client = None
-    storage_client: Optional[StorageClient] = None
-
-    async def ensure_storage_client():
-        nonlocal account_client, client, storage_client, project_id
-
-        if storage_client is not None:
-            return
-
-        if not room:
-            raise typer.BadParameter("To get a remote file, you must provide --room")
-
-        account_client = await get_client()
-        project_id = await resolve_project_id(project_id=project_id)
-
-        connection = await account_client.connect_room(project_id=project_id, room=room)
-
-        print("[bold green]Connecting to room...[/bold green]")
-        client = RoomClient(
-            protocol_factory=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=connection.room_name),
-                token=connection.jwt,
-            ).create_factory()
-        )
-
-        await client.__aenter__()
-        storage_client = client.storage
-
-    try:
-        if scheme == "local":
-            # Local file read
-            if not os.path.isfile(subpath):
-                print(f"[bold red]Local file '{subpath}' not found.[/bold red]")
-                raise typer.Exit(code=1)
-            with open(subpath, "rb") as f:
-                data = f.read()
-            text_content = data.decode(encoding, errors="replace")
-            print(text_content)
+    parsed = parse_path(path)
+    decoder = codecs.getincrementaldecoder(encoding)(errors="replace")
+    async with storage_context(project_id, room, agent) as context:
+        if parsed.scheme == "local":
+            chunks = _local_chunks(Path(parsed.path))
         else:
-            # Remote file read
-            await ensure_storage_client()
-            remote_stat = await storage_client.stat(path=subpath)
-            if remote_stat is None:
-                print(f"[bold red]Remote file '{subpath}' not found.[/bold red]")
-                raise typer.Exit(code=1)
-
-            if remote_stat.is_folder:
-                print(
-                    f"[bold red]Remote path '{subpath}' is a folder; use 'meshagent room storage ls' to inspect it.[/bold red]"
-                )
-                raise typer.Exit(code=1)
-
-            try:
-                remote_file = await storage_client.download(path=subpath)
-            except RoomException as ex:
-                if ex.code == ErrorCode.STORAGE_NOT_FOUND:
-                    print(f"[bold red]Remote file '{subpath}' not found.[/bold red]")
-                    raise typer.Exit(code=1)
-                raise
-
-            text_content = remote_file.data.decode(encoding, errors="replace")
-            print(text_content)
-    finally:
-        if client is not None:
-            await client.__aexit__(None, None, None)
-        if account_client is not None:
-            await account_client.close()
+            files = await context.remote(parsed)
+            chunks = files.download_stream(parsed.path)
+        async for chunk in chunks:
+            sys.stdout.write(decoder.decode(chunk))
+        sys.stdout.write(decoder.decode(b"", final=True) + "\n")
 
 
 @app.async_command(
-    "rm", help="Remove files or directories from local disk or room storage."
+    "rm", help="Remove local, room or agent files; directories require -r."
 )
 async def storage_rm_command(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
     path: str,
-    recursive: Annotated[
-        bool, typer.Option("-r", help="Remove directories/folders recursively")
-    ] = False,
+    agent: AgentOption = None,
+    recursive: RecursiveOption = False,
 ):
-    """
-    Remove files (and optionally folders) either locally or in remote storage.
-    - Supports wildcards on the source path (for files).
-    - Fails if trying to remove a directory/folder without --recursive/-r.
-    """
-    room = resolve_room(room)
-
-    try:
-        # We'll mimic the "cp" approach, expanding wildcards for local/remote.
-
-        scheme, subpath = parse_path(path)
-
-        account_client = None
-        client = None
-        storage_client: Optional[StorageClient] = None
-
-        # Helper to ensure we have a storage client if we need remote operations
-        async def ensure_storage_client():
-            nonlocal account_client, client, storage_client, project_id
-
-            if storage_client is not None:
-                return  # Already set up
-
-            if not room:
-                raise typer.BadParameter(
-                    "To remove a remote file or folder, you must provide --room"
-                )
-
-            account_client = await get_client()
-            project_id = await resolve_project_id(project_id=project_id)
-
-            connection = await account_client.connect_room(
-                project_id=project_id, room=room
-            )
-
-            print("[bold green]Connecting to room...[/bold green]")
-            client = RoomClient(
-                protocol_factory=WebSocketClientProtocol(
-                    url=websocket_room_url(room_name=connection.room_name),
-                    token=connection.jwt,
-                ).create_factory()
-            )
-
-            await client.__aenter__()
-            storage_client = client.storage
-
-        # --------------
-        # LOCAL HELPERS
-        # --------------
-        def local_list_files_with_glob(path_pattern: str):
-            return glob.glob(path_pattern)
-
-        def remove_local_path(local_path: str, recursive: bool):
-            """Remove a single local path (file or directory). Respects 'recursive' for directories."""
-            if not os.path.exists(local_path):
-                print(
-                    f"[yellow]Local path '{local_path}' does not exist. Skipping.[/yellow]"
-                )
-                return
-
-            if os.path.isfile(local_path):
-                os.remove(local_path)
-                print(f"[bold cyan]Removed local file '{local_path}'[/bold cyan]")
-            elif os.path.isdir(local_path):
-                if not recursive:
-                    print(
-                        f"[bold red]Cannot remove directory '{local_path}' without -r.[/bold red]"
-                    )
-                    raise typer.Exit(code=1)
-                shutil.rmtree(local_path)
-                print(
-                    f"[bold cyan]Removed local directory '{local_path}' recursively[/bold cyan]"
-                )
-            else:
-                # Neither file nor directory?
-                print(
-                    f"[bold red]'{local_path}' is not a regular file or directory. Skipping.[/bold red]"
-                )
-
-        # ---------------
-        # REMOTE HELPERS
-        # ---------------
-        async def remote_list_files_with_glob(sc: StorageClient, path_pattern: str):
-            """
-            If there's a wildcard, returns only matching files (not folders),
-            consistent with 'cp' approach. If no wildcard, returns either
-            [(full_path, basename)] if it exists or empty list if not found.
-            """
-            base_dir, maybe_pattern = split_glob_subpath(path_pattern)
-            if maybe_pattern is None:
-                # Single path
-                file_exists = await sc.exists(path=base_dir)
-                if not file_exists:
-                    return []
-                # We don't know if it's file or folder yet, but for a single path, we'll treat it as one item.
-                return [(base_dir, os.path.basename(base_dir))]
-            else:
-                # We have a pattern
-                entries = await sc.list(path=base_dir)
-                matched = [
-                    (os.path.join(base_dir, e.name), e.name)
-                    for e in entries
-                    if not e.is_folder and fnmatch.fnmatch(e.name, maybe_pattern)
-                ]
-                return matched
-
-        async def is_remote_folder(sc: StorageClient, remote_path: str) -> bool:
-            """Return True if remote_path is a folder, otherwise False or it doesn't exist."""
-            stat = await sc.stat(path=remote_path)
-            if stat is None:
-                return False
-            else:
-                return stat.is_folder
-
-        async def remove_remote_path(sc: StorageClient, path: str, recursive: bool):
-            """
-            Removes a single remote path (file or folder). If it's a folder,
-            recursively remove if `recursive` is True, otherwise fail.
-            """
-            # Does it exist at all?
-            if not await sc.exists(path=path):
-                print(
-                    f"[yellow]Remote path '{path}' does not exist. Skipping.[/yellow]"
-                )
-                return
-
-            # Check if it's a folder
-            if await is_remote_folder(sc, path):
-                # It's a folder
-                if not recursive:
-                    print(
-                        f"[bold red]Cannot remove remote directory '{path}' without -r.[/bold red]"
-                    )
-                    raise typer.Exit(code=1)
-
-                # Recursively remove contents
-                entries = await sc.list(path=path)
-                for e in entries:
-                    child_path = os.path.join(path, e.name)
-                    await remove_remote_path(sc, child_path, recursive)
-
-                # Finally remove the folder itself (assuming storage.delete can remove empty folders)
-                await sc.delete(path)
-                print(
-                    f"[bold cyan]Removed remote directory '{path}' recursively[/bold cyan]"
-                )
-            else:
-                # It's a file
-                await sc.delete(path)
-                print(f"[bold cyan]Removed remote file '{path}'[/bold cyan]")
-
-        # ----------------------------------------------------------------
-        # 1) Expand the path if there's a wildcard
-        # ----------------------------------------------------------------
-        expanded_targets = []
-        if scheme == "local":
-            # Local expansions
-            if any(c in subpath for c in ["*", "?", "["]):
-                local_matches = local_list_files_with_glob(subpath)
-                if not local_matches:
-                    print(f"[bold red]No local files match '{subpath}'[/bold red]")
-                    raise typer.Exit(code=1)
-                # We'll store them (absolute_path, basename)
-                expanded_targets = [(m, os.path.basename(m)) for m in local_matches]
-            else:
-                # Single path
-                expanded_targets = [(subpath, os.path.basename(subpath))]
+    parsed = parse_path(path)
+    async with storage_context(project_id, room, agent) as context:
+        if parsed.scheme != "local":
+            files = await context.remote(parsed)
+            for target in await _remote_matches(files, parsed.path):
+                if (await files.stat(target)).is_folder and not recursive:
+                    raise typer.BadParameter("Use -r to remove a directory")
+                await files.delete(target, recursive=recursive)
+                print(f"Removed '{target}'")
         else:
-            # Remote expansions
-            await ensure_storage_client()
-            matches = await remote_list_files_with_glob(storage_client, subpath)
-            if not matches:
-                print(f"[bold red]No remote files/folders match '{subpath}'[/bold red]")
-                raise typer.Exit(code=1)
-            expanded_targets = matches
-
-        # ----------------------------------------------------------------
-        # 2) Perform the removal
-        # ----------------------------------------------------------------
-        for full_path, _ in expanded_targets:
-            if scheme == "local":
-                remove_local_path(full_path, recursive)
-            else:
-                await remove_remote_path(storage_client, full_path, recursive)
-    finally:
-        # Clean up remote client if used
-        if client is not None:
-            await client.__aexit__(None, None, None)
-        if account_client is not None:
-            await account_client.close()
+            targets = (
+                glob.glob(parsed.path) if glob.has_magic(parsed.path) else [parsed.path]
+            )
+            for target in targets:
+                item = Path(target)
+                if item.is_dir() and not item.is_symlink():
+                    if not recursive:
+                        raise typer.BadParameter("Use -r to remove a directory")
+                    shutil.rmtree(item)
+                else:
+                    item.unlink()
+                print(f"Removed '{target}'")
 
 
-@app.async_command("ls", help="List files and directories locally or in room storage.")
+async def _list_remote(
+    files: TargetFilesClient, path: str, recursive: bool, prefix: str = ""
+) -> None:
+    if path and not (await files.stat(path)).is_folder:
+        print(prefix + posixpath.basename(path))
+        return
+    async for entry in files.list(path):
+        print(prefix + entry.name + ("/" if entry.is_folder else ""))
+        if recursive and entry.is_folder:
+            await _list_remote(
+                files, posixpath.join(path, entry.name), True, prefix + "  "
+            )
+
+
+def _list_local(path: Path, recursive: bool, prefix: str = "") -> None:
+    if not path.is_dir():
+        print(prefix + path.name)
+        return
+    for entry in sorted(path.iterdir()):
+        print(prefix + entry.name + ("/" if entry.is_dir() else ""))
+        if recursive and entry.is_dir() and not entry.is_symlink():
+            _list_local(entry, True, prefix + "  ")
+
+
+@app.async_command(
+    "ls", help="List local, room or agent files, with optional globs and -r."
+)
 async def storage_ls_command(
     *,
     project_id: ProjectIdOption,
     room: RoomOption,
     path: Annotated[
-        str, typer.Argument(..., help="Path to list (local or room://...)")
+        str, typer.Argument(help="Local, room://, agent:// or meshagent:// path")
     ],
-    recursive: Annotated[
-        bool, typer.Option("-r", help="List subfolders/files recursively")
-    ] = False,
+    agent: AgentOption = None,
+    recursive: RecursiveOption = False,
 ):
-    """
-    List files/folders either locally or in remote storage.
-    - Supports wildcards on the path (e.g. *.txt).
-    - Use -r for recursive listing.
-    """
-
-    scheme, subpath = parse_path(path)
-
-    account_client = None
-    client = None
-    storage_client: Optional[StorageClient] = None
-
-    room = resolve_room(room)
-
-    # --- Set up remote connection if needed ---
-    async def ensure_storage_client():
-        nonlocal account_client, client, storage_client, project_id
-        if storage_client is not None:
-            return
-
-        if not room:
-            raise typer.BadParameter("To list a remote path, you must provide --room")
-
-        account_client = await get_client()
-        project_id = await resolve_project_id(project_id=project_id)
-        connection = await account_client.connect_room(project_id=project_id, room=room)
-
-        client = RoomClient(
-            protocol_factory=WebSocketClientProtocol(
-                url=websocket_room_url(room_name=connection.room_name),
-                token=connection.jwt,
-            ).create_factory()
-        )
-        await client.__aenter__()
-        storage_client = client.storage
-
-    # ----------------------------------------------------------------
-    # Local listing
-    # ----------------------------------------------------------------
-    def list_local_path(base_path: str, recursive: bool, prefix: str = ""):
-        """
-        List a local path. If it's a file, print it.
-        If it's a directory, list its contents.
-        If recursive=True, walk subdirectories as well.
-
-        prefix is used to indent or prefix lines if desired.
-        """
-
-        if not os.path.exists(base_path):
-            print(f"[red]{prefix}{base_path} does not exist[/red]")
-            return
-
-        if os.path.isfile(base_path):
-            print(f"{prefix}{os.path.basename(base_path)}")
-            return
-
-        # If it's a directory
-        # Print the directory name itself (if you want a heading)
-        print(f"{prefix}{os.path.basename(base_path)}/")
-
-        try:
-            with os.scandir(base_path) as it:
-                for entry in sorted(it, key=lambda x: x.name):
-                    if entry.is_dir():
-                        print(f"{prefix}  {entry.name}/")
-                        if recursive:
-                            # Recursively list the folder
-                            list_local_path(
-                                os.path.join(base_path, entry.name),
-                                True,
-                                prefix + "    ",
-                            )
-                    else:
-                        print(f"{prefix}  {entry.name}")
-        except PermissionError:
-            print(f"{prefix}[PermissionError] Cannot list {base_path}")
-
-    def glob_and_list_local(path_pattern: str, recursive: bool):
-        """
-        Glob for local paths. For each match:
-          - If it's a file, print the file.
-          - If it's a folder, list its contents.
-        """
-        matches = glob.glob(path_pattern)
-        if not matches:
-            print(f"[red]No local files/folders match '{path_pattern}'[/red]")
-            return
-
-        for m in matches:
-            list_local_path(m, recursive)
-
-    # ----------------------------------------------------------------
-    # Remote listing
-    # ----------------------------------------------------------------
-    async def list_remote_path(
-        sc: StorageClient, remote_path: str, recursive: bool, prefix: str = ""
-    ):
-        """
-        List a remote path. If it's a file, just print it.
-        If it's a folder, list its contents. If recursive=True, list subfolders too.
-        """
-
-        is_root = remote_path in ("", "/")
-
-        if is_root:
-            folder_name = "/"
-            list_path = ""
+    parsed = parse_path(path)
+    async with storage_context(project_id, room, agent) as context:
+        if parsed.scheme == "local":
+            targets = (
+                glob.glob(parsed.path) if glob.has_magic(parsed.path) else [parsed.path]
+            )
+            for target in targets:
+                if not Path(target).exists():
+                    raise FileNotFoundError(target)
+                _list_local(Path(target), recursive)
         else:
-            stat = await sc.stat(path=remote_path)
-            if stat is None:
-                print(f"{prefix}[red]{remote_path} does not exist (remote)[/red]")
-                return
-
-            if not stat.is_folder:
-                print(f"{prefix}{os.path.basename(remote_path)}")
-                return
-
-            folder_name = os.path.basename(remote_path.rstrip("/")) or remote_path
-            list_path = remote_path
-
-        # It's a folder, list immediate children.
-        print(f"{prefix}{folder_name}/")
-        try:
-            entries = await sc.list(path=list_path)
-            entries.sort(key=lambda e: e.name)
-            for e in entries:
-                child_path = os.path.join(list_path, e.name)
-                if e.is_folder:
-                    print(f"{prefix}  {e.name}/")
-                    if recursive:
-                        await list_remote_path(
-                            sc, child_path, recursive, prefix + "    "
-                        )
-                else:
-                    print(f"{prefix}  {e.name}")
-        except Exception as ex:
-            print(f"{prefix}[red]Cannot list remote folder '{remote_path}': {ex}[/red]")
-
-    async def glob_and_list_remote(
-        sc: StorageClient, path_pattern: str, recursive: bool
-    ):
-        """
-        If there's a wildcard, list matching files/folders. If no wildcard, list the single path.
-        """
-        base_dir, maybe_pattern = split_glob_subpath(path_pattern)
-        if maybe_pattern is None:
-            # Single path
-            await list_remote_path(sc, base_dir, recursive)
-        else:
-            # Expand the directory
-            # For 'ls' we might want to list matching files and also matching folders if pattern matches?
-            # But your earlier approach for "cp" and "rm" only matched files in wildcard.
-            # Let's do a slightly broader approach: match both files and folders by listing base_dir.
-            if base_dir not in ("", "/") and not await sc.exists(path=base_dir):
-                print(f"[red]Remote folder '{base_dir}' does not exist[/red]")
-                return
-            try:
-                entries = await sc.list(path="" if base_dir in ("", "/") else base_dir)
-                # Filter by pattern
-                matched = [e for e in entries if fnmatch.fnmatch(e.name, maybe_pattern)]
-                if not matched:
-                    print(f"[red]No remote entries match '{path_pattern}'[/red]")
-                    return
-
-                # For each match, build the full path and list it
-                for e in matched:
-                    child_path = os.path.join(base_dir, e.name)
-                    await list_remote_path(sc, child_path, recursive)
-            except Exception as ex:
-                print(f"[red]Error listing remote '{base_dir}': {ex}[/red]")
-
-    # ----------------------------------------------------------------
-    # Execute listing based on local/remote
-    # ----------------------------------------------------------------
-    try:
-        if scheme == "local":
-            if any(c in subpath for c in ["*", "?", "["]):
-                glob_and_list_local(subpath, recursive)
+            files = await context.remote(parsed)
+            if glob.has_magic(parsed.path):
+                for target in await _remote_matches(files, parsed.path, folders=True):
+                    await _list_remote(files, target, recursive)
             else:
-                # Single path (file or folder)
-                if not os.path.exists(subpath):
-                    print(f"[red]Local path '{subpath}' does not exist[/red]")
-                    raise typer.Exit(code=1)
-                list_local_path(subpath, recursive)
-        else:
-            await ensure_storage_client()
-            # wildcard or single path
-            if any(c in subpath for c in ["*", "?", "["]):
-                await glob_and_list_remote(storage_client, subpath, recursive)
-            else:
-                # Single remote path
-                await list_remote_path(storage_client, subpath, recursive)
+                await _list_remote(files, parsed.path, recursive)
 
-    finally:
-        if client is not None:
-            await client.__aexit__(None, None, None)
-        if account_client is not None:
-            await account_client.close()
+
+@app.async_command(
+    "presign", help="Create a scoped temporary file URL (requires presign permission)."
+)
+async def storage_presign_command(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    path: str,
+    agent: AgentOption = None,
+    method: Annotated[
+        Literal["GET", "HEAD", "PUT", "DELETE"], typer.Option("--method")
+    ] = "GET",
+    expires_in: Annotated[
+        int, typer.Option("--expires-in", min=1, max=604800, help="Lifetime in seconds")
+    ] = 3600,
+):
+    parsed = parse_path(path)
+    async with storage_context(project_id, room, agent) as context:
+        files = await context.remote(parsed)
+        result = await files.presign(parsed.path, method=method, expires_in=expires_in)
+        # JSON preserves required headers as well as the URL and expiry.
+        sys.stdout.write(result.model_dump_json() + "\n")

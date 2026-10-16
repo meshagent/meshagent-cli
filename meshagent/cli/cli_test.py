@@ -61,6 +61,7 @@ def test_root_help_lists_create_and_doctor_but_hides_legacy_command_namespaces()
     assert "│ launch" in result.output
     assert "│ room" in result.output
     assert "│ volumes" in result.output
+    assert "│ files" in result.output
     assert "│ call" not in result.output
     assert "│ package" not in result.output
     assert "│ multi" not in result.output
@@ -224,12 +225,14 @@ def test_agents_help_lists_use_command() -> None:
 
 def test_agent_help_lists_command_descriptions() -> None:
     result = CliRunner().invoke(cli.app, ["agent", "--help"])
+    assert "storage" in result.stdout
 
     assert result.exit_code == 0
-    assert "│ delete  Delete a managed agent from the project." in result.output
-    assert "│ update  Update a managed agent configuration." in result.output
-    assert "│ list    List managed agents in the project." in result.output
-    assert "│ get     Get a managed agent configuration." in result.output
+    output = " ".join(result.output.split())
+    assert "delete Delete a managed agent from the project." in output
+    assert "update Update a managed agent configuration." in output
+    assert "list List managed agents in the project." in output
+    assert "get Get a managed agent configuration." in output
 
 
 def test_room_agents_call_help_lists_call_targets() -> None:

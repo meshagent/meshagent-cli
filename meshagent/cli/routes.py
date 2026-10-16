@@ -134,6 +134,26 @@ def _load_route_spec(path: str) -> RouteSpec:
         raise typer.BadParameter(f"Invalid route spec: {exc}") from exc
 
 
+def _validate_route_spec(value: dict[str, object]) -> RouteSpec:
+    try:
+        return RouteSpec.model_validate(value)
+    except ValidationError as exc:
+        raise typer.BadParameter(f"Invalid RouteSpec: {exc}") from exc
+
+
+def _check_agent_options(
+    *, room: str | None, agent: str | None, port: str | None, iap: bool | None
+) -> None:
+    if agent is None:
+        return
+    if room is not None:
+        raise typer.BadParameter("--room and --agent cannot be combined")
+    if not agent.strip():
+        raise typer.BadParameter("--agent must name a managed agent")
+    if port is not None or iap is True:
+        raise typer.BadParameter("Agent file routes cannot use --port or --iap")
+
+
 def _warn_if_non_meshagent_app_domain(domain: str) -> None:
     if domain.strip().lower().endswith(MESHAGENT_APP_DOMAIN_SUFFIX):
         return
@@ -185,9 +205,13 @@ async def route_create(
         Optional[str],
         typer.Option("--file", "-f", help="Path to a RouteSpec YAML or JSON file"),
     ] = None,
-    room: Annotated[
-        Optional[str], typer.Option("--room", help="Room name")
-    ] = os.getenv("MESHAGENT_ROOM"),
+    room: Annotated[Optional[str], typer.Option("--room", help="Room name")] = None,
+    agent: Annotated[
+        Optional[str],
+        typer.Option(
+            "--agent", help="Managed agent whose files to publish (public only)"
+        ),
+    ] = None,
     port: Annotated[
         Optional[str],
         typer.Option(
@@ -205,7 +229,7 @@ async def route_create(
         typer.Option(
             "--content-path",
             "--room-path",
-            help="Room storage subpath to serve directly",
+            help="Room or managed-agent files subpath to serve directly",
         ),
     ] = None,
     cors: Annotated[
@@ -246,6 +270,7 @@ async def route_create(
     try:
         project_id = await resolve_project_id(project_id)
         if file is None:
+            _check_agent_options(room=room, agent=agent, port=port, iap=iap)
             content_options = _content_options_supplied(
                 content_path=content_path,
                 cors=cors,
@@ -265,8 +290,8 @@ async def route_create(
                 raise typer.BadParameter(
                     "Provide --content-path when using room content options"
                 )
-            room = resolve_room(room)
-            if room is None:
+            room = resolve_room(room) if agent is None else None
+            if room is None and agent is None:
                 print(
                     "[red]Room name not specified, pass --room or set MESHAGENT_ROOM[/red]"
                 )
@@ -285,11 +310,13 @@ async def route_create(
                 }
             else:
                 target = {"targetPort": port}
-            spec = RouteSpec.model_validate(
+            spec = _validate_route_spec(
                 {
                     "metadata": {"name": domain, "annotations": parsed_annotations},
                     "domain": domain,
-                    "backend": {"room": {"name": room}},
+                    "backend": {"agent": {"name": agent}}
+                    if agent is not None
+                    else {"room": {"name": room}},
                     "paths": [
                         {
                             "path": _parse_route_path(path),
@@ -342,7 +369,13 @@ async def route_update(
             "-r",
             help="Room name to route traffic into",
         ),
-    ] = os.getenv("MESHAGENT_ROOM"),
+    ] = None,
+    agent: Annotated[
+        Optional[str],
+        typer.Option(
+            "--agent", help="Managed agent whose files to publish (public only)"
+        ),
+    ] = None,
     port: Annotated[
         Optional[str],
         typer.Option(
@@ -360,7 +393,7 @@ async def route_update(
         typer.Option(
             "--content-path",
             "--room-path",
-            help="Room storage subpath to serve directly",
+            help="Room or managed-agent files subpath to serve directly",
         ),
     ] = None,
     cors: Annotated[
@@ -396,7 +429,7 @@ async def route_update(
         if file is not None:
             spec = _load_route_spec(file)
         else:
-            room = resolve_room(room)
+            _check_agent_options(room=room, agent=agent, port=port, iap=iap)
             parsed_annotations = _parse_annotations(annotations)
             parsed_cors = _parse_cors(cors)
             parsed_compression = _parse_compression(compression)
@@ -422,8 +455,11 @@ async def route_update(
                     print(f"[red]{_validation_error_message(exc)}[/]")
                     raise typer.Exit(code=1)
                 raise
-            room = room or route.room_name
-            if room == "":
+            if agent is None and room is None and route.spec.agent_name is not None:
+                agent = route.spec.agent_name
+            room = (resolve_room(room) or route.room_name) if agent is None else None
+            _check_agent_options(room=room, agent=agent, port=port, iap=iap)
+            if not room and agent is None:
                 raise typer.BadParameter("Provide --room for a room route")
             parsed_annotations = (
                 parsed_annotations
@@ -528,11 +564,13 @@ async def route_update(
                 },
                 *[item.model_dump(mode="python") for item in route.spec.paths[1:]],
             ]
-            spec = RouteSpec.model_validate(
+            spec = _validate_route_spec(
                 {
                     "metadata": {"name": domain, "annotations": parsed_annotations},
                     "domain": domain,
-                    "backend": {"room": {"name": room}},
+                    "backend": {"agent": {"name": agent}}
+                    if agent is not None
+                    else {"room": {"name": room}},
                     "paths": paths,
                 }
             )

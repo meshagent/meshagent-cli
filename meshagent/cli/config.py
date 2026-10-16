@@ -21,6 +21,7 @@ SUPPORTED_CONFIG_PATHS = (
     "domains.accounts",
     "domains.powerboards",
     "domains.api",
+    "domains.files",
     "domains.mail",
     "domains.pages",
     "domains.registry",
@@ -59,6 +60,8 @@ def _config_value(
             return config.domains.powerboards
         case "domains.api":
             return config.domains.api
+        case "domains.files":
+            return config.domains.files
         case "domains.mail":
             return config.domains.mail
         case "domains.pages":
