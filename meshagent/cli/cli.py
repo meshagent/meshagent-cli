@@ -201,6 +201,11 @@ app.add_lazy_command(
     help="Create, list, and manage managed agents in a project",
 )
 app.add_lazy_command(
+    name="files",
+    module="meshagent.cli.storage",
+    help="Manage persistent room and managed-agent files",
+)
+app.add_lazy_command(
     name="agents",
     module="meshagent.cli.agents",
     help="Create, list, and manage managed agents in a project",

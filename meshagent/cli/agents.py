@@ -19,9 +19,15 @@ from meshagent.agents.messages import (
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import OutputFormatOption, ProjectIdOption
 from meshagent.cli.helper import get_client, print_json_table, resolve_project_id
+from meshagent.cli.storage import app as storage_app
 
 app = async_typer.AsyncTyper(
     help="Create, list, and manage managed agents in a project"
+)
+app.add_typer(
+    storage_app,
+    name="storage",
+    help="Manage persistent agent files using --agent or a qualified path",
 )
 
 

@@ -350,3 +350,127 @@ def test_route_table_row_exposes_content_route_details() -> None:
             '"allowCredentials":false}]'
         ),
     }
+
+
+@pytest.fixture
+def agent_route_client(monkeypatch):
+    current = Route.model_validate(
+        {
+            "domain": "docs.meshagent.app",
+            "spec": {
+                "metadata": {
+                    "name": "docs.meshagent.app",
+                    "annotations": {"keep": "yes"},
+                },
+                "domain": "docs.meshagent.app",
+                "backend": {"agent": {"name": "publisher"}},
+                "paths": [
+                    {
+                        "path": "/docs",
+                        "pathType": "prefix",
+                        "targetContent": {
+                            "subpath": "web/docs",
+                            "index": True,
+                            "iap": False,
+                            "compression": "gzip",
+                            "cors": [{"allowedOrigins": ["https://app.example.test"]}],
+                        },
+                    }
+                ],
+            },
+        }
+    )
+    client = _FakeRouteMutationClient(current)
+
+    async def get_client():
+        return client
+
+    monkeypatch.setattr(routes, "get_client", get_client)
+    monkeypatch.setattr(routes, "resolve_project_id", _resolved_project_id)
+    monkeypatch.setattr(
+        routes, "resolve_room", lambda room=None: room or "implicit-room"
+    )
+    monkeypatch.setattr(routes, "print", lambda *_args, **_kwargs: None)
+    return client
+
+
+@pytest.mark.asyncio
+async def test_agent_content_create_ignores_implicit_room_and_stays_public(
+    agent_route_client,
+):
+    await routes.route_create(
+        project_id="project-1",
+        domain="docs.meshagent.app",
+        agent="publisher",
+        content_path="web",
+        index=True,
+    )
+    spec = agent_route_client.created_spec
+    assert spec.agent_name == "publisher"
+    assert spec.room_name is None
+    assert spec.paths[0].targetContent.subpath == "web"
+    assert spec.paths[0].targetContent.index
+    assert not spec.paths[0].targetContent.iap
+    assert agent_route_client.closed
+
+
+@pytest.mark.asyncio
+async def test_agent_content_update_preserves_backend_and_unspecified_options(
+    agent_route_client,
+):
+    await routes.route_update(
+        project_id="project-1", domain="docs.meshagent.app", content_path="updated"
+    )
+    spec = agent_route_client.updated_spec
+    assert spec.agent_name == "publisher"
+    assert spec.room_name is None
+    content = spec.paths[0].targetContent
+    assert content.subpath == "updated"
+    assert content.index and not content.iap
+    assert content.compression == "gzip"
+    assert content.cors[0].allowedOrigins == ["https://app.example.test"]
+    assert spec.metadata.annotations == {"keep": "yes"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["create", "update"])
+@pytest.mark.parametrize("options", [{"room": "room"}, {"port": "8080"}, {"iap": True}])
+async def test_agent_route_flags_reject_other_backend_ports_and_iap(
+    agent_route_client, command, options
+):
+    import typer
+
+    function = routes.route_create if command == "create" else routes.route_update
+    with pytest.raises(typer.BadParameter):
+        await function(
+            project_id="project-1",
+            domain="docs.meshagent.app",
+            agent="publisher",
+            content_path="web",
+            **options,
+        )
+    assert agent_route_client.created_spec is None
+    assert agent_route_client.updated_spec is None
+    assert agent_route_client.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("options", [{"port": "8080"}, {"iap": True}])
+async def test_existing_agent_route_cannot_gain_ports_or_iap(
+    agent_route_client, options
+):
+    import typer
+
+    with pytest.raises(typer.BadParameter):
+        await routes.route_update(
+            project_id="project-1", domain="docs.meshagent.app", **options
+        )
+    assert agent_route_client.updated_spec is None
+
+
+def test_agent_route_help_describes_both_backend_options():
+    for command in ["create", "update"]:
+        result = CliRunner().invoke(routes.app, [command, "--help"])
+        assert result.exit_code == 0
+        assert "--agent" in result.stdout
+        assert "public only" in result.stdout
