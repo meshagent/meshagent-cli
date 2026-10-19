@@ -1,15 +1,18 @@
+import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+import os
+import sys
 
 from aiohttp import web
 from aiohttp.client_exceptions import ClientPayloadError
 import pytest
 import pytest_asyncio
-from typer.testing import CliRunner
 
 from meshagent.api import Meshagent
 from meshagent.api.client import PermissionDeniedError
 from meshagent.cli import storage
+from meshagent.cli.testing import CliRunner
 
 
 @dataclass
@@ -195,6 +198,72 @@ async def test_recursive_agent_upload_retains_empty_directories(files, tmp_path)
         "/project-1/agents/worker/backup/empty",
     }
     assert files.blobs["/project-1/agents/worker/backup/one.bin"] == b"one"
+
+
+async def run_files_cli(files: FilesFixture, args: list[str]) -> str:
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        "from meshagent.cli.cli import app; app()",
+        *args,
+        env={
+            **os.environ,
+            "MESHAGENT_API_URL": files.url,
+            "MESHAGENT_API_KEY": "cli-token",
+            "MESHAGENT_DISABLE_VERSION_CHECK": "1",
+            "MESHAGENT_CLI_BUILD": "1",
+        },
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    assert process.returncode == 0, (stdout + stderr).decode()
+    return stdout.decode()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "entrypoint",
+    [["files"], ["room", "storage"], ["agent", "storage"], ["agents", "storage"]],
+)
+@pytest.mark.parametrize("qualified", [False, True])
+async def test_cli_agent_copy_does_not_require_room(
+    files, tmp_path, monkeypatch, entrypoint, qualified
+):
+    monkeypatch.delenv("MESHAGENT_ROOM", raising=False)
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"\x00\xffagent-upload")
+    destination = (
+        "meshagent://project-1/agents/worker/upload.bin"
+        if qualified
+        else "agent://upload.bin"
+    )
+    args = [*entrypoint, "cp", "--project-id", "project-1"]
+    if not qualified:
+        args.extend(["--agent", "worker"])
+    args.extend([str(source), destination])
+    await run_files_cli(files, args)
+    assert files.blobs["/project-1/agents/worker/upload.bin"] == source.read_bytes()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["exists", "get", "ls", "rm", "presign"])
+async def test_cli_agent_file_commands_do_not_require_room(files, monkeypatch, command):
+    monkeypatch.delenv("MESHAGENT_ROOM", raising=False)
+    files.blobs["/project-1/agents/worker/file.txt"] = b"agent-data"
+    await run_files_cli(
+        files,
+        [
+            "files",
+            command,
+            "--project-id",
+            "project-1",
+            "--agent",
+            "worker",
+            "agent://file.txt",
+        ],
+    )
+    assert files.requests
 
 
 @pytest.mark.asyncio

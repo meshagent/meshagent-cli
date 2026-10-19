@@ -156,7 +156,7 @@ async def _download(files: TargetFilesClient, source: str, destination: Path) ->
 async def storage_exists_command(
     *,
     project_id: ProjectIdOption,
-    room: RoomOption,
+    room: RoomOption = None,
     path: str,
     agent: AgentOption = None,
 ):
@@ -224,7 +224,7 @@ async def _copy_remote_tree(
 async def storage_cp_command(
     *,
     project_id: ProjectIdOption,
-    room: RoomOption,
+    room: RoomOption = None,
     source_path: str,
     dest_path: str,
     agent: AgentOption = None,
@@ -314,7 +314,7 @@ async def storage_cp_command(
 async def storage_get_command(
     *,
     project_id: ProjectIdOption,
-    room: RoomOption,
+    room: RoomOption = None,
     path: str,
     agent: AgentOption = None,
     encoding: Annotated[
@@ -340,7 +340,7 @@ async def storage_get_command(
 async def storage_rm_command(
     *,
     project_id: ProjectIdOption,
-    room: RoomOption,
+    room: RoomOption = None,
     path: str,
     agent: AgentOption = None,
     recursive: RecursiveOption = False,
@@ -399,7 +399,7 @@ def _list_local(path: Path, recursive: bool, prefix: str = "") -> None:
 async def storage_ls_command(
     *,
     project_id: ProjectIdOption,
-    room: RoomOption,
+    room: RoomOption = None,
     path: Annotated[
         str, typer.Argument(help="Local, room://, agent:// or meshagent:// path")
     ],
@@ -431,7 +431,7 @@ async def storage_ls_command(
 async def storage_presign_command(
     *,
     project_id: ProjectIdOption,
-    room: RoomOption,
+    room: RoomOption = None,
     path: str,
     agent: AgentOption = None,
     method: Annotated[
