@@ -427,3 +427,90 @@ async def test_agent_use_command_runs_tui_with_resolved_project(
         }
     ]
     assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_python_tool_test_runs_embedded_source_without_login(
+    monkeypatch, tmp_path, capsys
+):
+    definition = {
+        "type": "python",
+        "name": "lookup",
+        "input_schema": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": ["id"],
+            "additionalProperties": False,
+        },
+        "source": "async def lookup(args): return args",
+    }
+    spec = tmp_path / "agent.yaml"
+    spec.write_text(
+        json.dumps(
+            {"metadata": {"name": "test"}, "allowed_models": [], "tools": [definition]}
+        )
+    )
+    monkeypatch.setenv("MESHAGENT_PYTHON_TOOLS_BIN", "/test/runner")
+
+    async def unexpected_login():
+        raise AssertionError("plain tools must not require login")
+
+    class Process:
+        returncode = 0
+
+        async def communicate(self, data):
+            payload = json.loads(data)
+            assert payload["tool"]["source"] == definition["source"]
+            assert payload["input"] == {"id": "abc"}
+            assert payload["proxy"] is None
+            return b'{"result":{"id":"abc"},"logs":"","requests":[]}', b""
+
+    async def spawn(*args, **kwargs):
+        assert args == ("/test/runner",)
+        return Process()
+
+    monkeypatch.setattr(agents, "get_client", unexpected_login)
+    monkeypatch.setattr(agents.asyncio, "create_subprocess_exec", spawn)
+    await agents.test_python_tool(spec=spec, tool="lookup", input_json='{"id":"abc"}')
+    assert json.loads(capsys.readouterr().out)["result"] == {"id": "abc"}
+
+
+@pytest.mark.asyncio
+async def test_python_tool_test_reports_runner_failure(monkeypatch, tmp_path):
+    from meshagent.api import RoomException
+
+    spec = tmp_path / "agent.yaml"
+    spec.write_text(
+        json.dumps(
+            {
+                "metadata": {"name": "test"},
+                "allowed_models": [],
+                "tools": [
+                    {
+                        "name": "lookup",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {},
+                            "required": [],
+                            "additionalProperties": False,
+                        },
+                        "source": "async def lookup(args): raise ValueError('bad customer')",
+                    }
+                ],
+            }
+        )
+    )
+    monkeypatch.setenv("MESHAGENT_PYTHON_TOOLS_BIN", "/test/runner")
+
+    class Process:
+        returncode = 1
+
+        async def communicate(self, data):
+            return b'{"error":"tool lookup: bad customer"}', b""
+
+    async def spawn(*args, **kwargs):
+        return Process()
+
+    monkeypatch.setattr(agents.asyncio, "create_subprocess_exec", spawn)
+    with pytest.raises(RoomException, match="tool lookup: bad customer"):
+        await agents.test_python_tool(spec=spec, tool="lookup", input_json="{}")

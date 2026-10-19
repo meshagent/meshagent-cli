@@ -1,4 +1,7 @@
+import asyncio
 import json
+from pathlib import Path
+import shutil
 import os
 from typing import Annotated, Any, Awaitable, Callable, Literal, Optional
 
@@ -24,6 +27,11 @@ from meshagent.cli.storage import app as storage_app
 app = async_typer.AsyncTyper(
     help="Create, list, and manage managed agents in a project"
 )
+tools_app = async_typer.AsyncTyper(
+    help="Run embedded Python tools locally without deploying"
+)
+app.add_typer(tools_app, name="tools")
+
 app.add_typer(
     storage_app,
     name="storage",
@@ -750,3 +758,81 @@ async def agent_use_command(
         raise typer.Exit(1)
     finally:
         await account_client.close()
+
+
+@tools_app.command("test")
+async def test_python_tool(
+    spec: Annotated[
+        Path, typer.Argument(help="Agent YAML file", exists=True, dir_okay=False)
+    ],
+    tool: Annotated[str, typer.Option("--tool", help="Tool name to invoke")],
+    input_json: Annotated[
+        str, typer.Option("--input", help="JSON arguments for the tool")
+    ],
+    allow_private_http: Annotated[
+        bool,
+        typer.Option(
+            "--allow-private-http",
+            help="Allow local/private HTTP destinations for development",
+        ),
+    ] = False,
+):
+    """Run the current embedded source with live HTTP, without saving or deploying.
+
+    Secret-backed connections use your current authenticated identity.
+    """
+    import yaml
+
+    configuration = ManagedAgentSpec.model_validate(yaml.safe_load(spec.read_text()))
+    selected = next((item for item in configuration.tools if item.name == tool), None)
+    if selected is None:
+        raise RoomException(f"Unknown Python tool: {tool}")
+    arguments = _maybe_parse_json_object("input", input_json)
+    binary = os.environ.get("MESHAGENT_PYTHON_TOOLS_BIN") or shutil.which(
+        "meshagent-python-tools"
+    )
+    if binary is None:
+        raise RoomException(
+            "Install meshagent-python-tools and Monty, or set MESHAGENT_PYTHON_TOOLS_BIN and MESHAGENT_MONTY_BIN"
+        )
+    proxy = None
+    if any(
+        connection.use_proxy_secret for connection in configuration.connections.values()
+    ):
+        client = await get_client()
+        try:
+            proxy = {"base_url": client.base_url, "token": client.token}
+        finally:
+            await client.close()
+    payload = {
+        "tool": selected.model_dump(),
+        "connections": {
+            name: value.model_dump()
+            for name, value in configuration.connections.items()
+        },
+        "input": arguments,
+        "proxy": proxy,
+        "allow_private_http": allow_private_http,
+    }
+    process = await asyncio.create_subprocess_exec(
+        binary,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(json.dumps(payload).encode()), timeout=40
+        )
+    except BaseException:
+        if process.returncode is None:
+            process.kill()
+        await process.wait()
+        raise
+    if process.returncode:
+        try:
+            error = json.loads(stdout)["error"]
+        except (ValueError, KeyError):
+            error = stderr.decode() or "Python tool runner failed"
+        raise RoomException(error)
+    typer.echo(stdout.decode().rstrip())
