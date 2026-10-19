@@ -18,7 +18,7 @@ app = async_typer.AsyncTyper(help="Manage IAM policies for project resources")
 
 
 def _parse_subject_type(value: str) -> AccessSubjectType:
-    allowed = {"user", "group", "agent", "service_account", "userset"}
+    allowed = {"user", "group", "agent", "service_account", "userset", "everyone"}
     if value not in allowed:
         raise typer.BadParameter(f"expected one of: {', '.join(sorted(allowed))}")
     return cast(AccessSubjectType, value)
@@ -91,6 +91,8 @@ def _parse_roles(values: list[str]) -> list[AccessRole]:
         "billing_manager",
         "group_manager",
         "user_profile_editor",
+        "site_user",
+        "guest",
         "viewer",
         "operator",
         "reader",
@@ -127,6 +129,8 @@ def _access_subject(
     subject_object_type: str | None,
     subject_relation: str | None,
 ) -> AccessSubject:
+    if subject_type == "everyone" and subject_id != "all":
+        raise typer.BadParameter("everyone requires --subject-id all")
     if subject_type != "userset":
         if subject_object_type is not None or subject_relation is not None:
             raise typer.BadParameter(

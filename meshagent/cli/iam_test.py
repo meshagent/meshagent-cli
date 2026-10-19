@@ -173,3 +173,21 @@ async def test_iam_policy_prints_direct_grants(monkeypatch: pytest.MonkeyPatch):
             "roles": "developer, list",
         }
     ]
+
+
+def test_everyone_subject_and_public_room_roles():
+    assert iam._parse_subject_type("everyone") == "everyone"
+    assert iam._access_subject(
+        subject_type="everyone",
+        subject_id="all",
+        subject_object_type=None,
+        subject_relation=None,
+    ) == AccessSubject(type="everyone", id="all")
+    assert iam._parse_roles(["site_user,guest"]) == ["site_user", "guest"]
+    with pytest.raises(iam.typer.BadParameter):
+        iam._access_subject(
+            subject_type="everyone",
+            subject_id="somebody",
+            subject_object_type=None,
+            subject_relation=None,
+        )
