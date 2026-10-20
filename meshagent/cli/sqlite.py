@@ -1,5 +1,6 @@
 import json as _json
 import os
+from enum import Enum
 import tempfile
 from pathlib import Path
 from typing import Annotated, Optional, List, Any
@@ -37,6 +38,12 @@ from meshagent.cli.helper import (
     resolve_project_id,
     resolve_room,
 )
+
+
+class ReplicationMode(str, Enum):
+    synchronous = "synchronous"
+    asynchronous = "asynchronous"
+
 
 app = async_typer.AsyncTyper(help="Manage SQLite databases and tables in a room")
 database_app = async_typer.AsyncTyper(help="Manage SQLite databases in a room")
@@ -233,6 +240,22 @@ async def create_database(
         str, typer.Option("--mode", help="create | overwrite | create_if_not_exists")
     ] = "create",
     namespace: NamespaceOption = None,
+    replication_mode: Annotated[
+        Optional[ReplicationMode],
+        typer.Option(
+            "--replication-mode",
+            help="Commit acknowledgement: synchronous or asynchronous replication",
+        ),
+    ] = None,
+    flush_interval_ms: Annotated[
+        Optional[int],
+        typer.Option(
+            "--flush-interval-ms",
+            min=1,
+            max=3600000,
+            help="Background replication interval in milliseconds (asynchronous mode)",
+        ),
+    ] = None,
 ):
     account_client = await get_client()
     try:
@@ -247,7 +270,13 @@ async def create_database(
                 token=connection.jwt,
             ).create_factory()
         ) as client:
+            settings = {}
+            if replication_mode is not None:
+                settings["replication_mode"] = replication_mode.value
+            if flush_interval_ms is not None:
+                settings["flush_interval_ms"] = flush_interval_ms
             await client.sqlite.create_database(
+                **settings,
                 name=database,
                 mode=mode,
                 namespace=_ns(namespace),
@@ -1132,5 +1161,86 @@ async def sql(
     except (RoomException, typer.BadParameter, ValidationError) as e:
         print(e)
         raise typer.Exit(1)
+    finally:
+        await account_client.close()
+
+
+@database_app.async_command(
+    "settings",
+    help="Read database replication settings, or save changes immediately. Asynchronous mode can lose unpublished writes if local state is lost.",
+)
+async def database_settings(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    database: Annotated[str, typer.Option("--database", "-d")],
+    namespace: NamespaceOption = None,
+    replication_mode: Annotated[
+        Optional[ReplicationMode], typer.Option("--replication-mode")
+    ] = None,
+    flush_interval_ms: Annotated[
+        Optional[int], typer.Option("--flush-interval-ms", min=1, max=3600000)
+    ] = None,
+):
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        room_name = resolve_room(room)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
+        async with RoomClient(
+            protocol_factory=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room_name), token=connection.jwt
+            ).create_factory()
+        ) as client:
+            if replication_mode is None and flush_interval_ms is None:
+                settings = await client.sqlite.get_database_settings(
+                    name=database, namespace=_ns(namespace)
+                )
+            else:
+                settings = await client.sqlite.update_database_settings(
+                    name=database,
+                    namespace=_ns(namespace),
+                    replication_mode=replication_mode.value
+                    if replication_mode
+                    else None,
+                    flush_interval_ms=flush_interval_ms,
+                )
+            print(_json.dumps(settings.model_dump(), indent=2))
+    except RoomException as error:
+        print(error)
+        raise typer.Exit(1) from error
+    finally:
+        await account_client.close()
+
+
+@database_app.async_command(
+    "flush", help="Wait until pending database writes are replicated to remote storage."
+)
+async def flush_database(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    database: Annotated[str, typer.Option("--database", "-d")],
+    namespace: NamespaceOption = None,
+):
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        room_name = resolve_room(room)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
+        async with RoomClient(
+            protocol_factory=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room_name), token=connection.jwt
+            ).create_factory()
+        ) as client:
+            await client.sqlite.flush_database(name=database, namespace=_ns(namespace))
+            print("Database replication complete")
+    except RoomException as error:
+        print(error)
+        raise typer.Exit(1) from error
     finally:
         await account_client.close()

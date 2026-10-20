@@ -89,3 +89,20 @@ def test_sqlite_backup_restore_and_recovery_have_distinct_inputs() -> None:
         assert absent not in output
     result = CliRunner().invoke(app, ["database", "--help"])
     assert "restore" not in Text.from_ansi(result.output).plain
+
+
+def test_sqlite_replication_options_and_validation() -> None:
+    for command in ["create", "settings"]:
+        result = CliRunner().invoke(app, ["database", command, "--help"])
+        assert result.exit_code == 0
+        assert "--replication-mode" in result.output
+        assert "--flush-interval-ms" in result.output
+    result = CliRunner().invoke(
+        app,
+        ["database", "settings", "--database", "app", "--replication-mode", "invalid"],
+    )
+    assert result.exit_code != 0
+    result = CliRunner().invoke(
+        app, ["database", "settings", "--database", "app", "--flush-interval-ms", "0"]
+    )
+    assert result.exit_code != 0
