@@ -114,8 +114,8 @@ class AuthSwitchApp(App[None]):
     def __init__(self, *, saved_profiles: Sequence[SavedProfileRecord]) -> None:
         super().__init__()
         self._saved_profiles = list(saved_profiles)
-        self._profiles_by_user_id = {
-            profile.user_id: profile for profile in self._saved_profiles
+        self._profiles_by_key = {
+            profile.key: profile for profile in self._saved_profiles
         }
         self._title_view: Static | None = None
         self._message_view: Static | None = None
@@ -167,7 +167,7 @@ class AuthSwitchApp(App[None]):
         if user_id is None:
             return
 
-        selected_profile = self._profiles_by_user_id.get(user_id)
+        selected_profile = self._profiles_by_key.get(user_id)
         if selected_profile is None:
             return
 
@@ -183,12 +183,12 @@ class AuthSwitchApp(App[None]):
     ) -> str | None:
         for profile in saved_profiles:
             if profile.is_active:
-                return profile.user_id
+                return profile.key
 
         if len(saved_profiles) == 0:
             return None
 
-        return saved_profiles[0].user_id
+        return saved_profiles[0].key
 
     @staticmethod
     def _first_enabled_option_index(options: Sequence[Option]) -> int | None:
@@ -237,7 +237,7 @@ class AuthSwitchApp(App[None]):
         options = [
             Option(
                 _profile_option_label(profile),
-                id=_profile_option_id(profile.user_id),
+                id=_profile_option_id(profile.key),
             )
             for profile in self._saved_profiles
         ]

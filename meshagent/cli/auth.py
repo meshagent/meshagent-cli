@@ -10,6 +10,7 @@ from meshagent.cli.local_settings import (
     DEFAULT_API_URL,
     SavedProfileRecord,
     list_saved_profiles,
+    normalize_api_url,
     resolve_api_url,
     switch_active_profile,
 )
@@ -99,10 +100,21 @@ async def switch(
             ),
         ),
     ] = None,
+    api_url: Annotated[
+        str | None,
+        typer.Option(
+            "--api-url", help="Select the environment containing the saved profile."
+        ),
+    ] = None,
 ):
     selected_profile_selector = profile
     if selected_profile_selector is None:
         saved_profiles = list_saved_profiles()
+        environment = normalize_api_url(api_url)
+        if environment is not None:
+            saved_profiles = [
+                saved for saved in saved_profiles if saved.api_url == environment
+            ]
         if len(saved_profiles) == 0:
             typer.echo("No saved local profiles.")
             return
@@ -118,14 +130,18 @@ async def switch(
                     typer.echo(result.message)
                 return
 
-            selected_profile_selector = result.selected_profile.user_id
+            selected_profile_selector = result.selected_profile.key
         else:
             for saved_profile in saved_profiles:
                 typer.echo(_format_saved_profile(saved_profile))
             return
 
     try:
-        selected_profile = switch_active_profile(selected_profile_selector)
+        selected_profile = (
+            switch_active_profile(selected_profile_selector, api_url=api_url)
+            if api_url is not None
+            else switch_active_profile(selected_profile_selector)
+        )
     except LookupError as exc:
         typer.echo(str(exc))
         raise typer.Exit(code=1) from exc

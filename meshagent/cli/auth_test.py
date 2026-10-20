@@ -249,7 +249,7 @@ async def test_switch_launches_tui_when_no_selector_in_tty(monkeypatch) -> None:
 
     await auth.switch()
 
-    assert selected_selectors == ["user-456"]
+    assert selected_selectors == [saved_profiles[1].key]
     assert output == [
         "Active profile: * Taylor Swift [user-456] @ https://api.meshagent.test",
     ]

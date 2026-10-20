@@ -1,4 +1,5 @@
 from textual.widgets.option_list import Option
+import pytest
 
 from meshagent.cli.local_settings import SavedProfileRecord, StoredUserProfile
 from meshagent.cli.tui.auth_switch import AuthSwitchApp
@@ -36,6 +37,29 @@ def test_first_enabled_option_index_returns_first_enabled() -> None:
     assert AuthSwitchApp._first_enabled_option_index(options) == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selected", [0, 1])
+async def test_picker_selects_same_id_in_each_environment(selected):
+    profiles = [
+        _saved_profile(
+            user_id="same-id",
+            first_name="Same",
+            last_name="User",
+            email="same@example.com",
+            api_url=url,
+            is_active=False,
+        )
+        for url in ["https://api.meshagent.com", "https://api.meshagent.life"]
+    ]
+    app = AuthSwitchApp(saved_profiles=profiles)
+    async with app.run_test() as pilot:
+        if selected:
+            await pilot.press("down")
+        await pilot.press("enter")
+    assert app.result.status == "completed"
+    assert app.result.selected_profile == profiles[selected]
+
+
 def test_highlighted_profile_user_id_prefers_active_profile() -> None:
     saved_profiles = [
         _saved_profile(
@@ -56,7 +80,10 @@ def test_highlighted_profile_user_id_prefers_active_profile() -> None:
         ),
     ]
 
-    assert AuthSwitchApp._highlighted_profile_user_id(saved_profiles) == "user-123"
+    assert (
+        AuthSwitchApp._highlighted_profile_user_id(saved_profiles)
+        == saved_profiles[0].key
+    )
 
 
 def test_highlighted_profile_user_id_falls_back_to_first_saved_profile() -> None:
@@ -79,7 +106,10 @@ def test_highlighted_profile_user_id_falls_back_to_first_saved_profile() -> None
         ),
     ]
 
-    assert AuthSwitchApp._highlighted_profile_user_id(saved_profiles) == "user-123"
+    assert (
+        AuthSwitchApp._highlighted_profile_user_id(saved_profiles)
+        == saved_profiles[0].key
+    )
 
 
 def test_show_profile_selection_renders_saved_profiles(monkeypatch) -> None:
@@ -136,13 +166,13 @@ def test_show_profile_selection_renders_saved_profiles(monkeypatch) -> None:
         "options": [
             (
                 "Jesse Ezell (user-123) @ https://api.meshagent.test (active)",
-                "__auth_switch_profile__:user-123",
+                '__auth_switch_profile__:["https://api.meshagent.test","user-123"]',
             ),
             (
                 "Taylor Swift (user-456) @ https://api.meshagent.test",
-                "__auth_switch_profile__:user-456",
+                '__auth_switch_profile__:["https://api.meshagent.test","user-456"]',
             ),
             ("Exit without switching", "__auth_switch_exit__"),
         ],
-        "highlighted_id": "__auth_switch_profile__:user-123",
+        "highlighted_id": '__auth_switch_profile__:["https://api.meshagent.test","user-123"]',
     }

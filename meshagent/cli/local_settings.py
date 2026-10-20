@@ -1,8 +1,9 @@
 import json
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from meshagent.api.client import User
 
@@ -100,8 +101,10 @@ class StoredUserSettings(BaseModel):
 
 
 class CLISettings(BaseModel):
+    # Retain the on-disk field name; its value is now an environment/profile key.
     active_user_id: str | None = None
     users: dict[str, StoredUserSettings] = Field(default_factory=dict)
+    active_profiles: dict[str, str] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +113,77 @@ class SavedProfileRecord:
     profile: StoredUserProfile
     api_url: str | None
     is_active: bool
+
+    @property
+    def key(self) -> str:
+        return profile_key(self.user_id, self.api_url)
+
+
+def profile_key(user_id: str, api_url: str | None) -> str:
+    return json.dumps(
+        [normalize_api_url(api_url) or DEFAULT_API_URL, user_id],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+_PROFILE_KEY = TypeAdapter(tuple[str, str])
+
+
+def _stored_user_id(key: str, user: StoredUserSettings) -> str:
+    if user.profile is not None:
+        return user.profile.id
+    try:
+        _, user_id = _PROFILE_KEY.validate_json(key)
+        return user_id
+    except ValidationError:
+        return key
+
+
+def _upgrade_settings(settings: CLISettings) -> bool:
+    original = settings.model_copy(deep=True)
+    users: dict[str, StoredUserSettings] = {}
+    aliases: dict[str, str] = {}
+    active_profiles: dict[str, str] = {}
+    # Existing scoped records take precedence if an older CLI added a legacy
+    # record to an upgraded file. Merge project settings without losing keys.
+    for key, user in sorted(
+        settings.users.items(),
+        key=lambda item: (
+            item[0] == profile_key(_stored_user_id(*item), item[1].api_url),
+            item[0],
+        ),
+    ):
+        api_url = normalize_api_url(user.api_url) or DEFAULT_API_URL
+        user_id = _stored_user_id(key, user)
+        scoped_key = profile_key(user_id, api_url)
+        aliases[key] = scoped_key
+        user.api_url = api_url
+        previous = users.get(scoped_key)
+        if previous is not None:
+            user = user.model_copy(
+                update={
+                    "profile": user.profile or previous.profile,
+                    "session": user.session or previous.session,
+                    "project": _merge_project_settings(user.project, previous.project),
+                }
+            )
+        users[scoped_key] = user
+        active_profiles.setdefault(api_url, scoped_key)
+    for api_url, key in settings.active_profiles.items():
+        api_url = normalize_api_url(api_url) or DEFAULT_API_URL
+        key = aliases.get(key, key)
+        if key in users and users[key].api_url == api_url:
+            active_profiles[api_url] = key
+    active_key = aliases.get(settings.active_user_id or "")
+    if active_key is None and len(users) == 1:
+        active_key = next(iter(users))
+    if active_key is not None:
+        active_profiles[users[active_key].api_url or DEFAULT_API_URL] = active_key
+    settings.users = users
+    settings.active_user_id = active_key
+    settings.active_profiles = active_profiles
+    return settings != original
 
 
 def normalize_api_url(api_url: str | None) -> str | None:
@@ -128,12 +202,6 @@ def _ensure_settings_dir() -> None:
 
 
 def _cleanup_settings(settings: CLISettings) -> None:
-    local_state = settings.users.get(LOCAL_STATE_USER_ID)
-    if local_state is not None and local_state.is_empty():
-        del settings.users[LOCAL_STATE_USER_ID]
-        if settings.active_user_id == LOCAL_STATE_USER_ID:
-            settings.active_user_id = None
-
     if (
         settings.active_user_id is not None
         and settings.active_user_id not in settings.users
@@ -144,9 +212,19 @@ def _cleanup_settings(settings: CLISettings) -> None:
 def _save_settings(settings: CLISettings) -> None:
     _cleanup_settings(settings)
     _ensure_settings_dir()
-    SETTINGS_FILE.write_text(
-        json.dumps(settings.model_dump(mode="json"), indent=2, sort_keys=True)
-    )
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=SETTINGS_DIR, delete=False
+        ) as file:
+            temporary_path = Path(file.name)
+            json.dump(settings.model_dump(mode="json"), file, indent=2, sort_keys=True)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary_path, SETTINGS_FILE)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def _load_json_model(path: Path, model_type: type[BaseModel]) -> BaseModel | None:
@@ -185,12 +263,20 @@ def load_settings() -> CLISettings:
     try:
         _ensure_settings_dir()
         if SETTINGS_FILE.exists():
-            return CLISettings.model_validate_json(SETTINGS_FILE.read_text())
+            settings = CLISettings.model_validate_json(SETTINGS_FILE.read_text())
+            if _upgrade_settings(settings):
+                try:
+                    _save_settings(settings)
+                except OSError as ex:
+                    if ex.errno not in (1, 13, 30):
+                        raise
+            return settings
 
         migrated = _migrate_legacy_settings()
         if migrated is None:
             return CLISettings()
 
+        _upgrade_settings(migrated)
         try:
             _save_settings(migrated)
             _remove_legacy_files()
@@ -204,15 +290,18 @@ def load_settings() -> CLISettings:
         raise
 
 
-def _active_user_id(settings: CLISettings) -> str | None:
+def _active_user_id(settings: CLISettings, api_url: str | None = None) -> str | None:
+    environment = normalize_api_url(api_url) or normalize_api_url(
+        os.getenv("MESHAGENT_API_URL")
+    )
+    if environment is not None:
+        key = settings.active_profiles.get(environment)
+        return key if key in settings.users else None
     if (
         settings.active_user_id is not None
         and settings.active_user_id in settings.users
     ):
         return settings.active_user_id
-
-    if LOCAL_STATE_USER_ID in settings.users:
-        return LOCAL_STATE_USER_ID
 
     if len(settings.users) == 1:
         return next(iter(settings.users))
@@ -227,19 +316,30 @@ def _active_user(settings: CLISettings) -> StoredUserSettings | None:
     return settings.users.get(user_id)
 
 
-def _ensure_active_user(settings: CLISettings) -> tuple[str, StoredUserSettings]:
-    user_id = _active_user_id(settings)
+def _select_profile(settings: CLISettings, key: str) -> None:
+    settings.active_user_id = key
+    settings.active_profiles[settings.users[key].api_url or DEFAULT_API_URL] = key
+
+
+def _ensure_active_user(
+    settings: CLISettings, api_url: str | None = None
+) -> tuple[str, StoredUserSettings]:
+    user_id = _active_user_id(settings, api_url)
     if user_id is None:
-        settings.active_user_id = LOCAL_STATE_USER_ID
-        settings.users[LOCAL_STATE_USER_ID] = StoredUserSettings()
-        return LOCAL_STATE_USER_ID, settings.users[LOCAL_STATE_USER_ID]
+        environment = (
+            normalize_api_url(api_url)
+            or normalize_api_url(os.getenv("MESHAGENT_API_URL"))
+            or DEFAULT_API_URL
+        )
+        user_id = profile_key(LOCAL_STATE_USER_ID, environment)
+        settings.users.setdefault(user_id, StoredUserSettings(api_url=environment))
 
     user_settings = settings.users.get(user_id)
     if user_settings is None:
         settings.users[user_id] = StoredUserSettings()
         user_settings = settings.users[user_id]
 
-    settings.active_user_id = user_id
+    _select_profile(settings, user_id)
     return user_id, user_settings
 
 
@@ -257,7 +357,9 @@ def _merge_project_settings(
 
 
 def get_active_user_id() -> str | None:
-    return _active_user_id(load_settings())
+    settings = load_settings()
+    key = _active_user_id(settings)
+    return _stored_user_id(key, settings.users[key]) if key is not None else None
 
 
 def get_active_profile() -> StoredUserProfile | None:
@@ -280,7 +382,7 @@ def set_active_session(
     api_url: str | None = None,
 ) -> None:
     settings = load_settings()
-    _, active_user = _ensure_active_user(settings)
+    _, active_user = _ensure_active_user(settings, api_url)
     active_user.session = session
     normalized_api_url = normalize_api_url(api_url)
     if normalized_api_url is not None:
@@ -294,17 +396,17 @@ def set_local_session(
     api_url: str | None = None,
 ) -> None:
     settings = load_settings()
-    local_settings = settings.users.get(LOCAL_STATE_USER_ID)
+    normalized_api_url = normalize_api_url(api_url) or resolve_api_url()
+    key = profile_key(LOCAL_STATE_USER_ID, normalized_api_url)
+    local_settings = settings.users.get(key)
     if local_settings is None:
         local_settings = StoredUserSettings()
 
     local_settings.session = session
-    normalized_api_url = normalize_api_url(api_url)
-    if normalized_api_url is not None:
-        local_settings.api_url = normalized_api_url
+    local_settings.api_url = normalized_api_url
 
-    settings.users[LOCAL_STATE_USER_ID] = local_settings
-    settings.active_user_id = LOCAL_STATE_USER_ID
+    settings.users[key] = local_settings
+    _select_profile(settings, key)
     _save_settings(settings)
 
 
@@ -402,11 +504,14 @@ def save_authenticated_profile(
     api_url: str,
 ) -> None:
     settings = load_settings()
-    target_settings = settings.users.get(profile.id)
+    api_url = normalize_api_url(api_url) or DEFAULT_API_URL
+    key = profile_key(profile.id, api_url)
+    target_settings = settings.users.get(key)
     if target_settings is None:
         target_settings = StoredUserSettings()
 
-    local_settings = settings.users.get(LOCAL_STATE_USER_ID)
+    local_key = profile_key(LOCAL_STATE_USER_ID, api_url)
+    local_settings = settings.users.get(local_key)
     if local_settings is not None and profile.id != LOCAL_STATE_USER_ID:
         target_settings.project = _merge_project_settings(
             local_settings.project,
@@ -414,13 +519,13 @@ def save_authenticated_profile(
         )
         if target_settings.api_url is None:
             target_settings.api_url = local_settings.api_url
-        del settings.users[LOCAL_STATE_USER_ID]
+        del settings.users[local_key]
 
     target_settings.profile = profile
     target_settings.session = session
     target_settings.api_url = normalize_api_url(api_url)
-    settings.users[profile.id] = target_settings
-    settings.active_user_id = profile.id
+    settings.users[key] = target_settings
+    _select_profile(settings, key)
     _save_settings(settings)
 
 
@@ -429,8 +534,8 @@ def list_saved_profiles() -> list[SavedProfileRecord]:
     active_user_id = _active_user_id(settings)
     profiles: list[SavedProfileRecord] = []
 
-    for user_id, user_settings in settings.users.items():
-        if user_id == LOCAL_STATE_USER_ID:
+    for key, user_settings in settings.users.items():
+        if _stored_user_id(key, user_settings) == LOCAL_STATE_USER_ID:
             continue
         if user_settings.profile is None or user_settings.session is None:
             continue
@@ -439,10 +544,10 @@ def list_saved_profiles() -> list[SavedProfileRecord]:
 
         profiles.append(
             SavedProfileRecord(
-                user_id=user_id,
+                user_id=user_settings.profile.id,
                 profile=user_settings.profile,
                 api_url=normalize_api_url(user_settings.api_url),
-                is_active=user_id == active_user_id,
+                is_active=key == active_user_id,
             )
         )
 
@@ -455,19 +560,34 @@ def list_saved_profiles() -> list[SavedProfileRecord]:
     return profiles
 
 
-def switch_active_profile(selector: str) -> SavedProfileRecord:
+def switch_active_profile(
+    selector: str, *, api_url: str | None = None
+) -> SavedProfileRecord:
     normalized_selector = selector.strip()
     if normalized_selector == "":
         raise LookupError("Profile selector cannot be empty.")
 
     profiles = list_saved_profiles()
+    explicit_environment = normalize_api_url(api_url)
+    if explicit_environment is not None:
+        profiles = [
+            profile for profile in profiles if profile.api_url == explicit_environment
+        ]
+    environment = explicit_environment or normalize_api_url(
+        os.getenv("MESHAGENT_API_URL")
+    )
+    exact_keys = [profile for profile in profiles if profile.key == normalized_selector]
+    if not exact_keys and environment is not None:
+        profiles = [profile for profile in profiles if profile.api_url == environment]
     exact_id_matches = [
         profile for profile in profiles if profile.user_id == normalized_selector
     ]
-    if len(exact_id_matches) == 1:
+    if len(exact_keys) == 1:
+        selected = exact_keys[0]
+    elif len(exact_id_matches) == 1:
         selected = exact_id_matches[0]
     else:
-        email_matches = [
+        email_matches = exact_id_matches or [
             profile
             for profile in profiles
             if profile.profile.email is not None
@@ -480,12 +600,12 @@ def switch_active_profile(selector: str) -> SavedProfileRecord:
         if len(email_matches) > 1:
             raise LookupError(
                 f"More than one saved local profile matches '{normalized_selector}'. "
-                "Use the user id instead."
+                "Use --api-url to select the environment, or select a unique user id."
             )
         selected = email_matches[0]
 
     settings = load_settings()
-    settings.active_user_id = selected.user_id
+    _select_profile(settings, selected.key)
     _save_settings(settings)
     apply_active_profile_api_url_environment()
     return SavedProfileRecord(

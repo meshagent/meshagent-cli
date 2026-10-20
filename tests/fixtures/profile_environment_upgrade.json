@@ -1,0 +1,63 @@
+{
+  "legacy": {
+    "active_user_id": "same-id",
+    "users": {
+      "same-id": {
+        "profile": {
+          "id": "same-id",
+          "first_name": "Same",
+          "last_name": null,
+          "email": "same@example.com"
+        },
+        "api_url": "https://api.meshagent.life/",
+        "session": {
+          "access_token": "fixture-access",
+          "refresh_token": "fixture-refresh",
+          "expires_at": 4102444800,
+          "token_type": "Bearer",
+          "scope": "profile:read",
+          "id_token": "fixture-id"
+        },
+        "project": {
+          "active_project": "fixture-project",
+          "active_api_keys": {
+            "fixture-project": "fixture-key"
+          },
+          "llm_proxy_bearer_token": "fixture-llm"
+        }
+      }
+    }
+  },
+  "upgraded": {
+    "active_user_id": "[\"https://api.meshagent.life\",\"same-id\"]",
+    "users": {
+      "[\"https://api.meshagent.life\",\"same-id\"]": {
+        "profile": {
+          "id": "same-id",
+          "first_name": "Same",
+          "last_name": null,
+          "email": "same@example.com"
+        },
+        "api_url": "https://api.meshagent.life",
+        "session": {
+          "access_token": "fixture-access",
+          "refresh_token": "fixture-refresh",
+          "expires_at": 4102444800,
+          "token_type": "Bearer",
+          "scope": "profile:read",
+          "id_token": "fixture-id"
+        },
+        "project": {
+          "active_project": "fixture-project",
+          "active_api_keys": {
+            "fixture-project": "fixture-key"
+          },
+          "llm_proxy_bearer_token": "fixture-llm"
+        }
+      }
+    },
+    "active_profiles": {
+      "https://api.meshagent.life": "[\"https://api.meshagent.life\",\"same-id\"]"
+    }
+  }
+}
