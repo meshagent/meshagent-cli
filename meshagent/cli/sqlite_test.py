@@ -95,8 +95,9 @@ def test_sqlite_replication_options_and_validation() -> None:
     for command in ["create", "settings"]:
         result = CliRunner().invoke(app, ["database", command, "--help"])
         assert result.exit_code == 0
-        assert "--replication-mode" in result.output
-        assert "--flush-interval-ms" in result.output
+        output = Text.from_ansi(result.output).plain
+        assert "--replication-mode" in output
+        assert "--flush-interval-ms" in output
     result = CliRunner().invoke(
         app,
         ["database", "settings", "--database", "app", "--replication-mode", "invalid"],
