@@ -1,7 +1,5 @@
-import asyncio
 import json
 from pathlib import Path
-import shutil
 import os
 from typing import Annotated, Any, Awaitable, Callable, Literal, Optional
 
@@ -22,6 +20,7 @@ from meshagent.agents.messages import (
 from meshagent.cli import async_typer
 from meshagent.cli.common_options import OutputFormatOption, ProjectIdOption
 from meshagent.cli.helper import get_client, print_json_table, resolve_project_id
+from meshagent.cli.managed_python import run_embedded_tool
 from meshagent.cli.storage import app as storage_app
 
 app = async_typer.AsyncTyper(
@@ -769,6 +768,7 @@ async def test_python_tool(
     input_json: Annotated[
         str, typer.Option("--input", help="JSON arguments for the tool")
     ],
+    project_id: ProjectIdOption,
     allow_private_http: Annotated[
         bool,
         typer.Option(
@@ -788,51 +788,58 @@ async def test_python_tool(
     if selected is None:
         raise RoomException(f"Unknown Python tool: {tool}")
     arguments = _maybe_parse_json_object("input", input_json)
-    binary = os.environ.get("MESHAGENT_PYTHON_TOOLS_BIN") or shutil.which(
-        "meshagent-python-tools"
-    )
-    if binary is None:
-        raise RoomException(
-            "Install meshagent-python-tools and Monty, or set MESHAGENT_PYTHON_TOOLS_BIN and MESHAGENT_MONTY_BIN"
-        )
     proxy = None
     if any(
-        connection.use_proxy_secret for connection in configuration.connections.values()
+        connection.use_proxy_secret
+        or any(header.secret is not None for header in connection.headers)
+        for connection in configuration.connections.values()
     ):
         client = await get_client()
         try:
             proxy = {"base_url": client.base_url, "token": client.token}
         finally:
             await client.close()
-    payload = {
-        "tool": selected.model_dump(),
-        "connections": {
-            name: value.model_dump()
-            for name, value in configuration.connections.items()
-        },
-        "input": arguments,
-        "proxy": proxy,
-        "allow_private_http": allow_private_http,
-    }
-    process = await asyncio.create_subprocess_exec(
-        binary,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(json.dumps(payload).encode()), timeout=40
-        )
-    except BaseException:
-        if process.returncode is None:
-            process.kill()
-        await process.wait()
-        raise
-    if process.returncode:
+    environment = {}
+    if configuration.environment:
+        client = None
         try:
-            error = json.loads(stdout)["error"]
-        except (ValueError, KeyError):
-            error = stderr.decode() or "Python tool runner failed"
-        raise RoomException(error)
-    typer.echo(stdout.decode().rstrip())
+            if any(entry.secret is not None for entry in configuration.environment):
+                project_id = await resolve_project_id(project_id=project_id)
+                client = await get_client()
+            for entry in configuration.environment:
+                if entry.value is not None:
+                    environment[entry.name] = entry.value
+                else:
+                    assert entry.secret is not None and client is not None
+                    secret = await client.get_service_account_secret(
+                        project_id=project_id,
+                        service_account_id="self",
+                        secret_id=entry.secret.id,
+                        include_value=True,
+                    )
+                    if secret.value_base64 is None:
+                        raise RoomException("Environment secret has no value")
+                    import base64
+
+                    environment[entry.name] = base64.b64decode(
+                        secret.value_base64, validate=True
+                    ).decode("utf-8")
+        finally:
+            if client is not None:
+                await client.close()
+    try:
+        result = await run_embedded_tool(
+            selected,
+            configuration.connections,
+            arguments,
+            environment,
+            proxy,
+            allow_private_http,
+        )
+    except Exception as error:
+        message = str(error)
+        for secret in [*environment.values(), proxy["token"] if proxy else ""]:
+            if secret:
+                message = message.replace(secret, "[REDACTED]")
+        raise RoomException(message) from None
+    typer.echo(json.dumps(result))

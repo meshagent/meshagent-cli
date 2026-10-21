@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 import typer
@@ -450,29 +451,139 @@ async def test_python_tool_test_runs_embedded_source_without_login(
             {"metadata": {"name": "test"}, "allowed_models": [], "tools": [definition]}
         )
     )
-    monkeypatch.setenv("MESHAGENT_PYTHON_TOOLS_BIN", "/test/runner")
 
     async def unexpected_login():
         raise AssertionError("plain tools must not require login")
 
-    class Process:
-        returncode = 0
-
-        async def communicate(self, data):
-            payload = json.loads(data)
-            assert payload["tool"]["source"] == definition["source"]
-            assert payload["input"] == {"id": "abc"}
-            assert payload["proxy"] is None
-            return b'{"result":{"id":"abc"},"logs":"","requests":[]}', b""
-
-    async def spawn(*args, **kwargs):
-        assert args == ("/test/runner",)
-        return Process()
-
     monkeypatch.setattr(agents, "get_client", unexpected_login)
-    monkeypatch.setattr(agents.asyncio, "create_subprocess_exec", spawn)
-    await agents.test_python_tool(spec=spec, tool="lookup", input_json='{"id":"abc"}')
+    await agents.test_python_tool(
+        spec=spec, tool="lookup", input_json='{"id":"abc"}', project_id=None
+    )
     assert json.loads(capsys.readouterr().out)["result"] == {"id": "abc"}
+
+
+@pytest.mark.asyncio
+async def test_python_tool_test_supplies_proxy_for_secret_headers(
+    monkeypatch, tmp_path
+):
+    spec = tmp_path / "agent.yaml"
+    spec.write_text(
+        json.dumps(
+            {
+                "metadata": {"name": "test"},
+                "allowed_models": [],
+                "tools": [
+                    {
+                        "type": "python",
+                        "name": "lookup",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {},
+                            "required": [],
+                            "additionalProperties": False,
+                        },
+                        "source": "async def lookup(args): return args",
+                    }
+                ],
+                "connections": {
+                    "crm": {
+                        "base_url": "https://api.example.com",
+                        "headers": [{"name": "X-API-Key", "secret": {"id": "api-key"}}],
+                    }
+                },
+            }
+        )
+    )
+
+    class Client:
+        base_url = "https://api.meshagent.test"
+        token = "runtime-token"
+
+        async def close(self):
+            pass
+
+    async def run_embedded_tool(
+        tool, connections, arguments, environment, proxy, allow_private_http
+    ):
+        assert proxy == {
+            "base_url": Client.base_url,
+            "token": Client.token,
+        }
+        assert connections["crm"].headers[0].secret.id == "api-key"
+        return {"result": {}, "logs": "", "requests": []}
+
+    async def get_client():
+        return Client()
+
+    monkeypatch.setattr(agents, "get_client", get_client)
+    monkeypatch.setattr(agents, "run_embedded_tool", run_embedded_tool)
+    await agents.test_python_tool(
+        spec=spec, tool="lookup", input_json="{}", project_id=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_python_tool_test_resolves_secret_environment_with_current_identity(
+    monkeypatch, tmp_path
+):
+    spec = tmp_path / "agent.yaml"
+    spec.write_text(
+        json.dumps(
+            {
+                "metadata": {"name": "test"},
+                "allowed_models": [],
+                "run_as": {
+                    "email": "agent@service.project.example.test",
+                    "scopes": ["secrets:read"],
+                },
+                "environment": [{"name": "API_KEY", "secret": {"id": "secret-1"}}],
+                "tools": [
+                    {
+                        "name": "lookup",
+                        "source": "async def lookup(args): return args",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {},
+                            "required": [],
+                            "additionalProperties": False,
+                        },
+                    }
+                ],
+            }
+        )
+    )
+
+    class Client:
+        async def get_service_account_secret(self, **kwargs):
+            assert kwargs == {
+                "project_id": "project-1",
+                "service_account_id": "self",
+                "secret_id": "secret-1",
+                "include_value": True,
+            }
+            return SimpleNamespace(value_base64="Y29uZmlndXJlZC1zZWNyZXQ=")
+
+        async def close(self):
+            pass
+
+    async def run_embedded_tool(
+        tool, connections, arguments, environment, proxy, allow_private_http
+    ):
+        assert environment == {"API_KEY": "configured-secret"}
+        return {"result": {}, "logs": "", "requests": []}
+
+    async def get_client():
+        return Client()
+
+    async def resolve_project_id(*, project_id):
+        return project_id
+
+    monkeypatch.setattr(agents, "get_client", get_client)
+    monkeypatch.setattr(agents, "resolve_project_id", resolve_project_id)
+    monkeypatch.setattr(agents, "run_embedded_tool", run_embedded_tool)
+    await agents.test_python_tool(
+        spec=spec, tool="lookup", input_json="{}", project_id="project-1"
+    )
 
 
 @pytest.mark.asyncio
@@ -500,17 +611,7 @@ async def test_python_tool_test_reports_runner_failure(monkeypatch, tmp_path):
             }
         )
     )
-    monkeypatch.setenv("MESHAGENT_PYTHON_TOOLS_BIN", "/test/runner")
-
-    class Process:
-        returncode = 1
-
-        async def communicate(self, data):
-            return b'{"error":"tool lookup: bad customer"}', b""
-
-    async def spawn(*args, **kwargs):
-        return Process()
-
-    monkeypatch.setattr(agents.asyncio, "create_subprocess_exec", spawn)
-    with pytest.raises(RoomException, match="tool lookup: bad customer"):
-        await agents.test_python_tool(spec=spec, tool="lookup", input_json="{}")
+    with pytest.raises(RoomException, match="bad customer"):
+        await agents.test_python_tool(
+            spec=spec, tool="lookup", input_json="{}", project_id=None
+        )
