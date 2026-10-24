@@ -1,4 +1,4 @@
-FROM node:22-alpine
+FROM node:22.23.4-alpine
 WORKDIR /app
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000

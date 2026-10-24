@@ -8,6 +8,9 @@ version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
   "aiohttp[speedups]~=3.13.0",
+  # CVE-2026-111497: aiohttp speedups must use patched Brotli decoders.
+  "brotli>=1.2.1; platform_python_implementation == 'CPython'",
+  "brotlicffi>=1.2.1.0; platform_python_implementation != 'CPython'",
   "meshagent-api==__MESHAGENT_CLIENT_VERSION__",
 ]
 
