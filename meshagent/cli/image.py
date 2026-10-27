@@ -248,7 +248,8 @@ async def _list_owner_deploy_rooms(
                     project_id=project_id,
                     resource=AccessResource(type="room", id=room.id),
                     subject=AccessSubject(type="user", id=user_id),
-                    relations=["admin"],
+                    roles=["admin"],
+                    relations=[],
                 )
                 if "admin" in effective.effective_roles:
                     rooms_by_name.setdefault(room.name, room)
