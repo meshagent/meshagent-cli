@@ -1226,7 +1226,7 @@ async def list_connections(*, project_id: ProjectIdOption, room: RoomOption):
 
 @connection_app.async_command(
     "create",
-    help="Create external storage from a local JSON file containing name, config, and credentials.",
+    help="Create external storage from a local JSON file; anonymous connections omit credentials.",
 )
 async def create_connection(
     *,
@@ -1261,7 +1261,7 @@ async def create_connection(
 
 @connection_app.async_command(
     "update",
-    help="Update external storage from a local JSON file; omitted credentials are preserved.",
+    help="Update external storage from a local JSON file; anonymous access removes saved credentials.",
 )
 async def update_connection(
     *,
