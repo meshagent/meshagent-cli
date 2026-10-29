@@ -363,3 +363,77 @@ async def test_import_source_streams_excel_rows(tmp_path) -> None:
         {"id": 1, "name": "a"},
         {"id": 2, "name": "b"},
     ]
+
+
+def test_external_dataset_connection_help():
+    result = CliRunner().invoke(app, ["connection", "--help"])
+    assert result.exit_code == 0
+    for command in ("list", "create", "update", "delete"):
+        assert command in result.output
+    result = CliRunner().invoke(app, ["register", "--help"])
+    assert result.exit_code == 0
+    assert "--connection-id" in result.output
+    assert "--path" in result.output
+
+
+@pytest.mark.asyncio
+async def test_connection_create_never_prints_credentials(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+    import typer
+    from types import SimpleNamespace
+    from meshagent.api.storage_connections import StorageConnection
+    from meshagent.cli import dataset
+
+    printed = []
+    monkeypatch.setattr(dataset, "print", lambda value: printed.append(str(value)))
+    connection_id = "7bb11459-c29b-4a54-9bae-a85bbf6c1d70"
+    room_id = "2081d3e0-07ba-49db-a355-d617747abc2f"
+    payload = {
+        "name": "analytics",
+        "config": {"provider": "s3", "bucket": "test-bucket", "region": "us-east-1"},
+        "credentials": {
+            "provider": "s3",
+            "access_key_id": "test-key",
+            "secret_access_key": "never-print-this",
+        },
+    }
+    file = tmp_path / "connection.json"
+    file.write_text(json.dumps(payload))
+    result_model = StorageConnection.model_validate(
+        {
+            "id": connection_id,
+            "room_id": room_id,
+            "name": "analytics",
+            "config": payload["config"],
+            "revision": 1,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }
+    )
+    client = SimpleNamespace(
+        create_room_storage_connection=AsyncMock(return_value=result_model),
+        close=AsyncMock(),
+    )
+    monkeypatch.setattr(dataset, "get_client", AsyncMock(return_value=client))
+    monkeypatch.setattr(
+        dataset, "resolve_project_id", AsyncMock(return_value="project")
+    )
+    monkeypatch.setattr(dataset, "resolve_room", lambda room: room)
+    await dataset.create_connection(project_id="project", room="room", file=str(file))
+    assert connection_id in "\n".join(printed)
+    assert "never-print-this" not in "\n".join(printed)
+    assert (
+        client.create_room_storage_connection.await_args.kwargs[
+            "connection"
+        ].credentials.secret_access_key
+        == "never-print-this"
+    )
+    client.close.assert_awaited_once()
+    payload["credentials"]["secret_access_key"] = {"secret": "never-print-this"}
+    file.write_text(json.dumps(payload))
+    with pytest.raises(typer.BadParameter) as error:
+        await dataset.create_connection(
+            project_id="project", room="room", file=str(file)
+        )
+    assert "never-print-this" not in str(error.value)
+    assert client.create_room_storage_connection.await_count == 1

@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterable, AsyncIterator, Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from datetime import date, datetime
 import os
 from pydantic import ValidationError
@@ -21,6 +22,10 @@ from rich.console import Console
 from rich.table import Table
 import xlsxwriter
 
+from meshagent.api.storage_connections import (
+    CreateStorageConnection,
+    UpdateStorageConnection,
+)
 from meshagent.api import RequiredTable
 from meshagent.api.http import new_client_session
 from meshagent.agents.agent import install_required_table
@@ -45,6 +50,11 @@ from meshagent.api.sql import ALLOWED_DATA_TYPES, SchemaParseError, parse_table_
 from meshagent.api import RoomException  # or wherever you defined it
 
 app = async_typer.AsyncTyper(help="Manage dataset tables in a room")
+connection_app = async_typer.AsyncTyper(
+    help="Manage room-owned external storage connections."
+)
+app.add_typer(connection_app, name="connection")
+
 branch_app = async_typer.AsyncTyper(help="Manage dataset branches in a room namespace.")
 app.add_typer(
     branch_app,
@@ -1187,6 +1197,173 @@ async def import_table(
 
     except (RoomException, typer.BadParameter, ValidationError, OSError, KeyError) as e:
         print(e)
+        raise typer.Exit(1)
+    finally:
+        await account_client.close()
+
+
+@connection_app.async_command(
+    "list", help="List room external storage connections without credentials."
+)
+async def list_connections(*, project_id: ProjectIdOption, room: RoomOption):
+    client = await get_client()
+    try:
+        connections = await client.list_room_storage_connections(
+            project_id=await resolve_project_id(project_id=project_id),
+            room=resolve_room(room),
+        )
+        print(
+            _json.dumps(
+                [item.model_dump(mode="json") for item in connections], indent=2
+            )
+        )
+    except RoomException as error:
+        print(error)
+        raise typer.Exit(1)
+    finally:
+        await client.close()
+
+
+@connection_app.async_command(
+    "create",
+    help="Create external storage from a local JSON file containing name, config, and credentials.",
+)
+async def create_connection(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    file: Annotated[
+        str, typer.Option(..., "--file", help="Local connection JSON file")
+    ],
+):
+    try:
+        request = CreateStorageConnection.model_validate(
+            _json.loads(Path(file).read_text())
+        )
+    except (ValueError, OSError):
+        raise typer.BadParameter(
+            "invalid connection JSON file; expected name, config, and matching credentials"
+        ) from None
+    client = await get_client()
+    try:
+        connection = await client.create_room_storage_connection(
+            project_id=await resolve_project_id(project_id=project_id),
+            room=resolve_room(room),
+            connection=request,
+        )
+        print(connection.model_dump_json(indent=2))
+    except RoomException as error:
+        print(error)
+        raise typer.Exit(1)
+    finally:
+        await client.close()
+
+
+@connection_app.async_command(
+    "update",
+    help="Update external storage from a local JSON file; omitted credentials are preserved.",
+)
+async def update_connection(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    connection_id: Annotated[str, typer.Option(..., "--connection-id")],
+    file: Annotated[
+        str, typer.Option(..., "--file", help="Local connection JSON file")
+    ],
+):
+    try:
+        request = UpdateStorageConnection.model_validate(
+            _json.loads(Path(file).read_text())
+        )
+    except (ValueError, OSError):
+        raise typer.BadParameter(
+            "invalid connection JSON file; expected name, config, and optional matching credentials"
+        ) from None
+    client = await get_client()
+    try:
+        connection = await client.update_room_storage_connection(
+            project_id=await resolve_project_id(project_id=project_id),
+            room=resolve_room(room),
+            connection_id=connection_id,
+            connection=request,
+        )
+        print(connection.model_dump_json(indent=2))
+    except RoomException as error:
+        print(error)
+        raise typer.Exit(1)
+    finally:
+        await client.close()
+
+
+@connection_app.async_command(
+    "delete", help="Remove a room connection without deleting external data."
+)
+async def delete_connection(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    connection_id: Annotated[str, typer.Option(..., "--connection-id")],
+):
+    client = await get_client()
+    try:
+        await client.delete_room_storage_connection(
+            project_id=await resolve_project_id(project_id=project_id),
+            room=resolve_room(room),
+            connection_id=connection_id,
+        )
+        print("Deleted storage connection")
+    except RoomException as error:
+        print(error)
+        raise typer.Exit(1)
+    finally:
+        await client.close()
+
+
+@app.async_command(
+    "register", help="Register an existing external Lance dataset as a read-only table."
+)
+async def register_table(
+    *,
+    project_id: ProjectIdOption,
+    room: RoomOption,
+    table: Annotated[
+        str, typer.Option(..., "--table", "-t", help="Catalog table name")
+    ],
+    connection_id: Annotated[
+        str, typer.Option(..., "--connection-id", help="Room storage connection ID")
+    ],
+    path: Annotated[
+        str,
+        typer.Option(
+            ..., "--path", help="Dataset path relative to the connection prefix"
+        ),
+    ],
+    namespace: NamespaceOption = None,
+    branch: BranchOption = None,
+):
+    account_client = await get_client()
+    try:
+        project_id = await resolve_project_id(project_id=project_id)
+        room_name = resolve_room(room)
+        connection = await account_client.connect_room(
+            project_id=project_id, room=room_name
+        )
+        async with RoomClient(
+            protocol_factory=WebSocketClientProtocol(
+                url=websocket_room_url(room_name=room_name), token=connection.jwt
+            ).create_factory()
+        ) as client:
+            await client.datasets.register_table(
+                name=table,
+                connection_id=connection_id,
+                path=path,
+                namespace=_ns(namespace),
+                branch=branch,
+            )
+            print(f"Registered external table: {table}")
+    except RoomException as error:
+        print(error)
         raise typer.Exit(1)
     finally:
         await account_client.close()
