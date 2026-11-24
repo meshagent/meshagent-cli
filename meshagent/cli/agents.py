@@ -4,7 +4,9 @@ import os
 from typing import Annotated, Any, Awaitable, Callable, Literal, Optional
 
 import typer
+from pydantic import ValidationError
 from rich import print
+from rich.markup import escape
 
 from meshagent.api import RoomException
 from meshagent.api.client import ManagedAgent
@@ -77,6 +79,19 @@ def _maybe_parse_json_object(label: str, value: Optional[str]) -> Optional[dict]
     if not isinstance(parsed, dict):
         raise RoomException(f"Invalid {label} JSON: expected an object")
     return parsed
+
+
+def _parse_agent_write_configuration(value: str) -> ManagedAgentSpec:
+    try:
+        return ManagedAgentSpec.model_validate(
+            _maybe_parse_json_object("configuration", value)
+        )
+    except ValidationError as error:
+        details = [
+            f"{'.'.join(str(part) for part in item['loc']) or 'configuration'}: {item['msg']}"
+            for item in error.errors(include_input=False)
+        ]
+        raise RoomException("\n".join(details)) from None
 
 
 def _maybe_parse_string_dict_json(
@@ -533,9 +548,7 @@ async def agent_create_command(
     account_client = await get_client()
     try:
         project_id = await resolve_project_id(project_id=project_id)
-        configuration_obj = ManagedAgentSpec.model_validate(
-            _maybe_parse_json_object("configuration", configuration)
-        )
+        configuration_obj = _parse_agent_write_configuration(configuration)
         if thread_isolation is not None:
             configuration_obj = configuration_obj.model_copy(
                 update={"thread_isolation": thread_isolation}
@@ -549,7 +562,7 @@ async def agent_create_command(
         )
         print(json.dumps(agent.model_dump(mode="json"), indent=2))
     except RoomException as ex:
-        print(f"[red]{ex}[/red]")
+        print(f"[red]{escape(str(ex))}[/red]")
         raise typer.Exit(1)
     finally:
         await account_client.close()
@@ -602,9 +615,7 @@ async def agent_update_command(
         agent_id = await _resolve_agent_id_or_fail(
             account_client, project_id=project_id, agent_id=id, agent_name=name
         )
-        configuration_obj = ManagedAgentSpec.model_validate(
-            _maybe_parse_json_object("configuration", configuration)
-        )
+        configuration_obj = _parse_agent_write_configuration(configuration)
         if thread_isolation is not None:
             configuration_obj = configuration_obj.model_copy(
                 update={"thread_isolation": thread_isolation}
@@ -618,7 +629,7 @@ async def agent_update_command(
         )
         print("[bold cyan]Agent updated.[/bold cyan]")
     except RoomException as ex:
-        print(f"[red]{ex}[/red]")
+        print(f"[red]{escape(str(ex))}[/red]")
         raise typer.Exit(1)
     finally:
         await account_client.close()

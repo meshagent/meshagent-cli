@@ -213,6 +213,25 @@ async def test_agent_create_command_can_override_thread_isolation(
 
 
 @pytest.mark.asyncio
+async def test_agent_create_reports_missing_models(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    client = _FakeAgentClient()
+    _patch_agent_command(monkeypatch, client=client)
+
+    with pytest.raises(typer.Exit) as failure:
+        await agents.agent_create_command(
+            project_id="project-1",
+            configuration='{"metadata":{"name":"planner"}}',
+        )
+
+    assert failure.value.exit_code == 1
+    assert capsys.readouterr().out.strip() == "allowed_models: Field required"
+    assert client.create_agent_calls == []
+    assert client.closed
+
+
+@pytest.mark.asyncio
 async def test_agent_update_command_uses_configuration_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
