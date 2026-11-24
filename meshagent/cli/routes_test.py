@@ -395,8 +395,10 @@ def agent_route_client(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_agent_content_create_ignores_implicit_room_and_stays_public(
+@pytest.mark.parametrize("iap", [False, True])
+async def test_agent_content_create_ignores_implicit_room(
     agent_route_client,
+    iap,
 ):
     await routes.route_create(
         project_id="project-1",
@@ -404,29 +406,35 @@ async def test_agent_content_create_ignores_implicit_room_and_stays_public(
         agent="publisher",
         content_path="web",
         index=True,
+        iap=iap,
     )
     spec = agent_route_client.created_spec
     assert spec.agent_name == "publisher"
     assert spec.room_name is None
     assert spec.paths[0].targetContent.subpath == "web"
     assert spec.paths[0].targetContent.index
-    assert not spec.paths[0].targetContent.iap
+    assert spec.paths[0].targetContent.iap is iap
     assert agent_route_client.closed
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("content_path", [None, "updated"])
 async def test_agent_content_update_preserves_backend_and_unspecified_options(
     agent_route_client,
+    content_path,
 ):
     await routes.route_update(
-        project_id="project-1", domain="docs.meshagent.app", content_path="updated"
+        project_id="project-1",
+        domain="docs.meshagent.app",
+        content_path=content_path,
+        iap=True,
     )
     spec = agent_route_client.updated_spec
     assert spec.agent_name == "publisher"
     assert spec.room_name is None
     content = spec.paths[0].targetContent
-    assert content.subpath == "updated"
-    assert content.index and not content.iap
+    assert content.subpath == (content_path or "web/docs")
+    assert content.index and content.iap
     assert content.compression == "gzip"
     assert content.cors[0].allowedOrigins == ["https://app.example.test"]
     assert spec.metadata.annotations == {"keep": "yes"}
@@ -434,8 +442,8 @@ async def test_agent_content_update_preserves_backend_and_unspecified_options(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("command", ["create", "update"])
-@pytest.mark.parametrize("options", [{"room": "room"}, {"port": "8080"}, {"iap": True}])
-async def test_agent_route_flags_reject_other_backend_ports_and_iap(
+@pytest.mark.parametrize("options", [{"room": "room"}, {"port": "8080"}])
+async def test_agent_route_flags_reject_other_backend_and_ports(
     agent_route_client, command, options
 ):
     import typer
@@ -455,15 +463,12 @@ async def test_agent_route_flags_reject_other_backend_ports_and_iap(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("options", [{"port": "8080"}, {"iap": True}])
-async def test_existing_agent_route_cannot_gain_ports_or_iap(
-    agent_route_client, options
-):
+async def test_existing_agent_route_cannot_gain_ports(agent_route_client):
     import typer
 
     with pytest.raises(typer.BadParameter):
         await routes.route_update(
-            project_id="project-1", domain="docs.meshagent.app", **options
+            project_id="project-1", domain="docs.meshagent.app", port="8080"
         )
     assert agent_route_client.updated_spec is None
 
@@ -473,4 +478,4 @@ def test_agent_route_help_describes_both_backend_options():
         result = CliRunner().invoke(routes.app, [command, "--help"])
         assert result.exit_code == 0
         assert "--agent" in result.stdout
-        assert "public only" in result.stdout
+        assert "--iap" in result.stdout

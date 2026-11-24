@@ -142,7 +142,7 @@ def _validate_route_spec(value: dict[str, object]) -> RouteSpec:
 
 
 def _check_agent_options(
-    *, room: str | None, agent: str | None, port: str | None, iap: bool | None
+    *, room: str | None, agent: str | None, port: str | None
 ) -> None:
     if agent is None:
         return
@@ -150,8 +150,8 @@ def _check_agent_options(
         raise typer.BadParameter("--room and --agent cannot be combined")
     if not agent.strip():
         raise typer.BadParameter("--agent must name a managed agent")
-    if port is not None or iap is True:
-        raise typer.BadParameter("Agent file routes cannot use --port or --iap")
+    if port is not None:
+        raise typer.BadParameter("Agent file routes cannot use --port")
 
 
 def _warn_if_non_meshagent_app_domain(domain: str) -> None:
@@ -208,9 +208,7 @@ async def route_create(
     room: Annotated[Optional[str], typer.Option("--room", help="Room name")] = None,
     agent: Annotated[
         Optional[str],
-        typer.Option(
-            "--agent", help="Managed agent whose files to publish (public only)"
-        ),
+        typer.Option("--agent", help="Managed agent whose files to publish"),
     ] = None,
     port: Annotated[
         Optional[str],
@@ -270,7 +268,7 @@ async def route_create(
     try:
         project_id = await resolve_project_id(project_id)
         if file is None:
-            _check_agent_options(room=room, agent=agent, port=port, iap=iap)
+            _check_agent_options(room=room, agent=agent, port=port)
             content_options = _content_options_supplied(
                 content_path=content_path,
                 cors=cors,
@@ -372,9 +370,7 @@ async def route_update(
     ] = None,
     agent: Annotated[
         Optional[str],
-        typer.Option(
-            "--agent", help="Managed agent whose files to publish (public only)"
-        ),
+        typer.Option("--agent", help="Managed agent whose files to publish"),
     ] = None,
     port: Annotated[
         Optional[str],
@@ -429,7 +425,7 @@ async def route_update(
         if file is not None:
             spec = _load_route_spec(file)
         else:
-            _check_agent_options(room=room, agent=agent, port=port, iap=iap)
+            _check_agent_options(room=room, agent=agent, port=port)
             parsed_annotations = _parse_annotations(annotations)
             parsed_cors = _parse_cors(cors)
             parsed_compression = _parse_compression(compression)
@@ -458,7 +454,7 @@ async def route_update(
             if agent is None and room is None and route.spec.agent_name is not None:
                 agent = route.spec.agent_name
             room = (resolve_room(room) or route.room_name) if agent is None else None
-            _check_agent_options(room=room, agent=agent, port=port, iap=iap)
+            _check_agent_options(room=room, agent=agent, port=port)
             if not room and agent is None:
                 raise typer.BadParameter("Provide --room for a room route")
             parsed_annotations = (
